@@ -297,11 +297,13 @@ impl<'a> RunHistoryStore<'a> {
             "INSERT INTO run_llm_calls \
                 (id, run_id, tenant_id, agent_name, step_index, provider, model, \
                  prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd, \
-                 latency_ms, status, error_message, request_payload, response_payload, created_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) \
+                 latency_ms, cached_tokens, total_time_ms, status, error_message, \
+                 request_payload, response_payload, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) \
              RETURNING id, run_id, tenant_id, agent_name, step_index, provider, model, \
                        prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd, \
-                       latency_ms, status, error_message, request_payload, response_payload, created_at",
+                       latency_ms, cached_tokens, total_time_ms, status, error_message, \
+                       request_payload, response_payload, created_at",
         )
         .bind(&req.id)
         .bind(&req.run_id)
@@ -961,7 +963,7 @@ impl<'a> RunHistoryStore<'a> {
                         THEN NULL \
                         ELSE SUM(cached_tokens)::DOUBLE PRECISION / SUM(prompt_tokens)::DOUBLE PRECISION \
                     END AS cache_hit_ratio, \
-                    AVG(total_time_ms) AS avg_total_time_ms \
+                    AVG(COALESCE(total_time_ms, 0))::DOUBLE PRECISION AS avg_total_time_ms \
              FROM run_llm_calls \
              GROUP BY model \
              ORDER BY calls DESC, model ASC",
@@ -1475,7 +1477,7 @@ mod tests {
             "created_at": 1_700_000_000i64,
         });
         // Merge so the request deserializes; defaults keep old payloads valid.
-        let merged = match (full, partial) {
+        let merged = match (full.clone(), partial) {
             (serde_json::Value::Object(mut base), serde_json::Value::Object(extra)) => {
                 base.extend(extra);
                 serde_json::Value::Object(base)
@@ -1504,7 +1506,7 @@ mod tests {
                         THEN NULL \
                         ELSE SUM(cached_tokens)::DOUBLE PRECISION / SUM(prompt_tokens)::DOUBLE PRECISION \
                     END AS cache_hit_ratio, \
-                    AVG(total_time_ms) AS avg_total_time_ms \
+                    AVG(COALESCE(total_time_ms, 0))::DOUBLE PRECISION AS avg_total_time_ms \
              FROM run_llm_calls \
              GROUP BY model \
              ORDER BY calls DESC, model ASC";
@@ -1596,6 +1598,8 @@ mod tests {
             total_tokens: 150,
             estimated_cost_usd: dec!(0.000250),
             latency_ms: 420,
+            cached_tokens: Some(40),
+            total_time_ms: Some(430),
             status: "success".into(),
             error_message: None,
             request_payload: Some(serde_json::json!({"messages": []})),

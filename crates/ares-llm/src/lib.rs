@@ -125,7 +125,7 @@ pub use coordinator::{
 pub use exporter::{ExporterRouter, LogExporter, RecordLevel, TracingExporter};
 pub use governor::{GovernorConfig, ProviderGovernor};
 pub use llm_service::{Breaker, Llm, ModelOverride, TenantModelPolicy};
-pub use micro::{MicroEngine, MicroOutcome, MicroTask};
+pub use micro::{MicroCacheConfig, MicroEngine, MicroOutcome, MicroTask};
 pub use observability::{LlmCallRecord, ObservabilitySink};
 pub use plugins::{install_tracing_router, register_plugins};
 pub use pool::{ClientPool, ClientPoolBuilder, PoolConfig, PoolStats, PooledClientGuard};

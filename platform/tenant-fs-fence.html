@@ -1,0 +1,357 @@
+<!DOCTYPE HTML>
+<html lang="en" class="navy" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Tenant FS Permission Fence - ARES documentation</title>
+
+
+        <!-- Custom HTML head -->
+        
+        <meta name="description" content="Documentation for ARES, an agent platform with multi-provider LLM support, tool calling, RAG, and multi-tenant support.">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="../highlight.css">
+        <link rel="stylesheet" href="../tomorrow-night.css">
+        <link rel="stylesheet" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "../";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "navy";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('navy')
+            html.classList.add(theme);
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var body = document.querySelector('body');
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="../introduction.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">Getting started</li><li class="chapter-item expanded "><a href="../getting-started/quickstart.html"><strong aria-hidden="true">1.</strong> Quickstart</a></li><li class="chapter-item expanded "><a href="../getting-started/authentication.html"><strong aria-hidden="true">2.</strong> Authentication</a></li><li class="chapter-item expanded "><a href="../getting-started/models.html"><strong aria-hidden="true">3.</strong> Models & Providers</a></li><li class="chapter-item expanded affix "><li class="part-title">API Reference</li><li class="chapter-item expanded "><a href="../api/chat.html"><strong aria-hidden="true">4.</strong> Chat</a></li><li class="chapter-item expanded "><a href="../api/agents.html"><strong aria-hidden="true">5.</strong> Agents</a></li><li class="chapter-item expanded "><a href="../api/tools.html"><strong aria-hidden="true">6.</strong> Tools</a></li><li class="chapter-item expanded "><a href="../api/skills.html"><strong aria-hidden="true">7.</strong> Skills</a></li><li class="chapter-item expanded "><a href="../api/mcp.html"><strong aria-hidden="true">8.</strong> MCP Integration</a></li><li class="chapter-item expanded "><a href="../api/memory.html"><strong aria-hidden="true">9.</strong> Memory</a></li><li class="chapter-item expanded "><a href="../api/rag.html"><strong aria-hidden="true">10.</strong> RAG</a></li><li class="chapter-item expanded "><a href="../api/workflows.html"><strong aria-hidden="true">11.</strong> Workflows</a></li><li class="chapter-item expanded "><a href="../api/research.html"><strong aria-hidden="true">12.</strong> Research</a></li><li class="chapter-item expanded "><a href="../api/streaming.html"><strong aria-hidden="true">13.</strong> Streaming</a></li><li class="chapter-item expanded affix "><li class="part-title">Enterprise</li><li class="chapter-item expanded "><a href="../enterprise/v1-api.html"><strong aria-hidden="true">14.</strong> V1 Client API</a></li><li class="chapter-item expanded "><a href="../enterprise/admin-api.html"><strong aria-hidden="true">15.</strong> Admin API</a></li><li class="chapter-item expanded "><a href="../enterprise/deploy-api.html"><strong aria-hidden="true">16.</strong> Deployment API</a></li><li class="chapter-item expanded "><a href="../enterprise/multi-tenant.html"><strong aria-hidden="true">17.</strong> Multi-Tenant Setup</a></li><li class="chapter-item expanded affix "><li class="part-title">Platform</li><li class="chapter-item expanded "><a href="../platform/architecture.html"><strong aria-hidden="true">18.</strong> Architecture (Cordis)</a></li><li class="chapter-item expanded "><a href="../platform/rate-limits.html"><strong aria-hidden="true">19.</strong> Rate Limits & Quotas</a></li><li class="chapter-item expanded "><a href="../platform/safety.html"><strong aria-hidden="true">20.</strong> Loop Detection & Safety</a></li><li class="chapter-item expanded "><a href="../platform/tenant-fs-fence.html" class="active"><strong aria-hidden="true">21.</strong> Tenant FS Permission Fence</a></li><li class="chapter-item expanded "><a href="../platform/errors.html"><strong aria-hidden="true">22.</strong> Error Handling</a></li><li class="chapter-item expanded "><a href="../platform/self-hosting.html"><strong aria-hidden="true">23.</strong> Self-Hosting</a></li><li class="chapter-item expanded affix "><li class="part-title">Architecture</li><li class="chapter-item expanded "><a href="../cordis/cordis-mapping.html"><strong aria-hidden="true">24.</strong> Mapping, Γ^∞ → Rust</a></li><li class="chapter-item expanded "><a href="../cordis/cordis-remedies.html"><strong aria-hidden="true">25.</strong> Remedies, P0-P10</a></li><li class="chapter-item expanded "><a href="../cordis/cordis-capabilities.html"><strong aria-hidden="true">26.</strong> Capabilities, Preservation Checklist</a></li><li class="chapter-item expanded "><a href="../cordis/cordis-baseline.html"><strong aria-hidden="true">27.</strong> Baseline, Gates</a></li><li class="chapter-item expanded "><a href="../cordis/cordis-yagni.html"><strong aria-hidden="true">28.</strong> YAGNI Ladder</a></li><li class="chapter-item expanded "><a href="../cordis/cordis-redesign.html"><strong aria-hidden="true">29.</strong> Handoff, Architecture</a></li><li class="chapter-item expanded "><a href="../upstream-parity.html"><strong aria-hidden="true">30.</strong> Upstream Parity Ledger</a></li><li class="chapter-item expanded affix "><li class="part-title">Extending ARES</li><li class="chapter-item expanded "><a href="../extending/context-provider.html"><strong aria-hidden="true">31.</strong> ContextProvider Trait</a></li><li class="chapter-item expanded "><a href="../extending/base-router.html"><strong aria-hidden="true">32.</strong> Building on the ARES router</a></li><li class="chapter-item expanded affix "><li class="part-title">Guides</li><li class="chapter-item expanded "><a href="../guides/chat-agent.html"><strong aria-hidden="true">33.</strong> Build a Chat Agent</a></li><li class="chapter-item expanded "><a href="../guides/tool-calling.html"><strong aria-hidden="true">34.</strong> Tool Calling</a></li><li class="chapter-item expanded affix "><li class="part-title">Resources</li><li class="chapter-item expanded "><a href="../changelog.html"><strong aria-hidden="true">35.</strong> Changelog</a></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">ARES documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares/edit/main/docs/src/platform/tenant-fs-fence.md" title="Suggest an edit" aria-label="Suggest an edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="tenant-fs-permission-fence"><a class="header" href="#tenant-fs-permission-fence">Tenant FS permission fence</a></h1>
+<p>File-manipulation tools give agents real power over the host filesystem. That power needs a fence. This page defines the fence that will gate every future file tool. The policy core ships now in <code>crates/ares-tools/src/fence.rs</code>. Tool wiring comes later. This document is the contract for both halves.</p>
+<h2 id="status"><a class="header" href="#status">Status</a></h2>
+<p>The module <code>ares_tools::fence</code> holds the decision types and the L0, L1, and L2 checks. It exposes <code>check_path</code>, <code>check_read</code>, and <code>check_write</code>. No tool calls these functions yet. Layer L3 needs the read-hash ledger of the future file tools. It joins at wiring time.</p>
+<h2 id="design-principles"><a class="header" href="#design-principles">Design principles</a></h2>
+<p>The fence makes decisions before any tool touches the disk where possible. Every denial names the layer that produced it. Agents see the failing rule and can correct their plan. Policies are plain values, so tests construct them without setup.</p>
+<h2 id="the-four-layers"><a class="header" href="#the-four-layers">The four layers</a></h2>
+<p>A request must pass all four layers. The fence checks layers in a fixed order: L0, L1, L2, L3. The first failure wins. Its layer appears in the returned decision, so outcomes stay deterministic for tests and for error messages.</p>
+<h3 id="l0---sandbox-mode"><a class="header" href="#l0---sandbox-mode">L0 - Sandbox mode</a></h3>
+<p>Each session carries exactly one mode:</p>
+<div class="table-wrapper"><table><thead><tr><th>Mode</th><th>Reads</th><th>Writes</th></tr></thead><tbody>
+<tr><td><code>ReadOnly</code></td><td>Judged by L1 and L2</td><td>Always denied</td></tr>
+<tr><td><code>WorkspaceWrite</code> (default)</td><td>Judged by L1 and L2</td><td>Allowed below the workspace root</td></tr>
+<tr><td><code>Full</code></td><td>Judged by L2</td><td>Allowed anywhere except blocklist hits</td></tr>
+</tbody></table>
+</div>
+<p>Mode is per-session state. It is never global. A session can switch modes at runtime. The policy value clones cheaply, so each conversation holds its own copy. One user cannot change the mode of another session.</p>
+<h3 id="l1---workspace-boundary"><a class="header" href="#l1---workspace-boundary">L1 - Workspace boundary</a></h3>
+<p>The fence resolves every candidate path before judgment. Resolution anchors relative paths on the tenant workspace root. It removes <code>.</code> parts and folds <code>..</code> parts lexically. Then it canonicalizes the deepest existing ancestor and rejoins the missing tail. Fresh tail names need no resolution because they do not exist yet.</p>
+<p>The canonical result must start with the workspace root. The comparison works component by component. Lexical neighbors such as <code>/workspace</code> and <code>/workspace-evil</code> never satisfy it. Canonicalization follows symlink targets, so a link planted inside the workspace that points outside becomes a violation. A failed canonicalization is also a violation. The fence reports the boundary layer either way.</p>
+<p>Roots come from per-tenant isolation. Each tenant sees exactly one root. <code>Full</code> mode waives this layer, and L2 still judges every path.</p>
+<h3 id="l2---sensitive-file-blocklist"><a class="header" href="#l2---sensitive-file-blocklist">L2 - Sensitive-file blocklist</a></h3>
+<p>Some names stay forbidden in every mode. The blocklist covers credential files, key material, database files, <code>.env</code> variants, and ssh directories. Deployments extend the list through configuration, so operators add site-specific entries without code changes.</p>
+<p>The matcher walks every component of the path. Each component name is compared against all patterns. Comparison ignores letter case. Patterns accept the <code>*</code> and <code>?</code> wildcards. An illustrative deployment list looks like this:</p>
+<pre><code class="language-toml">blocklist = [".env", ".env.*", "*.pem", "*.key", "id_rsa*", ".ssh", "*.db"]
+</code></pre>
+<p>The fence scans the raw spelling first and the canonical spelling second. A symlink therefore cannot smuggle a protected name past the scan. The blocklist applies to reads and writes alike. <code>Full</code> mode does not weaken it.</p>
+<h3 id="l3---write-guards"><a class="header" href="#l3---write-guards">L3 - Write guards</a></h3>
+<p>Writes face four extra guards once the file tools arrive:</p>
+<ol>
+<li><strong>Read-before-edit.</strong> The tool records the content hash of the last read. At write time the current file hash must match that record. A mismatch means another writer changed the file in between. The write fails and directs the agent to re-read.</li>
+<li><strong>Size ceiling.</strong> Writes above a configured byte limit are denied. The limit stops runaway output from filling the disk.</li>
+<li><strong>Binary-extension denylist.</strong> Writes to configured executable or archive extensions are denied. Text-oriented agents corrupt binaries by accident. The denylist removes that accident class.</li>
+<li><strong>Atomic write.</strong> The tool writes to a temporary file in the target directory and renames it into place. Rename within one directory is atomic on local filesystems. Interrupted writes then leave no torn file behind.</li>
+</ol>
+<p>These guards live beside the tools, not in the path checker. They need the read ledger that only the tools own. Their denials still report the same layer name, so callers see one uniform scheme.</p>
+<h2 id="threat-model"><a class="header" href="#threat-model">Threat model</a></h2>
+<p>Each layer stops a different attack path. L0 stops a hijacked or confused agent from mutating anything during a review session. <code>ReadOnly</code> refuses every write before the process opens a file. L1 stops escapes from the tenant workspace. Parent traversal, planted symlinks, and absolute paths into other tenants or system locations all fail the prefix test. One tenant cannot reach the files of another tenant through the fence. L2 stops quiet credential theft from inside the walls. Workspaces often hold <code>.env</code> files or private keys beside ordinary project files. The blocklist denies those reads in every mode, including <code>Full</code>. L3 stops silent data damage. Stale-hash edits lose concurrent updates, oversized writes fill disks, careless writes corrupt binaries, and killed processes leave half-written files. One guard addresses each of those four failures.</p>
+<h2 id="api-sketch"><a class="header" href="#api-sketch">API sketch</a></h2>
+<p>The shipped skeleton matches this shape:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use std::path::{Path, PathBuf};
+
+pub struct FencePolicy {
+    pub mode: FenceMode,
+    pub workspace_root: PathBuf,
+    pub blocklist: Vec&lt;String&gt;,
+}
+
+pub enum FenceMode {
+    ReadOnly,
+    WorkspaceWrite,
+    Full,
+}
+
+pub enum FenceLayer {
+    L0Mode,
+    L1Boundary,
+    L2Blocklist,
+    L3WriteGuard,
+}
+
+pub enum FenceDecision {
+    Allowed,
+    Denied {
+        layer: FenceLayer,
+        reason: String,
+    },
+}
+
+impl FencePolicy {
+    pub fn check_read(&amp;self, raw: &amp;Path) -&gt; FenceDecision;
+    pub fn check_write(&amp;self, raw: &amp;Path) -&gt; FenceDecision;
+}
+
+// Free function behind both methods. `write == false` means read.
+pub fn check_path(policy: &amp;FencePolicy, raw: &amp;Path, write: bool) -&gt; FenceDecision;
+<span class="boring">}</span></code></pre></pre>
+<p>Callers turn a denial into a tool error without building extra context. The reason string carries a human-readable cause, for example <code>blocked name: .env</code>. A typical call site looks like this:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let policy = FencePolicy::new(
+    FenceMode::WorkspaceWrite,
+    &amp;session.workspace_root,
+    config.blocklist.clone(),
+);
+
+if let FenceDecision::Denied { layer, reason } = policy.check_write(&amp;candidate) {
+    return Err(format!("fence rejected the write at {layer:?}: {reason}"));
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="attachment-through-tenant-isolation"><a class="header" href="#attachment-through-tenant-isolation">Attachment through tenant isolation</a></h2>
+<p>Each tenant gets its own fence instance. The attachment reuses the per-tenant service isolate pattern that already exists in the kernel. <code>cordis::Context::isolate_type</code> builds a child context in which one service type resolves to a per-realm registration instead of the parent registration. <code>ares_store::TenantRealms::open</code> applies that pattern today. It creates the child with <code>root.extend().isolate_type(tools_type_id, tenant_id)</code> and caches one child per tenant id.</p>
+<p>The fence joins that pattern at wiring time. Each realm will register its own tools wrapper carrying the tenant <code>FencePolicy</code> and the tenant workspace root. Mode changes will mutate only the policy copy of that realm. Other tenants will never observe them. Shared engine services stay outside the isolate, so execution remains common while file access stays fenced.</p>
+<h2 id="testing-matrix"><a class="header" href="#testing-matrix">Testing matrix</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Layer</th><th>Case</th><th>Expected decision</th></tr></thead><tbody>
+<tr><td>L0</td><td>Write while mode is <code>ReadOnly</code></td><td>Denied at L0Mode</td></tr>
+<tr><td>L0</td><td>Read while mode is <code>ReadOnly</code></td><td>Passes L0, L1 and L2 still judge</td></tr>
+<tr><td>L1</td><td>Relative path inside the workspace</td><td>Allowed</td></tr>
+<tr><td>L1</td><td>Path with <code>..</code> climbing above the root</td><td>Denied at L1Boundary</td></tr>
+<tr><td>L1</td><td>Symlink inside the root pointing outside</td><td>Denied at L1Boundary</td></tr>
+<tr><td>L1</td><td>Absolute path outside the workspace</td><td>Denied at L1Boundary</td></tr>
+<tr><td>L1</td><td>Missing intermediate directories</td><td>Resolved first, then judged normally</td></tr>
+<tr><td>L1</td><td>Any path while mode is <code>Full</code></td><td>L1 steps aside, L2 still judges</td></tr>
+<tr><td>L2</td><td><code>.env</code> at any depth, read or write</td><td>Denied at L2Blocklist</td></tr>
+<tr><td>L2</td><td>Wildcard match such as <code>server.pem</code></td><td>Denied at L2Blocklist</td></tr>
+<tr><td>L2</td><td>Uppercase spelling such as <code>SERVER.PEM</code></td><td>Denied at L2Blocklist</td></tr>
+<tr><td>L2</td><td>Protected name reached through a symlink</td><td>Denied at L2Blocklist</td></tr>
+<tr><td>L3</td><td>Edit without a recorded read</td><td>Denied at L3WriteGuard (planned)</td></tr>
+<tr><td>L3</td><td>Payload above the size ceiling</td><td>Denied at L3WriteGuard (planned)</td></tr>
+<tr><td>L3</td><td>Write to a denylisted binary extension</td><td>Denied at L3WriteGuard (planned)</td></tr>
+<tr><td>L3</td><td>File changed between read and write</td><td>Denied at L3WriteGuard (planned)</td></tr>
+</tbody></table>
+</div>
+<p>The unit tests in <code>crates/ares-tools/src/fence.rs</code> cover the shipped rows today. Integration tests will cover the planned L3 rows together with the tool wiring.</p>
+<h2 id="non-goals"><a class="header" href="#non-goals">Non-goals</a></h2>
+<p>The fence judges filesystem paths only. It does not attempt:</p>
+<ul>
+<li><strong>Network egress control.</strong> Outbound connection policy belongs to the subprocess service.</li>
+<li><strong>Process-level sandboxing.</strong> Operating-system users, namespaces, and similar controls stay with the subprocess service.</li>
+<li><strong>Secret storage and rotation.</strong> Store and authentication components own credential custody.</li>
+<li><strong>Content inspection.</strong> The fence judges names and directory structure. It does not scan file bodies for secrets.</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../platform/safety.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../platform/errors.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../platform/safety.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../platform/errors.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>

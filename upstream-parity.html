@@ -1,0 +1,632 @@
+<!DOCTYPE HTML>
+<html lang="en" class="navy" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Upstream Parity Ledger - ARES documentation</title>
+
+
+        <!-- Custom HTML head -->
+        
+        <meta name="description" content="Documentation for ARES, an agent platform with multi-provider LLM support, tool calling, RAG, and multi-tenant support.">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon.svg">
+        <link rel="shortcut icon" href="favicon.png">
+        <link rel="stylesheet" href="css/variables.css">
+        <link rel="stylesheet" href="css/general.css">
+        <link rel="stylesheet" href="css/chrome.css">
+        <link rel="stylesheet" href="css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="highlight.css">
+        <link rel="stylesheet" href="tomorrow-night.css">
+        <link rel="stylesheet" href="ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "navy";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('navy')
+            html.classList.add(theme);
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var body = document.querySelector('body');
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="introduction.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">Getting started</li><li class="chapter-item expanded "><a href="getting-started/quickstart.html"><strong aria-hidden="true">1.</strong> Quickstart</a></li><li class="chapter-item expanded "><a href="getting-started/authentication.html"><strong aria-hidden="true">2.</strong> Authentication</a></li><li class="chapter-item expanded "><a href="getting-started/models.html"><strong aria-hidden="true">3.</strong> Models & Providers</a></li><li class="chapter-item expanded affix "><li class="part-title">API Reference</li><li class="chapter-item expanded "><a href="api/chat.html"><strong aria-hidden="true">4.</strong> Chat</a></li><li class="chapter-item expanded "><a href="api/agents.html"><strong aria-hidden="true">5.</strong> Agents</a></li><li class="chapter-item expanded "><a href="api/tools.html"><strong aria-hidden="true">6.</strong> Tools</a></li><li class="chapter-item expanded "><a href="api/skills.html"><strong aria-hidden="true">7.</strong> Skills</a></li><li class="chapter-item expanded "><a href="api/mcp.html"><strong aria-hidden="true">8.</strong> MCP Integration</a></li><li class="chapter-item expanded "><a href="api/memory.html"><strong aria-hidden="true">9.</strong> Memory</a></li><li class="chapter-item expanded "><a href="api/rag.html"><strong aria-hidden="true">10.</strong> RAG</a></li><li class="chapter-item expanded "><a href="api/workflows.html"><strong aria-hidden="true">11.</strong> Workflows</a></li><li class="chapter-item expanded "><a href="api/research.html"><strong aria-hidden="true">12.</strong> Research</a></li><li class="chapter-item expanded "><a href="api/streaming.html"><strong aria-hidden="true">13.</strong> Streaming</a></li><li class="chapter-item expanded affix "><li class="part-title">Enterprise</li><li class="chapter-item expanded "><a href="enterprise/v1-api.html"><strong aria-hidden="true">14.</strong> V1 Client API</a></li><li class="chapter-item expanded "><a href="enterprise/admin-api.html"><strong aria-hidden="true">15.</strong> Admin API</a></li><li class="chapter-item expanded "><a href="enterprise/deploy-api.html"><strong aria-hidden="true">16.</strong> Deployment API</a></li><li class="chapter-item expanded "><a href="enterprise/multi-tenant.html"><strong aria-hidden="true">17.</strong> Multi-Tenant Setup</a></li><li class="chapter-item expanded affix "><li class="part-title">Platform</li><li class="chapter-item expanded "><a href="platform/architecture.html"><strong aria-hidden="true">18.</strong> Architecture (Cordis)</a></li><li class="chapter-item expanded "><a href="platform/rate-limits.html"><strong aria-hidden="true">19.</strong> Rate Limits & Quotas</a></li><li class="chapter-item expanded "><a href="platform/safety.html"><strong aria-hidden="true">20.</strong> Loop Detection & Safety</a></li><li class="chapter-item expanded "><a href="platform/tenant-fs-fence.html"><strong aria-hidden="true">21.</strong> Tenant FS Permission Fence</a></li><li class="chapter-item expanded "><a href="platform/errors.html"><strong aria-hidden="true">22.</strong> Error Handling</a></li><li class="chapter-item expanded "><a href="platform/self-hosting.html"><strong aria-hidden="true">23.</strong> Self-Hosting</a></li><li class="chapter-item expanded affix "><li class="part-title">Architecture</li><li class="chapter-item expanded "><a href="cordis/cordis-mapping.html"><strong aria-hidden="true">24.</strong> Mapping, Γ^∞ → Rust</a></li><li class="chapter-item expanded "><a href="cordis/cordis-remedies.html"><strong aria-hidden="true">25.</strong> Remedies, P0-P10</a></li><li class="chapter-item expanded "><a href="cordis/cordis-capabilities.html"><strong aria-hidden="true">26.</strong> Capabilities, Preservation Checklist</a></li><li class="chapter-item expanded "><a href="cordis/cordis-baseline.html"><strong aria-hidden="true">27.</strong> Baseline, Gates</a></li><li class="chapter-item expanded "><a href="cordis/cordis-yagni.html"><strong aria-hidden="true">28.</strong> YAGNI Ladder</a></li><li class="chapter-item expanded "><a href="cordis/cordis-redesign.html"><strong aria-hidden="true">29.</strong> Handoff, Architecture</a></li><li class="chapter-item expanded "><a href="upstream-parity.html" class="active"><strong aria-hidden="true">30.</strong> Upstream Parity Ledger</a></li><li class="chapter-item expanded affix "><li class="part-title">Extending ARES</li><li class="chapter-item expanded "><a href="extending/context-provider.html"><strong aria-hidden="true">31.</strong> ContextProvider Trait</a></li><li class="chapter-item expanded "><a href="extending/base-router.html"><strong aria-hidden="true">32.</strong> Building on the ARES router</a></li><li class="chapter-item expanded affix "><li class="part-title">Guides</li><li class="chapter-item expanded "><a href="guides/chat-agent.html"><strong aria-hidden="true">33.</strong> Build a Chat Agent</a></li><li class="chapter-item expanded "><a href="guides/tool-calling.html"><strong aria-hidden="true">34.</strong> Tool Calling</a></li><li class="chapter-item expanded affix "><li class="part-title">Resources</li><li class="chapter-item expanded "><a href="changelog.html"><strong aria-hidden="true">35.</strong> Changelog</a></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">ARES documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares/edit/main/docs/src/upstream-parity.md" title="Suggest an edit" aria-label="Suggest an edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="upstream-parity-ledger"><a class="header" href="#upstream-parity-ledger">Upstream Parity Ledger</a></h1>
+<h2 id="what-this-document-is"><a class="header" href="#what-this-document-is">What this document is</a></h2>
+<p>This document records every deliberate divergence between our kernel and the upstream model.
+The paper states the reference model.
+Our kernel sometimes chooses a different behavior on purpose.
+This file is the audit ledger for those decisions.</p>
+<ul>
+<li>Date: 2026-08-24</li>
+<li>Scope: <code>crates/cordis</code> versus the model in the paper</li>
+<li>Method: every divergence lists the claim, the rationale, and the enforcement or test point</li>
+</ul>
+<h2 id="divergence-table"><a class="header" href="#divergence-table">Divergence table</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>#</th><th>Divergence</th><th>Decision</th></tr></thead><tbody>
+<tr><td>1</td><td>Failed registrations stay visible</td><td><code>Failed{error}</code> is a terminal rest state with reflective wiring</td></tr>
+<tr><td>2</td><td>Peer-dependency compatibility</td><td>Majors-only version buckets, no structural checks</td></tr>
+<tr><td>3</td><td>Late inject declarations</td><td>Eager reconciliation on <code>Active</code> fibers</td></tr>
+<tr><td>4</td><td>Hot swap mechanics</td><td>Out-of-band trial then promote, honest <code>swap_mode</code> reporting</td></tr>
+<tr><td>5</td><td>Dynamic library loading</td><td>Strictly opt-in behind <code>hmr</code>, exact fingerprint handshake</td></tr>
+<tr><td>6</td><td>Factory collection</td><td>Inventory primary, manual chains as fallback</td></tr>
+<tr><td>7</td><td>Serial dispatch</td><td>Direct alias of <code>Bail</code>, waterfall uses real <code>next</code> continuations</td></tr>
+<tr><td>8</td><td>Worker supervision</td><td>Reserved exit codes plus stdin-EOF death detection</td></tr>
+<tr><td>9</td><td>Log routing</td><td>One exporter router fans records to every gated sink</td></tr>
+<tr><td>10</td><td>Dependency withdrawal</td><td>Genuine loss rests working fibers <code>Pending</code> (reversible); apply errors stay terminal <code>Failed</code></td></tr>
+<tr><td>11</td><td>Dispatch participation knobs</td><td><code>EventOptions{prepend,global}</code> + <code>emit_filtered</code>; filters never exclude global listeners</td></tr>
+<tr><td>12</td><td>Reads during transitions</td><td>Strict <code>get</code> refuses transitioning owners; <code>get_relaxed</code> is the explicit opt-in</td></tr>
+</tbody></table>
+</div>
+<p>| 14 | Kernel operations are interceptable | Five meta-events veto or rewrite kernel ops; unregistered path stays zero-cost; sync bridges fall open |
+| 15 | Readiness gates wait quietly | Closed <code>ready_when</code> barriers rest fibers <code>Pending</code> (never <code>Failed</code>); availability predicates remain the loud path |
+| 16 | Config cascades batch | Concurrent provider updates collapse to one dependent convergence wave |
+| 17 | Validation errors carry paths | Pre-flight failures surface <code>message</code> + <code>path</code> issues beside the legacy string |
+| 18 | Logger adopted natively | Ring buffer, effect-owned exporters, per-name routing live in the kernel crate |
+| 19 | Timers adopted natively | Six fiber-scoped primitives share one std-only wheel thread |
+| 20 | Accessor traffic bypasses interception | Name-keyed computed properties resolve outside the <code>internal/get</code> / <code>internal/set</code> waterfalls entirely |
+| 21 | Intercept layers are ordered and inspectable | Append-on-set keeps the innermost layer effective; <code>intercept_chain</code> returns outermost..innermost |
+| 22 | Restart errors keep the old application | <code>Fiber::update</code> propagates errors with the fiber still <code>Active</code>; a veto parks <code>vetoed_config</code> and returns <code>Ok</code> |
+| 23 | Config interception covers activation | The <code>internal/config</code> waterfall consults on first activation too, not only re-applies |
+| 24 | Module changes fan out through one graph | <code>change_many</code> computes the affected set read-only first, reloads each plugin once per transaction, and rollback keeps siblings <code>Active</code> (EXCEEDS upstream: no module-graph concept) |
+| 25 | Entries relocate without losing identity | PATCH move-then-update answers 409 on conflict; <code>/move</code> renames the <code>{id}:*</code> subtree; in-place refresh preserves the fiber (EXCEEDS upstream: flat key list only) |
+| 26 | Subtask cancellation is wired end to end | Sticky cancel tokens honored at step boundaries plus an external trigger (EXCEEDS upstream: reference defines the hook but never wires it) |
+| 27 | Deterministic micro calls are cached | LRU+TTL keyed <code>(model, system, input)</code> with <code>cache_hit</code> telemetry; salvage/retry results never cached (EXCEEDS upstream: roadmap prose only) |
+| 28 | Guided grammars ride typed hints | Schema-shaped values become <code>json_schema</code> everywhere; raw GBNF stays a provider extension; absent hint = byte-identical wire |
+| 29 | Duplicate embeddings cost one backend call | Content-hash dedup on local and HTTP paths fans vectors back to duplicate slots (EXCEEDS upstream: roadmap prose only) |</p>
+<p>Each row expands below with the claim, the rationale, and the evidence.</p>
+<h3 id="1-failed-registrations-stay-visible"><a class="header" href="#1-failed-registrations-stay-visible">1. Failed registrations stay visible</a></h3>
+<ul>
+<li>Upstream expectation: a factory error leaves the fiber permanently <code>Inactive</code> and unreachable.</li>
+<li>Claim: <code>Failed{error}</code> is a terminal VISIBLE rest state.</li>
+<li>Detail: <code>RegistryService::register</code> returns <code>Err</code>.</li>
+<li>Detail: the fiber enters the bookkeeping graph through <code>RegistryService::wire_failed_registration</code>.</li>
+<li>Detail: <code>ReflectService</code> wiring registers the fiber against the attempted provider key.</li>
+<li>Detail: notify fans out, so dependents observe the provider loss reactively and rest <code>Inactive</code>.</li>
+<li>Detail: a later successful registration allocates a fresh fiber id and supersedes the failed fiber.</li>
+<li>Rationale: operators inspect failures directly.</li>
+<li>Rationale: dependents get a real notification instead of silence.</li>
+<li>Rationale: fresh-id supersession keeps the provided slot free for retry.</li>
+<li>Source: <code>crates/cordis/src/registry.rs</code>, <code>wire_failed_registration</code></li>
+<li>Test: metatheory property 3 legs D-H, <code>metatheory_dependent_never_active_without_provider</code></li>
+</ul>
+<h3 id="2-peer-dependencies-use-majors-only-buckets"><a class="header" href="#2-peer-dependencies-use-majors-only-buckets">2. Peer dependencies use majors-only buckets</a></h3>
+<ul>
+<li>Upstream expectation: compatibility needs full structural interface checks.</li>
+<li>Claim: compatibility compares majors only.</li>
+<li>Detail: versions are plain <code>u64</code> values.</li>
+<li>Detail: <code>major(v) = v / VERSION_MAJOR_SCALE</code> and <code>floor(v) = v % VERSION_MAJOR_SCALE</code>.</li>
+<li>Detail: <code>VERSION_MAJOR_SCALE</code> equals <code>100_000</code>.</li>
+<li>Detail: a requirement binds when the major matches AND the provider reaches the floor.</li>
+<li>Detail: any mismatch leaves the dependent fiber <code>Inactive</code>.</li>
+<li>Detail: structural interface compatibility is deliberately NOT attempted.</li>
+<li>Rationale: majors-only buckets cover practical drift between builds.</li>
+<li>Rationale: full structural compatibility remains the open problem the paper defers.</li>
+<li>Source: <code>Context::provide_versioned</code> and <code>VERSION_MAJOR_SCALE</code> in <code>crates/cordis/src/context.rs</code></li>
+<li>Source: <code>Fiber::declare_inject_versioned</code> in <code>crates/cordis/src/fiber.rs</code></li>
+<li>Tests: the <code>version_conformance</code> module in <code>crates/cordis/src/metatheory.rs</code></li>
+</ul>
+<h3 id="3-late-inject-declarations-reconcile-eagerly"><a class="header" href="#3-late-inject-declarations-reconcile-eagerly">3. Late inject declarations reconcile eagerly</a></h3>
+<ul>
+<li>Upstream expectation: a late declaration waits for an external refresh trigger.</li>
+<li>Claim: a declaration landing on a fiber resting <code>Active</code> reconciles eagerly.</li>
+<li>Detail: <code>Fiber::reconcile_after_declare</code> runs with the same transition shape as <code>refresh</code>.</li>
+<li>Detail: satisfied declarations update the epoch in place.</li>
+<li>Detail: unsatisfied declarations undo effects and rest the fiber <code>Inactive</code>.</li>
+<li>Detail: a declaration that races an in-flight refresh folds into that refresh through a pending flag.</li>
+<li>Detail: declarations on <code>Inactive</code> and <code>Failed</code> fibers wait for the next transition.</li>
+<li>Rationale: eager recompute loses no racing declaration.</li>
+<li>Rationale: the quiescence invariant survives every declaration path.</li>
+<li>Source: <code>Fiber::declare_inject</code> and <code>Fiber::reconcile_after_declare</code> in <code>crates/cordis/src/fiber.rs</code></li>
+<li>Source: register paths in <code>crates/cordis/src/registry.rs</code></li>
+<li>Test: reactive invariant leg of <code>dependent_never_active_without_provider</code></li>
+</ul>
+<h3 id="4-hot-swap-drains-then-shifts"><a class="header" href="#4-hot-swap-drains-then-shifts">4. Hot swap drains then shifts</a></h3>
+<ul>
+<li>Upstream expectation: swap mutates providers in place.</li>
+<li>Claim: swap builds out-of-band, then promotes.</li>
+<li>Detail: new instances build inside a scratch context.</li>
+<li>Detail: <code>SwapPromotion</code> bridges the new values through intercept bindings.</li>
+<li>Detail: the old fiber disposes while the bridge keeps serving consumers.</li>
+<li>Detail: promotion moves bridge values into the store before intercept removal.</li>
+<li>Detail: consumers never observe an absence window.</li>
+<li>Detail: an unverifiable swap reports <code>swap_mode = "unverified"</code> instead of a fake success state.</li>
+<li>Rationale: drain-and-shift proves a zero absence window under concurrency.</li>
+<li>Rationale: honest reporting lets operators tell verified swaps from unverified ones.</li>
+<li>Source: <code>Loader::replace_provider</code> and <code>SwapPromotion</code> in <code>crates/cordis/src/loader.rs</code></li>
+<li>Tests: <code>replace_provider_zero_absence_window</code></li>
+<li>Tests: <code>rebuild_same_type_verified_swap</code> probes resolution from a concurrent task during the swap</li>
+</ul>
+<h3 id="5-dylib-loading-is-strictly-opt-in-with-a-fingerprint-handshake"><a class="header" href="#5-dylib-loading-is-strictly-opt-in-with-a-fingerprint-handshake">5. Dylib loading is strictly opt-in with a fingerprint handshake</a></h3>
+<ul>
+<li>Upstream expectation: dynamic library loading runs as a first-class default.</li>
+<li>Claim: dylib loading requires the <code>hmr</code> cargo feature.</li>
+<li>Detail: the default production path is file-watch plus <code>Fiber::reload</code> through <code>watcher::watch_many</code>.</li>
+<li>Detail: as of this change, every dylib load performs an exact ABI fingerprint handshake.</li>
+<li>Detail: the plugin must export <code>cordis_plugin_fingerprint</code>.</li>
+<li>Detail: the returned string must equal the host fingerprint exactly.</li>
+<li>Detail: a missing symbol refuses the load.</li>
+<li>Detail: a mismatched string refuses the load and names both fingerprints.</li>
+<li>Rationale: stale libraries fail fast at load time.</li>
+<li>Rationale: unchecked dylibs corrupt the process across the FFI boundary.</li>
+<li>Source: <code>load_plugin_so</code> and <code>FINGERPRINT_SYMBOL</code> in <code>crates/cordis/src/hmr.rs</code></li>
+<li>Tests: <code>load_plugin_so_rejects_missing_fingerprint</code></li>
+<li>Tests: <code>load_plugin_so_rejects_mismatched_fingerprint</code></li>
+</ul>
+<h3 id="6-inventory-collection-is-the-primary-registration-path"><a class="header" href="#6-inventory-collection-is-the-primary-registration-path">6. Inventory collection is the primary registration path</a></h3>
+<ul>
+<li>Upstream expectation: registration walks an explicit hand-written factory list.</li>
+<li>Claim: inventory collection gathers factories automatically as the primary path.</li>
+<li>Detail: hand-written <code>register_plugins</code> chains remain as the fallback without the <code>inventory</code> feature.</li>
+<li>Detail: the linker drops inventory nodes from crates that nothing references.</li>
+<li>Detail: parity tests force-link every contributing crate before collection.</li>
+<li>Rationale: collection deletes a hand-maintained list and its drift bugs.</li>
+<li>Rationale: the linker failure is silent, so it needs a written warning.</li>
+<li>Source: <code>register_inventory_factories</code> in <code>crates/cordis/src/lib.rs</code></li>
+<li>Test: <code>inventory_registry_matches_expected_factory_set</code> in <code>tests/inventory_parity.rs</code></li>
+</ul>
+<h3 id="7-serial-dispatch-aliases-bail-waterfall-composes-handlers"><a class="header" href="#7-serial-dispatch-aliases-bail-waterfall-composes-handlers">7. Serial dispatch aliases Bail, waterfall composes handlers</a></h3>
+<ul>
+<li>Upstream expectation: serial dispatch differs from bail semantics.</li>
+<li>Claim: <code>Dispatch::Serial</code> is a direct alias of <code>Dispatch::Bail</code>.</li>
+<li>Detail: both variants run the same <code>run_bail_handlers</code> code path.</li>
+<li>Detail: waterfall is around-middleware.</li>
+<li>Detail: every waterfall handler receives a real <code>next</code> continuation.</li>
+<li>Detail: the terminal <code>next</code> runs the core operation.</li>
+<li>Detail: no sentinel value ever stops a chain.</li>
+<li>Rationale: one shared bail mode removes a near-duplicate implementation.</li>
+<li>Rationale: around-middleware composition matches the paper shape directly.</li>
+<li>Source: <code>EventsService::dispatch</code> in <code>crates/cordis/src/events.rs</code></li>
+<li>Tests: <code>serial_stops_at_first_non_null_result</code></li>
+<li>Tests: <code>waterfall_around_short_circuit_skips_core</code></li>
+</ul>
+<h3 id="8-worker-supervision-uses-reserved-exit-codes-plus-stdin-eof"><a class="header" href="#8-worker-supervision-uses-reserved-exit-codes-plus-stdin-eof">8. Worker supervision uses reserved exit codes plus stdin EOF</a></h3>
+<ul>
+<li>Upstream expectation: the paper defines no process supervision model.</li>
+<li>Claim: supervised workers terminate through a fixed exit-code protocol.</li>
+<li>Detail: <code>EXIT_RESTART</code> (51) asks the daemon for a fresh worker.</li>
+<li>Detail: <code>EXIT_QUIT</code> (52) stops without a restart.</li>
+<li>Detail: <code>EXIT_BOOT</code> (53) surfaces boot failure non-zero to the manager.</li>
+<li>Detail: codes sit in the 51-53 band, clear of shell (1-2) and panic (101) codes.</li>
+<li>Detail: workers set <code>CORDIS_SUPERVISED</code> watch stdin; EOF means the daemon died.</li>
+<li>Rationale: pipe EOF is the only loss-free signal that survives daemon SIGKILL.</li>
+<li>Source: <code>crates/cordis/src/worker.rs</code>, <code>src/supervisor.rs</code></li>
+<li>Tests: <code>exit_codes_are_distinct</code></li>
+<li>Tests: <code>child_exit_codes_drive_loop</code></li>
+</ul>
+<h3 id="9-log-routing-fans-out-through-one-exporter-router"><a class="header" href="#9-log-routing-fans-out-through-one-exporter-router">9. Log routing fans out through one exporter router</a></h3>
+<ul>
+<li>Upstream expectation: the paper defines no observability surface.</li>
+<li>Claim: one router fans call records out to every registered exporter.</li>
+<li>Detail: per-exporter level gates filter records before delivery.</li>
+<li>Detail: exporter failures stay contained; inference never fails on them.</li>
+<li>Detail: registration validates once; duplicate registrations are skipped.</li>
+<li>Rationale: a single fan-out point replaces ad hoc sink plumbing per consumer.</li>
+<li>Source: <code>ExporterRouter</code> in <code>crates/ares-llm/src/exporter.rs</code></li>
+<li>Tests: <code>router_fans_out_to_all_exporters</code></li>
+<li>Tests: <code>accepts_gate_filters_records</code></li>
+</ul>
+<h3 id="10-dependency-withdrawal-is-reversible-for-working-fibers"><a class="header" href="#10-dependency-withdrawal-is-reversible-for-working-fibers">10. Dependency withdrawal is reversible for working fibers</a></h3>
+<ul>
+<li>Upstream expectation: a fiber whose provider disappears rests <code>Inactive</code> (or is disposed) and never comes back on its own.</li>
+<li>Claim: a previously-working runner fiber whose dependency genuinely vanished disposes its effects LIFO under <code>Unloading</code> and rests a new <code>Pending</code> state; when the provider returns it reactivates through <code>Loading</code>.</li>
+<li>Detail: <code>Pending</code> is reserved for reactive waiting only — an apply error still rests terminal <code>Failed{error}</code> (row 1), and a peer-version constraint refusal over an existing-but-incompatible provider still rests <code>Inactive</code> because the provider remains available.</li>
+<li>Detail: eligibility requires one fully-satisfied refresh pass first; registration cannot mark a fiber eligible.</li>
+<li>Detail: <code>Pending</code> fibers reserve their registry key and survive <code>prune_disposed</code>, so reactivation needs no re-registration.</li>
+<li>Rationale: the paper's permanently-Inactive outcome discards a healthy instance that only waits for its dependency; keeping it reversible preserves work.</li>
+<li>Source: <code>FiberState::Pending</code>, the reactive-loss branch of <code>Fiber::refresh</code> in <code>crates/cordis/src/fiber.rs</code></li>
+<li>Tests: <code>dependent_reactivates_when_provider_returns</code>, <code>failed_stays_failed_on_dep_return</code>, <code>pending_fiber_survives_prune_disposed</code></li>
+</ul>
+<h3 id="11-dispatch-participation-knobs-and-filtered-emits"><a class="header" href="#11-dispatch-participation-knobs-and-filtered-emits">11. Dispatch participation knobs and filtered emits</a></h3>
+<ul>
+<li>Upstream expectation: listener registration has fixed semantics with no ordering or participation control.</li>
+<li>Claim: flat listeners register through <code>on_with</code> / <code>once_with</code> with <code>EventOptions { prepend, global }</code>; <code>emit_filtered</code> runs a per-dispatch predicate over non-global listeners.</li>
+<li>Detail: <code>prepend: true</code> inserts at the front of the dispatch-order list; <code>global: true</code> marks the listener realm-agnostic, and filters never exclude it.</li>
+<li>Detail: a filter exclusion skips one dispatch without unregistering the listener.</li>
+<li>Detail: the historical <code>on</code> / <code>once</code> / <code>emit</code> signatures delegate unchanged, and the broadcast bus fan-out is not filtered.</li>
+<li>Rationale: per-realm policies need ordered, selectively-participating listeners without duplicating the bus.</li>
+<li>Source: <code>EventOptions</code>, <code>EventsService::on_with</code> / <code>once_with</code> / <code>emit_filtered</code> in <code>crates/cordis/src/events.rs</code></li>
+<li>Tests: <code>prepend_ordering_observed</code>, <code>filter_excludes_nonmatching_contexts</code>, <code>global_bypasses_filter</code></li>
+</ul>
+<h3 id="12-reads-during-transitions-are-explicit-and-relaxed"><a class="header" href="#12-reads-during-transitions-are-explicit-and-relaxed">12. Reads during transitions are explicit and relaxed</a></h3>
+<ul>
+<li>Upstream expectation: every read either resolves an Active value or fails; mid-transition values are unreachable by construction.</li>
+<li>Claim: strict <code>Context::get</code> keeps refusing providers resting in transitional states; <code>Context::get_relaxed</code> serves locally-owned values while their owner sits in <code>Loading</code> / <code>Reloading</code> / <code>Unloading</code> / reactive <code>Pending</code>.</li>
+<li>Detail: terminal rest states stay refused even relaxed — disposed owners (undos already ran) and <code>Failed{error}</code> owners return nothing.</li>
+<li>Rationale: lifecycle and observer code must inspect the value that is about to serve or was just retracted; making that a distinct method keeps the default read conservative.</li>
+<li>Source: <code>Context::get_relaxed</code> in <code>crates/cordis/src/context.rs</code></li>
+<li>Test: <code>relaxed_read_succeeds_while_provider_transitioning</code></li>
+</ul>
+<h3 id="13-fiber-state-observers"><a class="header" href="#13-fiber-state-observers">13. Fiber state observers</a></h3>
+<ul>
+<li>Upstream expectation: the model defines no notification surface for individual fiber state changes.</li>
+<li>Claim: <code>Fiber::subscribe_state</code> fans every lifecycle transition out to synchronous observers.</li>
+<li>Detail: observers run inline under the short state-lock critical section and MUST NOT call back into the fiber.</li>
+<li>Detail: observer panics are caught, so one broken observer cannot corrupt a transition; cancelled subscriptions are pruned on the next event.</li>
+<li>Rationale: tooling (admin surfaces, tests, supervision) needs transitions as they happen, not just polling after quiescence.</li>
+</ul>
+<h3 id="14-kernel-operations-are-interceptable-through-meta-events"><a class="header" href="#14-kernel-operations-are-interceptable-through-meta-events">14. Kernel operations are interceptable through meta-events</a></h3>
+<ul>
+<li>Upstream expectation: reads, writes, config resolution, restart schedules, and listener registration are fixed kernel behavior with no override points.</li>
+<li>Claim: five veto meta-events (<code>internal/get</code>, <code>internal/set</code>, <code>internal/config</code>, <code>internal/update</code>, <code>internal/listener</code>) wrap those operations and an <code>internal/dispatch</code> observer reports every non-internal dispatch with <code>(mode, name, args)</code>; the un-intercepted path is a zero-cost gate, and synchronous bridges FALL OPEN on runtimes that cannot park the worker.</li>
+<li>Detail: <code>internal/get</code> — a non-null terminal replaces the value a strict read returns, <code>{"refuse": true}</code> fails the lookup outright, null passes, a chain error refuses the read; a redirect verdict continues the lookup at the parent frame.</li>
+<li>Detail: <code>internal/set</code> — a chain error vetoes THIS write; the previous binding stays fully intact (no store/owners/version mutation).</li>
+<li>Detail: <code>internal/config</code> — the chain's non-null terminal IS the effective config staged for that apply pass; a chain error rests the fiber terminal <code>Failed{error}</code> (row 1 semantics unchanged).</li>
+<li>Detail: <code>internal/update</code> — a bail or explicit JSON false skips the restart; the fiber keeps serving its current application and the deferred config stays visible via <code>vetoed_config</code>.</li>
+<li>Detail: <code>internal/listener</code> — a bail or chain error cancels the registration and the caller receives an INERT handle; neither registry ever sees the listener (fail-closed).</li>
+<li>Detail: every consult checks <code>listener_count == 0</code> first (map-lookup cost); a thread-local fence keeps operations made inside a chain un-intercepted; single-thread tokio flavors log a warning and fall open, matching historical behavior.</li>
+<li>Detail: <code>bail_from</code> / <code>waterfall_from</code> / <code>waterfall_async_from</code> carry the operating context through an optional per-dispatch <code>ListenerFilter</code>; exclusions skip one dispatch without unregistering.</li>
+<li>Rationale: policy layers need to observe and veto kernel operations without duplicating them; the zero-cost gate keeps the default path byte-identical for every existing caller.</li>
+<li>Source: <code>INTERNAL_*_EVENT</code> constants, <code>intercept_get/set/config/update/listener</code>, <code>bail_from</code> / <code>waterfall_from</code> / <code>waterfall_async_from</code>, and the synchronous bridges in <code>crates/cordis/src/events.rs</code></li>
+<li>Source: consult points in <code>Context::get</code> / the provider-write path (<code>crates/cordis/src/context.rs</code>); config staging and the update veto in <code>crates/cordis/src/fiber.rs</code></li>
+<li>Tests: <code>get_interceptor_rewrites_read</code>, <code>set_interceptor_vetoes_write_leaves_old_value</code>, <code>config_interceptor_rewrites_effective_config</code>, <code>update_interceptor_veto_skips_restart_keeps_config</code>, <code>listener_interceptor_bail_cancels_registration_inert_handle</code>, <code>internal_dispatch_observes_non_internal_only</code>, <code>interceptor_error_fails_fiber_activation</code>, <code>target_carrying_dispatches_filter_per_dispatch</code></li>
+</ul>
+<h3 id="15-readiness-gates-wait-quietly-availability-predicates-fail-loudly"><a class="header" href="#15-readiness-gates-wait-quietly-availability-predicates-fail-loudly">15. Readiness gates wait quietly; availability predicates fail loudly</a></h3>
+<ul>
+<li>Upstream expectation: the model defines no way to hold a produced service out of rotation while its environment warms up (and nothing distinguishes that from failure).</li>
+<li>Claim: <code>register_with_readiness</code> installs a composable <code>ReadinessBarrier</code> consulted before every activation pass; while it reports not-ready the fiber rests inspectable <code>Pending</code> — quiet waiting that NEVER becomes <code>Failed</code> — while availability predicates (<code>Service::check</code>) remain the loud complement resting <code>Failed{error: "availability predicate rejected service"}</code>.</li>
+<li>Detail: <code>ReadinessBarrier::new(pred)</code> wraps one <code>Fn(&amp;Arc&lt;Context&gt;) -&gt; bool</code>; <code>.and(other)</code> AND-composes; <code>with_readiness([a, b, c])</code> folds any number of barriers (an empty list is vacuously ready).</li>
+<li>Detail: <code>.watching([TypeId])</code> unions the provider keys whose settlements re-kick the gated fiber through the <code>ReflectService</code> fan-out — an external provide or withdrawal re-evaluates the gate without touching the fiber.</li>
+<li>Detail: the factory runs once at registration (config errors still surface immediately); a closed gate only keeps the produced service OUT of consumer reach because strict <code>get</code> refuses non-<code>Active</code> owners; opening the gate activates without re-running the factory.</li>
+<li>Rationale: not-ready-yet (warming caches, absent external system) differs fundamentally from broken; conflating them buries healthy waiting fibers under failure noise, and separating them lets operators read intent from state alone.</li>
+<li>Source: <code>ReadinessBarrier</code>, <code>with_readiness</code>, <code>register_with_readiness</code>, and the re-kick wiring in <code>crates/cordis/src/registry.rs</code></li>
+<li>Source: the readiness consult in <code>Fiber::refresh</code> (<code>crates/cordis/src/fiber.rs</code>)</li>
+<li>Tests: <code>ready_when_holds_pending_until_true_then_activates</code>, <code>readiness_composes_and_semantics</code>, <code>external_rekick_reactivates_waiting_fiber</code></li>
+</ul>
+<h3 id="16-concurrent-config-updates-collapse-to-one-cascade-wave"><a class="header" href="#16-concurrent-config-updates-collapse-to-one-cascade-wave">16. Concurrent config updates collapse to one cascade wave</a></h3>
+<ul>
+<li>Upstream expectation: every provider settle triggers its own full dependent refresh wave.</li>
+<li>Claim: an in-flight ledger marks providers mid-reapply; dependents defer during the window and converge EXACTLY ONCE per settled batch.</li>
+<li>Detail: <code>CASCADE_INFLIGHT</code> maps fiber id to open-window count (reentrant-safe); <code>Loader::drive_fiber_update</code> opens and closes windows around one live re-apply.</li>
+<li>Detail: the kernel refresh path consults <code>cascade_any_inflight</code>, so a storm of racing patches costs one dependent apply pass and ends Active with the final config.</li>
+<li>Rationale: N concurrent patches against one provider must not cost N dependent convergence waves.</li>
+<li>Source: <code>CASCADE_INFLIGHT</code>, <code>cascade_begin</code> / <code>cascade_end</code> / <code>cascade_any_inflight</code> in <code>crates/cordis/src/loader.rs</code></li>
+<li>Test: <code>concurrent_config_updates_collapse_to_single_cascade</code></li>
+</ul>
+<h3 id="17-config-pre-flight-failures-carry-structured-issues"><a class="header" href="#17-config-pre-flight-failures-carry-structured-issues">17. Config pre-flight failures carry structured issues</a></h3>
+<ul>
+<li>Upstream expectation: configuration errors are lossy prose strings.</li>
+<li>Claim: plugins reject configs with <code>ValidationIssue { message, path }</code> items aggregated in a <code>ValidationError</code>; <code>CordisError::validation</code> lifts the aggregate into the existing <code>invalid config:</code> class, and the loader trial stashes per-entry failures so the admin PATCH answers 4xx with a machine-readable <code>issues</code> array beside the legacy <code>error</code> string.</li>
+<li>Detail: stash slots mirror the LATEST trial outcome; recording a non-validation error clears the entry and consumption removes it, so a later successful patch carries no <code>issues</code>.</li>
+<li>Rationale: API consumers need to render field-level feedback, not parse sentences.</li>
+<li>Source: <code>ValidationIssue</code> / <code>ValidationError</code> / trial stash in <code>crates/cordis/src/error.rs</code>; <code>CordisError::validation</code> in <code>crates/cordis/src/service.rs</code>; issue attachment in <code>crates/ares-http/src/api/handlers/admin/cordis.rs</code></li>
+<li>Test: <code>patch_endpoint_returns_structured_issues_on_bad_config</code></li>
+</ul>
+<h3 id="18-the-logger-lives-in-the-kernel-crate"><a class="header" href="#18-the-logger-lives-in-the-kernel-crate">18. The logger lives in the kernel crate</a></h3>
+<ul>
+<li>Upstream expectation: logging ships as a satellite console package beside the kernel.</li>
+<li>Claim: the logger is adopted NATIVELY (<code>cordis::logger</code>) with upstream-style semantics: bounded ring, effect-owned exporter sinks, per-name level routing, printf rendering.</li>
+<li>Detail: <code>LoggerService</code> keeps the last 1000 <code>Message</code>s (monotonic sequence, timestamp, name, kind, numeric level, args, fiber label) and snapshots without copying payloads.</li>
+<li>Detail: exporters are effect-owned — <code>register</code> returns a <code>Disposable</code> whose disposal removes the sink; <code>ExporterConfig</code> gates per name and truncates rendered text (default cap 4096 chars, char-boundary safe).</li>
+<li>Detail: thresholds resolve per-name pin, then the <code>LoggerIntercept</code> override (read through the relaxed channel, so per-fiber overrides apply on child contexts), then the default level (<code>Debug</code>); <code>enabled</code> bails BEFORE argument assembly.</li>
+<li>Detail: rendering supports <code>%s %d %i %f %o %O %c %C %%</code>; unknown specifiers and exhausted arguments stay literal; <code>%c</code> picks a stable ANSI16 slot by FNV-1a hash of the logger name, <code>%C</code> adds bold; <code>hyphenate</code> / <code>derived_name</code> yield kebab-case logger names.</li>
+<li>Detail: the <code>Context</code> facade (<code>ctx.log/info/warn/debug/error/log_with</code>) is a no-op when no logger is provided.</li>
+<li>Rationale: observability belongs where fibers dispose, so sink lifetimes tie to effects instead of a satellite package boundary; the multi-package layering ceremony is deliberately not replicated.</li>
+<li>Source: <code>LoggerService</code>, <code>Exporter</code>, <code>ExporterConfig</code>, <code>LoggerIntercept</code>, <code>Message::render</code>, <code>hyphenate</code> in <code>crates/cordis/src/logger.rs</code></li>
+<li>Tests: <code>buffer_bounded_at_capacity_snapshot_reads</code>, <code>level_routing_per_name_with_default_fallback</code>, <code>printf_placeholders_format_correctly</code>, <code>logger_intercept_overrides_level</code>, <code>hyphenate_and_derived_names</code>, <code>exporter_disposal_removes_sink</code></li>
+</ul>
+<h3 id="19-timer-primitives-are-fiber-scoped-and-std-only"><a class="header" href="#19-timer-primitives-are-fiber-scoped-and-std-only">19. Timer primitives are fiber-scoped and std-only</a></h3>
+<ul>
+<li>Upstream expectation: timing ships as a dedicated satellite package with its own runtime assumptions.</li>
+<li>Claim: six primitives (<code>timeout</code>, <code>sleep</code>, <code>interval</code>, <code>interval_stream</code>, <code>debounce</code>, <code>throttle</code>) live natively in <code>cordis::timer</code>, run on ONE shared wheel thread, and attach to the owning fiber through labeled undos.</li>
+<li>Detail: the wheel is a min-heap on a dedicated <code>cordis-timer</code> thread; due entries drain under one short critical section and callbacks run outside the lock; panics are caught and the thread survives.</li>
+<li>Detail: registrations made under <code>with_current_fiber</code> push <code>timer:</code>-labeled undos, so <code>Fiber::dispose</code> (or a reactive unload) cancels them; dropping a handle does NOT cancel; out-of-scope registrations degrade to warned orphan handles that stay explicitly disposable.</li>
+<li>Detail: a disposed <code>Interval</code> stream yields exactly ONE final <code>Err(InactiveEffect)</code> then closes; queued live ticks are discarded so teardown is the final observation.</li>
+<li>Detail: <code>debounce</code> collapses a burst into one trailing delivery after the last call; <code>throttle</code> delivers leading-edge plus optional trailing in a fixed window.</li>
+<li>Rationale: timers must die with the fiber that owns them or they leak firings past teardown; a shared thread keeps thousands of registrations at one thread's cost with no async runtime dependency.</li>
+<li>Source: <code>timeout</code> / <code>sleep</code> / <code>interval</code> / <code>interval_stream</code> / <code>debounce</code> / <code>throttle</code>, <code>with_current_fiber</code>, <code>Scheduled</code>, <code>Interval</code> in <code>crates/cordis/src/timer.rs</code></li>
+<li>Tests: <code>timeout_fires_once_and_disposes_with_fiber</code>, <code>timeout_dispose_before_deadline_prevents_fire</code>, <code>interval_ticks_repeatedly_and_stops_on_dispose</code>, <code>interval_stream_final_err_on_dispose</code>, <code>debounce_collapses_bursts</code>, <code>throttle_trailing_edge_respected</code></li>
+</ul>
+<h3 id="20-accessor-traffic-bypasses-interception"><a class="header" href="#20-accessor-traffic-bypasses-interception">20. Accessor traffic bypasses interception</a></h3>
+<ul>
+<li>Upstream expectation: every value read or write consults the <code>internal/get</code> / <code>internal/set</code> veto waterfalls.</li>
+<li>Claim: name-keyed computed properties (<code>register_accessor</code>) resolve OUTSIDE both waterfalls — resolving an accessor never consults or re-enters a veto chain.</li>
+<li>Detail: <code>Accessor::{read_only, read_write, setter_only}</code> installs a getter/setter pair beside the TypeId service store; registration returns an <code>EffectHandle</code> whose disposal removes the declaration and every alias.</li>
+<li>Detail: <code>Context::alias</code> binds an alternate name through the SAME registration; duplicate declarations (including alias collisions) are rejected with <code>DuplicateProvider</code>.</li>
+<li>Detail: typed reads surface <code>CordisError::PropertyTypeMismatch</code> instead of a silent <code>None</code>; writes to a read-only property are refused with <code>CordisError::ReadOnlyProperty</code>.</li>
+<li>Rationale: computed properties are policy plumbing, not provider state — vetoing them would let an interceptor break accessor invariants it cannot see.</li>
+<li>Source: <code>Context::register_accessor</code>, <code>Accessor</code>, <code>Context::alias</code>, <code>EffectHandle</code> in <code>crates/cordis/src/context.rs</code></li>
+<li>Tests: <code>accessor_read_write_roundtrip</code>, <code>duplicate_accessor_declaration_rejected</code>, <code>readonly_property_rejects_set</code>, <code>dispose_accessor_resolves_none</code>, <code>alias_resolves_same_value</code>, <code>accessor_bypasses_intercept_waterfalls</code></li>
+</ul>
+<h3 id="21-intercept-layers-are-ordered-append-on-set-and-inspectable"><a class="header" href="#21-intercept-layers-are-ordered-append-on-set-and-inspectable">21. Intercept layers are ordered, append-on-set, and inspectable</a></h3>
+<ul>
+<li>Upstream expectation: one intercept binding per key; later registrations replace earlier ones (last-write-wins).</li>
+<li>Claim: intercept layers per TypeId form an ordered outermost..innermost sequence; NEW registrations APPEND, so the innermost layer stays effective for all existing getters.</li>
+<li>Detail: append-on-set means no existing caller observes a behavior change when another layer joins.</li>
+<li>Detail: <code>Context::intercept_chain(tid)</code> returns every layer outermost..innermost for inspection and restart-decision logic.</li>
+<li>Detail: <code>Context::chains_structurally_equal</code> compares two chains by shared-instance identity (<code>Arc::ptr_eq</code>) per layer pair; erased values carry no comparable contract, so freshly-built values compare unequal by design.</li>
+<li>Rationale: layered policies need composition without clobbering, and restart decisions need an honest equality test over opaque layers.</li>
+<li>Source: <code>Context::intercept_chain</code>, <code>Context::chains_structurally_equal</code>, layer storage in <code>crates/cordis/src/context.rs</code></li>
+<li>Tests: <code>chained_layers_append_innermost_effective</code>, <code>intercept_chain_returns_all_layers_in_order</code></li>
+</ul>
+<h3 id="22-restart-errors-keep-the-old-application-vetoes-defer-loudly"><a class="header" href="#22-restart-errors-keep-the-old-application-vetoes-defer-loudly">22. Restart errors keep the old application; vetoes defer loudly</a></h3>
+<ul>
+<li>Upstream expectation: an update-pass failure leaves the fiber in an unspecified mid-transition state.</li>
+<li>Claim: <code>Fiber::update</code> returns <code>Result&lt;(), CordisError&gt;</code> — a restart-path error propagates to the caller and the fiber stays <code>Active</code> serving its OLD configuration; an <code>internal/update</code> veto parks the deferred config in <code>Fiber::vetoed_config</code> and returns <code>Ok</code>.</li>
+<li>Detail: error propagation never disposes effects of the still-running application.</li>
+<li>Detail: the vetoed config remains inspectable through <code>vetoed_config()</code> so operators can see what was declined and why.</li>
+<li>Rationale: a failed restart must not destroy the working instance, and a silent skip must still be observable.</li>
+<li>Source: <code>Fiber::update</code>, <code>vetoed_config</code> in <code>crates/cordis/src/fiber.rs</code></li>
+<li>Tests: <code>update_error_stays_active_old_config</code>, <code>update_veto_defers_config_and_returns_ok</code></li>
+</ul>
+<h3 id="23-config-interception-covers-the-activation-path"><a class="header" href="#23-config-interception-covers-the-activation-path">23. Config interception covers the activation path</a></h3>
+<ul>
+<li>Upstream expectation: config rewriting applies only on later re-applies; first activation runs the raw config.</li>
+<li>Claim: the <code>internal/config</code> waterfall is consulted on the ACTIVATION path too, so rewrites apply on first activation identically to re-applies.</li>
+<li>Detail: the same non-null-terminal-becomes-effective-config semantics hold on both paths (row 14).</li>
+<li>Rationale: activation-time-only rewrites would make a policy's effect depend on whether the fiber happened to start fresh.</li>
+<li>Source: config-waterfall consult in the register/activation path in <code>crates/cordis/src/registry.rs</code></li>
+<li>Test: <code>config_waterfall_covers_activation_path</code></li>
+</ul>
+<h3 id="24-module-changes-fan-out-through-one-dependency-graph"><a class="header" href="#24-module-changes-fan-out-through-one-dependency-graph">24. Module changes fan out through one dependency graph</a></h3>
+<ul>
+<li>Upstream expectation: no module-level change propagation exists; each watcher event maps to at most one reload target.</li>
+<li>Claim: <code>ModuleGraph</code> maps module keys to dependencies; <code>change_many</code> computes the TRANSITIVE affected plugin set read-only FIRST, then reloads each affected plugin EXACTLY ONCE per transaction; a failing reload rolls back that plugin while successfully reloaded siblings stay <code>Active</code>.</li>
+<li>Detail: <code>ModuleReload</code> implementations perform the reloads; <code>ChangeOutcome</code> classifies the transaction result.</li>
+<li>Detail: the file watcher's debounced batch fans through a registered <code>ModuleGraph</code> when one is provided on the context; WITHOUT registration the watcher path is unchanged (opt-in).</li>
+<li>Rationale: batched filesystem events must not reload shared dependents N times or leave siblings dead because one peer failed.</li>
+<li>Source: <code>ModuleGraph</code>, <code>ModuleEntry</code>, <code>ModuleReload</code>, <code>ChangeOutcome</code>, <code>change_many</code> in <code>crates/cordis/src/module_graph.rs</code>; fan-out wiring in <code>crates/cordis/src/watcher.rs</code></li>
+<li>Tests: <code>dependency_change_reloads_dependents_transitively</code>, <code>batched_changes_reload_each_plugin_once</code>, <code>rollback_keeps_successful_siblings_active</code>, <code>watcher_module_graph_fan_out_reloads_dependents</code>, <code>module_graph_without_registration_is_ignored</code></li>
+</ul>
+<h3 id="25-entries-relocate-without-losing-fiber-identity-we-exceed-upstream"><a class="header" href="#25-entries-relocate-without-losing-fiber-identity-we-exceed-upstream">25. Entries relocate without losing fiber identity (we exceed upstream)</a></h3>
+<ul>
+<li>Upstream expectation: entries form a flat id-keyed list; relocation means delete-plus-recreate with a fresh fiber.</li>
+<li>Claim: PATCH accepts optional <code>parent</code> / <code>position</code> (<code>EntryPosition</code>) applied move-THEN-update (invalid placements answer 409 before any mutation), <code>POST /admin/cordis/entries/{id}/move</code> relocates an entry with its whole <code>{id}:*</code> subtree in one rename cascade, and a valid move preserves fiber identity via in-place refresh.</li>
+<li>Detail: moving into a descendant is refused; disabled groups move suppressed-then-restored.</li>
+<li>Detail: invalid moves touch neither the entries file nor the live tree; unknown ids answer 404.</li>
+<li>Rationale: hierarchical entry organization must not cost consumer-visible dispose/recreate windows.</li>
+<li>Source: <code>EntryPosition</code>, <code>EntryTree::move_entry</code>, <code>subtree_ids</code>, <code>Loader::move_entry</code> in <code>crates/cordis/src/loader.rs</code>; <code>patch</code> / <code>move_cordis_entry</code> handlers in <code>crates/ares-http/src/api/handlers/admin/cordis.rs</code></li>
+<li>Tests: <code>move_preserves_fiber_identity_and_lands_update_in_new_parent</code>, <code>descendant_move_refused</code>, <code>subtree_rename_cascades_descendants</code>, <code>disabled_group_move_suppresses_start_then_restores</code>, <code>patch_endpoint_moves_entry</code>, <code>patch_endpoint_invalid_move_conflicts_without_mutating</code></li>
+</ul>
+<h3 id="26-subtask-cancellation-is-wired-end-to-end-we-exceed-upstream"><a class="header" href="#26-subtask-cancellation-is-wired-end-to-end-we-exceed-upstream">26. Subtask cancellation is wired end to end (we exceed upstream)</a></h3>
+<ul>
+<li>Upstream expectation: the reference client defines cancellation hooks but never wires them into its delegation loop.</li>
+<li>Claim: delegated subtasks register sticky cancel tokens keyed by run/skill id; <code>SkillEngine::cancel_subtask()</code> flips a token exactly once and is honored at step boundaries alongside the <code>EmergencyStop</code> hook; an aborted subtask integrates nothing into the parent.</li>
+<li>Detail: quote-aware delegation argument parsing: double-quoted segments are single tokens (backslash escapes inside quotes); <code>--parallel</code> latches split-per-token mode with <code>|</code> separators ignored, <code>--model</code> consumes exactly one token, <code>--tools</code> enables the inner tool loop; precedence is flags &gt; profile &gt; global.</li>
+<li>Rationale: long-running delegated work needs an external off switch that lands between model rounds, not only at process exit.</li>
+<li>Source: <code>SubtaskCancelToken</code>, <code>SkillEngine::cancel_subtask</code>, <code>registered_cancel_token</code>, step-boundary checks in <code>crates/ares-agent/src/skills/engine.rs</code>; <code>parse_flags</code> tokenizer in <code>crates/ares-agent/src/skills/mod.rs</code></li>
+<li>Tests: <code>cancel_token_aborts_subtask_between_rounds</code>, <code>parse_flags_quote_aware_tokens</code></li>
+</ul>
+<h3 id="27-deterministic-micro-calls-are-cached-repaired-answers-are-not-we-exceed-upstream"><a class="header" href="#27-deterministic-micro-calls-are-cached-repaired-answers-are-not-we-exceed-upstream">27. Deterministic micro calls are cached; repaired answers are not (we exceed upstream)</a></h3>
+<ul>
+<li>Upstream expectation: the reference roadmap describes response caching but ships none; every identical micro call re-hits the network.</li>
+<li>Claim: deterministic-class micro outcomes serve from a bounded LRU map keyed by a content hash over <code>(model, system template, input)</code>; answers reached through retries or salvage fallback are NEVER cached.</li>
+<li>Detail: default 256 entries, 15-minute TTL, master switch via <code>MicroCacheConfig</code>.</li>
+<li>Detail: hits skip the network entirely, report <code>latency_ms: 0</code>, and carry the <code>cache_hit</code> telemetry flag.</li>
+<li>Rationale: classify/tag-style enrichment calls dominate micro traffic and their answers are stable; a repeated or repaired request proves the call was NOT deterministic-class, so caching it would pin a bad answer.</li>
+<li>Source: <code>MicroCacheConfig</code>, <code>MicroOutcome::cache_hit</code>, <code>cache_key</code>, <code>LruOutcomeCache</code> in <code>crates/ares-llm/src/micro.rs</code></li>
+<li>Tests: <code>identical_inputs_serve_cached_outcome</code>, <code>retries_exhausted_falls_back_to_salvage</code> (salvage path stays uncached by construction)</li>
+</ul>
+<h3 id="28-guided-grammars-ride-typed-hints-with-byte-identical-absence"><a class="header" href="#28-guided-grammars-ride-typed-hints-with-byte-identical-absence">28. Guided grammars ride typed hints with byte-identical absence</a></h3>
+<ul>
+<li>Upstream expectation: constrained output requires per-provider request surgery with no portable hint channel.</li>
+<li>Claim: <code>GenerationHints::guided_grammar</code> carries a schema-shaped JSON value as <code>response_format</code> <code>json_schema</code> on every OpenAI-compatible path; raw GBNF/EBNF text rides the provider-specific <code>guided_grammar</code> extension field on NON-streaming OpenAI-compatible requests; providers without a channel silently ignore the hint; an ABSENT hint leaves the wire byte-identical.</li>
+<li>Detail: classification is structural — a JSON object with an object root is a schema; anything else is raw grammar text.</li>
+<li>Rationale: one opt-in hint field covers structured outputs where supported and vendor grammar extensions where they are not, without changing default requests.</li>
+<li>Source: <code>GenerationHints::guided_grammar</code> in <code>crates/ares-llm/src/client.rs</code>; classification and <code>GUIDED_GRAMMAR_EXTENSION</code> in <code>crates/ares-llm/src/openai.rs</code></li>
+<li>Test: <code>grammar_hint_present_reaches_request_builder</code></li>
+</ul>
+<h3 id="29-duplicate-embeddings-cost-exactly-one-backend-call-we-exceed-upstream"><a class="header" href="#29-duplicate-embeddings-cost-exactly-one-backend-call-we-exceed-upstream">29. Duplicate embeddings cost exactly one backend call (we exceed upstream)</a></h3>
+<ul>
+<li>Upstream expectation: the reference roadmap mentions embedding dedup but implements none; every input in a batch hits the backend.</li>
+<li>Claim: per-request content-hash dedup collapses duplicate inputs (whitespace-normalized SHA-256) BEFORE the backend call on BOTH local and HTTP embedding paths; computed vectors fan back to every duplicate slot.</li>
+<li>Detail: <code>DedupPlan</code> maps duplicates to the first occurrence's slot; callers receive full-length results.</li>
+<li>Rationale: identical texts in one batch are common (templates, retries) and each costs a paid embedding call.</li>
+<li>Source: <code>DedupPlan</code>, <code>content_hash_hex</code>, <code>normalize_for_dedup</code> in <code>crates/ares-rag/src/embeddings.rs</code></li>
+<li>Tests: <code>dedup_plan_maps_duplicates_to_first_occurrence_slot</code>, <code>duplicate_texts_single_backend_call_vectors_fanned_back</code>, <code>content_hash_hex_ignores_whitespace_differences_only</code></li>
+</ul>
+<h2 id="properties-we-prove-beyond-the-paper"><a class="header" href="#properties-we-prove-beyond-the-paper">Properties we prove beyond the paper</a></h2>
+<p><code>crates/cordis/src/metatheory.rs</code> proves five properties as executable checks.
+These hold regardless of the divergence choices above.</p>
+<ol>
+<li><strong>Quiescence after every operation</strong> (<code>quiescence_after_every_op</code>). Every fiber rests in a well-defined state between operations. Transitional states appear only mid-await, never at rest. Allowed rest states include the reversible <code>Pending</code> (row 10) and terminal <code>Failed{error}</code> (row 1); only <code>Active</code> fibers must hold all declared injects available.</li>
+<li><strong>Registration confluence</strong> (<code>order_confluence_of_registrations</code>). Registration order does not change the final graph.</li>
+<li><strong>Reactive spatial invariant</strong> (<code>dependent_never_active_without_provider</code>). A dependent never activates while its provider is absent. It activates reactively when the provider appears.</li>
+<li><strong>LIFO dispose restores the store</strong> (<code>lifo_dispose_restores_store</code>). Disposal unwinds effects in strict LIFO order. The store returns to its pre-registration contents.</li>
+<li><strong>Version-conformance flips</strong> (<code>version_conformance</code> module). A compatible upgrade flips the dependent back to <code>Active</code>. A mismatch holds it at <code>Inactive</code>.</li>
+</ol>
+<h2 id="maintenance-note"><a class="header" href="#maintenance-note">Maintenance note</a></h2>
+<p>Any pull request that changes kernel semantics MUST add a row here or update an existing row.
+State the claim, the rationale, and the enforcement point in the entry.
+Reviewers reject semantic kernel changes without a ledger entry.
+Before merge, re-run the cited tests.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="cordis/cordis-redesign.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="extending/context-provider.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="cordis/cordis-redesign.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="extending/context-provider.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr.min.js"></script>
+        <script src="mark.min.js"></script>
+        <script src="searcher.js"></script>
+
+        <script src="clipboard.min.js"></script>
+        <script src="highlight.js"></script>
+        <script src="book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>

@@ -33,6 +33,19 @@ These options work on every command:
 | `-h, --help` | Print help. Use `-h` for a short form and `--help` for details |
 | `-V, --version` | Print the version |
 
+### Global flag placement
+
+Every option carries `global = true` (`src/cli/mod.rs`). Place a global flag before or after the subcommand. These two lines parse identically:
+
+```bash
+ares-server --no-color config --validate
+ares-server config --validate --no-color
+```
+
+`-v, --verbose` changes the log filter of a server run from `info` to `debug,ares=trace` (`run_server`, `src/main.rs`). Subcommands print their diagnostics to standard error regardless of this flag.
+
+`--mcp` needs the `mcp` build feature. Without it, the binary prints a rebuild hint and exits `1`.
+
 ### Supervisor semantics
 
 `--supervise` runs the real server in a child copy of the same executable. The child signals the parent through its exit code:
@@ -43,7 +56,7 @@ These options work on every command:
 | `52` | Clean shutdown | Stop the loop |
 | `53` | Boot failure | Stop and mirror the non-zero code to the service manager |
 
-Any other terminal status also ends the loop. Respawns that follow very short runs pace themselves with exponential backoff, from 100 ms up to a 5 s cap.
+The constants live in `src/supervisor.rs`. The child carries the `CORDIS_SUPERVISED` environment variable. The daemon holds the write end of the child's standard input. Dropping it closes the pipe, so the child sees end-of-file and tears down gracefully.
 
 Example: run a daemon that survives hot restarts:
 
@@ -52,6 +65,32 @@ ares-server --supervise
 ```
 
 Pair it with a service manager such as systemd. Boot failures still surface as non-zero exits.
+
+### Restart safeguards
+
+Four safeguards keep the loop responsive (`src/supervisor.rs`):
+
+- **Rapid-restart guard.** Five exits inside any 30-second window stop the loop. This bounds a crash loop that a misbehaving child cannot out-wait.
+- **Health ladder reset.** A child that ran for at least 10 minutes before exiting counts as healthy. The next crash sequence starts its backoff from zero, not from stale strikes.
+- **Exponential backoff.** A child that exited within 10 seconds never proved it could serve. The daemon delays the respawn: 100 ms first, then double each consecutive unhealthy run, capped at 5 s.
+- **Stop grace.** A stopped worker gets 10 seconds to exit after its standard input closes. A worker that ignores the request is force-killed.
+
+### Exit codes
+
+Use these codes in scripts and service units:
+
+| Code | Producer | Meaning |
+|---|---|---|
+| `0` | every subcommand | Success. `config --validate` reports a valid file |
+| `1` | `init` | Target files already exist (`--force` overwrites), or scaffolding failed |
+| `1` | server boot | Missing config file, missing Overlay entry, failed entries program, or `--mcp` without the feature |
+| `51` | supervised child | Hot-restart request; the daemon respawns |
+| `52` | supervised child | Clean shutdown; the daemon stops |
+| `53` | supervised child | Boot failure; the daemon stops and mirrors `53` |
+
+Two details matter for wrappers:
+
+- Without `--supervise`, a failing boot returns `1`. With `--supervise`, the parent mirrors the real child code (`exit(last_code & 0xff)`), so a boot failure surfaces as `53`.
 
 ## `init`
 
@@ -176,7 +215,7 @@ Recursively ingest local text documents into a collection.
 $ ares-server rag ingest-dir [OPTIONS] --collection <COLLECTION> --docs-path <DOCS_PATH>
 ```
 
-Notable options:
+All options (`--help` output):
 
 | Option | Effect |
 |---|---|
@@ -185,6 +224,7 @@ Notable options:
 | `--chunking-strategy <KIND>` | `word` (default), `semantic`, or `character` |
 | `--tag <TAG>` | Attach a tag. Repeat for multiple tags |
 | `--dry-run` | List the files that would be ingested. Send no requests |
+| `--host <URL>` | ARES server base URL. Default: `http://localhost:3000` |
 | `--user` / `--password` | Login credentials |
 | `--token <TOKEN>` | Bearer token; skips login |
 
@@ -208,7 +248,7 @@ Search a collection.
 $ ares-server rag search [OPTIONS] --collection <COLLECTION> --query <QUERY>
 ```
 
-Notable options:
+All options (`--help` output):
 
 | Option | Effect |
 |---|---|
@@ -216,6 +256,7 @@ Notable options:
 | `--query <TEXT>` | Search query. Required |
 | `--top-k <N>` | Maximum number of results. Default: `10` |
 | `--strategy <KIND>` | `semantic` (default), `bm25`, `fuzzy`, or `hybrid` |
+| `--host <URL>` | ARES server base URL. Default: `http://localhost:3000` |
 | `--user` / `--password` | Login credentials |
 | `--token <TOKEN>` | Bearer token; skips login |
 
@@ -227,6 +268,44 @@ ares-server rag search \
   --query "how do I rotate API keys" \
   --top-k 5 \
   --strategy hybrid
+```
+
+## Scripting and composition
+
+Every command reports its result through the exit code. Chain commands with `&&` so a later step runs only after an earlier step succeeds.
+
+Validate, then start under the supervisor:
+
+```bash
+ares-server config --validate && ares-server --supervise
+```
+
+Preview an ingest, then run it for real:
+
+```bash
+ares-server rag ingest-dir --collection docs --docs-path ./handbook --dry-run \
+  && ares-server rag ingest-dir --collection docs --docs-path ./handbook \
+       --tag handbook --user me@example.com --password "$PASS"
+```
+
+Scripting guidance:
+
+- Check `$?` after each call. `0` means success; see the exit-code table above for failure codes.
+- `--verbose` raises server log verbosity to `debug,ares=trace`. It does not change subcommand output.
+- Progress lines go to standard output; failures go to standard error. Redirect them separately: `2>err.log`.
+- A failed ingest still processes every document first. The summary line on stdout reads `summary<TAB>documents=N succeeded=S failed=F chunks=C`; parse it to decide whether to retry.
+- A dry run prints one tab-separated line per file: `<path><TAB><title><TAB><N bytes>`, then `dry_run=true documents=<count>`. Both formats are stable for parsing.
+
+A guarded ingest in shell:
+
+```bash
+if ares-server rag ingest-dir --collection docs --docs-path ./handbook \
+     --token "$ARES_TOKEN" > out.log 2> err.log; then
+  grep '^summary' out.log
+else
+  cat err.log
+  exit 1
+fi
 ```
 
 ## Where to go next

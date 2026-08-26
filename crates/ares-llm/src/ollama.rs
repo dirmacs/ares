@@ -807,6 +807,43 @@ mod hint_tests {
         .to_string()
     }
 
+    /// Ollama has no grammar-constrained decoding on the chat request, so a
+    /// guided_grammar hint must be silently ignored: no grammar key, no
+    /// error, and no other hint behavior disturbed.
+    #[tokio::test]
+    async fn unsupported_backend_ignores_grammar_hint() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_ok()))
+            .mount(&server)
+            .await;
+
+        let client = ollama_client(&server).await;
+        client.set_hints(GenerationHints {
+            json_mode: false,
+            suppress_reasoning: false,
+            max_tokens: None,
+            guided_grammar: Some("root ::= \"yes\" | \"no\"".to_string()),
+        });
+
+        let _ = client.generate("hi").await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert!(
+            body.get("guided_grammar").is_none(),
+            "unsupported backend must not carry the grammar field"
+        );
+        assert!(
+            body.get("grammar").is_none(),
+            "no grammar-shaped key may appear on the wire"
+        );
+        // The static params budget is untouched by the ignored hint.
+        assert_eq!(body["options"]["num_predict"], 64);
+    }
+
     /// Hint budget overrides num_predict; json_mode only applies when the
     /// parsed capability says JSON output is supported.
     #[tokio::test]
@@ -825,6 +862,7 @@ mod hint_tests {
             json_mode: true,
             suppress_reasoning: false,
             max_tokens: Some(256),
+            guided_grammar: None,
         });
 
         let _ = client.generate("hi").await.unwrap();
@@ -864,6 +902,7 @@ mod hint_tests {
             json_mode: true,
             suppress_reasoning: false,
             max_tokens: None,
+            guided_grammar: None,
         });
         // Capability evidence as `/api/show` would report it.
         let caps = parse_model_capabilities_from_show(&serde_json::json!({

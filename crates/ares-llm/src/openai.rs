@@ -23,10 +23,13 @@
 use crate::client::{GenerationHints, LLMClient, LLMResponse, ModelParams, TokenUsage};
 use crate::coordinator::{ConversationMessage, MessageRole};
 use ares_types::types::{AppError, Result, ToolCall, ToolDefinition};
-use async_openai::types::chat::ResponseFormat;
+use async_openai::types::chat::{
+    CreateChatCompletionRequest, CreateChatCompletionResponse, ResponseFormat,
+    ResponseFormatJsonSchema,
+};
 use async_openai::{
     Client,
-    config::OpenAIConfig,
+    config::{Config as _, OpenAIConfig},
     types::chat::{
         ChatCompletionMessageToolCall, ChatCompletionMessageToolCalls,
         ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
@@ -43,6 +46,11 @@ use std::time::Duration;
 /// OpenAI client for API-based inference
 pub struct OpenAIClient {
     client: Client<OpenAIConfig>,
+    /// Direct HTTP handle mirroring the client's transport (same timeouts,
+    /// default headers). Used only by the extension-field send path, which
+    /// posts hint-derived provider-specific fields the typed request cannot
+    /// express.
+    http: reqwest::Client,
     model: String,
     params: ModelParams,
     /// Generation hints applying to SUBSEQUENT calls (see [`GenerationHints`]
@@ -124,7 +132,8 @@ impl OpenAIClient {
             .expect("failed to build reqwest client");
 
         Self {
-            client: Client::with_config(config).with_http_client(http_client),
+            client: Client::with_config(config).with_http_client(http_client.clone()),
+            http: http_client,
             model,
             params,
             hints: RwLock::new(GenerationHints::default()),
@@ -233,6 +242,9 @@ impl OpenAIClient {
     /// - `max_tokens` → `max_completion_tokens` (only when params did not
     ///   already set one, so an explicit config budget wins)
     /// - `suppress_reasoning` → `reasoning_effort: minimal`
+    /// - `guided_grammar`: schema-shaped values → `response_format`
+    ///   `json_schema`; raw GBNF/EBNF text rides the provider-specific
+    ///   extension field attached by [`Self::send_chat_request`]
     fn apply_model_params(&self, builder: &mut CreateChatCompletionRequestArgs) {
         // GPT-5 chat-completions works reliably here when we explicitly cap reasoning effort.
         if self.model.starts_with("gpt-5") {
@@ -259,6 +271,22 @@ impl OpenAIClient {
         if hints.json_mode {
             builder.response_format(ResponseFormat::JsonObject);
         }
+        if let Some(schema) = hints
+            .guided_grammar
+            .as_deref()
+            .and_then(Self::schema_shaped_grammar)
+        {
+            // Schema-shaped grammar overrides plain json_mode with strict
+            // structured output.
+            builder.response_format(ResponseFormat::JsonSchema {
+                json_schema: ResponseFormatJsonSchema {
+                    description: None,
+                    name: Self::GUIDED_GRAMMAR_SCHEMA_NAME.to_string(),
+                    schema: Some(schema),
+                    strict: None,
+                },
+            });
+        }
         if self.params.max_tokens.is_none() {
             if let Some(budget) = hints.max_tokens {
                 builder.max_completion_tokens(budget);
@@ -267,6 +295,104 @@ impl OpenAIClient {
         if hints.suppress_reasoning {
             builder.reasoning_effort(ReasoningEffort::Minimal);
         }
+    }
+
+    /// Provider-specific extension key carrying raw guided-grammar text for
+    /// OpenAI-compatible servers with grammar-constrained decoding
+    /// (vLLM-style `guided_grammar`). Schema-shaped grammars ride
+    /// `response_format` instead and never take this path.
+    const GUIDED_GRAMMAR_EXTENSION: &'static str = "guided_grammar";
+
+    /// Structured-output name used for schema-shaped guided-grammar hints.
+    const GUIDED_GRAMMAR_SCHEMA_NAME: &'static str = "guided_output";
+
+    /// Classify a `guided_grammar` hint: `Some(schema)` when the value is
+    /// shaped like a JSON Schema object (parses as JSON with an object root
+    /// and a `"type"` member), which OpenAI-compatible endpoints honor
+    /// natively via structured outputs; `None` for raw GBNF/EBNF-style text.
+    fn schema_shaped_grammar(grammar: &str) -> Option<serde_json::Value> {
+        serde_json::from_str::<serde_json::Value>(grammar)
+            .ok()
+            .filter(|v| v.is_object() && v.get("type").is_some())
+    }
+
+    /// Hint-derived provider-specific extension fields: currently the raw
+    /// (non-schema) guided-grammar text under
+    /// [`Self::GUIDED_GRAMMAR_EXTENSION`]. `None` = nothing to attach, so
+    /// requests flow through the normal typed pipeline unchanged.
+    fn hint_extension_fields(&self) -> Option<serde_json::Map<String, serde_json::Value>> {
+        let grammar = self
+            .hints
+            .read()
+            .ok()
+            .and_then(|h| h.guided_grammar.clone())
+            .filter(|g| !g.trim().is_empty())?;
+        if Self::schema_shaped_grammar(&grammar).is_some() {
+            return None;
+        }
+        let mut extensions = serde_json::Map::new();
+        extensions.insert(
+            Self::GUIDED_GRAMMAR_EXTENSION.to_string(),
+            serde_json::Value::String(grammar),
+        );
+        Some(extensions)
+    }
+
+    /// Send a chat-completion request through the typed pipeline, switching
+    /// to the direct extension-field POST only when a raw guided-grammar
+    /// hint demands it.
+    async fn send_chat_request(
+        &self,
+        request: CreateChatCompletionRequest,
+    ) -> Result<CreateChatCompletionResponse> {
+        match self.hint_extension_fields() {
+            None => self
+                .client
+                .chat()
+                .create(request)
+                .await
+                .map_err(|e| AppError::LLM(format!("OpenAI API error: {}", e))),
+            Some(extensions) => self.send_with_extensions(request, &extensions).await,
+        }
+    }
+
+    /// Direct POST for requests that must carry provider-specific extension
+    /// fields the typed request type cannot express (currently raw guided
+    /// grammar). Mirrors the typed pipeline's URL resolution, auth headers,
+    /// and error mapping. Streaming calls cannot take this path and silently
+    /// ignore the extension fields.
+    async fn send_with_extensions(
+        &self,
+        request: CreateChatCompletionRequest,
+        extensions: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CreateChatCompletionResponse> {
+        let mut body = serde_json::to_value(&request)
+            .map_err(|e| AppError::LLM(format!("Failed to serialize request: {}", e)))?;
+        if let Some(object) = body.as_object_mut() {
+            object.extend(extensions.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
+        let response = self
+            .http
+            .post(self.client.config().url("/chat/completions"))
+            .headers(self.client.config().headers())
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AppError::LLM(format!("OpenAI API error: {}", e)))?;
+        let status = response.status();
+        let payload = response
+            .text()
+            .await
+            .map_err(|e| AppError::LLM(format!("OpenAI API error: {}", e)))?;
+        if !status.is_success() {
+            return Err(AppError::LLM(format!(
+                "OpenAI API error: HTTP {} {}",
+                status.as_u16(),
+                payload
+            )));
+        }
+        serde_json::from_str::<CreateChatCompletionResponse>(&payload)
+            .map_err(|e| AppError::LLM(format!("Failed to parse response: {}", e)))
     }
 }
 
@@ -287,12 +413,7 @@ impl LLMClient for OpenAIClient {
             .build()
             .map_err(|e| AppError::LLM(format!("Failed to build request: {}", e)))?;
 
-        let response = self
-            .client
-            .chat()
-            .create(request)
-            .await
-            .map_err(|e| AppError::LLM(format!("OpenAI API error: {}", e)))?;
+        let response = self.send_chat_request(request).await?;
 
         response
             .choices
@@ -324,12 +445,7 @@ impl LLMClient for OpenAIClient {
             .build()
             .map_err(|e| AppError::LLM(format!("Failed to build request: {}", e)))?;
 
-        let response = self
-            .client
-            .chat()
-            .create(request)
-            .await
-            .map_err(|e| AppError::LLM(format!("OpenAI API error: {}", e)))?;
+        let response = self.send_chat_request(request).await?;
 
         response
             .choices
@@ -388,12 +504,7 @@ impl LLMClient for OpenAIClient {
             .build()
             .map_err(|e| AppError::LLM(format!("Failed to build request: {}", e)))?;
 
-        let response = self
-            .client
-            .chat()
-            .create(request)
-            .await
-            .map_err(|e| AppError::LLM(format!("OpenAI API error: {}", e)))?;
+        let response = self.send_chat_request(request).await?;
 
         let content = response
             .choices
@@ -436,12 +547,7 @@ impl LLMClient for OpenAIClient {
             .build()
             .map_err(|e| AppError::LLM(format!("Failed to build request: {}", e)))?;
 
-        let response = self
-            .client
-            .chat()
-            .create(request)
-            .await
-            .map_err(|e| AppError::LLM(format!("OpenAI API error: {}", e)))?;
+        let response = self.send_chat_request(request).await?;
 
         let choice = response
             .choices
@@ -504,12 +610,7 @@ impl LLMClient for OpenAIClient {
             .build()
             .map_err(|e| AppError::LLM(format!("Failed to build request: {}", e)))?;
 
-        let response = self
-            .client
-            .chat()
-            .create(request)
-            .await
-            .map_err(|e| AppError::LLM(format!("OpenAI API error: {}", e)))?;
+        let response = self.send_chat_request(request).await?;
 
         let choice = response
             .choices
@@ -1313,6 +1414,7 @@ mod tests {
             json_mode: true,
             suppress_reasoning: true,
             max_tokens: Some(77),
+            guided_grammar: None,
         });
 
         let _ = client.generate("hi").await.unwrap();
@@ -1356,11 +1458,115 @@ mod tests {
             json_mode: false,
             suppress_reasoning: false,
             max_tokens: Some(64),
+            guided_grammar: None,
         });
         let _ = client.generate("hi").await.unwrap();
         let body = first_request_json(&server).await;
         assert_eq!(body["max_completion_tokens"], 512);
         assert!(body.get("reasoning_effort").is_none());
+    }
+
+    /// guided_grammar reaches the request builder: JSON-Schema-shaped values
+    /// map to `response_format` structured outputs, while raw GBNF/EBNF
+    /// text rides the provider-specific `guided_grammar` extension field.
+    #[tokio::test]
+    async fn grammar_hint_present_reaches_request_builder() {
+        // Schema-shaped grammar → strict structured output.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_completion_json("ok")))
+            .mount(&server)
+            .await;
+
+        let client = openai_client(&server, "gpt-4");
+        client.set_hints(GenerationHints {
+            guided_grammar: Some(
+                r#"{"type":"object","properties":{"ok":{"type":"boolean"}}}"#.to_string(),
+            ),
+            ..GenerationHints::default()
+        });
+
+        let _ = client.generate("hi").await.unwrap();
+        let body = first_request_json(&server).await;
+        assert_eq!(body["response_format"]["type"], "json_schema");
+        assert_eq!(body["response_format"]["json_schema"]["name"], "guided_output");
+        assert_eq!(
+            body["response_format"]["json_schema"]["schema"]["properties"]["ok"]["type"],
+            "boolean"
+        );
+        assert!(
+            body.get("guided_grammar").is_none(),
+            "schema-shaped grammar must not also ride the extension field"
+        );
+
+        // Raw GBNF-style text → provider-specific extension field.
+        let raw_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_completion_json("raw")))
+            .mount(&raw_server)
+            .await;
+
+        let raw_client = openai_client(&raw_server, "gpt-4");
+        raw_client.set_hints(GenerationHints {
+            guided_grammar: Some("root ::= \"yes\" | \"no\"".to_string()),
+            ..GenerationHints::default()
+        });
+        let out = raw_client.generate("hi").await.unwrap();
+        assert_eq!(out, "raw", "extension-field send parses the typed response");
+
+        let body = first_request_json(&raw_server).await;
+        assert_eq!(
+            body["guided_grammar"], "root ::= \"yes\" | \"no\"",
+            "raw grammar text must be carried verbatim as an extension field"
+        );
+        assert!(
+            body.get("response_format").is_none(),
+            "non-schema grammar must not fabricate a response_format"
+        );
+    }
+
+    /// No hints at all vs. explicitly cleared hints: identical requests,
+    /// byte for byte, with no grammar or structured-output residue.
+    #[tokio::test]
+    async fn absent_hint_byte_identical_request() {
+        let expected = serde_json::json!({
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "hi"}],
+        });
+
+        let bare_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_completion_json("ok")))
+            .mount(&bare_server)
+            .await;
+        let cleared_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(chat_completion_json("ok")))
+            .mount(&cleared_server)
+            .await;
+
+        let bare = openai_client(&bare_server, "gpt-4");
+        let _ = bare.generate("hi").await.unwrap();
+
+        let cleared = openai_client(&cleared_server, "gpt-4");
+        cleared.set_hints(GenerationHints::default());
+        let _ = cleared.generate("hi").await.unwrap();
+
+        let bare_requests = bare_server.received_requests().await.unwrap();
+        let cleared_requests = cleared_server.received_requests().await.unwrap();
+        assert_eq!(
+            bare_requests[0].body, cleared_requests[0].body,
+            "an absent hint and a default-cleared hint must produce byte-identical bodies"
+        );
+
+        for request in [&bare_requests[0], &cleared_requests[0]] {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            assert_eq!(body, expected, "no hint residue may appear on the wire");
+        }
     }
 
     #[test]

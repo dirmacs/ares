@@ -2186,7 +2186,7 @@ mod tests {
         let d = events.on(INTERNAL_UPDATE_EVENT.into(), |_payload| async move {
             Ok(serde_json::json!({ "veto": "maintenance window" }))
         });
-        fiber.update(&ctx).await;
+        fiber.update(&ctx).await.unwrap();
         assert!(
             matches!(fiber.state(), crate::FiberState::Active { .. }),
             "vetoed update must keep the fiber Active, got {:?}",
@@ -2201,7 +2201,7 @@ mod tests {
 
         // After disposal updates flow again: refresh re-applies (epoch
         // unchanged + satisfied ⇒ early return, but no veto either way).
-        fiber.update(&ctx).await;
+        fiber.update(&ctx).await.unwrap();
         assert!(matches!(fiber.state(), crate::FiberState::Active { .. }));
     }
 

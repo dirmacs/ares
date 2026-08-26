@@ -781,13 +781,122 @@ pub async fn toggle_cordis_entry(
     }
 }
 
+/// POST /admin/cordis/entries/{id}/move — relocate the entry (and its whole
+/// `{id}:*` descendant namespace) under a new parent.
+///
+/// Body: `{"parent": "group-id" | null, "position": N}` — `parent: null`
+/// moves to the tree root; an absent `position` appends after the target's
+/// existing children. Execution goes through
+/// [`cordis::loader::Loader::move_entry`]: invalid moves (unknown ids,
+/// moving under one's own descendant, id collisions) answer 409 WITHOUT
+/// touching the file or the live tree; a valid move re-keys the journal
+/// records with fiber ids PRESERVED (pure structural moves never restart
+/// fibers), persists the renamed tree, and applies the diff. Responds
+/// `{moved: true, renamed, applied}`; unknown ids 404, missing loader state
+/// 503.
+pub async fn move_cordis_entry(
+    State(ctx): State<Arc<Context>>,
+    Path(id): Path<String>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
+    if let Err((status, body)) = require_loader_state(&ctx) {
+        return Ok((status, Json(body)));
+    }
+    let Some(current_entries) = ctx.get::<cordis::CurrentEntries>() else {
+        return Ok((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "moved": false,
+                "error": "CurrentEntries is not provided on this context",
+            })),
+        ));
+    };
+    let path = current_entries.path.clone();
+
+    let parent = body.get("parent").map(|p| {
+        p.as_str()
+            .map(str::to_string)
+            .ok_or_else(|| HttpError::from(ares_types::types::AppError::InvalidInput(
+                "\"parent\" must be a string or null".to_string(),
+            )))
+    });
+    let parent = match parent {
+        Some(Ok(p)) => Some(p),
+        Some(Err(e)) => return Err(e),
+        None => None,
+    };
+    let position = match body.get("position") {
+        Some(v) => match v.as_u64() {
+            Some(p) => p as usize,
+            None => {
+                return Err(HttpError::from(ares_types::types::AppError::InvalidInput(
+                    "\"position\" must be a non-negative integer".to_string(),
+                )));
+            }
+        },
+        None => usize::MAX,
+    };
+
+    let mut tree = match load_desired_tree(&path) {
+        Ok(tree) => tree,
+        Err((status, body)) => return Ok((status, Json(body))),
+    };
+    if !tree.0.iter().any(|e| e.id == id) {
+        return Ok((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "moved": false, "error": "no such entry" })),
+        ));
+    }
+
+    let journal = ctx.get::<cordis::LoaderJournal>().expect("loader state");
+    let outcome =
+        cordis::loader::Loader::move_entry(&ctx, &mut tree, &journal, &id, parent.as_deref(), position)
+            .await;
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            return Ok((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "moved": false, "error": e.to_string() })),
+            ));
+        }
+    };
+
+    tree.0 = tree.0.drain(..).map(normalize_entry_config).collect();
+    if let Err(e) = tree.save_to_toml_file(&path) {
+        return Ok((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "applied": [], "error": e.to_string() })),
+        ));
+    }
+
+    match apply_entries_from_disk(&ctx).await {
+        Ok(actions) => Ok((
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "moved": true,
+                "noop": outcome.noop,
+                "renamed": outcome.renamed,
+                "applied": applied_json(&actions),
+            })),
+        )),
+        Err((status, body)) => Ok((status, Json(body))),
+    }
+}
+
 /// PATCH /admin/cordis/entries/{id} — partial update of one entry: only the
 /// fields present in the [`cordis::loader::EntryUpdate`] body are applied
 /// (`config`, `disabled`, `isolate`, `intercept`); everything else is left
 /// untouched, so an empty body is a validated no-op that still persists and
-/// re-applies the unchanged tree. Persists to the TOML program file and
-/// applies through the same flow as reload; responds with the post-patch
-/// entry. Unknown ids answer 404.
+/// re-applies the unchanged tree.
+///
+/// Present `parent` / `position` body fields MOVE the entry first (through
+/// [`cordis::loader::Loader::move_entry`], preserving live fiber identity on
+/// pure structural moves), THEN the remaining field updates land in one call.
+/// An invalid move answers 409 without touching the file or the live tree.
+/// Persists to the TOML program file and applies through the same flow as
+/// reload; responds with the post-patch entry (plus `renamed` old→new pairs
+/// when a move ran). Unknown ids answer 404.
 pub async fn patch_cordis_entry(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
@@ -811,7 +920,63 @@ pub async fn patch_cordis_entry(
         Ok(tree) => tree,
         Err((status, body)) => return Ok((status, Json(body))),
     };
-    let Some(entry) = tree.0.iter_mut().find(|e| e.id == id) else {
+    if !tree.0.iter().any(|e| e.id == id) {
+        return Ok((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "patched": false,
+                "error": "no such entry",
+            })),
+        ));
+    };
+
+    // MOVE phase: a present `parent`/`position` field relocates the entry —
+    // renaming the subtree namespace — BEFORE any field updates land.
+    let mut renamed: Vec<(String, String)> = Vec::new();
+    if update.parent.is_some() || update.position.is_some() {
+        let current_parent = tree
+            .0
+            .iter()
+            .find(|e| e.id == id)
+            .and_then(|e| e.position.as_ref())
+            .and_then(|p| p.parent.clone());
+        let target = match &update.parent {
+            // Explicit null = move to the tree root.
+            Some(explicit) => explicit.clone(),
+            // Position-only request reorders within the CURRENT parent.
+            None => current_parent,
+        };
+        // Absent position appends after the target's existing children.
+        let position = update.position.unwrap_or(usize::MAX);
+        let journal = ctx.get::<cordis::LoaderJournal>().expect("loader state");
+        match cordis::loader::Loader::move_entry(
+            &ctx,
+            &mut tree,
+            &journal,
+            &id,
+            target.as_deref(),
+            position,
+        )
+        .await
+        {
+            Ok(outcome) => renamed = outcome.renamed,
+            Err(e) => {
+                return Ok((
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({
+                        "patched": false,
+                        "error": e.to_string(),
+                    })),
+                ));
+            }
+        }
+    }
+    let final_id = renamed
+        .last()
+        .map(|(_, new)| new.clone())
+        .unwrap_or_else(|| id.clone());
+
+    let Some(entry) = tree.0.iter_mut().find(|e| e.id == final_id) else {
         return Ok((
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({
@@ -831,7 +996,7 @@ pub async fn patch_cordis_entry(
 
     // Structured issues below describe THIS apply only: drop any record an
     // earlier patch left for this entry before running the pre-flights.
-    let _ = cordis::error::take_trial_validation(&id);
+    let _ = cordis::error::take_trial_validation(&final_id);
     match apply_entries_from_disk(&ctx).await {
         Ok(actions) => {
             let patched = ctx
@@ -840,7 +1005,7 @@ pub async fn patch_cordis_entry(
                     ce.tree
                         .lock()
                         .ok()
-                        .map(|t| t.0.iter().find(|e| e.id == id).cloned())
+                        .map(|t| t.0.iter().find(|e| e.id == final_id).cloned())
                 })
                 .flatten();
             let Some(patched) = patched else {
@@ -852,20 +1017,21 @@ pub async fn patch_cordis_entry(
                     })),
                 ));
             };
-            Ok((
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "applied": applied_json(&actions),
-                    "patched": true,
-                    "entry": patched,
-                })),
-            ))
+            let mut body = serde_json::json!({
+                "applied": applied_json(&actions),
+                "patched": true,
+                "entry": patched,
+            });
+            if !renamed.is_empty() {
+                body["renamed"] = serde_json::to_value(&renamed).unwrap_or_default();
+            }
+            Ok((StatusCode::OK, Json(body)))
         }
         Err((status, mut body)) => {
             // When the failing step was a config pre-flight, the loader
             // trial stashed machine-readable issues for this entry; attach
             // them alongside the legacy `error` string.
-            if let Some(validation) = cordis::error::take_trial_validation(&id) {
+            if let Some(validation) = cordis::error::take_trial_validation(&final_id) {
                 if let Ok(issues) = serde_json::to_value(&validation.issues) {
                     body["issues"] = issues;
                 }
@@ -1139,6 +1305,7 @@ mod tests {
                             disabled: false,
                             isolate: None,
                             intercept: Default::default(),
+                            position: None,
                         }])
                     )
                     .len(),
@@ -1167,6 +1334,7 @@ mod tests {
             disabled,
             isolate: None,
             intercept: Default::default(),
+            position: None,
         }
     }
 
@@ -1571,6 +1739,8 @@ mod tests {
             disabled: None,
             isolate: None,
             intercept: None,
+            parent: None,
+            position: None,
         };
         let (status, Json(body)) =
             patch_cordis_entry(State(ctx.clone()), Path("calc".into()), axum::Json(update))
@@ -1741,6 +1911,146 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(ok_body["patched"], json!(true));
         assert!(ok_body.get("issues").is_none(), "success carries no issues");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// PATCH with a `parent` field MOVES the entry first, THEN applies any
+    /// field updates in the same call. A live fiber keeps its identity across
+    /// the rename (journal re-key preserves fiber id), and the config update
+    /// lands under the NEW id driving that same fiber.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn patch_endpoint_moves_entry() {
+        /// Second probe type so grp/svc never collide as duplicate providers.
+        struct Anchor(std::sync::atomic::AtomicU64);
+        impl ::cordis::Service for Anchor {}
+
+        let initial_toml = "[[entry]]\nid = \"grp\"\nplugin = \"GroupMarker\"\ndisabled = false\n\n[entry.config]\n\
+            [[entry]]\nid = \"svc\"\nplugin = \"CalculatorService\"\ndisabled = false\n\n[entry.config]\n";
+        // CurrentEntries starts EMPTY so the boot-like reload below actually
+        // Begins both entries and journals their live fibers.
+        let (ctx, dir) = build_entries_fixture("patch-move", initial_toml, vec![]);
+        // Register the second factory the group entry rides on.
+        let registry = ctx.get::<cordis::PluginRegistry>().expect("registry");
+        registry.register(
+            "GroupMarker",
+            Arc::new(|ctx: &Arc<::cordis::Context>, _cfg| {
+                let fut = ctx.plugin(Anchor(std::sync::atomic::AtomicU64::new(0)));
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(fut)
+                })
+            }),
+        );
+
+        // Boot-like first apply so both entries have journaled live fibers.
+        let (status, Json(body)) = reload_cordis_entries(State(ctx.clone()))
+            .await
+            .expect("resp");
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["applied"].as_array().unwrap().len() >= 2);
+        let journal = ctx.get::<cordis::LoaderJournal>().expect("journal");
+        let svc_fid = journal.get("svc").unwrap().fiber_id.unwrap();
+
+        // Move + reconfigure in one PATCH: svc becomes grp:svc with v = 9.
+        let update = cordis::loader::EntryUpdate {
+            config: Some(serde_json::json!({"v": 9})),
+            parent: Some(Some("grp".into())),
+            position: None,
+            ..Default::default()
+        };
+        let (status, Json(body)) =
+            patch_cordis_entry(State(ctx.clone()), Path("svc".into()), axum::Json(update))
+                .await
+                .expect("resp");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["patched"], json!(true));
+        assert_eq!(
+            body["renamed"],
+            json!([["svc", "grp:svc"]]),
+            "rename pairs accompany the patch: {body}"
+        );
+        assert_eq!(body["entry"]["id"], "grp:svc");
+        assert_eq!(body["entry"]["config"]["v"], 9);
+        assert_eq!(
+            body["entry"]["position"]["parent"], "grp",
+            "post-patch entry carries its new parent pointer"
+        );
+
+        // Fiber identity survived the move; the update landed under the new id.
+        assert_eq!(journal.get("grp:svc").unwrap().fiber_id, Some(svc_fid));
+        assert_eq!(journal.get("grp:svc").unwrap().config, json!({"v": 9}));
+        assert!(journal.get("svc").is_none(), "old journal key gone");
+        assert!(
+            ctx.get::<Probe>().is_some(),
+            "live instance never disposed by the move"
+        );
+
+        // The program file persists the renamed entry with parent pointer…
+        let raw = std::fs::read_to_string(dir.join("cordis-entries.toml")).expect("read back");
+        assert!(raw.contains("id = \"grp:svc\""), "renamed on disk: {raw}");
+        assert!(raw.contains("[entry.position]"), "parent persisted: {raw}");
+        assert!(!raw.contains("id = \"svc\""), "stale id gone from disk");
+
+        // …and a follow-up no-op PATCH round-trips cleanly (no phantom
+        // retire/begin for the renamed ids).
+        let noop = cordis::loader::EntryUpdate::default();
+        let (status, Json(body)) =
+            patch_cordis_entry(State(ctx.clone()), Path("grp:svc".into()), axum::Json(noop))
+                .await
+                .expect("resp");
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body["applied"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|a| a["action"] != "Retire" && a["action"] != "retire"),
+            "no phantom retirement after move: {body}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An INVALID move via PATCH answers 409 and leaves both the file and
+    /// the applied tree untouched.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn patch_endpoint_invalid_move_conflicts_without_mutating() {
+        let initial_toml = "[[entry]]\nid = \"a\"\nplugin = \"CalculatorService\"\ndisabled = false\n\n[entry.config]\n\
+            [[entry]]\nid = \"b\"\nplugin = \"CalculatorService\"\ndisabled = false\n\n[entry.config]\n\
+            [[entry]]\nid = \"b:a\"\nplugin = \"CalculatorService\"\ndisabled = false\n\n[entry.config]\n";
+        let (ctx, dir) = build_entries_fixture(
+            "patch-move-bad",
+            initial_toml,
+            vec![
+                probe_entry("a", false),
+                probe_entry("b", false),
+                probe_entry("b:a", false),
+            ],
+        );
+        let before = std::fs::read_to_string(dir.join("cordis-entries.toml")).expect("read");
+
+        let update = cordis::loader::EntryUpdate {
+            parent: Some(Some("b".into())), // would collide with existing b:a
+            ..Default::default()
+        };
+        let (status, Json(body)) =
+            patch_cordis_entry(State(ctx.clone()), Path("a".into()), axum::Json(update))
+                .await
+                .expect("resp");
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["patched"], json!(false));
+        assert!(
+            body["error"]
+                .as_str()
+                .map(|e| e.contains("already used"))
+                .unwrap_or(false),
+            "collision named: {body}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("cordis-entries.toml")).expect("read back"),
+            before,
+            "failed move must not touch the file"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

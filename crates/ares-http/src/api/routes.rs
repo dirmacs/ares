@@ -449,6 +449,11 @@ pub fn create_router(
             "/admin/cordis/entries/{id}/toggle",
             post(crate::api::handlers::admin::toggle_cordis_entry),
         )
+        // Cordis entry relocation (subtree rename cascade, fiber identity)
+        .route(
+            "/admin/cordis/entries/{id}/move",
+            post(crate::api::handlers::admin::cordis::move_cordis_entry),
+        )
         // Per-event dispatch metrics from EventsService
         .route(
             "/admin/cordis/events",

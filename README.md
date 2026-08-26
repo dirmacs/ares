@@ -63,7 +63,7 @@ Add this dependency to your project:
 
 ```toml
 [dependencies]
-ares-server = "0.9"
+ares-server = "0.10"
 ```
 
 Basic usage:

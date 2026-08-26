@@ -96,7 +96,7 @@ pub mod logger;
 pub mod service;
 pub mod timer;
 
-pub use context::Context;
+pub use context::{Accessor, Context, EffectHandle};
 pub use effect::Disposable;
 pub use events::{summarize_listener_errors, AggregateError, Dispatch, EventsService};
 pub use error::{ValidationError, ValidationIssue};
@@ -138,9 +138,11 @@ pub use watcher::SettleBarrier;
 pub mod metatheory;
 
 pub mod hmr;
+pub mod module_graph;
 pub mod registry;
 pub mod watcher;
 pub use registry::{Plugin, RegistryService};
+pub use module_graph::{ChangeOutcome, ModuleEntry, ModuleGraph, ModuleReload, NoopReload};
 
 pub use logger::{
     derived_name, hyphenate, Exporter, ExporterConfig, LogArg, LogKind, LogLevel,
@@ -584,6 +586,17 @@ impl LoaderJournal {
     /// Remove `id` from the journal (retirement).  Returns the removed record.
     pub fn retire(&self, id: &str) -> Option<JournalRecord> {
         self.records.write().remove(id)
+    }
+    /// Re-key the record `old` → `new` (subtree move), PRESERVING the plugin
+    /// label, config, generation, and tracked fiber id. This is how a
+    /// structural entry move keeps its live fiber: the record moves, the
+    /// fiber does not. Returns the record under its new key, or `None` when
+    /// `old` was not journaled.
+    pub fn rename(&self, old: &str, new: &str) -> Option<JournalRecord> {
+        let mut records = self.records.write();
+        let record = records.remove(old)?;
+        records.insert(new.to_string(), record.clone());
+        Some(record)
     }
 
     pub fn get(&self, id: &str) -> Option<JournalRecord> {

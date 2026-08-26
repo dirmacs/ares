@@ -1,0 +1,298 @@
+<!DOCTYPE HTML>
+<html lang="en" class="navy" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Fiber Lifecycle - ARES documentation</title>
+
+
+        <!-- Custom HTML head -->
+        
+        <meta name="description" content="Documentation for ARES, an agent platform with multi-provider LLM support, tool calling, RAG, and multi-tenant support.">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="../highlight.css">
+        <link rel="stylesheet" href="../tomorrow-night.css">
+        <link rel="stylesheet" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "../";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "navy";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('navy')
+            html.classList.add(theme);
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var body = document.querySelector('body');
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="../introduction.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">Getting Started</li><li class="chapter-item expanded "><a href="../getting-started/installation.html"><strong aria-hidden="true">1.</strong> Installation</a></li><li class="chapter-item expanded "><a href="../getting-started/first-server.html"><strong aria-hidden="true">2.</strong> First Server</a></li><li class="chapter-item expanded affix "><li class="part-title">Architecture</li><li class="chapter-item expanded "><a href="../architecture.html"><strong aria-hidden="true">3.</strong> System Overview</a></li><li class="chapter-item expanded affix "><li class="part-title">Using ARES</li><li class="chapter-item expanded "><a href="../cli.html"><strong aria-hidden="true">4.</strong> Command Line Interface</a></li><li class="chapter-item expanded "><a href="../http-api.html"><strong aria-hidden="true">5.</strong> HTTP API</a></li><li class="chapter-item expanded "><a href="../library.html"><strong aria-hidden="true">6.</strong> ARES as a Library</a></li><li class="chapter-item expanded affix "><li class="part-title">The Cordis Kernel</li><li class="chapter-item expanded "><a href="../kernel/index.html"><strong aria-hidden="true">7.</strong> Ideas and Map</a></li><li class="chapter-item expanded "><a href="../kernel/lifecycle.html" class="active"><strong aria-hidden="true">8.</strong> Fiber Lifecycle</a></li><li class="chapter-item expanded "><a href="../kernel/interception.html"><strong aria-hidden="true">9.</strong> Interception Points</a></li><li class="chapter-item expanded "><a href="../kernel/runtime.html"><strong aria-hidden="true">10.</strong> Runtime Services</a></li><li class="chapter-item expanded "><a href="../kernel/patterns.html"><strong aria-hidden="true">11.</strong> Kernel Patterns in Rust</a></li><li class="chapter-item expanded affix "><li class="part-title">Product Surfaces</li><li class="chapter-item expanded "><a href="../agents.html"><strong aria-hidden="true">12.</strong> Agents and Skills</a></li><li class="chapter-item expanded "><a href="../rag.html"><strong aria-hidden="true">13.</strong> Retrieval</a></li><li class="chapter-item expanded affix "><li class="part-title">Operations</li><li class="chapter-item expanded "><a href="../operations.html"><strong aria-hidden="true">14.</strong> Configuration and Deployment</a></li><li class="chapter-item expanded affix "><li class="part-title">Reference</li><li class="chapter-item expanded "><a href="../reference/cordis-mapping.html"><strong aria-hidden="true">15.</strong> Cordis Surface Map</a></li><li class="chapter-item expanded "><a href="../reference/upstream-parity.html"><strong aria-hidden="true">16.</strong> Upstream Parity Ledger</a></li><li class="chapter-item expanded affix "><a href="../changelog.html">Changelog</a></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">ARES documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares/edit/main/docs/src/kernel/lifecycle.md" title="Suggest an edit" aria-label="Suggest an edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="fiber-lifecycle"><a class="header" href="#fiber-lifecycle">Fiber lifecycle</a></h1>
+<p>A fiber is the lifecycle owner of one registration. Its state machine has seven states. The type is <code>cordis::fiber::FiberState</code>.</p>
+<h2 id="states"><a class="header" href="#states">States</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>State</th><th>Meaning</th></tr></thead><tbody>
+<tr><td><code>Inactive { error }</code></td><td>Not serving. Pristine, waiting for a first apply, or resting after an unsatisfied declaration.</td></tr>
+<tr><td><code>Loading</code></td><td>A plugin activation is in flight.</td></tr>
+<tr><td><code>Active { epoch }</code></td><td>Serving. <code>epoch</code> encodes every declared dependency version.</td></tr>
+<tr><td><code>Reloading</code></td><td>A refresh pass runs. Effects may be undone and re-applied.</td></tr>
+<tr><td><code>Unloading { error }</code></td><td>Effects are being disposed in reverse order (LIFO).</td></tr>
+<tr><td><code>Pending</code></td><td>Reactive waiting. Effects were disposed, but the fiber is not disposed. It waits for dependencies or its readiness gate.</td></tr>
+<tr><td><code>Failed { error }</code></td><td>Terminal after an apply error, or inspectable after an availability-predicate rejection.</td></tr>
+</tbody></table>
+</div>
+<p><code>Pending</code> carries no error. Reactive waiting is not a failure.</p>
+<h2 id="state-diagram"><a class="header" href="#state-diagram">State diagram</a></h2>
+<pre><code class="language-mermaid">stateDiagram-v2
+    [*] --&gt; Inactive
+    Inactive --&gt; Loading : dependencies satisfied and gate open
+    Loading --&gt; Active : runner returns Ok(true)
+    Loading --&gt; Inactive : runner returns Ok(false)
+    Loading --&gt; Failed : runner returns Err
+    Active --&gt; Reloading : dependency epoch changed
+    Active --&gt; Unloading : reactive dependency loss or closed gate
+    Reloading --&gt; Unloading : effects undone before re-apply
+    Unloading --&gt; Pending : fiber ever activated
+    Unloading --&gt; Inactive : dispose completes
+    Pending --&gt; Loading : gate opens or provider returns
+    Pending --&gt; Pending : still-closed gate (no-op)
+    Failed --&gt; Failed : terminal; refreshes refuse to revive
+</code></pre>
+<p>Observers see the exact documented sequence across one reactive cycle: <code>Active</code>, <code>Reloading</code>, <code>Unloading</code>, <code>Pending</code>, <code>Loading</code>, <code>Active</code>. Subscribe with <code>Fiber::subscribe_state</code>. Test anchor: <code>observer_sees_unloading_pending_active_sequence</code>.</p>
+<h2 id="reactive-pending-reversal-rules"><a class="header" href="#reactive-pending-reversal-rules">Reactive Pending reversal rules</a></h2>
+<p>The kernel converts a working configuration into <code>Pending</code> only under narrow conditions:</p>
+<ul>
+<li>The fiber lost a dependency <strong>genuinely</strong>: the provider is unavailable and reads provider version 0 again after its undo ran.</li>
+<li>The fiber has a reload runner and completed at least one fully-satisfied application (<code>ever_activated</code>). Fibers that never activated rest <code>Inactive</code> instead.</li>
+<li>A peer-version constraint refusal over a live provider is policy, not loss. The provider is still available, so those fibers stay <code>Inactive</code>.</li>
+</ul>
+<p>Apply errors are different. A factory error sets a terminal marker (<code>apply_failed</code>). Refreshes never revive such a fiber. Recovery means explicit re-registration with a fresh fiber id. Test anchors: <code>dependent_reactivates_when_provider_returns</code>, <code>failed_stays_failed_on_dep_return</code>.</p>
+<p>Late inject declarations never rest <code>Pending</code>. An unsatisfied declaration deactivates the fiber immediately with the note "missing or inactive dependency". The next reactive refresh converts a genuine loss to <code>Pending</code>.</p>
+<p>A re-kick on a <code>Pending</code> fiber with a still-closed gate is a no-op. An open gate falls through to one full pass: <code>Pending</code>, <code>Loading</code>, <code>Active</code>. <code>RegistryService::prune_disposed</code> keeps <code>Pending</code> fibers alive so they can reactivate. Tests: <code>pending_fiber_survives_prune_disposed</code>, <code>prune_disposed_drops_disposed_but_keeps_failed</code>.</p>
+<p>Every transition acquires the fiber inertia guard through a bounded wait (<code>TRANSITION_WAIT</code>, 10 seconds). Same-thread reentrancy fails immediately. Cross-task contention times out with an error naming the stuck fiber id. Tests: <code>reentrant_transition_detected_fast</code>, <code>contention_times_out_named</code>.</p>
+<h2 id="readiness-barriers-versus-availability-predicates"><a class="header" href="#readiness-barriers-versus-availability-predicates">Readiness barriers versus availability predicates</a></h2>
+<p>The two mechanisms answer different questions.</p>
+<p><strong>Readiness barrier</strong> — "not yet". Install one with <code>RegistryService::register_with_readiness</code> and compose predicates with <code>ReadinessBarrier::new</code>, <code>ReadinessBarrier::and</code>, and <code>with_readiness</code>. While the predicate reports false:</p>
+<ul>
+<li>The fiber rests in inspectable <code>Pending</code>. This is quiet, reversible waiting.</li>
+<li>The factory still runs once at registration, so config errors surface early.</li>
+<li>Strict <code>ctx.get</code> refuses values owned by non-<code>Active</code> fibers, so consumers never see the half-ready service.</li>
+<li>Declare watch keys with <code>ReadinessBarrier::watching</code>. Any settlement on those types fans out through <code>ReflectService</code> and re-kicks the gated fiber.</li>
+</ul>
+<p>Test anchors: <code>ready_when_holds_pending_until_true_then_activates</code>, <code>readiness_composes_and_semantics</code>, <code>external_rekick_reactivates_waiting_fiber</code>.</p>
+<p><strong>Availability predicate</strong> — "never, as built". Implement <code>Service::check</code>. The registry consults it before the value reaches consumers. A rejection rests the fiber as <code>Failed { error: "availability predicate rejected service" }</code>. Registration itself stays non-throwing; later refreshes converge once the instance reports healthy.</p>
+<p>Test anchors: <code>availability_predicate_rejection_registers_failed</code>, <code>predicate_passing_reregistration_activates_dependents</code>.</p>
+<p>In short: a closed readiness gate parks the fiber quietly as reversible <code>Pending</code>. An availability rejection fails loudly to <code>Failed{error}</code>. They are complements, not alternatives.</p>
+<h2 id="two-phase-staged-reload"><a class="header" href="#two-phase-staged-reload">Two-phase staged reload</a></h2>
+<p>The loader applies a desired entry tree against the current tree in two phases:</p>
+<ol>
+<li><strong>Verify without mutating.</strong> Phase one resolves entries and pre-flights config trials against scratch candidates. On the first failed verification, the batch aborts. Nothing changed, so no rollback is needed.</li>
+<li><strong>Apply in dependency order.</strong> Phase two applies verified candidates. Begin and rebuild steps run first, then updates, then retire steps. On a failure during phase two, the loader rolls back every applied change newest-first: configs restore, rebuilt fibers dispose. The live tree serves the originals.</li>
+</ol>
+<p>On any failure the loader leaves <code>current</code> unchanged, so a retry re-diffs cleanly. Config-only patches on active fibers go through the update path with a pre-flight trial, so factory apply counts stay flat.</p>
+<p>Test anchors: <code>staged_batch_rolls_back_on_first_failure</code>, <code>staged_batch_applies_in_order_on_success</code>.</p>
+<h2 id="cascade-batching"><a class="header" href="#cascade-batching">Cascade batching</a></h2>
+<p>When a provider fiber sits mid-config-update, dependent refreshes defer instead of churning. <code>Loader::cascade_defer_needed</code> probes an in-flight ledger. A deferred dependent rests <code>Pending</code> quietly. One post-settle re-kick converges every deferred dependent at once, instead of running one full cascade wave per concurrent patch. Without a <code>RegistryService</code> on the context, the probe always reports false and legacy behavior holds.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../kernel/index.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../kernel/interception.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../kernel/index.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../kernel/interception.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>

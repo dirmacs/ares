@@ -12,21 +12,21 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon.svg">
-        <link rel="shortcut icon" href="favicon.png">
-        <link rel="stylesheet" href="css/variables.css">
-        <link rel="stylesheet" href="css/general.css">
-        <link rel="stylesheet" href="css/chrome.css">
-        <link rel="stylesheet" href="css/print.css" media="print">
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
 
         <!-- Fonts -->
-        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
-        <link rel="stylesheet" href="fonts/fonts.css">
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
 
         <!-- Highlight.js Stylesheets -->
-        <link rel="stylesheet" href="highlight.css">
-        <link rel="stylesheet" href="tomorrow-night.css">
-        <link rel="stylesheet" href="ayu-highlight.css">
+        <link rel="stylesheet" href="../highlight.css">
+        <link rel="stylesheet" href="../tomorrow-night.css">
+        <link rel="stylesheet" href="../ayu-highlight.css">
 
         <!-- Custom theme stylesheets -->
 
@@ -35,7 +35,7 @@
     <div id="body-container">
         <!-- Provide site root to javascript -->
         <script>
-            var path_to_root = "";
+            var path_to_root = "../";
             var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "navy";
         </script>
 
@@ -88,7 +88,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded affix "><a href="introduction.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">Getting started</li><li class="chapter-item expanded "><a href="getting-started/quickstart.html"><strong aria-hidden="true">1.</strong> Quickstart</a></li><li class="chapter-item expanded "><a href="getting-started/authentication.html"><strong aria-hidden="true">2.</strong> Authentication</a></li><li class="chapter-item expanded "><a href="getting-started/models.html"><strong aria-hidden="true">3.</strong> Models & Providers</a></li><li class="chapter-item expanded affix "><li class="part-title">API Reference</li><li class="chapter-item expanded "><a href="api/chat.html"><strong aria-hidden="true">4.</strong> Chat</a></li><li class="chapter-item expanded "><a href="api/agents.html"><strong aria-hidden="true">5.</strong> Agents</a></li><li class="chapter-item expanded "><a href="api/tools.html"><strong aria-hidden="true">6.</strong> Tools</a></li><li class="chapter-item expanded "><a href="api/skills.html"><strong aria-hidden="true">7.</strong> Skills</a></li><li class="chapter-item expanded "><a href="api/mcp.html"><strong aria-hidden="true">8.</strong> MCP Integration</a></li><li class="chapter-item expanded "><a href="api/memory.html"><strong aria-hidden="true">9.</strong> Memory</a></li><li class="chapter-item expanded "><a href="api/rag.html"><strong aria-hidden="true">10.</strong> RAG</a></li><li class="chapter-item expanded "><a href="api/workflows.html"><strong aria-hidden="true">11.</strong> Workflows</a></li><li class="chapter-item expanded "><a href="api/research.html"><strong aria-hidden="true">12.</strong> Research</a></li><li class="chapter-item expanded "><a href="api/streaming.html"><strong aria-hidden="true">13.</strong> Streaming</a></li><li class="chapter-item expanded affix "><li class="part-title">Enterprise</li><li class="chapter-item expanded "><a href="enterprise/v1-api.html"><strong aria-hidden="true">14.</strong> V1 Client API</a></li><li class="chapter-item expanded "><a href="enterprise/admin-api.html"><strong aria-hidden="true">15.</strong> Admin API</a></li><li class="chapter-item expanded "><a href="enterprise/deploy-api.html"><strong aria-hidden="true">16.</strong> Deployment API</a></li><li class="chapter-item expanded "><a href="enterprise/multi-tenant.html"><strong aria-hidden="true">17.</strong> Multi-Tenant Setup</a></li><li class="chapter-item expanded affix "><li class="part-title">Platform</li><li class="chapter-item expanded "><a href="platform/architecture.html"><strong aria-hidden="true">18.</strong> Architecture (Cordis)</a></li><li class="chapter-item expanded "><a href="platform/rate-limits.html"><strong aria-hidden="true">19.</strong> Rate Limits & Quotas</a></li><li class="chapter-item expanded "><a href="platform/safety.html"><strong aria-hidden="true">20.</strong> Loop Detection & Safety</a></li><li class="chapter-item expanded "><a href="platform/tenant-fs-fence.html"><strong aria-hidden="true">21.</strong> Tenant FS Permission Fence</a></li><li class="chapter-item expanded "><a href="platform/errors.html"><strong aria-hidden="true">22.</strong> Error Handling</a></li><li class="chapter-item expanded "><a href="platform/self-hosting.html"><strong aria-hidden="true">23.</strong> Self-Hosting</a></li><li class="chapter-item expanded affix "><li class="part-title">Architecture</li><li class="chapter-item expanded "><a href="cordis/cordis-mapping.html"><strong aria-hidden="true">24.</strong> Mapping, Γ^∞ → Rust</a></li><li class="chapter-item expanded "><a href="cordis/cordis-remedies.html"><strong aria-hidden="true">25.</strong> Remedies, P0-P10</a></li><li class="chapter-item expanded "><a href="cordis/cordis-capabilities.html"><strong aria-hidden="true">26.</strong> Capabilities, Preservation Checklist</a></li><li class="chapter-item expanded "><a href="cordis/cordis-baseline.html"><strong aria-hidden="true">27.</strong> Baseline, Gates</a></li><li class="chapter-item expanded "><a href="cordis/cordis-yagni.html"><strong aria-hidden="true">28.</strong> YAGNI Ladder</a></li><li class="chapter-item expanded "><a href="cordis/cordis-redesign.html"><strong aria-hidden="true">29.</strong> Handoff, Architecture</a></li><li class="chapter-item expanded "><a href="upstream-parity.html" class="active"><strong aria-hidden="true">30.</strong> Upstream Parity Ledger</a></li><li class="chapter-item expanded affix "><li class="part-title">Extending ARES</li><li class="chapter-item expanded "><a href="extending/context-provider.html"><strong aria-hidden="true">31.</strong> ContextProvider Trait</a></li><li class="chapter-item expanded "><a href="extending/base-router.html"><strong aria-hidden="true">32.</strong> Building on the ARES router</a></li><li class="chapter-item expanded affix "><li class="part-title">Guides</li><li class="chapter-item expanded "><a href="guides/chat-agent.html"><strong aria-hidden="true">33.</strong> Build a Chat Agent</a></li><li class="chapter-item expanded "><a href="guides/tool-calling.html"><strong aria-hidden="true">34.</strong> Tool Calling</a></li><li class="chapter-item expanded affix "><li class="part-title">Resources</li><li class="chapter-item expanded "><a href="changelog.html"><strong aria-hidden="true">35.</strong> Changelog</a></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="../introduction.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">Getting Started</li><li class="chapter-item expanded "><a href="../getting-started/installation.html"><strong aria-hidden="true">1.</strong> Installation</a></li><li class="chapter-item expanded "><a href="../getting-started/first-server.html"><strong aria-hidden="true">2.</strong> First Server</a></li><li class="chapter-item expanded affix "><li class="part-title">Architecture</li><li class="chapter-item expanded "><a href="../architecture.html"><strong aria-hidden="true">3.</strong> System Overview</a></li><li class="chapter-item expanded affix "><li class="part-title">Using ARES</li><li class="chapter-item expanded "><a href="../cli.html"><strong aria-hidden="true">4.</strong> Command Line Interface</a></li><li class="chapter-item expanded "><a href="../http-api.html"><strong aria-hidden="true">5.</strong> HTTP API</a></li><li class="chapter-item expanded "><a href="../library.html"><strong aria-hidden="true">6.</strong> ARES as a Library</a></li><li class="chapter-item expanded affix "><li class="part-title">The Cordis Kernel</li><li class="chapter-item expanded "><a href="../kernel/index.html"><strong aria-hidden="true">7.</strong> Ideas and Map</a></li><li class="chapter-item expanded "><a href="../kernel/lifecycle.html"><strong aria-hidden="true">8.</strong> Fiber Lifecycle</a></li><li class="chapter-item expanded "><a href="../kernel/interception.html"><strong aria-hidden="true">9.</strong> Interception Points</a></li><li class="chapter-item expanded "><a href="../kernel/runtime.html"><strong aria-hidden="true">10.</strong> Runtime Services</a></li><li class="chapter-item expanded "><a href="../kernel/patterns.html"><strong aria-hidden="true">11.</strong> Kernel Patterns in Rust</a></li><li class="chapter-item expanded affix "><li class="part-title">Product Surfaces</li><li class="chapter-item expanded "><a href="../agents.html"><strong aria-hidden="true">12.</strong> Agents and Skills</a></li><li class="chapter-item expanded "><a href="../rag.html"><strong aria-hidden="true">13.</strong> Retrieval</a></li><li class="chapter-item expanded affix "><li class="part-title">Operations</li><li class="chapter-item expanded "><a href="../operations.html"><strong aria-hidden="true">14.</strong> Configuration and Deployment</a></li><li class="chapter-item expanded affix "><li class="part-title">Reference</li><li class="chapter-item expanded "><a href="../reference/cordis-mapping.html"><strong aria-hidden="true">15.</strong> Cordis Surface Map</a></li><li class="chapter-item expanded "><a href="../reference/upstream-parity.html" class="active"><strong aria-hidden="true">16.</strong> Upstream Parity Ledger</a></li><li class="chapter-item expanded affix "><a href="../changelog.html">Changelog</a></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -144,13 +144,13 @@
                     <h1 class="menu-title">ARES documentation</h1>
 
                     <div class="right-buttons">
-                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
                             <i id="print-button" class="fa fa-print"></i>
                         </a>
                         <a href="https://github.com/dirmacs/ares" title="Git repository" aria-label="Git repository">
                             <i id="git-repository-button" class="fa fa-github"></i>
                         </a>
-                        <a href="https://github.com/dirmacs/ares/edit/main/docs/src/upstream-parity.md" title="Suggest an edit" aria-label="Suggest an edit">
+                        <a href="https://github.com/dirmacs/ares/edit/main/docs/src/reference/upstream-parity.md" title="Suggest an edit" aria-label="Suggest an edit">
                             <i id="git-edit-button" class="fa fa-edit"></i>
                         </a>
 
@@ -583,11 +583,11 @@ Before merge, re-run the cited tests.</p>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="cordis/cordis-redesign.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../reference/cordis-mapping.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="extending/context-provider.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../changelog.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -597,11 +597,11 @@ Before merge, re-run the cited tests.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="cordis/cordis-redesign.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../reference/cordis-mapping.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="extending/context-provider.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../changelog.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
@@ -616,13 +616,13 @@ Before merge, re-run the cited tests.</p>
         </script>
 
 
-        <script src="elasticlunr.min.js"></script>
-        <script src="mark.min.js"></script>
-        <script src="searcher.js"></script>
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
 
-        <script src="clipboard.min.js"></script>
-        <script src="highlight.js"></script>
-        <script src="book.js"></script>
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
 
         <!-- Custom JS scripts -->
 

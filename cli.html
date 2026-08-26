@@ -1,0 +1,408 @@
+<!DOCTYPE HTML>
+<html lang="en" class="navy" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Command Line Interface - ARES documentation</title>
+
+
+        <!-- Custom HTML head -->
+        
+        <meta name="description" content="Documentation for ARES, an agent platform with multi-provider LLM support, tool calling, RAG, and multi-tenant support.">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon.svg">
+        <link rel="shortcut icon" href="favicon.png">
+        <link rel="stylesheet" href="css/variables.css">
+        <link rel="stylesheet" href="css/general.css">
+        <link rel="stylesheet" href="css/chrome.css">
+        <link rel="stylesheet" href="css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="highlight.css">
+        <link rel="stylesheet" href="tomorrow-night.css">
+        <link rel="stylesheet" href="ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "navy";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('navy')
+            html.classList.add(theme);
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var body = document.querySelector('body');
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="introduction.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">Getting Started</li><li class="chapter-item expanded "><a href="getting-started/installation.html"><strong aria-hidden="true">1.</strong> Installation</a></li><li class="chapter-item expanded "><a href="getting-started/first-server.html"><strong aria-hidden="true">2.</strong> First Server</a></li><li class="chapter-item expanded affix "><li class="part-title">Architecture</li><li class="chapter-item expanded "><a href="architecture.html"><strong aria-hidden="true">3.</strong> System Overview</a></li><li class="chapter-item expanded affix "><li class="part-title">Using ARES</li><li class="chapter-item expanded "><a href="cli.html" class="active"><strong aria-hidden="true">4.</strong> Command Line Interface</a></li><li class="chapter-item expanded "><a href="http-api.html"><strong aria-hidden="true">5.</strong> HTTP API</a></li><li class="chapter-item expanded "><a href="library.html"><strong aria-hidden="true">6.</strong> ARES as a Library</a></li><li class="chapter-item expanded affix "><li class="part-title">The Cordis Kernel</li><li class="chapter-item expanded "><a href="kernel/index.html"><strong aria-hidden="true">7.</strong> Ideas and Map</a></li><li class="chapter-item expanded "><a href="kernel/lifecycle.html"><strong aria-hidden="true">8.</strong> Fiber Lifecycle</a></li><li class="chapter-item expanded "><a href="kernel/interception.html"><strong aria-hidden="true">9.</strong> Interception Points</a></li><li class="chapter-item expanded "><a href="kernel/runtime.html"><strong aria-hidden="true">10.</strong> Runtime Services</a></li><li class="chapter-item expanded "><a href="kernel/patterns.html"><strong aria-hidden="true">11.</strong> Kernel Patterns in Rust</a></li><li class="chapter-item expanded affix "><li class="part-title">Product Surfaces</li><li class="chapter-item expanded "><a href="agents.html"><strong aria-hidden="true">12.</strong> Agents and Skills</a></li><li class="chapter-item expanded "><a href="rag.html"><strong aria-hidden="true">13.</strong> Retrieval</a></li><li class="chapter-item expanded affix "><li class="part-title">Operations</li><li class="chapter-item expanded "><a href="operations.html"><strong aria-hidden="true">14.</strong> Configuration and Deployment</a></li><li class="chapter-item expanded affix "><li class="part-title">Reference</li><li class="chapter-item expanded "><a href="reference/cordis-mapping.html"><strong aria-hidden="true">15.</strong> Cordis Surface Map</a></li><li class="chapter-item expanded "><a href="reference/upstream-parity.html"><strong aria-hidden="true">16.</strong> Upstream Parity Ledger</a></li><li class="chapter-item expanded affix "><a href="changelog.html">Changelog</a></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">ARES documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares/edit/main/docs/src/cli.md" title="Suggest an edit" aria-label="Suggest an edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="command-line-interface"><a class="header" href="#command-line-interface">Command Line Interface</a></h1>
+<p>The <code>ares-server</code> binary is the single entry point. Run it without a subcommand to start the server, or use a subcommand to manage a project.</p>
+<pre><code class="language-console">$ ares-server --help
+A production-grade agentic chatbot server with multi-provider LLM support,
+tool calling, RAG (Retrieval Augmented Generation), and MCP integration.
+
+Run without arguments to start the server, or use 'init' to scaffold a new project.
+
+Usage: ares-server [OPTIONS] [COMMAND]
+
+Commands:
+  init    Initialize a new A.R.E.S project with configuration files
+  config  Show configuration information
+  agent   Manage agents
+  rag     Ingest and search RAG collections through the ARES API
+  help    Print this message or the help of the given subcommand(s)
+</code></pre>
+<h2 id="global-options"><a class="header" href="#global-options">Global options</a></h2>
+<p>These options work on every command:</p>
+<div class="table-wrapper"><table><thead><tr><th>Option</th><th>Effect</th></tr></thead><tbody>
+<tr><td><code>-c, --config &lt;CONFIG&gt;</code></td><td>Path to the configuration file. Default: <code>ares.toml</code></td></tr>
+<tr><td><code>-v, --verbose</code></td><td>Enable verbose output</td></tr>
+<tr><td><code>--no-color</code></td><td>Disable colored output</td></tr>
+<tr><td><code>--mcp</code></td><td>Start in MCP server mode over stdio transport</td></tr>
+<tr><td><code>--supervise</code></td><td>Run under the built-in supervisor</td></tr>
+<tr><td><code>-h, --help</code></td><td>Print help. Use <code>-h</code> for a short form and <code>--help</code> for details</td></tr>
+<tr><td><code>-V, --version</code></td><td>Print the version</td></tr>
+</tbody></table>
+</div>
+<h3 id="supervisor-semantics"><a class="header" href="#supervisor-semantics">Supervisor semantics</a></h3>
+<p><code>--supervise</code> runs the real server in a child copy of the same executable. The child signals the parent through its exit code:</p>
+<div class="table-wrapper"><table><thead><tr><th>Exit code</th><th>Meaning</th><th>Parent action</th></tr></thead><tbody>
+<tr><td><code>51</code></td><td>Hot-restart request</td><td>Respawn a fresh child</td></tr>
+<tr><td><code>52</code></td><td>Clean shutdown</td><td>Stop the loop</td></tr>
+<tr><td><code>53</code></td><td>Boot failure</td><td>Stop and mirror the non-zero code to the service manager</td></tr>
+</tbody></table>
+</div>
+<p>Any other terminal status also ends the loop. Respawns that follow very short runs pace themselves with exponential backoff, from 100 ms up to a 5 s cap.</p>
+<p>Example: run a daemon that survives hot restarts:</p>
+<pre><code class="language-bash">ares-server --supervise
+</code></pre>
+<p>Pair it with a service manager such as systemd. Boot failures still surface as non-zero exits.</p>
+<h2 id="init"><a class="header" href="#init"><code>init</code></a></h2>
+<p>Scaffold a new project. Creates <code>ares.toml</code>, a <code>.env.example</code> template, the <code>data/</code> directory, and the <code>config/</code> directory tree with example TOON files.</p>
+<pre><code class="language-console">$ ares-server init [OPTIONS] [PATH]
+</code></pre>
+<div class="table-wrapper"><table><thead><tr><th>Option</th><th>Effect</th></tr></thead><tbody>
+<tr><td><code>[PATH]</code></td><td>Directory to initialize. Default: current directory</td></tr>
+<tr><td><code>-f, --force</code></td><td>Overwrite existing files without prompting</td></tr>
+<tr><td><code>-m, --minimal</code></td><td>Create fewer agents and tools</td></tr>
+<tr><td><code>--no-examples</code></td><td>Skip example TOON files in <code>config/</code></td></tr>
+<tr><td><code>--provider &lt;PROVIDER&gt;</code></td><td>LLM provider to configure: <code>ollama</code>, <code>openai</code>, or <code>both</code>. Default: <code>ollama</code></td></tr>
+<tr><td><code>--host &lt;HOST&gt;</code></td><td>Server host address. Default: <code>127.0.0.1</code></td></tr>
+<tr><td><code>--port &lt;PORT&gt;</code></td><td>Server port. Default: <code>3000</code></td></tr>
+</tbody></table>
+</div>
+<p>Example session:</p>
+<pre><code class="language-console">$ ares-server init --minimal
+   Agentic Runtime Extensible Server v0.10.0
+
+  Initializing A.R.E.S Project
+
+  Creating directories
+  ✓ directory data
+  ✓ directory config/agents
+  ✓ directory config/models
+
+  Creating configuration files
+  ✓ config ares.toml
+  ✓ env .env.example
+
+  A.R.E.S project initialized successfully!
+</code></pre>
+<h2 id="config"><a class="header" href="#config"><code>config</code></a></h2>
+<p>Show configuration information.</p>
+<pre><code class="language-console">$ ares-server config [OPTIONS]
+</code></pre>
+<div class="table-wrapper"><table><thead><tr><th>Option</th><th>Effect</th></tr></thead><tbody>
+<tr><td><code>-f, --full</code></td><td>Show the full configuration instead of the summary</td></tr>
+<tr><td><code>--validate</code></td><td>Validate the configuration file and report problems</td></tr>
+</tbody></table>
+</div>
+<p>Example summary:</p>
+<pre><code class="language-console">$ ares-server config
+  Configuration Summary
+
+    Config file: ares.toml
+    Server: 127.0.0.1:3000
+    Log level: info
+
+  Providers
+    • ollama-local
+
+  Agents
+    • orchestrator
+    • router
+</code></pre>
+<p>Validation fails when a referenced environment variable is missing, or when an agent references an unknown provider. A zero exit code means the file is valid:</p>
+<pre><code class="language-console">$ ares-server config --validate
+  ✓ Configuration is valid!
+</code></pre>
+<h2 id="agent"><a class="header" href="#agent"><code>agent</code></a></h2>
+<p>Manage configured agents.</p>
+<pre><code class="language-console">$ ares-server agent &lt;COMMAND&gt;
+</code></pre>
+<p>Subcommands:</p>
+<ul>
+<li><code>list</code> — list all configured agents.</li>
+<li><code>show &lt;NAME&gt;</code> — show details for one agent.</li>
+</ul>
+<p>Example listing:</p>
+<pre><code class="language-console">$ ares-server agent list
+  Configured Agents
+
+    Name            Model                        Tools
+    ────────────────────────────────────────────────
+    router          meta/llama-3.3-70b-instruct  -
+    orchestrator    meta/llama-3.3-70b-instruct  calculator, web_search
+</code></pre>
+<p>Show one agent by name:</p>
+<pre><code class="language-bash">ares-server agent show orchestrator
+</code></pre>
+<p>Both commands read the same sources as the server: static agents from <code>ares.toml</code> plus TOON files in the configured directories.</p>
+<h2 id="rag"><a class="header" href="#rag"><code>rag</code></a></h2>
+<p>Ingest documents into RAG collections and search them. These commands are API clients: they call a running ARES server over HTTP, so start the server first.</p>
+<p>Authenticate with <code>--user</code> and <code>--password</code>, or skip login with <code>--token</code>. Both forms accept <code>--host</code> for a remote server. Default host: <code>http://localhost:3000</code>.</p>
+<h3 id="rag-ingest-dir"><a class="header" href="#rag-ingest-dir"><code>rag ingest-dir</code></a></h3>
+<p>Recursively ingest local text documents into a collection.</p>
+<pre><code class="language-console">$ ares-server rag ingest-dir [OPTIONS] --collection &lt;COLLECTION&gt; --docs-path &lt;DOCS_PATH&gt;
+</code></pre>
+<p>Notable options:</p>
+<div class="table-wrapper"><table><thead><tr><th>Option</th><th>Effect</th></tr></thead><tbody>
+<tr><td><code>--collection &lt;NAME&gt;</code></td><td>Collection to ingest into. Required</td></tr>
+<tr><td><code>--docs-path &lt;DIR&gt;</code></td><td>Directory with the documents. Required</td></tr>
+<tr><td><code>--chunking-strategy &lt;KIND&gt;</code></td><td><code>word</code> (default), <code>semantic</code>, or <code>character</code></td></tr>
+<tr><td><code>--tag &lt;TAG&gt;</code></td><td>Attach a tag. Repeat for multiple tags</td></tr>
+<tr><td><code>--dry-run</code></td><td>List the files that would be ingested. Send no requests</td></tr>
+<tr><td><code>--user</code> / <code>--password</code></td><td>Login credentials</td></tr>
+<tr><td><code>--token &lt;TOKEN&gt;</code></td><td>Bearer token; skips login</td></tr>
+</tbody></table>
+</div>
+<p>Preview an ingest before running it:</p>
+<pre><code class="language-bash">ares-server rag ingest-dir \
+  --collection docs \
+  --docs-path ./handbook \
+  --tag handbook \
+  --dry-run
+</code></pre>
+<p>Remove <code>--dry-run</code> to perform the ingest.</p>
+<h3 id="rag-search"><a class="header" href="#rag-search"><code>rag search</code></a></h3>
+<p>Search a collection.</p>
+<pre><code class="language-console">$ ares-server rag search [OPTIONS] --collection &lt;COLLECTION&gt; --query &lt;QUERY&gt;
+</code></pre>
+<p>Notable options:</p>
+<div class="table-wrapper"><table><thead><tr><th>Option</th><th>Effect</th></tr></thead><tbody>
+<tr><td><code>--collection &lt;NAME&gt;</code></td><td>Collection to search. Required</td></tr>
+<tr><td><code>--query &lt;TEXT&gt;</code></td><td>Search query. Required</td></tr>
+<tr><td><code>--top-k &lt;N&gt;</code></td><td>Maximum number of results. Default: <code>10</code></td></tr>
+<tr><td><code>--strategy &lt;KIND&gt;</code></td><td><code>semantic</code> (default), <code>bm25</code>, <code>fuzzy</code>, or <code>hybrid</code></td></tr>
+<tr><td><code>--user</code> / <code>--password</code></td><td>Login credentials</td></tr>
+<tr><td><code>--token &lt;TOKEN&gt;</code></td><td>Bearer token; skips login</td></tr>
+</tbody></table>
+</div>
+<p>Example:</p>
+<pre><code class="language-bash">ares-server rag search \
+  --collection docs \
+  --query "how do I rotate API keys" \
+  --top-k 5 \
+  --strategy hybrid
+</code></pre>
+<h2 id="where-to-go-next"><a class="header" href="#where-to-go-next">Where to go next</a></h2>
+<ul>
+<li>Scaffold and run your first project: <a href="getting-started/first-server.html">First Server</a>.</li>
+<li>Call the server over HTTP instead of the CLI: <a href="http-api.html">HTTP API</a>.</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="architecture.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="http-api.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="architecture.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="http-api.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr.min.js"></script>
+        <script src="mark.min.js"></script>
+        <script src="searcher.js"></script>
+
+        <script src="clipboard.min.js"></script>
+        <script src="highlight.js"></script>
+        <script src="book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>

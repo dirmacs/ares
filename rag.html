@@ -1,0 +1,312 @@
+<!DOCTYPE HTML>
+<html lang="en" class="navy" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Retrieval - ARES documentation</title>
+
+
+        <!-- Custom HTML head -->
+        
+        <meta name="description" content="Documentation for ARES, an agent platform with multi-provider LLM support, tool calling, RAG, and multi-tenant support.">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon.svg">
+        <link rel="shortcut icon" href="favicon.png">
+        <link rel="stylesheet" href="css/variables.css">
+        <link rel="stylesheet" href="css/general.css">
+        <link rel="stylesheet" href="css/chrome.css">
+        <link rel="stylesheet" href="css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="highlight.css">
+        <link rel="stylesheet" href="tomorrow-night.css">
+        <link rel="stylesheet" href="ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "navy";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('navy')
+            html.classList.add(theme);
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var body = document.querySelector('body');
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="introduction.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">Getting Started</li><li class="chapter-item expanded "><a href="getting-started/installation.html"><strong aria-hidden="true">1.</strong> Installation</a></li><li class="chapter-item expanded "><a href="getting-started/first-server.html"><strong aria-hidden="true">2.</strong> First Server</a></li><li class="chapter-item expanded affix "><li class="part-title">Architecture</li><li class="chapter-item expanded "><a href="architecture.html"><strong aria-hidden="true">3.</strong> System Overview</a></li><li class="chapter-item expanded affix "><li class="part-title">Using ARES</li><li class="chapter-item expanded "><a href="cli.html"><strong aria-hidden="true">4.</strong> Command Line Interface</a></li><li class="chapter-item expanded "><a href="http-api.html"><strong aria-hidden="true">5.</strong> HTTP API</a></li><li class="chapter-item expanded "><a href="library.html"><strong aria-hidden="true">6.</strong> ARES as a Library</a></li><li class="chapter-item expanded affix "><li class="part-title">The Cordis Kernel</li><li class="chapter-item expanded "><a href="kernel/index.html"><strong aria-hidden="true">7.</strong> Ideas and Map</a></li><li class="chapter-item expanded "><a href="kernel/lifecycle.html"><strong aria-hidden="true">8.</strong> Fiber Lifecycle</a></li><li class="chapter-item expanded "><a href="kernel/interception.html"><strong aria-hidden="true">9.</strong> Interception Points</a></li><li class="chapter-item expanded "><a href="kernel/runtime.html"><strong aria-hidden="true">10.</strong> Runtime Services</a></li><li class="chapter-item expanded "><a href="kernel/patterns.html"><strong aria-hidden="true">11.</strong> Kernel Patterns in Rust</a></li><li class="chapter-item expanded affix "><li class="part-title">Product Surfaces</li><li class="chapter-item expanded "><a href="agents.html"><strong aria-hidden="true">12.</strong> Agents and Skills</a></li><li class="chapter-item expanded "><a href="rag.html" class="active"><strong aria-hidden="true">13.</strong> Retrieval</a></li><li class="chapter-item expanded affix "><li class="part-title">Operations</li><li class="chapter-item expanded "><a href="operations.html"><strong aria-hidden="true">14.</strong> Configuration and Deployment</a></li><li class="chapter-item expanded affix "><li class="part-title">Reference</li><li class="chapter-item expanded "><a href="reference/cordis-mapping.html"><strong aria-hidden="true">15.</strong> Cordis Surface Map</a></li><li class="chapter-item expanded "><a href="reference/upstream-parity.html"><strong aria-hidden="true">16.</strong> Upstream Parity Ledger</a></li><li class="chapter-item expanded affix "><a href="changelog.html">Changelog</a></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">ARES documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares/edit/main/docs/src/rag.md" title="Suggest an edit" aria-label="Suggest an edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="retrieval-augmented-generation"><a class="header" href="#retrieval-augmented-generation">Retrieval Augmented Generation</a></h1>
+<p>ARES ships a RAG (Retrieval Augmented Generation) system: document ingestion, chunking, embeddings, and search. This chapter describes only behavior verified in the source.</p>
+<h2 id="enabling-rag"><a class="header" href="#enabling-rag">Enabling RAG</a></h2>
+<p>The <code>[rag]</code> group in <code>ares.toml</code> deserializes into <code>RagConfig</code> (<code>crates/ares-rag/src/config.rs</code>). It has four sub-groups: <code>vector</code>, <code>chunking</code>, <code>search</code>, and <code>rerank</code>. Every field defaults, so an empty <code>[rag]</code> table is valid.</p>
+<h3 id="vector-group-ragvector"><a class="header" href="#vector-group-ragvector">Vector group (<code>[rag.vector]</code>)</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Default</th><th>Meaning</th></tr></thead><tbody>
+<tr><td><code>enabled</code></td><td>false</td><td>Master switch for the RAG feature.</td></tr>
+<tr><td><code>embedding_model</code></td><td><code>"bge-small-en-v1.5"</code></td><td>Local embedding model name.</td></tr>
+<tr><td><code>sparse_embeddings</code></td><td>false</td><td>Enable sparse embeddings for hybrid search.</td></tr>
+<tr><td><code>sparse_model</code></td><td><code>"splade-pp-en-v1"</code></td><td>Sparse model name.</td></tr>
+<tr><td><code>vector_path</code></td><td><code>"./data/vectors"</code></td><td>Path for vector data on disk.</td></tr>
+</tbody></table>
+</div>
+<h3 id="chunking-group-ragchunking"><a class="header" href="#chunking-group-ragchunking">Chunking group (<code>[rag.chunking]</code>)</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Default</th><th>Meaning</th></tr></thead><tbody>
+<tr><td><code>chunking_strategy</code></td><td><code>"word"</code></td><td>One of <code>"word"</code>, <code>"semantic"</code>, <code>"character"</code>.</td></tr>
+<tr><td><code>chunk_size</code></td><td>200</td><td>Chunk size; words for word chunking, characters otherwise.</td></tr>
+<tr><td><code>chunk_overlap</code></td><td>50</td><td>Overlap between consecutive chunks.</td></tr>
+<tr><td><code>min_chunk_size</code></td><td>20</td><td>Smallest chunk size to keep, in characters.</td></tr>
+</tbody></table>
+</div>
+<p>The chunker (<code>crates/ares-rag/src/chunker.rs</code>) exposes <code>TextChunker</code> with word, semantic, and character modes. <code>chunk_with_metadata</code> returns chunks that carry offsets.</p>
+<h3 id="search-group-ragsearch"><a class="header" href="#search-group-ragsearch">Search group (<code>[rag.search]</code>)</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Default</th><th>Meaning</th></tr></thead><tbody>
+<tr><td><code>search_strategy</code></td><td><code>"semantic"</code></td><td>One of <code>"semantic"</code>, <code>"bm25"</code>, <code>"fuzzy"</code>, <code>"hybrid"</code>.</td></tr>
+<tr><td><code>search_limit</code></td><td>10</td><td>Number of results to return.</td></tr>
+<tr><td><code>search_threshold</code></td><td>0.0</td><td>Similarity threshold.</td></tr>
+<tr><td><code>hybrid_weights</code></td><td>see below</td><td>Optional weights table.</td></tr>
+</tbody></table>
+</div>
+<p><code>hybrid_weights</code> takes three floats: <code>semantic</code> (default 0.5), <code>bm25</code> (default 0.3), and <code>fuzzy</code> (default 0.2). The sum should be 1.0.</p>
+<h3 id="rerank-group-ragrerank"><a class="header" href="#rerank-group-ragrerank">Rerank group (<code>[rag.rerank]</code>)</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Default</th><th>Meaning</th></tr></thead><tbody>
+<tr><td><code>rerank_enabled</code></td><td>false</td><td>Enable reranking of retrieved results.</td></tr>
+<tr><td><code>reranker_model</code></td><td><code>"bge-reranker-base"</code></td><td>Reranker model name.</td></tr>
+<tr><td><code>rerank_weight</code></td><td>0.6</td><td>Weight that combines rerank and retrieval scores.</td></tr>
+</tbody></table>
+</div>
+<h2 id="ingestion-paths"><a class="header" href="#ingestion-paths">Ingestion paths</a></h2>
+<p>Two paths reach the same ingest handler:</p>
+<h3 id="command-line"><a class="header" href="#command-line">Command line</a></h3>
+<p><code>ares-server rag ingest-dir</code> walks a local directory and posts each supported UTF-8 text file (.md, .txt, .json, .jsonl) to the server (<code>src/cli/rag.rs</code>). Flags:</p>
+<div class="table-wrapper"><table><thead><tr><th>Flag</th><th>Meaning</th></tr></thead><tbody>
+<tr><td><code>--host</code></td><td>Server base URL. Defaults to <code>http://localhost:3000</code>.</td></tr>
+<tr><td><code>--collection</code></td><td>Collection name to ingest into. Required.</td></tr>
+<tr><td><code>--docs-path</code></td><td>Directory with documents. Required.</td></tr>
+<tr><td><code>--user</code> / <code>--password</code></td><td>Login credentials. Used when <code>--token</code> is absent.</td></tr>
+<tr><td><code>--token</code></td><td>Bearer token; skips login when present.</td></tr>
+<tr><td><code>--chunking-strategy</code></td><td><code>word</code>, <code>semantic</code>, or <code>character</code>. Defaults to <code>word</code>.</td></tr>
+<tr><td><code>--tag</code></td><td>Tag to attach. Repeat for multiple tags.</td></tr>
+<tr><td><code>--dry-run</code></td><td>List files without sending API requests.</td></tr>
+</tbody></table>
+</div>
+<p>The command fails closed: a bad path or a failed login stops before any network write. Each document reports its own audit trail, so a partial run leaves no half-ingested files unrecorded.</p>
+<h3 id="http"><a class="header" href="#http">HTTP</a></h3>
+<p><code>POST /api/rag/ingest</code> accepts a JSON body with <code>collection</code>, <code>content</code>, <code>title</code>, <code>source</code>, <code>tags</code>, and <code>chunking_strategy</code>; it returns <code>chunks_created</code> (<code>crates/ares-http/src/api/routes.rs</code>, <code>src/cli/rag.rs</code>). The endpoint requires authentication and checks tenant-level RAG source allowlists before ingesting.</p>
+<p>Related endpoints: <code>POST /api/rag/search</code>, collection listing under <code>/api/rag/collections</code>.</p>
+<h2 id="embeddings-and-deduplication"><a class="header" href="#embeddings-and-deduplication">Embeddings and deduplication</a></h2>
+<p>Embeddings live in <code>crates/ares-rag/src/embeddings.rs</code>. Two facts matter:</p>
+<ul>
+<li>Dedup per request: identical inputs collapse by a whitespace-normalized SHA-256 content hash (<code>normalize_for_dedup</code> plus <code>content_hash_hex</code>) before the backend call. Computed vectors fan back to every duplicate slot, so callers receive full-length results while identical texts cost one backend call.</li>
+<li>Vectors are L2-normalized to unit length after computation (<code>normalize_embedding</code>).</li>
+</ul>
+<p>The <code>local-embeddings</code> feature enables the <code>fastembed</code> backend (<code>crates/ares-rag/Cargo.toml</code>). Without it, embedding calls go over HTTP.</p>
+<h2 id="search-flow"><a class="header" href="#search-flow">Search flow</a></h2>
+<p><code>SearchStrategy</code> (<code>crates/ares-rag/src/search.rs</code>) supports four strategies, also accepted by the CLI as <code>--strategy</code>:</p>
+<ul>
+<li><code>semantic</code> — dense vector similarity through embeddings.</li>
+<li><code>bm25</code> — sparse lexical matching.</li>
+<li><code>fuzzy</code> — approximate string matching for typo tolerance.</li>
+<li><code>hybrid</code> — combines strategies with reciprocal rank fusion weighted by <code>hybrid_weights</code>.</li>
+</ul>
+<p>The BM25 and fuzzy indices support <code>save()</code> and <code>load()</code>, so they survive restarts without re-indexing. <code>ares-server rag search --collection &lt;name&gt; --query &lt;text&gt; [--top-k N] [--strategy S]</code> drives the flow from the terminal.</p>
+<h2 id="vector-stores"><a class="header" href="#vector-stores">Vector stores</a></h2>
+<p>Two backends exist behind features:</p>
+<ul>
+<li><code>ares-vector</code> (<code>crates/ares-vector/</code>) — a pure-Rust embedded store. <code>VectorDb::open(Config::persistent("./data/vectors"))</code> loads collections from disk; <code>Config::memory()</code> runs in process. Persistence writes collection data under the configured path. This backend backs the default <code>[rag.vector]</code> path.</li>
+<li>Qdrant — optional external store configured through <code>database.qdrant</code> in <code>ares.toml</code> (<code>QdrantConfig</code> in <code>crates/ares-store/src/config.rs</code>). Fields: <code>url</code> (default <code>http://localhost:6334</code>) and <code>api_key_env</code>, the environment variable holding the API key.</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="agents.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="operations.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="agents.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="operations.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr.min.js"></script>
+        <script src="mark.min.js"></script>
+        <script src="searcher.js"></script>
+
+        <script src="clipboard.min.js"></script>
+        <script src="highlight.js"></script>
+        <script src="book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>

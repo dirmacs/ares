@@ -1,0 +1,601 @@
+<!DOCTYPE HTML>
+<html lang="en" class="navy" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>ARES as a Library - ARES documentation</title>
+
+
+        <!-- Custom HTML head -->
+        
+        <meta name="description" content="Documentation for ARES, an agent platform with multi-provider LLM support, tool calling, RAG, and multi-tenant support.">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon.svg">
+        <link rel="shortcut icon" href="favicon.png">
+        <link rel="stylesheet" href="css/variables.css">
+        <link rel="stylesheet" href="css/general.css">
+        <link rel="stylesheet" href="css/chrome.css">
+        <link rel="stylesheet" href="css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="highlight.css">
+        <link rel="stylesheet" href="tomorrow-night.css">
+        <link rel="stylesheet" href="ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "navy";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('navy')
+            html.classList.add(theme);
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var body = document.querySelector('body');
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="introduction.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">Getting Started</li><li class="chapter-item expanded "><a href="getting-started/installation.html"><strong aria-hidden="true">1.</strong> Installation</a></li><li class="chapter-item expanded "><a href="getting-started/first-server.html"><strong aria-hidden="true">2.</strong> First Server</a></li><li class="chapter-item expanded affix "><li class="part-title">Architecture</li><li class="chapter-item expanded "><a href="architecture.html"><strong aria-hidden="true">3.</strong> System Overview</a></li><li class="chapter-item expanded affix "><li class="part-title">Using ARES</li><li class="chapter-item expanded "><a href="cli.html"><strong aria-hidden="true">4.</strong> Command Line Interface</a></li><li class="chapter-item expanded "><a href="http-api.html"><strong aria-hidden="true">5.</strong> HTTP API</a></li><li class="chapter-item expanded "><a href="library.html" class="active"><strong aria-hidden="true">6.</strong> ARES as a Library</a></li><li class="chapter-item expanded affix "><li class="part-title">The Cordis Kernel</li><li class="chapter-item expanded "><a href="kernel/index.html"><strong aria-hidden="true">7.</strong> Ideas and Map</a></li><li class="chapter-item expanded "><a href="kernel/lifecycle.html"><strong aria-hidden="true">8.</strong> Fiber Lifecycle</a></li><li class="chapter-item expanded "><a href="kernel/interception.html"><strong aria-hidden="true">9.</strong> Interception Points</a></li><li class="chapter-item expanded "><a href="kernel/runtime.html"><strong aria-hidden="true">10.</strong> Runtime Services</a></li><li class="chapter-item expanded "><a href="kernel/patterns.html"><strong aria-hidden="true">11.</strong> Kernel Patterns in Rust</a></li><li class="chapter-item expanded affix "><li class="part-title">Product Surfaces</li><li class="chapter-item expanded "><a href="agents.html"><strong aria-hidden="true">12.</strong> Agents and Skills</a></li><li class="chapter-item expanded "><a href="rag.html"><strong aria-hidden="true">13.</strong> Retrieval</a></li><li class="chapter-item expanded affix "><li class="part-title">Operations</li><li class="chapter-item expanded "><a href="operations.html"><strong aria-hidden="true">14.</strong> Configuration and Deployment</a></li><li class="chapter-item expanded affix "><li class="part-title">Reference</li><li class="chapter-item expanded "><a href="reference/cordis-mapping.html"><strong aria-hidden="true">15.</strong> Cordis Surface Map</a></li><li class="chapter-item expanded "><a href="reference/upstream-parity.html"><strong aria-hidden="true">16.</strong> Upstream Parity Ledger</a></li><li class="chapter-item expanded affix "><a href="changelog.html">Changelog</a></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">ARES documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares/edit/main/docs/src/library.md" title="Suggest an edit" aria-label="Suggest an edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="ares-as-a-library"><a class="header" href="#ares-as-a-library">ARES as a Library</a></h1>
+<p>ARES runs as an embedded library. The <code>ares-server</code> package publishes a
+library facade next to the server binary. You build one Cordis
+<a href="kernel/index.html">context</a>, put services on it, and call them. No HTTP port
+opens unless you start the router yourself.</p>
+<p>This chapter shows every step with code that mirrors real tests in the
+repository. Each section names the source it adapts.</p>
+<h2 id="add-the-dependency"><a class="header" href="#add-the-dependency">Add the dependency</a></h2>
+<pre><code class="language-toml">[dependencies]
+ares-server = "0.10"
+ares-cordis = "0.10"   # kernel types beyond the facade re-exports
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde_json = "1"
+</code></pre>
+<p>The default features are the server defaults: <code>postgres</code>, <code>openai</code>,
+<code>ares-vector</code>, <code>mcp</code>, <code>inventory</code>, and <code>rhai-policy</code>. For a lean embed build,
+turn them off:</p>
+<pre><code class="language-toml">ares-server = { version = "0.10", default-features = false }
+</code></pre>
+<p>The Axum HTTP stack stays a compiled dependency of the package either way.
+It never binds a socket unless the <code>Http</code> service runs.</p>
+<h2 id="the-public-surface"><a class="header" href="#the-public-surface">The public surface</a></h2>
+<p><code>ares_server</code> re-exports this set (see <code>src/lib.rs</code>):</p>
+<div class="table-wrapper"><table><thead><tr><th>Export</th><th>Purpose</th></tr></thead><tbody>
+<tr><td><code>Context</code></td><td>The Cordis context; holds every service</td></tr>
+<tr><td><code>Execute</code></td><td>Unified agent execution service</td></tr>
+<tr><td><code>Tools</code></td><td>Tool listing, resolution, and dispatch</td></tr>
+<tr><td><code>Llm</code></td><td>Large language model client coordination</td></tr>
+<tr><td><code>Store</code></td><td>Tenant database (feature <code>postgres</code>)</td></tr>
+<tr><td><code>Plugin</code>, <code>Service</code></td><td>Factory and service traits from the kernel</td></tr>
+<tr><td><code>Loader</code>, <code>PluginRegistry</code></td><td>Entries-file loader and its factory table</td></tr>
+<tr><td><code>Dispatch</code></td><td>Event dispatch modes</td></tr>
+<tr><td><code>register_plugins</code></td><td>Registers all capability-crate factories</td></tr>
+</tbody></table>
+</div>
+<p>Types such as <code>AgentRequest</code>, <code>ExecutionResult</code>, <code>LLMClient</code>, <code>LLMResponse</code>,
+<code>Tool</code>, <code>ToolDefinition</code>, <code>TenantContext</code>, and <code>AppError</code> ride the same
+re-export list. Deeper types live in the capability crates: <code>ares-tools</code>,
+<code>ares-llm</code>, <code>ares-agent</code>, and <code>ares-store</code>.</p>
+<h2 id="minimal-embed-through-the-loader"><a class="header" href="#minimal-embed-through-the-loader">Minimal embed through the loader</a></h2>
+<p>The server boots as one ordered pass over an entries file. A library embed
+can run the same pass with two calls. This example adapts the in-tree test
+<code>calculator_entry_loads_factory_and_executes_tool</code> (<code>src/main.rs</code>) and the
+factory-registration helper <code>register_loader_factories</code> in the same file:</p>
+<pre><pre class="playground"><code class="language-rust">use ares_server::{Context, Loader, PluginRegistry, register_plugins};
+use cordis::loader::Entry;
+
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
+async fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+    // One context is the whole graph.
+    let ctx = Context::new_root();
+
+    // Fill the string-keyed factory table, then put it on the context.
+    ctx.provide(PluginRegistry::new());
+    let registry = ctx.get::&lt;PluginRegistry&gt;().expect("registry");
+    register_plugins(&amp;registry);
+
+    // One entry describes one service instance.
+    let entry = Entry {
+        id: "calc".to_string(),
+        plugin: "CalculatorService".to_string(),
+        config: serde_json::json!({}),
+        ..Default::default()
+    };
+    Loader::instantiate(&amp;ctx, &amp;entry.plugin, &amp;entry.config, &amp;entry.id)?;
+
+    // The factory provided a live service. Call it.
+    let calc = ctx.get::&lt;ares_tools::CalculatorService&gt;().expect("calculator");
+    let output = calc
+        .execute(serde_json::json!({ "operation": "add", "a": 2.0, "b": 3.0 }))
+        .await?;
+    println!("{}", output["result"]); // 5
+
+    Ok(())
+}</code></pre></pre>
+<p>Three facts matter here:</p>
+<ul>
+<li>Use a multi-threaded Tokio runtime. Factories run
+<code>tokio::task::block_in_place</code>, which current-thread runtimes reject
+(<code>crates/ares-tools/src/plugins.rs</code>).</li>
+<li><code>register_plugins</code> registers the manual fallback chain. With the default
+<code>inventory</code> feature, compile-time collected nodes add the same keys; both
+paths land identical factory names (<code>tests/server_inventory_probe.rs</code>).</li>
+<li>A second instantiation of the same service type fails with a
+duplicate-provider error. Single-source discipline is active in libraries
+too (<code>src/main.rs</code>, same test).</li>
+</ul>
+<h2 id="pulling-facades-at-call-time"><a class="header" href="#pulling-facades-at-call-time">Pulling facades at call time</a></h2>
+<p>Services are values behind their types. Code anywhere in your process pulls
+one with <code>ctx.get::&lt;T&gt;()</code>. The kernel walks parent contexts, honors tenant
+realms, and returns <code>None</code> when nothing provides the type. This mirrors
+<code>execute_lists_tools_using_tenant_context_intercept</code> in
+<code>crates/ares-agent/src/execution.rs</code>:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use ares_server::{AgentRequest, Context, Execute, Tools};
+
+async fn run_agent(ctx: &amp;std::sync::Arc&lt;Context&gt;) -&gt; Result&lt;String, ares_server::AppError&gt; {
+    // Shared engine, pulled at call time like the tests do.
+    let execute = ctx.get::&lt;Execute&gt;().expect("Execute on context");
+
+    if let Some(tools) = ctx.get::&lt;Tools&gt;() {
+        for def in tools.list(ctx) {
+            println!("available tool: {}", def.name);
+        }
+    }
+
+    let req = AgentRequest {
+        agent_name: "echo".to_string(),
+        message: "hi".to_string(),
+        ..Default::default()
+    };
+    let result = execute.run(&amp;req, ctx).await?;
+    Ok(result.response.content)
+}
+<span class="boring">}</span></code></pre></pre>
+<p>The same pattern reaches the other facades:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Llm: complete a prompt (crates/ares-llm/src/llm_service.rs, `complete`).
+if let Some(llm) = ctx.get::&lt;ares_server::Llm&gt;() {
+    let reply = llm.complete(ctx, "Summarize this document.").await?;
+}
+
+// Store: tenant database handle. Requires the postgres feature.
+#[cfg(feature = "postgres")]
+if let Some(store) = ctx.get::&lt;ares_server::Store&gt;() {
+    let pool = store.pool();
+    let _ = pool;
+}
+<span class="boring">}</span></code></pre></pre>
+<p>For tests and proofs, pin an in-process client instead of a network
+provider. <code>Llm::from_client</code> exists for exactly this
+(<code>crates/ares-llm/src/llm_service.rs</code>). The echo client below adapts the
+crate's own test double:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use ares_server::{AppError, ConversationMessage, LLMClient, LLMResponse, ToolDefinition};
+
+struct EchoClient;
+
+#[async_trait::async_trait]
+impl LLMClient for EchoClient {
+    async fn generate(&amp;self, prompt: &amp;str) -&gt; Result&lt;String, AppError&gt; {
+        Ok(format!("echo:{prompt}"))
+    }
+
+    async fn generate_with_system(&amp;self, _system: &amp;str, prompt: &amp;str) -&gt; Result&lt;String, AppError&gt; {
+        self.generate(prompt).await
+    }
+
+    async fn generate_with_history(
+        &amp;self,
+        _messages: &amp;[(String, String)],
+    ) -&gt; Result&lt;LLMResponse, AppError&gt; {
+        Ok(LLMResponse { content: String::new(), tool_calls: vec![], finish_reason: "stop".into(), usage: None })
+    }
+
+    async fn generate_with_tools(
+        &amp;self,
+        _prompt: &amp;str,
+        _tools: &amp;[ToolDefinition],
+    ) -&gt; Result&lt;LLMResponse, AppError&gt; {
+        Ok(LLMResponse { content: String::new(), tool_calls: vec![], finish_reason: "stop".into(), usage: None })
+    }
+
+    async fn generate_with_tools_and_history(
+        &amp;self,
+        _messages: &amp;[ConversationMessage],
+        _tools: &amp;[ToolDefinition],
+    ) -&gt; Result&lt;LLMResponse, AppError&gt; {
+        Ok(LLMResponse { content: String::new(), tool_calls: vec![], finish_reason: "stop".into(), usage: None })
+    }
+
+    async fn stream(
+        &amp;self,
+        _prompt: &amp;str,
+    ) -&gt; Result&lt;Box&lt;dyn futures::Stream&lt;Item = Result&lt;String, AppError&gt;&gt; + Send + Unpin&gt;, AppError&gt; {
+        Err(AppError::Internal("echo stream not implemented".into()))
+    }
+
+    async fn stream_with_system(
+        &amp;self,
+        _system: &amp;str,
+        _prompt: &amp;str,
+    ) -&gt; Result&lt;Box&lt;dyn futures::Stream&lt;Item = Result&lt;String, AppError&gt;&gt; + Send + Unpin&gt;, AppError&gt; {
+        Err(AppError::Internal("echo stream not implemented".into()))
+    }
+
+    async fn stream_with_history(
+        &amp;self,
+        _messages: &amp;[(String, String)],
+    ) -&gt; Result&lt;Box&lt;dyn futures::Stream&lt;Item = Result&lt;String, AppError&gt;&gt; + Send + Unpin&gt;, AppError&gt; {
+        Err(AppError::Internal("echo stream not implemented".into()))
+    }
+
+    fn model_name(&amp;self) -&gt; &amp;str {
+        "echo"
+    }
+}
+
+let llm = ares_server::Llm::from_client(std::sync::Arc::new(EchoClient));
+let reply = llm.complete(&amp;ctx, "hi").await?;
+assert_eq!(reply, "echo:hi");
+<span class="boring">}</span></code></pre></pre>
+<h2 id="register-a-custom-plugin"><a class="header" href="#register-a-custom-plugin">Register a custom plugin</a></h2>
+<p>A plugin is a typed factory. It declares a config type and the service it
+provides; the kernel calls <code>apply</code> once, inserts the value, and tracks the
+fiber for lifecycle and hot reload. The trait lives in
+<code>crates/cordis/src/registry.rs</code>; the shape below follows <code>PipelinePlugin</code>
+(<code>crates/ares-agent/src/pipeline.rs</code>) and the kernel's own registry tests:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use std::sync::Arc;
+
+use ares_server::{Context, Plugin, Service};
+use cordis::{CordisError, RegistryService};
+
+pub struct GreetingService {
+    prefix: String,
+}
+
+impl GreetingService {
+    pub fn greet(&amp;self, name: &amp;str) -&gt; String {
+        format!("{}{name}", self.prefix)
+    }
+}
+
+impl Service for GreetingService {}
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+pub struct GreetingConfig {
+    pub prefix: String,
+}
+
+pub struct GreetingPlugin;
+
+impl Plugin for GreetingPlugin {
+    type Config = GreetingConfig;
+    type Provides = GreetingService;
+
+    fn apply(
+        &amp;self,
+        _ctx: &amp;Arc&lt;Context&gt;,
+        config: Self::Config,
+    ) -&gt; Result&lt;Arc&lt;Self::Provides&gt;, CordisError&gt; {
+        Ok(Arc::new(GreetingService { prefix: config.prefix }))
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Register through the kernel registry and pull the service back:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let ctx = Context::new_root();
+let registry = RegistryService::new();
+
+registry.register(
+    &amp;ctx,
+    GreetingPlugin,
+    GreetingConfig { prefix: "hello, ".to_string() },
+)?;
+
+let greeting = ctx.get::&lt;GreetingService&gt;().expect("provided by apply");
+assert_eq!(greeting.greet("ares"), "hello, ares");
+<span class="boring">}</span></code></pre></pre>
+<p>To expose the same plugin to the entries loader, add a string-keyed factory.
+The closure-free function form follows the capability-crate factories in
+<code>crates/ares-tools/src/plugins.rs</code>:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>fn factory_greeting(
+    ctx: &amp;Arc&lt;Context&gt;,
+    config: &amp;serde_json::Value,
+) -&gt; Result&lt;cordis::FiberId, cordis::CordisError&gt; {
+    let cfg: GreetingConfig = serde_json::from_value(config.clone())
+        .map_err(|e| CordisError::Configuration(e.to_string()))?;
+    let svc = GreetingService { prefix: cfg.prefix };
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(ctx.plugin(svc))
+    })
+}
+
+
+// Pull the factory table from the context, then add the key
+// after register_plugins(&amp;registry).
+let factories = ctx.get::&lt;ares_server::PluginRegistry&gt;().expect("registry");
+factories.register("Greeting", std::sync::Arc::new(factory_greeting));
+<span class="boring">}</span></code></pre></pre>
+<p>An entry can now name it:</p>
+<pre><code class="language-toml">[[entry]]
+id = "greeter"
+plugin = "Greeting"
+disabled = false
+
+[entry.config]
+prefix = "hello, "
+</code></pre>
+<h2 id="loader-entries-versus-pure-library-composition"><a class="header" href="#loader-entries-versus-pure-library-composition">Loader entries versus pure-library composition</a></h2>
+<p>Pick one composition style per process:</p>
+<div class="table-wrapper"><table><thead><tr><th>Aspect</th><th>Loader entries</th><th>Direct provides</th></tr></thead><tbody>
+<tr><td>Declaration</td><td><code>config/cordis-entries.toml</code></td><td>Rust code</td></tr>
+<tr><td>Service shape</td><td><code>[entry]</code>: <code>id</code>, <code>plugin</code>, JSON <code>config</code>, <code>disabled</code>, optional <code>isolate</code> and <code>intercept</code></td><td>Typed values</td></tr>
+<tr><td>Hot reload</td><td>Yes, through the admin surface and journal</td><td>No; rebuild and restart</td></tr>
+<tr><td>Server boot</td><td>Required; the binary exits without a working <code>Overlay</code> entry</td><td>Not applicable</td></tr>
+<tr><td>Best fit</td><td>Deployment-time wiring, operator edits</td><td>Tests, embedded agents, fixed topologies</td></tr>
+</tbody></table>
+</div>
+<p>The server treats the entries file as the program: it loads the tree, composes
+includes, instantiates each enabled entry in file order, and fills empty
+configs after the <code>Overlay</code> entry lands (<code>boot_loader_program</code>,
+<code>src/main.rs</code>; entry fields in <code>crates/cordis/src/loader.rs</code>). A library
+embed can reuse that machinery with <code>Loader::load_from_file</code> and
+<code>Loader::instantiate_entry</code>, or skip it and call <code>ctx.provide(...)</code> directly.
+Direct provides are what every kernel and agent test in the repository does.</p>
+<h2 id="tenant-isolation"><a class="header" href="#tenant-isolation">Tenant isolation</a></h2>
+<p>Multi-tenant hosts keep shared services on a root context and scope
+per-request data into child contexts. Two mechanisms exist:</p>
+<ul>
+<li><strong>Isolate</strong> labels a service type with a realm name. <code>get</code> on the labeled
+child resolves only matching realms through <code>get_isolated</code>.</li>
+<li><strong>Intercept</strong> shadows one service type with a request-scoped value, such
+as a <code>TenantContext</code>.</li>
+</ul>
+<p>Both come from the kernel context (<code>crates/cordis/src/context.rs</code>). The
+production helper is <code>tenant_scope</code> in <code>crates/ares-agent/src/execution.rs</code>;
+its behavior is pinned by the test
+<code>execute_isolate_label_wins_over_intercept_for_tools</code>:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span>
+<span class="boring">fn main() {
+</span>use ares_server::{Context, TenantContext, TenantTier, Tool, Tools};
+
+// Root context holds shared services.
+let root = Context::new_root();
+
+// Scope to one tenant: realm label on Tools, then provide inside the realm.
+let scoped = root.isolate::&lt;Tools&gt;("acme");
+scoped.provide(Tools::from_static(Vec::&lt;Arc&lt;dyn Tool&gt;&gt;::new()));
+
+// Add request data on top. Isolate wins over intercept for resolution.
+let request = scoped.with_intercept(TenantContext::new(
+    "acme".to_string(),
+    TenantTier::Pro,
+));
+
+// The realm's tool set resolves on the request context...
+assert!(request.get::&lt;Tools&gt;().is_some());
+assert!(request.get_isolated::&lt;Tools&gt;("acme").is_some());
+
+// ...and stays invisible under a different label.
+assert!(request.get_isolated::&lt;Tools&gt;("other").is_none());
+<span class="boring">}</span></code></pre></pre>
+<p>Rules the tests enforce:</p>
+<ul>
+<li>An isolate label beats a <code>TenantContext</code> intercept during agent resolution
+(<code>user_id_from_ctx_isolate_label_wins_over_intercept</code>, resolver tests).</li>
+<li><code>Execute</code> stays shared. It is a stateless engine; isolating it hid the root
+instance and broke request paths, so <code>tenant_scope</code> isolates <code>Tools</code> only.</li>
+<li>Background jobs scope with isolate alone; HTTP requests add the intercept
+afterward (<code>request_tenant_ctx</code>, same module).</li>
+</ul>
+<h2 id="where-to-go-next"><a class="header" href="#where-to-go-next">Where to go next</a></h2>
+<ul>
+<li>Kernel concepts: <a href="kernel/index.html">Ideas and Map</a></li>
+<li>Interception points around reads, writes, and events:
+<a href="kernel/interception.html">Interception Points</a></li>
+<li>The HTTP surface the binary adds: <a href="http-api.html">HTTP API</a></li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="http-api.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="kernel/index.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="http-api.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="kernel/index.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr.min.js"></script>
+        <script src="mark.min.js"></script>
+        <script src="searcher.js"></script>
+
+        <script src="clipboard.min.js"></script>
+        <script src="highlight.js"></script>
+        <script src="book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>

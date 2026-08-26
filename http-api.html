@@ -1,0 +1,572 @@
+<!DOCTYPE HTML>
+<html lang="en" class="navy" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>HTTP API - ARES documentation</title>
+
+
+        <!-- Custom HTML head -->
+        
+        <meta name="description" content="Documentation for ARES, an agent platform with multi-provider LLM support, tool calling, RAG, and multi-tenant support.">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon.svg">
+        <link rel="shortcut icon" href="favicon.png">
+        <link rel="stylesheet" href="css/variables.css">
+        <link rel="stylesheet" href="css/general.css">
+        <link rel="stylesheet" href="css/chrome.css">
+        <link rel="stylesheet" href="css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="highlight.css">
+        <link rel="stylesheet" href="tomorrow-night.css">
+        <link rel="stylesheet" href="ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+    </head>
+    <body class="sidebar-visible no-js">
+    <div id="body-container">
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "navy";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('navy')
+            html.classList.add(theme);
+            var body = document.querySelector('body');
+            body.classList.remove('no-js')
+            body.classList.add('js');
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var body = document.querySelector('body');
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            body.classList.remove('sidebar-visible');
+            body.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="introduction.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">Getting Started</li><li class="chapter-item expanded "><a href="getting-started/installation.html"><strong aria-hidden="true">1.</strong> Installation</a></li><li class="chapter-item expanded "><a href="getting-started/first-server.html"><strong aria-hidden="true">2.</strong> First Server</a></li><li class="chapter-item expanded affix "><li class="part-title">Architecture</li><li class="chapter-item expanded "><a href="architecture.html"><strong aria-hidden="true">3.</strong> System Overview</a></li><li class="chapter-item expanded affix "><li class="part-title">Using ARES</li><li class="chapter-item expanded "><a href="cli.html"><strong aria-hidden="true">4.</strong> Command Line Interface</a></li><li class="chapter-item expanded "><a href="http-api.html" class="active"><strong aria-hidden="true">5.</strong> HTTP API</a></li><li class="chapter-item expanded "><a href="library.html"><strong aria-hidden="true">6.</strong> ARES as a Library</a></li><li class="chapter-item expanded affix "><li class="part-title">The Cordis Kernel</li><li class="chapter-item expanded "><a href="kernel/index.html"><strong aria-hidden="true">7.</strong> Ideas and Map</a></li><li class="chapter-item expanded "><a href="kernel/lifecycle.html"><strong aria-hidden="true">8.</strong> Fiber Lifecycle</a></li><li class="chapter-item expanded "><a href="kernel/interception.html"><strong aria-hidden="true">9.</strong> Interception Points</a></li><li class="chapter-item expanded "><a href="kernel/runtime.html"><strong aria-hidden="true">10.</strong> Runtime Services</a></li><li class="chapter-item expanded "><a href="kernel/patterns.html"><strong aria-hidden="true">11.</strong> Kernel Patterns in Rust</a></li><li class="chapter-item expanded affix "><li class="part-title">Product Surfaces</li><li class="chapter-item expanded "><a href="agents.html"><strong aria-hidden="true">12.</strong> Agents and Skills</a></li><li class="chapter-item expanded "><a href="rag.html"><strong aria-hidden="true">13.</strong> Retrieval</a></li><li class="chapter-item expanded affix "><li class="part-title">Operations</li><li class="chapter-item expanded "><a href="operations.html"><strong aria-hidden="true">14.</strong> Configuration and Deployment</a></li><li class="chapter-item expanded affix "><li class="part-title">Reference</li><li class="chapter-item expanded "><a href="reference/cordis-mapping.html"><strong aria-hidden="true">15.</strong> Cordis Surface Map</a></li><li class="chapter-item expanded "><a href="reference/upstream-parity.html"><strong aria-hidden="true">16.</strong> Upstream Parity Ledger</a></li><li class="chapter-item expanded affix "><a href="changelog.html">Changelog</a></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <!-- Track and set sidebar scroll position -->
+        <script>
+            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
+            sidebarScrollbox.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') {
+                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
+                }
+            }, { passive: true });
+            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
+            sessionStorage.removeItem('sidebar-scroll');
+            if (sidebarScrollTop) {
+                // preserve sidebar scroll position when navigating via links within sidebar
+                sidebarScrollbox.scrollTop = sidebarScrollTop;
+            } else {
+                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
+                var activeSection = document.querySelector('#sidebar .active');
+                if (activeSection) {
+                    activeSection.scrollIntoView({ block: 'center' });
+                }
+            }
+        </script>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">ARES documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/dirmacs/ares/edit/main/docs/src/http-api.md" title="Suggest an edit" aria-label="Suggest an edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="http-api"><a class="header" href="#http-api">HTTP API</a></h1>
+<p>ARES exposes one Axum HTTP service. The main router mounts every application route under the <code>/api</code> prefix (<code>crates/ares-http/src/lib.rs</code>). The server also answers <code>GET /health</code> outside <code>/api</code>. This chapter documents the routes as implemented in <code>crates/ares-http/src/api/routes.rs</code>.</p>
+<h2 id="base-url"><a class="header" href="#base-url">Base URL</a></h2>
+<p>The server binds to <code>server.host</code> and <code>server.port</code> from its configuration file. Defaults are <code>127.0.0.1</code> and port <code>3000</code> (<code>crates/ares-http/src/config.rs</code>). All paths below are relative to <code>http://localhost:3000/api</code>.</p>
+<pre><code class="language-bash">curl -s http://localhost:3000/health
+</code></pre>
+<p>The <code>/health</code> route returns the plain text <code>OK</code>. The server binary adds <code>GET /health/detailed</code> and <code>GET /config/info</code> next to it.</p>
+<h2 id="authentication"><a class="header" href="#authentication">Authentication</a></h2>
+<p>Three schemes exist. Pick the scheme that matches the route group.</p>
+<h3 id="jwt-bearer-tokens-user-routes"><a class="header" href="#jwt-bearer-tokens-user-routes">JWT bearer tokens (user routes)</a></h3>
+<p>Register or log in to get a token pair:</p>
+<pre><code class="language-bash">curl -s -X POST http://localhost:3000/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email": "user@example.com", "password": "secret", "name": "User"}'
+</code></pre>
+<pre><code class="language-json">{
+  "access_token": "&lt;jwt&gt;",
+  "refresh_token": "&lt;jwt&gt;",
+  "expires_in": 3600
+}
+</code></pre>
+<p>Send the access token as a bearer token:</p>
+<pre><code class="language-bash">Authorization: Bearer &lt;access_token&gt;
+</code></pre>
+<p>The middleware also accepts <code>?token=&lt;access_token&gt;</code> as a query parameter. EventSource clients cannot set custom headers, so they use this fallback. Tokens are HS256 JSON Web Tokens signed with the <code>JWT_SECRET</code> environment variable. A token carries claims <code>sub</code>, <code>email</code>, <code>exp</code>, <code>iat</code>, and optionally <code>jti</code> and <code>tenant_id</code>.</p>
+<h3 id="admin-secret-admin-routes"><a class="header" href="#admin-secret-admin-routes">Admin secret (admin routes)</a></h3>
+<p>Admin routes check the <code>X-Admin-Secret</code> header against the <code>ADMIN_API_KEY</code> environment variable. As an alternative, admin routes accept a JWT with an admin role claim.</p>
+<pre><code class="language-bash">curl -s http://localhost:3000/api/admin/stats \
+  -H "X-Admin-Secret: $ADMIN_API_KEY"
+</code></pre>
+<p>A rejected request answers <code>401</code> with:</p>
+<pre><code class="language-json">{"error":"Admin access requires X-Admin-Secret header or JWT with admin role"}
+</code></pre>
+<h3 id="tenant-api-keys-v1-routes"><a class="header" href="#tenant-api-keys-v1-routes">Tenant API keys (<code>/v1</code> routes)</a></h3>
+<p>Routes under <code>/v1</code> authenticate machine clients with tenant API keys. Keys start with <code>ares_</code> and travel in the same bearer header:</p>
+<pre><code class="language-bash">Authorization: Bearer ares_&lt;key&gt;
+</code></pre>
+<p>A missing or malformed key answers <code>401</code> with messages such as <code>Missing Authorization header</code> or <code>Invalid Authorization format. Expected: Bearer ares_...</code>.</p>
+<h2 id="response-envelope"><a class="header" href="#response-envelope">Response Envelope</a></h2>
+<p>Successful handlers return the documented payload directly. Errors return one consistent shape with two fields, <code>error</code> and <code>code</code> (<code>crates/ares-http/src/error.rs</code>):</p>
+<pre><code class="language-json">{
+  "error": "agent my-agent not found",
+  "code": "NOT_FOUND"
+}
+</code></pre>
+<p><code>code</code> values use stable SCREAMING_SNAKE_CASE identifiers. Middleware rejections before a handler runs answer with only the <code>error</code> field.</p>
+<h2 id="chat"><a class="header" href="#chat">Chat</a></h2>
+<h3 id="post-chat"><a class="header" href="#post-chat">POST /chat</a></h3>
+<p>Runs one agent turn. Requires a JWT bearer token.</p>
+<p>Request fields (<code>ChatRequest</code>, <code>crates/ares-types/src/types/mod.rs</code>):</p>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Notes</th></tr></thead><tbody>
+<tr><td><code>message</code></td><td>string</td><td>Required. The user message.</td></tr>
+<tr><td><code>agent_type</code></td><td>string</td><td>Optional. Defaults to the router agent.</td></tr>
+<tr><td><code>context_id</code></td><td>string</td><td>Optional. Continues a conversation.</td></tr>
+<tr><td><code>workspace_id</code></td><td>string</td><td>Optional. Eruka workspace scope.</td></tr>
+<tr><td><code>model</code></td><td>string</td><td>Optional per-request model override.</td></tr>
+</tbody></table>
+</div>
+<pre><code class="language-bash">curl -s -X POST http://localhost:3000/api/chat \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Summarize my notes", "agent_type": "researcher"}'
+</code></pre>
+<p>Response (<code>ChatResponse</code>):</p>
+<pre><code class="language-json">{
+  "response": "Here is the summary...",
+  "agent": "researcher",
+  "context_id": "8f14e45f-ea9b-4d2a-9c3b-1f6a2b7c9d01",
+  "sources": [
+    {"title": "Meeting notes", "url": null, "relevance_score": 0.87}
+  ]
+}
+</code></pre>
+<h3 id="post-chatstream-and-get-chatstream"><a class="header" href="#post-chatstream-and-get-chatstream">POST /chat/stream and GET /chat/stream</a></h3>
+<p>Streams Server-Sent Events with the same request body. The <code>GET</code> variant reads the fields from query parameters for EventSource clients. Each event is a <code>StreamEvent</code> object with fields <code>event</code>, <code>content</code>, <code>agent</code>, <code>context_id</code>, and <code>error</code>; absent optional fields are omitted:</p>
+<pre><code>data: {"event":"start","agent":"researcher","context_id":"8f14e45f-..."}
+
+data: {"event":"token","content":"Here "}
+
+data: {"event":"done","agent":"researcher","context_id":"8f14e45f-..."}
+</code></pre>
+<p>Event types are <code>start</code>, <code>token</code>, <code>done</code>, and <code>error</code>.</p>
+<h3 id="post-research"><a class="header" href="#post-research">POST /research</a></h3>
+<p>Runs deep research. Body is <code>{"query": "...", "depth": 3, "max_iterations": 10}</code>; both limits are optional.</p>
+<h3 id="get-memory"><a class="header" href="#get-memory">GET /memory</a></h3>
+<p>Returns stored facts and preferences for the authenticated user:</p>
+<pre><code class="language-json">{
+  "user_id": "42",
+  "preferences": [
+    {"category": "communication", "key": "style", "value": "concise", "confidence": 0.9}
+  ],
+  "facts": [
+    {
+      "id": "f-1", "user_id": "42", "category": "work",
+      "fact_key": "timezone", "fact_value": "UTC+1", "confidence": 0.95
+    }
+  ]
+}
+</code></pre>
+<p>An empty memory returns no body content.</p>
+<h2 id="agents"><a class="header" href="#agents">Agents</a></h2>
+<h3 id="user-agents-jwt"><a class="header" href="#user-agents-jwt">User agents (JWT)</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead><tbody>
+<tr><td>GET</td><td><code>/agents</code></td><td>Public list of shared agents.</td></tr>
+<tr><td>GET</td><td><code>/user/agents</code></td><td>List the caller's agents.</td></tr>
+<tr><td>POST</td><td><code>/user/agents</code></td><td>Create an agent.</td></tr>
+<tr><td>GET</td><td><code>/user/agents/{name}</code></td><td>Read one agent.</td></tr>
+<tr><td>PUT</td><td><code>/user/agents/{name}</code></td><td>Update one agent.</td></tr>
+<tr><td>DELETE</td><td><code>/user/agents/{name}</code></td><td>Delete one agent.</td></tr>
+<tr><td>POST</td><td><code>/user/agents/import</code></td><td>Import an agent from TOON format.</td></tr>
+<tr><td>GET</td><td><code>/user/agents/{name}/export</code></td><td>Export an agent to TOON format.</td></tr>
+</tbody></table>
+</div>
+<p>Create body (<code>CreateUserAgentReq</code>):</p>
+<pre><code class="language-json">{
+  "name": "my-agent",
+  "display_name": "My Agent",
+  "description": "Answers billing questions",
+  "model": "gpt-4o-mini",
+  "system_prompt": "You are a billing assistant.",
+  "tools": ["calculator"],
+  "max_tool_iterations": 10,
+  "parallel_tools": false,
+  "is_public": false,
+  "extra": {}
+}
+</code></pre>
+<p>Responses carry <code>id</code>, <code>usage_count</code>, <code>average_rating</code>, <code>created_at</code>, and <code>updated_at</code> alongside the input fields.</p>
+<h3 id="loop-mode-agents-jwt"><a class="header" href="#loop-mode-agents-jwt">Loop-mode agents (JWT)</a></h3>
+<p><code>POST /loops/start</code> starts a loop run, <code>GET /loops</code> lists loops, <code>DELETE /loops/{id}</code> stops one.</p>
+<h3 id="conversations-jwt"><a class="header" href="#conversations-jwt">Conversations (JWT)</a></h3>
+<p><code>GET /conversations</code> lists conversations. <code>GET</code>, <code>PUT</code>, and <code>DELETE</code> on <code>/conversations/{id}</code> read, rename, and delete one.</p>
+<h2 id="workflows-skills-tools"><a class="header" href="#workflows-skills-tools">Workflows, Skills, Tools</a></h2>
+<p>Workflows require a JWT:</p>
+<ul>
+<li><code>GET /workflows</code> lists available workflows.</li>
+<li><code>POST /workflows/{workflow_name}</code> executes one.</li>
+</ul>
+<p>With the <code>skills</code> feature enabled:</p>
+<ul>
+<li><code>GET /skills</code> lists skills.</li>
+<li><code>GET /skills/{name}</code> reads one skill.</li>
+</ul>
+<p>Admin surfaces manage runtime tools and skills with the <code>X-Admin-Secret</code> header:</p>
+<div class="table-wrapper"><table><thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead><tbody>
+<tr><td>GET / POST</td><td><code>/admin/runtime-tools</code></td><td>List or create tools.</td></tr>
+<tr><td>GET</td><td><code>/admin/runtime-tools/capabilities</code></td><td>List tool capability descriptors.</td></tr>
+<tr><td>GET / PUT / DELETE</td><td><code>/admin/runtime-tools/{id}</code></td><td>Manage one tool.</td></tr>
+<tr><td>POST</td><td><code>/admin/runtime-tools/{id}/test</code></td><td>Execute a tool with sample input.</td></tr>
+<tr><td>GET</td><td><code>/admin/runtime-tools/{id}/versions</code></td><td>List versions.</td></tr>
+<tr><td>POST</td><td><code>/admin/runtime-tools/{id}/rollback/{version}</code></td><td>Roll back.</td></tr>
+<tr><td>GET / POST</td><td><code>/admin/skills</code></td><td>List or create skills.</td></tr>
+<tr><td>POST</td><td><code>/admin/skills/run</code></td><td>Run a skill.</td></tr>
+<tr><td>GET / PUT / DELETE</td><td><code>/admin/skills/{id}</code></td><td>Manage one skill.</td></tr>
+</tbody></table>
+</div>
+<p>Tool test example. The body field <code>input_args</code> holds the JSON arguments passed to the tool's <code>execute</code> method:</p>
+<pre><code class="language-bash">curl -s -X POST http://localhost:3000/api/admin/runtime-tools/7/test \
+  -H "X-Admin-Secret: $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"input_args": {"x": 2, "y": 3}}'
+</code></pre>
+<pre><code class="language-json">{"ok": true, "output": {"sum": 5}, "error": null, "latency_ms": 4}
+</code></pre>
+<p>Skill run example. <code>tenant_id</code> must name an existing tenant:</p>
+<pre><code class="language-bash">curl -s -X POST http://localhost:3000/api/admin/skills/run \
+  -H "X-Admin-Secret: $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"skill_id": "summarize", "tenant_id": "tenant-a", "input": {"text": "..."}}'
+</code></pre>
+<h2 id="rag"><a class="header" href="#rag">RAG</a></h2>
+<p>These routes need the <code>local-embeddings</code> and <code>ares-vector</code> features at build time. They require a JWT. Collections are scoped per user; the server prefixes your collection name with your user id internally.</p>
+<h3 id="post-ragingest"><a class="header" href="#post-ragingest">POST /rag/ingest</a></h3>
+<p>Body fields come from <code>RagIngestRequest</code>: <code>collection</code>, <code>content</code>, plus optional <code>title</code>, <code>source</code>, <code>tags</code>, and <code>chunking_strategy</code>.</p>
+<pre><code class="language-bash">curl -s -X POST http://localhost:3000/api/rag/ingest \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "collection": "notes",
+    "content": "Quarterly review text...",
+    "title": "Q3 review",
+    "tags": ["finance"]
+  }'
+</code></pre>
+<pre><code class="language-json">{
+  "chunks_created": 4,
+  "document_ids": ["d1", "d2", "d3", "d4"],
+  "collection": "notes"
+}
+</code></pre>
+<h3 id="post-ragsearch"><a class="header" href="#post-ragsearch">POST /rag/search</a></h3>
+<p>Strategy is one of <code>semantic</code>, <code>bm25</code>, <code>fuzzy</code>, or <code>hybrid</code>. Defaults: <code>limit</code> 10, <code>threshold</code> 0.0, <code>rerank</code> false.</p>
+<pre><code class="language-bash">curl -s -X POST http://localhost:3000/api/rag/search \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"collection": "notes", "query": "budget owners", "limit": 5, "strategy": "hybrid"}'
+</code></pre>
+<pre><code class="language-json">{
+  "results": [
+    {
+      "id": "d1",
+      "content": "Budget owners meet on Mondays.",
+      "score": 0.91,
+      "metadata": {}
+    }
+  ],
+  "total": 5,
+  "strategy": "hybrid",
+  "reranked": false,
+  "duration_ms": 23
+}
+</code></pre>
+<h3 id="collection-management"><a class="header" href="#collection-management">Collection management</a></h3>
+<ul>
+<li><code>GET /rag/collections</code> lists collections as <code>CollectionInfo</code> objects.</li>
+<li><code>DELETE /rag/collection</code> deletes one. Body: <code>{"collection": "notes"}</code>. Response: <code>{"success": true, "collection": "notes", "documents_deleted": 12}</code>.</li>
+</ul>
+<h2 id="mcp"><a class="header" href="#mcp">MCP</a></h2>
+<p>Model Context Protocol surface is read-only today:</p>
+<pre><code class="language-bash">curl -s http://localhost:3000/api/mcp/runtime_tool_capabilities \
+  -H "X-Admin-Secret: $ADMIN_API_KEY"
+</code></pre>
+<p>The route lives behind the admin middleware because it merges into the admin router set (<code>build_routes</code>).</p>
+<h2 id="v1-external-api"><a class="header" href="#v1-external-api"><code>/v1</code> External API</a></h2>
+<p>Machine clients use tenant API keys. Metered routes record usage per call:</p>
+<div class="table-wrapper"><table><thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead><tbody>
+<tr><td>POST</td><td><code>/v1/chat</code></td><td>Chat completion.</td></tr>
+<tr><td>POST</td><td><code>/v1/research</code></td><td>Deep research run.</td></tr>
+<tr><td>POST</td><td><code>/v1/agents/{name}/run</code></td><td>Run a named agent.</td></tr>
+<tr><td>POST</td><td><code>/v1/agents/{name}/sandbox-run</code></td><td>Sandbox execution.</td></tr>
+<tr><td>GET</td><td><code>/v1/agents</code></td><td>List agents visible to the tenant.</td></tr>
+<tr><td>GET</td><td><code>/v1/agents/{name}</code></td><td>Read one agent.</td></tr>
+<tr><td>GET</td><td><code>/v1/agents/{name}/runs</code></td><td>List run history.</td></tr>
+<tr><td>GET</td><td><code>/v1/agents/{name}/logs</code></td><td>List run logs.</td></tr>
+<tr><td>GET</td><td><code>/v1/usage</code></td><td>Tenant usage summary.</td></tr>
+<tr><td>GET / POST</td><td><code>/v1/api-keys</code></td><td>List or create API keys.</td></tr>
+<tr><td>DELETE</td><td><code>/v1/api-keys/{id}</code></td><td>Revoke a key.</td></tr>
+<tr><td>POST</td><td><code>/v1/search/semantic</code></td><td>Semantic search (feature-gated).</td></tr>
+<tr><td>DELETE</td><td><code>/v1/tenant/data</code></td><td>Delete all tenant data.</td></tr>
+</tbody></table>
+</div>
+<p>Example:</p>
+<pre><code class="language-bash">curl -s -X POST http://localhost:3000/api/v1/chat \
+  -H "Authorization: Bearer ares_$API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Hello"}'
+</code></pre>
+<p>Quota breaches answer with a quota-exceeded error body.</p>
+<h2 id="webhooks-oauth-events"><a class="header" href="#webhooks-oauth-events">Webhooks, OAuth, Events</a></h2>
+<p>Public routes without authentication:</p>
+<ul>
+<li><code>POST /webhooks/{trigger_id}</code> — webhook receiver for triggers.</li>
+<li><code>GET /oauth/authorize</code> and <code>GET /oauth/callback</code> — connector OAuth flow.</li>
+<li><code>POST /events/document-upload</code> and <code>POST /events/field-change</code> — event ingestion.</li>
+</ul>
+<h2 id="admin-surfaces"><a class="header" href="#admin-surfaces">Admin Surfaces</a></h2>
+<p>All admin routes take the <code>X-Admin-Secret</code> header. Route groups in <code>routes.rs</code>:</p>
+<div class="table-wrapper"><table><thead><tr><th>Group</th><th>Example routes</th></tr></thead><tbody>
+<tr><td>Tenants</td><td><code>POST/GET /admin/tenants</code>, <code>GET /admin/tenants/{tenant_id}</code>, <code>POST/GET /admin/tenants/{tenant_id}/api-keys</code>, <code>GET .../usage</code>, <code>PUT .../quota</code>, <code>GET .../usage/daily</code></td></tr>
+<tr><td>Provisioning</td><td><code>POST /admin/provision-client</code></td></tr>
+<tr><td>Tenant agents</td><td><code>GET/POST /admin/tenants/{tenant_id}/agents</code>, <code>PUT/DELETE .../agents/{agent_name}</code>, <code>.../versions</code>, <code>.../rollback/{version}</code>, <code>.../test</code>, <code>.../runs</code>, <code>.../stats</code>, <code>.../feedback/*</code></td></tr>
+<tr><td>Cross-tenant agents</td><td><code>GET/POST /admin/agents</code>, <code>GET/PUT/DELETE /admin/agents/{tenant_id}/{agent_name}</code>, <code>.../versions</code>, <code>.../rollback/{version}</code>, <code>GET/POST /admin/agents/emergency-stop</code></td></tr>
+<tr><td>Templates and models</td><td><code>GET/POST /admin/agent-templates</code>, <code>DELETE /admin/agent-templates/{id}</code>, <code>GET /admin/models</code></td></tr>
+<tr><td>Alerts and audit</td><td><code>GET /admin/alerts</code>, <code>POST /admin/alerts/{alert_id}/resolve</code>, <code>GET /admin/audit-log</code></td></tr>
+<tr><td>Deployment</td><td><code>POST /admin/deploy</code>, <code>GET /admin/deploy/{deploy_id}</code>, <code>GET /admin/deploys</code>, <code>GET /admin/services</code>, <code>GET /admin/services/{service_name}/logs</code></td></tr>
+<tr><td>Model tiers</td><td><code>GET/POST /admin/tenants/{tenant_id}/model-tiers</code>, <code>GET/PUT/DELETE .../{tier_name}</code></td></tr>
+<tr><td>Allowlists</td><td><code>GET/POST .../allowed-tools</code>, <code>.../allowed-models</code>, <code>.../allowed-rag-sources</code>, each with <code>DELETE .../{name}</code></td></tr>
+<tr><td>Triggers and pipelines</td><td><code>GET/POST .../triggers</code>, <code>PUT/DELETE .../triggers/{id}</code>, same shape for <code>pipelines</code> and platform-wide <code>/admin/triggers</code>, <code>/admin/pipelines</code></td></tr>
+<tr><td>Fleet providers</td><td><code>GET /admin/fleet-providers</code>, <code>GET .../capabilities</code>, <code>PUT/DELETE .../{provider_name}</code>, <code>POST .../verify</code></td></tr>
+<tr><td>Schedules</td><td><code>GET/POST /admin/schedules</code>, <code>PUT/DELETE /admin/schedules/{id}</code>, tenant variants and <code>GET .../missed-runs</code></td></tr>
+<tr><td>Connectors</td><td><code>GET/POST /admin/connectors</code>, <code>PUT/DELETE /admin/connectors/{id}</code>, tenant connectors and <code>oauth-creds</code></td></tr>
+<tr><td>Billing</td><td><code>GET .../billing/summary</code>, <code>GET .../billing/line-items</code>, <code>GET /admin/billing/model-rates</code>, <code>GET /admin/billing/unit-rates</code></td></tr>
+<tr><td>Budgets</td><td><code>GET/PUT/DELETE /admin/run-history/budgets/{tenant_id}</code>, <code>GET/PUT /admin/token-budgets/{tenant_id}</code>, <code>GET .../status</code>, <code>POST .../reset</code>, <code>GET .../usage</code>, <code>GET /admin/run-history/alerts</code>, <code>POST /admin/run-history/alerts/{id}/acknowledge</code></td></tr>
+<tr><td>Run history</td><td><code>GET/POST /admin/run-history/llm-calls</code>, <code>GET .../llm-calls/{id}</code>, same shape for <code>tool-calls</code>, <code>GET /admin/run-history/costs/{run_id}</code>, <code>GET .../costs</code>, <code>GET/POST .../health-metrics</code>, <code>GET .../model-metrics</code>, <code>GET /admin/runs/live</code> (active-run stream)</td></tr>
+<tr><td>Runtime providers</td><td><code>GET/POST /admin/runtime_providers</code>, <code>GET/DELETE /admin/runtime_providers/{name}</code></td></tr>
+<tr><td>Platform stats</td><td><code>GET /admin/stats</code></td></tr>
+</tbody></table>
+</div>
+<h3 id="cordis-service-lifecycle"><a class="header" href="#cordis-service-lifecycle">Cordis Service Lifecycle</a></h3>
+<p>These routes manage the plugin runtime. Unknown loader state answers <code>503</code>.</p>
+<p>Retire removes a service; provide re-registers a known direct service:</p>
+<pre><code class="language-bash">curl -s -X POST http://localhost:3000/api/admin/cordis/services/events_service/provide \
+  -H "X-Admin-Secret: $ADMIN_API_KEY"
+</code></pre>
+<pre><code class="language-json">{"provided": true, "service": "events_service", "type": "cordis::events::EventsService"}
+</code></pre>
+<h3 id="post-admincordisservicesnamereplace"><a class="header" href="#post-admincordisservicesnamereplace">POST /admin/cordis/services/{name}/replace</a></h3>
+<p>Rolling drain-and-shift replacement of a journaled provider. The body must be <code>{"config": &lt;value&gt;}</code> carrying the new configuration. Success answers:</p>
+<pre><code class="language-json">{"replaced": true, "plugin": "calc", "fiber_id": 17}
+</code></pre>
+<p>A refusal (unknown plugin label, untracked provider, failing trial) leaves the old provider serving untouched and answers <code>409 {"replaced": false, "service": "calc", "reason": "..."}</code>. A missing <code>config</code> field answers <code>400</code>.</p>
+<h3 id="cordis-entries"><a class="header" href="#cordis-entries">Cordis Entries</a></h3>
+<p>Entries live in a TOML program file. Routes:</p>
+<div class="table-wrapper"><table><thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead><tbody>
+<tr><td>GET</td><td><code>/admin/cordis/entries</code></td><td>List the entry tree.</td></tr>
+<tr><td>PUT</td><td><code>/admin/cordis/entries</code></td><td>Upsert an entry.</td></tr>
+<tr><td>PATCH</td><td><code>/admin/cordis/entries/{id}</code></td><td>Partial update.</td></tr>
+<tr><td>DELETE</td><td><code>/admin/cordis/entries/{id}</code></td><td>Remove an entry.</td></tr>
+<tr><td>POST</td><td><code>/admin/cordis/entries/{id}/toggle</code></td><td>Enable or disable.</td></tr>
+<tr><td>POST</td><td><code>/admin/cordis/entries/reload</code></td><td>Reload from disk.</td></tr>
+<tr><td>POST</td><td><code>/admin/cordis/entries/{id}/move</code></td><td>Relocate an entry.</td></tr>
+<tr><td>GET</td><td><code>/admin/cordis/events</code></td><td>Per-event dispatch counters.</td></tr>
+<tr><td>GET</td><td><code>/admin/cordis/undo</code></td><td>Pending undo labels per fiber.</td></tr>
+</tbody></table>
+</div>
+<h4 id="">PATCH /admin/cordis/entries/</h4>
+<p>Applies only the present fields: <code>config</code>, <code>disabled</code>, <code>isolate</code>, <code>intercept</code>. An empty body is a validated no-op that still persists and re-applies the tree. Present <code>parent</code> or <code>position</code> fields move the entry first. Invalid moves answer <code>409</code>; unknown ids answer <code>404</code>.</p>
+<p>When the new configuration fails the factory pre-flight, the response carries a structured <code>issues</code> array next to the legacy <code>error</code> string. Each issue has a <code>message</code> and a <code>path</code>:</p>
+<pre><code class="language-json">{
+  "applied": [],
+  "patched": false,
+  "reloaded": false,
+  "error": "config pre-flight failed for calc: missing url",
+  "issues": [{"message": "missing url", "path": ["calc", "url"]}]
+}
+</code></pre>
+<p>Success answers <code>200</code>:</p>
+<pre><code class="language-json">{"applied": [], "patched": true, "entry": {"id": "calc"}}
+</code></pre>
+<h4 id="post-admincordisentriesidmove"><a class="header" href="#post-admincordisentriesidmove">POST /admin/cordis/entries/{id}/move</a></h4>
+<p>Relocates the entry and its whole <code>{id}:*</code> descendant namespace under a new parent. Body fields:</p>
+<ul>
+<li><code>parent</code> — string entry id, or <code>null</code> to move to the tree root.</li>
+<li><code>position</code> — non-negative integer child index. Omit it to append after the target's existing children.</li>
+</ul>
+<pre><code class="language-bash">curl -s -X POST http://localhost:3000/api/admin/cordis/entries/calc/move \
+  -H "X-Admin-Secret: $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"parent": "tools-group", "position": 0}'
+</code></pre>
+<p>Pure structural moves preserve fiber identity; running fibers never restart. Renamed descendant ids appear as old-to-new pairs:</p>
+<pre><code class="language-json">{
+  "moved": true,
+  "noop": false,
+  "renamed": [["calc", "tools-group:calc"]],
+  "applied": []
+}
+</code></pre>
+<p>Invalid moves (unknown ids, moves under one's own descendant, id collisions) answer <code>409 {"moved": false, "error": "..."}</code> without touching the file or the live tree. Unknown entry ids answer <code>404</code>.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="cli.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="library.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="cli.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="library.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr.min.js"></script>
+        <script src="mark.min.js"></script>
+        <script src="searcher.js"></script>
+
+        <script src="clipboard.min.js"></script>
+        <script src="highlight.js"></script>
+        <script src="book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+    </div>
+    </body>
+</html>

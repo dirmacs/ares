@@ -1,47 +1,38 @@
 # Introduction
 
-ARES (Agentic Runtime Extensible Server) is a composable AI agent runtime in Rust. The Cordis kernel underlies it: components register as services on a typed Context, and you compose them through loader entries or the library facade. ARES exposes one API that routes requests to Groq, Anthropic, NVIDIA DeepSeek, and Ollama. It handles tool calling, retrieval-augmented generation (RAG), multi-step workflows, streaming, usage metering, and multi-tenant isolation. You build your application; ARES wires the provider SDKs together.
+ARES (Agentic Runtime Extensible Server) is an agent server written in Rust. It runs chat agents with multi-provider large language model (LLM) support, tool calling, and retrieval-augmented generation (RAG). It also speaks the Model Context Protocol (MCP) and serves a web UI.
 
-![ARES × Cordis — the live service graph, zero-downtime provider replacement, guarded operations, and fail-closed policy gates](../assets/cli-demo.svg)
+## The Cordis kernel
 
-ARES runs on a service-based architecture with dependency injection. Components register into a typed `Context`, and handlers pull dependencies with `ctx.get::<T>()`. The unified `Execute` service handles every execution path through event-first around-middleware (`EventsService::waterfall_around` on `tools.*`, `llm.*`, and `agent.run`). Skills keep the request `Context`, isolate tools per tenant with `ctx.isolate::<Tools>(tenant_id)`, and run tool steps through `Tools::execute`. Skill `LlmCall` steps use the strict evented `Llm::complete` (`llm.complete`) path with no direct provider `generate_with_history` fallback. Hot-reload runs over file-watch. A circuit breaker protects LLM providers.
+Every ARES component is a service on a typed `Context`. Services declare dependencies, and the Cordis kernel resolves them at run time. You can add, replace, or intercept services while the server runs.
+
+![ARES × Cordis — the live service graph, zero-downtime provider replacement, guarded operations, and fail-closed policy gates](assets/cli-demo.svg)
+
+## What you can do with ARES
+
+You use ARES in three ways:
+
+- **Command line interface (CLI)**: the `ares-server` binary starts the server. It also scaffolds projects, inspects configuration, and drives RAG collections from your terminal. See the [Command Line Interface](cli.md) chapter.
+- **HTTP server**: the same binary exposes an HTTP API on Axum. Clients send chat requests over `POST /v1/chat` with an API key. Streaming uses Server-Sent Events (SSE). See the [HTTP API](http-api.md) chapter.
+- **Rust library**: the `ares-server` crate is also a library facade. You inject `Execute`, `Tools`, and `Llm` on a Cordis `Context` and run an agent with no HTTP stack. See [ARES as a Library](library.md).
+
+New to ARES? Follow [Installation](getting-started/installation.md), then build your [First Server](getting-started/first-server.md).
 
 ## Key capabilities
 
-- Multi-provider LLM routing: send requests to Groq, Anthropic, NVIDIA, or Ollama through one API. Switch models without changes to your integration.
-- Tool calling: define tools your agents can invoke. ARES runs the tool-call loop, execution, and response assembly.
-- Retrieval-augmented generation (RAG): ground LLM responses in your own data with built-in retrieval pipelines.
-- Workflows: chain agents and processing steps into deterministic multi-step workflows.
-- Multi-tenant enterprise support: tenant isolation, per-tenant agent configuration, API key scoping, and usage tracking at the tenant level.
-- Streaming: Server-Sent Events (SSE) streaming for real-time token-by-token responses.
-- Usage metering: track tokens, requests, and costs per tenant with built-in rate limiting and quota enforcement.
-- Skills: SKILL.md file discovery and loading via [thulp-skill-files](https://crates.io/crates/thulp-skill-files). Scope-based priority resolution (project > personal > plugin).
-- MCP integration: bridge external MCP servers as agent-callable tools. Connect Eruka, Daedra, or any MCP-compatible service.
-- Loop detection: sliding-window hash tracking with 3-tier escalation (warn, force alternative, halt). It stops agents from getting stuck in loops.
-- Crash recovery: checkpoint-based state serialization lets agents resume from the last saved state after failures.
-- Agent versioning: version history, rollback, and emergency stop (kill switch) for all agent requests.
-- Research coordination: deep research agent with configurable depth and max iterations for multi-step investigation tasks.
-- Deployment automation: built-in deploy and rollback endpoints with service health monitoring and log streaming.
+- Multi-provider LLM routing through one API: OpenAI-compatible endpoints, Azure AI Foundry, AWS Bedrock, and Ollama.
+- Tool calling: define tools in configuration. ARES runs the tool-call loop and assembles the response.
+- Retrieval-augmented generation: ingest documents into collections and ground responses in them.
+- Workflows: chain agents into multi-step flows with entry and fallback agents.
+- Multi-tenancy: tenant isolation, scoped API keys, quotas, and usage metering.
+- Hot reload: edits to `ares.toml` and TOON files apply without a restart.
+- Supervision: the built-in supervisor restarts the server after hot-restart exits.
+- MCP integration: bridge external MCP servers as agent-callable tools.
 
-## Who is ARES for
+## Where to go next
 
-- **Platform teams** who build internal AI infrastructure and need a reliable multi-provider abstraction layer.
-- **Enterprise clients** who want managed AI agents with tenant isolation, usage visibility, and SLA guarantees.
-- **Developers building AI applications** who want a clean API without managing provider credentials, rate limits, and failover logic themselves.
-
-## Base URL
-
-Send all API requests to:
-
-```
-http://localhost:3000
-```
-
-## Quick links
-
-| Resource | Description |
+| Chapter | Purpose |
 |---|---|
-| [Quickstart](getting-started/quickstart.md) | Zero to first API call in 5 minutes |
-| [Authentication](getting-started/authentication.md) | API keys, JWT tokens, and admin auth |
-| [Models & Providers](getting-started/models.md) | Available models, tiers, and provider configuration |
-| [Changelog](changelog.md) | Release history and breaking changes |
+| [Installation](getting-started/installation.md) | Install or build the `ares-server` binary |
+| [First Server](getting-started/first-server.md) | Scaffold, validate, run, and call the server |
+| [Command Line Interface](cli.md) | Every subcommand and flag |

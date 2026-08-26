@@ -1,62 +1,42 @@
 # Summary
 
-[Introduction](./introduction.md)
+[Introduction](introduction.md)
 
-# Getting started
+# Getting Started
 
-- [Quickstart](./getting-started/quickstart.md)
-- [Authentication](./getting-started/authentication.md)
-- [Models & Providers](./getting-started/models.md)
-
-# API Reference
-
-- [Chat](./api/chat.md)
-- [Agents](./api/agents.md)
-- [Tools](./api/tools.md)
-- [Skills](./api/skills.md)
-- [MCP Integration](./api/mcp.md)
-- [Memory](./api/memory.md)
-- [RAG](./api/rag.md)
-- [Workflows](./api/workflows.md)
-- [Research](./api/research.md)
-- [Streaming](./api/streaming.md)
-
-# Enterprise
-
-- [V1 Client API](./enterprise/v1-api.md)
-- [Admin API](./enterprise/admin-api.md)
-- [Deployment API](./enterprise/deploy-api.md)
-- [Multi-Tenant Setup](./enterprise/multi-tenant.md)
-
-# Platform
-
-- [Architecture (Cordis)](./platform/architecture.md)
-- [Rate Limits & Quotas](./platform/rate-limits.md)
-- [Loop Detection & Safety](./platform/safety.md)
-- [Tenant FS Permission Fence](./platform/tenant-fs-fence.md)
-- [Error Handling](./platform/errors.md)
-- [Self-Hosting](./platform/self-hosting.md)
+- [Installation](getting-started/installation.md)
+- [First Server](getting-started/first-server.md)
 
 # Architecture
 
-- [Mapping, Γ^∞ → Rust](./cordis/cordis-mapping.md)
-- [Remedies, P0-P10](./cordis/cordis-remedies.md)
-- [Capabilities, Preservation Checklist](./cordis/cordis-capabilities.md)
-- [Baseline, Gates](./cordis/cordis-baseline.md)
-- [YAGNI Ladder](./cordis/cordis-yagni.md)
-- [Handoff, Architecture](./cordis/cordis-redesign.md)
-- [Upstream Parity Ledger](./upstream-parity.md)
+- [System Overview](architecture.md)
 
-# Extending ARES
+# Using ARES
 
-- [ContextProvider Trait](./extending/context-provider.md)
-- [Building on the ARES router](./extending/base-router.md)
+- [Command Line Interface](cli.md)
+- [HTTP API](http-api.md)
+- [ARES as a Library](library.md)
 
-# Guides
+# The Cordis Kernel
 
-- [Build a Chat Agent](./guides/chat-agent.md)
-- [Tool Calling](./guides/tool-calling.md)
+- [Ideas and Map](kernel/index.md)
+- [Fiber Lifecycle](kernel/lifecycle.md)
+- [Interception Points](kernel/interception.md)
+- [Runtime Services](kernel/runtime.md)
+- [Kernel Patterns in Rust](kernel/patterns.md)
 
-# Resources
+# Product Surfaces
 
-- [Changelog](./changelog.md)
+- [Agents and Skills](agents.md)
+- [Retrieval](rag.md)
+
+# Operations
+
+- [Configuration and Deployment](operations.md)
+
+# Reference
+
+- [Cordis Surface Map](reference/cordis-mapping.md)
+- [Upstream Parity Ledger](reference/upstream-parity.md)
+
+[Changelog](changelog.md)

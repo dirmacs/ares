@@ -1,666 +1,246 @@
 # Changelog
 
-All notable changes to A.R.E.S will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [0.9.1] - 2026-08-24
-
-### Changed — library facade
-
-- **The `ares` facade crate is folded into the `ares-server` package as a `[lib]` target**; `crates/ares` is deleted. The crates.io name `ares` is occupied by an unrelated 2015 package. The name can never publish, so the published entry point for embedding ARES as a library is now `ares-server = "0.9.1"`: `use ares_server::{Context, Execute, Tools, Llm, Plugin, Loader, Dispatch, register_plugins};`. `Store` re-export remains behind the `postgres` feature. The inventory-parity guarantee moved to a root-package test (`tests/inventory_parity.rs`) with force-linking of every capability crate including `ares-http`.
-
-### Added — Cordis rounds 4–9
-
-Nine hardening/feature rounds on the Cordis kernel and its use across the server (full narrative in `docs/cordis-mapping.md` §10–§19):
-
-- **RhaiPolicy scripting** (default-on): declarative TOML entries attach sandboxed Rhai functions to catalog events; `on_error = "deny"` fail-closed gates; isolate-realm multi-instance coexistence; two active policies ship in `config/cordis-entries.toml` (admission audit, emergency-halt).
-- **Guarded withdrawal** (paper §4.3.1): derived realm-aware consumer counting; `Context::remove<T>` refuses while active consumers exist (`remove_forced` for internal rollback); admin retire maps refusal to 409.
-- **Verified hot-swap + drain-and-shift**: entry rebuilds trial out-of-band before committing (zero absence window, concurrent-get proven); `Loader::replace_provider` plus `POST /admin/cordis/services/{name}/replace` swap providers under live traffic.
-- **Static registration**: inventory-collected `CordisPluginFactory` submissions are the primary boot path; manual chains remain as fallback; parity tests pin the factory set.
-- **Composition**: `@include` splice, `@group` flatten, `${rhai: …}` config interpolation run at boot and reload (fail-open); production entries program split across files with parity proof.
-- **Dependency-cycle detection**: post-apply graph walk warns on rings; surfaced via `Loader::detect_cycle_entry_ids` and `GET /admin/cordis/entries`.
-- **Peer-dependency versioning**: `provide_versioned` / `declare_inject_versioned`; major-bucket satisfaction rule; mismatch keeps dependents Inactive reactively.
-- **Eager inject reconciliation**: declarations on Active fibers take effect immediately; declare/refresh races lossless.
-- **Failed-factory wiring**: failed registrations notify dependents and stay inspectable (`Failed{error}` terminal); fresh-id supersession on re-register.
-- **Typed listeners adopted** in scheduler prod paths; **per-event dispatch metrics** at `GET /admin/cordis/events`; **atomic temp+rename** entries persistence; **metatheory property suite** (`cordis::metatheory`) proving quiescence, order confluence, LIFO disposal, reactive invariant.
-- **HMR dylib hot-swap** finished: unique-copy dlopen so rebuilt `.so` files actually swap; strictly opt-in behind `--features hmr`.
-
-### Fixed
-
-- Latent deadlock in `RegistryService::register` (read guard held across stale-slot write cleanup), exposed by metatheory leg F.
-- Latent double-swap bug in verified rebuilds (promoted values lacked undo; a second swap wedges re-provide).
-
-## [0.7.5] - 2026-04-11
-
-### Changed
-
-- **`mcp` feature decoupled from `postgres`**, replaces the 0.7.4 coarse coupling. Library consumers can now enable `mcp` for protocol glue, client, registry, extension, and tool plumbing **without** dragging `sqlx` and `postgres` into their dependency graph. The MCP *server* (`mcp/server.rs`), usage tracking (`mcp/usage.rs`), and tenant API-key auth (`mcp/auth.rs`, uses `crate::db::tenants::TenantDb`) are now gated behind `cfg(all(feature = "mcp", feature = "postgres"))`. Their only consumer is `start_mcp_server`, which `main.rs` already gates with the same combination. Verified compile-clean for `--features "mcp"`, `--features "mcp,postgres"`, and default features. 234 lib tests pass.
-
-## [0.7.4] - 2026-04-11
-
-### Fixed
-
-- **`mcp` feature implies `postgres`**, the MCP server code under `src/mcp/server.rs` and `src/mcp/usage.rs` references `sqlx::PgPool` directly, so enabling `features = ["mcp"]` without `features = ["postgres"]` produced `E0433: unresolved module sqlx` compile errors. Making `mcp = ["dep:rmcp", "postgres"]` fixes the feature graph so any consumer that turns on MCP gets the transitive postgres dep automatically. Downstream crates that previously had to spell out both features can now enable `mcp` alone. No behavior change, the dep was already implicit at the code level.
-
-> **Note:** 0.7.4 was never published to crates.io. It was superseded by 0.7.5, which decouples the modules behind separate `cfg` gates so `mcp` no longer requires `postgres`.
-
-## [0.7.3] - 2026-04-11
-
-### Fixed
-
-- **`sqlx::query!` / `sqlx::query_as!` macros replaced with runtime variants**, downstream crates no longer need `DATABASE_URL` at compile time or a shipped `.sqlx` cache to build `ares-server`. Fixes compilation failures in any consumer that pulls `ares-server` from crates.io with `features = ["postgres"]`.
- - `src/middleware/usage.rs`: `sqlx::query!(...)` → `sqlx::query(...).bind(...)`
- - `src/db/agent_versions.rs`: `sqlx::query_as!(AgentVersionRecord, ...)` → `sqlx::query_as::<_, AgentVersionRecord>(...).bind(...)`
- - `AgentVersionRecord` now derives `sqlx::FromRow`.
-
-### Note
-
-No schema or behavior change, only compile-time check removed to unblock downstream crate builds. Library crates shipped via crates.io cannot assume consumers have a live DB or prepared cache.
-
-## [0.6.2] - 2026-03-08
-
-### Security
-
-- Config split: Removed all Dirmacs-specific production configs from public repo
- - `ares.toml` (23 agents), `kasino.toml`, `agents/kasino-*.toml` moved to private `dirmacs/ares-config`
- - Public repo retains `ares.example.toml` as generic template
- - Updated `.gitignore` to prevent re-tracking of `ares.toml`, `kasino.toml`, `agents/*.toml`
-
-### Added
-
-- **Compliance auditor agent** (`compliance-auditor.toon`) in overlay, audits projects against Dirmacs Engineering Standards
-- **Dirmacs Engineering Standards SOP**, covers repo structure, config architecture, deployment, security, agent quality, and scaling
-
-## [0.6.3] - 2026-03-13
-
-### Added
-
-- Deploy automation API: `POST /api/admin/deploy`, `GET /api/admin/deploy/{id}`, `GET /api/admin/deploys` for triggering and tracking deployments
-- Service health monitoring: `GET /api/admin/services` returns status, PID, and port for all VPS services
-- Service log viewer: `GET /api/admin/services/{name}/logs` returns recent journalctl output
-- Deploy registry: In-memory deploy tracking in AppState with status polling
-
-### Fixed
-
-- Chat handler tenant_id: Fixed tenant_id extraction in chat handler for metered requests
-- Migration 002 checksum: Fixed checksum mismatch after migration edit
+All notable changes to ARES are documented here. This project follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [0.6.1] - 2026-03-07
+## 0.10.0 - 2026-08-26
 
-### Changed
+**Reactive fiber lifecycle, kernel interception points, guarded file writes, and opt-in intelligence controls.**
 
-- LLM Provider: Switched default provider from Anthropic to Groq (free tier)
- - Provider: `groq` at `https://api.groq.com/openai/v1` (OpenAI-compatible)
- - `fast` tier: `llama-3.1-8b-instant` (14,400 req/day free)
- - `balanced` + `powerful` tiers: `llama-3.3-70b-versatile` (GPT-4 class, 6,000 req/day free)
- - Env var: `GROQ_API_KEY` replaces `ANTHROPIC_API_KEY`
- - Anthropic provider kept in `ares.toml`, switch back by changing tier `provider` fields
+### Added
 
-- VPS build flags: `--no-default-features --features openai,postgres,mcp`
- - Avoids dev-only defaults (`local-db`, `ollama`, `ares-vector`)
+**Kernel (`ares-cordis`)**
 
-### Infrastructure
+- Reactive `Pending` fiber state: an `Active` fiber whose dependency is genuinely withdrawn disposes its effects (LIFO) and rests `Pending`; it reactivates through `Loading` when the provider returns. Apply errors stay terminal `Failed`; peer-version refusals over a live provider still rest `Inactive`. `Pending` fibers reserve their registry key and survive `prune_disposed`
+- `EventOptions { prepend, global }` on the new `on_with` / `once_with` listener registrations, plus `emit_filtered`: per-dispatch filtering where non-global listeners are offered to a filter predicate and `global` listeners always join. Existing `on` / `once` / `emit` signatures are unchanged
+- `Context::get_relaxed::<T>()`: like `get`, but serves a locally-owned value while its provider fiber transitions (`Active` / `Loading` / `Reloading` / `Unloading` / `Pending`); disposed and `Failed` owners stay refused
+- Fiber state observers: `Fiber::subscribe_state` delivers every lifecycle transition to synchronous observers with panic isolation; the returned handle cancels the subscription
+- Kernel intercept meta-events: listeners on `internal/get`, `internal/set`, `internal/config`, `internal/update`, and `internal/listener` veto or rewrite the matching kernel operation, and `internal/dispatch` observes every non-internal dispatch with its `(mode, name, args)`. `internal/get` can replace a strict read's value, refuse the lookup (`refuse: true`), or redirect it to the parent frame; an erroring chain refuses the read. `internal/set` errors veto the provider write with the previous binding left fully intact. `internal/config`'s non-null terminal IS the effective config for that apply pass; an erroring chain rests the fiber terminal `Failed` (unchanged semantics). An `internal/update` bail skips the restart and keeps the current application, with the deferred config visible as `vetoed_config`. An `internal/listener` bail (or chain error) cancels the registration and returns an inert handle. Every consult short-circuits at map-lookup cost when no listener is registered, a re-entrancy fence keeps reads inside a chain un-intercepted, and the synchronous bridges fall open (warn + allow) on tokio flavors that cannot `block_in_place`
+- Target-carrying dispatch family: `bail_from` / `waterfall_from` / `waterfall_async_from` run the Bail / Waterfall / around-waterfall chains with an optional per-dispatch `ListenerFilter`; a filtered-out listener skips that one dispatch and stays registered
+- Readiness barriers: `register_with_readiness` takes a composable `ReadinessBarrier` — `ReadinessBarrier::new(pred)`, `.and(..)` / `with_readiness([a, b])` AND-composition (empty is vacuously ready), `.watching([TypeId])` re-kicks the gated fiber when those providers settle through the `ReflectService` fan-out. While the gate is closed the fiber rests inspectable `Pending` — quiet waiting that never becomes `Failed` — with the factory run once up front and strict `get` keeping the service out of consumer reach. Complements (does not replace) availability predicates, which still fail loudly to `Failed`
+- Cascade batching: concurrent config updates against one provider collapse to a single dependent convergence wave. Providers mid-reapply are marked in an in-flight ledger; dependents defer during the window and converge once per settled batch instead of once per patch
+- Name-keyed computed properties: `Context::register_accessor(name, Accessor::{read_only, read_write, setter_only})` installs a computed property beside the TypeId service store and returns an `EffectHandle` whose disposal removes the declaration and every alias. `Context::alias` binds an alternate name through the same registration. Typed reads surface `PropertyTypeMismatch` instead of a silent `None`; writes to a read-only property are refused with `ReadOnlyProperty`; duplicates (including alias collisions) are rejected. Accessor traffic BYPASSES the `internal/get` / `internal/set` intercept waterfalls entirely
+- Layered intercept chains: intercept layers per TypeId form an ordered outermost..innermost sequence; new registrations APPEND, so the innermost layer stays effective for all existing getters (no caller breakage). `Context::intercept_chain` returns every layer in dispatch order, and `Context::chains_structurally_equal` compares two chains by shared-instance identity for restart-decision checks
+- Lifecycle riders: `Fiber::update` returns `Result<(), CordisError>` — an error on the restart path propagates to the caller and the fiber stays `Active` serving its OLD configuration. An `internal/update` veto parks the deferred config in `Fiber::vetoed_config` and returns `Ok`. The `internal/config` waterfall now also covers the activation path, so rewrites apply on first activation, not only on re-applies
+- Module graph fan-out (opt-in): `cordis::module_graph::ModuleGraph` maps module keys to their dependencies and, given a `ModuleReload` implementation, `change_many` computes the TRANSITIVE affected plugin set read-only FIRST, then reloads each affected plugin exactly once per transaction; a failing reload rolls back that plugin while successfully reloaded siblings stay `Active`. When a `ModuleGraph` is registered on the context, the file watcher's debounced batch fans through it; without one, watcher behavior is unchanged
 
-- First production deployment: Contabo VPS 217.216.78.38
-- Caddy reverse proxy: `api.ares.dirmacs.com` → `localhost:8080`
-- systemd service: `/etc/systemd/system/ares.service`
-- PostgreSQL: `ares` database, user `dirmacs`
+**Logger**
+
+- In-kernel `LoggerService`: bounded ring (default 1000 records) with monotonic sequences, fan-out to effect-owned `Exporter` sinks (registration returns a `Disposable` that removes the sink), and per-name level routing (`set_level`) with a service-wide fallback (`set_default_level`, default `Debug`). `enabled` gates writes before argument assembly. `Message::render` applies printf placeholders `%s %d %i %f %o %O %c %C %%` (`%o`/`%O` render compact/pretty JSON; unknown specifiers stay literal); `%c` colorizes over the ANSI16 palette by an FNV-1a hash of the logger name, `%C` adds bold. `hyphenate` / `derived_name` turn type names into `kebab-case` logger names (`HTTPServer` → `http-server`). `LoggerIntercept` overrides thresholds per fiber through `ctx.intercept` (resolved via the relaxed read); the `Context` facade (`ctx.info`, …) is a no-op when no logger is provided
+
+**Timers**
+
+- `cordis::timer`: six fiber-scoped primitives — `timeout`, `sleep`, `interval`, `interval_stream`, `debounce`, `throttle` — std-only on a shared wheel thread (min-heap deadlines drained under one short critical section, callbacks outside it, panics caught). Registrations under `with_current_fiber` push labeled undos onto the owning fiber, so dispose or a reactive unload cancels them; dropping a handle does NOT cancel. A disposed `Interval` stream yields exactly one final `Err(InactiveEffect)` and closes; `debounce` collapses bursts to one trailing delivery, `throttle`
+
+**Admin HTTP**
+
+- Structured validation errors on the same PATCH endpoint: a config pre-flight can reject with `ValidationIssue { message, path }` items aggregated in a `ValidationError`; the 4xx body then carries a machine-readable `issues` array beside the legacy `error` string (success carries none, and a failed trial leaves no stale slot behind)
+- Entry moves: PATCH accepts optional `parent` / `position` (`EntryPosition`) applied move-THEN-update — an invalid placement answers 409 without touching the file or the live tree. `POST /admin/cordis/entries/{id}/move` relocates an entry together with its whole `{id}:*` subtree in one rename cascade. A valid move preserves fiber identity through in-place refresh, so consumers never observe a dispose/recreate window
+
+**Tools fence**
+
+- Layer 3 write guards on `Fence`: writes require a prior `fence_read` observation unless the mode allows blind writes (`FS_NOT_OBSERVED`); `CreateIfAbsent` refuses existing paths (`FS_EXISTS`); `ReplaceIfVersion` compares the `mtime ^ size` fingerprint captured at read time (`FS_VERSION_CONFLICT`). Bytes land through a sibling temp file renamed into place, new files get `0600` on unix, errors carry structured `FS_*` codes, and a bounded 200-entry audit ring is readable through `audit_log`. Layers 0-2 behave exactly as before
+
+**LLM**
+
+- Retry-before-salvage JSON policy: the micro engine re-requests a malformed-JSON answer identically up to `json_retries` times (default 2) before the substring-salvage fallback runs
+- Per-provider concurrency governor: optional pool setting `max_in_flight` caps simultaneous dispatches per provider, with `governor_acquire_timeout` (default 30 s) bounding the wait. Permits release only at terminal stream items, and saturation fails closed. Without the setting, behavior is unchanged and no wrappers install
+- Model-profile catalog: one cross-provider `ModelProfile` table (capabilities, context window, speed tier, cost) merging the static tables with runtime catalog entries. `lean_hint` renders the whole catalog for prompt injection in well under 50 tokens, `describe_full` prints one record, and `route` picks the cheapest capable model for a modality. The catalog is opt-in; nothing wires it into default model selection
+- Guided-output grammar hints: `GenerationHints::guided_grammar` carries a schema-shaped value (JSON object with a `"type": "object"` root) as `response_format` `json_schema` on every OpenAI-compatible path; raw GBNF/EBNF-style text rides the provider-specific `guided_grammar` extension field on non-streaming OpenAI-compatible requests instead. Providers without a channel silently ignore the hint, and an ABSENT hint leaves the wire byte-identical
+- Micro-call response cache: deterministic-class micro outcomes are served from a bounded least-recently-used map keyed by a content hash over `(model, system template, input)` — default 256 entries with a 15-minute TTL and a master switch via `MicroCacheConfig`. Hits skip the network entirely, report `latency_ms: 0`, and carry a `cache_hit` telemetry flag. Answers reached through retries or the salvage fallback are NEVER cached
+
+**Agent**
+
+- Per-subtask cancellation: delegated subtasks register sticky cancel tokens keyed by run/skill id; `SkillEngine::cancel_subtask()` flips a token exactly once and is honored at step boundaries alongside the existing `EmergencyStop` hook. An aborted subtask integrates nothing into the parent context
+- Quote-aware delegation arguments: double-quoted segments parse as single tokens that may contain spaces and `|` separators; `--parallel` latches split-per-token mode (separators ignored), `--model` consumes exactly one token, and `--tools` enables the inner tool loop for delegated tasks. Precedence is flags > profile > global
+
+**RAG**
+
+- Embedding dedup per request: duplicate inputs collapse by whitespace-normalized SHA-256 content hash before the backend call on both the local and HTTP embedding paths; computed vectors fan back to every duplicate slot, so callers receive full-length results while identical texts cost exactly one backend call
+
+**Skills**
+
+- Delegated-result review gate (opt-in `review_delegated_results`): nested `SkillCall` results pass a fixed-template consistency and task-fit review before integration. A rejection replaces the result with a structured rejection that keeps the original for re-dispatch; a reviewer outage passes the result through unchanged. Off by default
+- Self-check critique rounds (opt-in `SkillEngine::with_self_check_rounds`): nested `SkillCall` results pass up to N LLM critique rounds over a cache-stable template before integration; a verbatim reply ends the loop, and an LLM failure keeps the last good answer silently. Off by default
+- Delegation hygiene: delegated sub-workflows accept only allowlisted step kinds (`delegated_step_not_allowed:`), nested tool rounds hard-cap at three (`tool_round_cap_exceeded:` aborts after exactly three rounds), and slash-command chatter lines are stripped from delegated result text before it enters the parent context
 
 ---
 
-## [Unreleased]
+## 0.9.0, 2026-08-22
+
+**Service architecture, unified execution, wrapper removal.**
 
 ### Added
 
-- PostgreSQL Database Support: Migrated from SQLite/libsql to PostgreSQL
- - New `PostgresClient` with `sqlx::PgPool` for connection pooling
- - Multi-tenant database support via `TenantDb`
- - Automatic database migrations on startup
- - Support for PostgreSQL `$1, $2, ...` query placeholders
- - Added `#[derive(sqlx::FromRow)]` for database models
- - Updated all SQL queries for PostgreSQL syntax
- - New `init_postgres_db()` function for simplified initialization
- - Location: `src/db/postgres.rs`, `src/db/tenants.rs`
+- `Execute::run` with the full resolve-create-execute pipeline and `RunTracker` observability
+- `EventsService::waterfall_around`: around-middleware waterfall that runs `core` at the end; a skip of `next` skips core
+- `Context::inject` waits on the `ReflectService` TypeId notifier (`ensure_notifier` + `changed`); if ReflectService is absent or the sender is dropped, it falls through to a 5ms poll
+- Product events: `tools.list` / `tools.resolve` / `tools.execute`, `llm.get_client` / `llm.complete`, `llm.generate` / `llm.generate_tools` (`ConfigurableAgent`), `agent.run` (waterfall), `agent.admit` (`Dispatch::Bail`), `agent.started` (`Dispatch::Parallel`)
+- Skills isolate the request `ctx` (`isolate::<Tools>(tenant_id)`) instead of opening a new root
+- Skill `LlmCall` steps strictly run `Llm::complete` through the `llm.complete` waterfall; `SkillEngine` and `SkillsService` have no direct provider `generate_with_history` fallback
+- Skill `ToolCall` steps run `Tools::execute` (`tools.execute` waterfall) on the tenant isolate
+- `ExecutionResult` return type with resolution metadata (source tier, run ID)
+- `RunTracker` trait extracted to `ares-agent` for decoupled run observability
+- `Service` impl directly on `AgentRegistry` and `ConfigBasedLLMFactory` (no wrappers needed)
+- `agent_config_from_user_agent` helper in `ares-agent::configurable`
+- `Fiber::refresh` reruns registered plugin `apply` after epoch recompute
+- `EventsService` `Parallel` returns JSON `null`; `Serial` bails on the first non-null handler result
+- Store loader factory runs SQL migrations and seeds agent templates
+- Overlay fills empty loader `entry.config` from `ares.toml`; TOON reloads notify `Tools` and `Execute`
+- `TenantRealms` open-then-intercept on request paths; dispose on admin tenant delete
+- JWT research plus remaining v1 stream/agent handlers open the tenant realm before intercept
+- Isolate labels win over intercept for the same `TypeId`; unlabeled types still intercept
+- Leftover `execution_stack` dual `Execute` installer removed
+- Default `ares-server` library build has no axum (`http` is optional) and no longer re-exports `ProviderRegistry`
+- Single `Execute` loader key (ares-agent); Overlay/`ServerRuntime` provide host extras
+- JWT middleware looks up tenant claims in Store, fail-closes 401 when the tenant does not exist, then opens `TenantRealms` and intercepts `TenantContext`; user claims isolate with no dummy Free tenant
+- `Llm::from_client` is the public test constructor; `no_http` no longer builds `ProviderRegistry`
+- Root `ares-server` package keeps its binary; the library target serves embedders; integration tests depend on `ares-server` / `ares-http`
 
 ### Changed
 
-- BREAKING: Database backend changed from SQLite to PostgreSQL
- - Connection strings now use PostgreSQL format: `postgres://user:pass@host:5432/dbname`
- - Removed `turso_url_env` and `turso_token_env` from configuration
- - Default database URL: `postgres://postgres:postgres@localhost:5432/ares`
- - See Migration Guide below for upgrade instructions
-
-### Removed
-
-- libsql/SQLite: Complete removal of SQLite backend
- - Removed `libsql` dependency
- - Removed `TursoClient` and `src/db/turso.rs`
- - Removed `turso` feature flag
- - Removed `hnsw_rs` dependency (moved to pgvector)
-
-- OllamaToolCoordinator: Removed in favor of the unified `ToolCoordinator`
- - `OllamaToolCoordinator` struct
- - `ToolCoordinatorResult` struct (ollama-specific)
- - `ToolCallRecord` struct
- - `ToolCallingConfig` struct (ollama-specific)
- - `OllamaClient::with_config()` and `with_config_and_params()` constructors
- - `OllamaClient::tool_config()` and `set_tool_config()` methods
- - `OllamaClient::generate_with_tool_loop()` method
- - `execute_tool_call()` and `format_tool_result()` helper functions
- - Related tests
-
-- LegacyEmbeddingService: Removed deprecated wrapper struct from `src/rag/embeddings.rs`
- - Use `EmbeddingService` directly instead
-
-- LlamaCppClient::with_params_legacy(): Removed legacy constructor
- - Use `with_config_params()` or `with_params()` instead
-
-- Legacy Environment Variables documentation: Removed from README.md
- - Use the standard environment variables documented in the Configuration section
-
-### PostgreSQL migration guide
-
-#### For local development
-
-1. **Install PostgreSQL**:
- ```bash
-   # Ubuntu/Debian
-   sudo apt install postgresql postgresql-contrib
-   
-   # macOS
-   brew install postgresql
-   
-   # Windows
-   # Download from https://www.postgresql.org/download/windows/
-   ```
-
-2. **Create database and user**:
- ```bash
-   sudo -u postgres psql -c "CREATE DATABASE ares;"
-   sudo -u postgres psql -c "CREATE USER ares WITH PASSWORD 'your_password';"
-   sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ares TO ares;"
-   ```
-
-3. **Set environment variable**:
- ```bash
-   export DATABASE_URL="postgres://ares:your_password@localhost:5432/ares"
-   ```
-
-4. **Run ARES**: Migrations run automatically on startup
-
-#### For production (Contabo VPS)
-
-See `sops/deployment-checklist.md` for complete VPS deployment instructions.
-
-### PostgreSQL migration guide
-
-#### For local development
-
-1. **Install PostgreSQL**:
- ```bash
-   # Ubuntu/Debian
-   sudo apt install postgresql postgresql-contrib
-   
-   # macOS
-   brew install postgresql
-   
-   # Windows
-   # Download from https://www.postgresql.org/download/windows/
-   ```
-
-2. **Create database and user**:
- ```bash
-   sudo -u postgres psql -c "CREATE DATABASE ares;"
-   sudo -u postgres psql -c "CREATE USER ares WITH PASSWORD 'your_password';"
-   sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ares TO ares;"
-   ```
-
-3. **Set environment variable**:
- ```bash
-   export DATABASE_URL="postgres://ares:your_password@localhost:5432/ares"
-   ```
-
-4. **Run ARES**: Migrations run automatically on startup
-
-#### For production (Contabo VPS)
-
-See `sops/deployment-checklist.md` for complete VPS deployment instructions.
-
-### Migration guide
-
-If your code used any of the removed APIs:
-
-1. **OllamaToolCoordinator** → Use `ToolCoordinator` from `src/llm/coordinator.rs`
- ```rust
-   // Old
-   let coordinator = OllamaToolCoordinator::new(client, registry);
-   
-   // New
-   use ares::llm::coordinator::{ToolCoordinator, ToolCallingConfig};
-   let coordinator = ToolCoordinator::new(client, registry, ToolCallingConfig::default());
-   ```
-
-2. **LegacyEmbeddingService** → Use `EmbeddingService`
- ```rust
-   // Old
-   let service = LegacyEmbeddingService::new("model")?;
-   
-   // New
-   let service = EmbeddingService::with_default_model()?;
-   ```
-
-3. **LlamaCppClient::with_params_legacy()** → Use `with_config_params()`
- ```rust
-   // Old
-   let client = LlamaCppClient::with_params_legacy(path, ctx, threads, max_tokens)?;
-   
-   // New
-   let client = LlamaCppClient::with_config_params(path, ctx, threads, max_tokens, 0.7, 0.9)?;
-   ```
-
-## [0.5.0] - 2026-02-01
-
-### Added
-
-- Unified ToolCoordinator: Provider-agnostic multi-turn tool calling orchestration
- - New `ToolCoordinator` struct for managing tool calling across all LLM providers
- - `ToolCallingConfig` for configuring max iterations, parallel tool calls, and timeouts
- - `ConversationMessage` enum for unified message representation
- - New `generate_with_tools_and_history()` method added to `LLMClient` trait
- - Implemented for all 4 providers: OpenAI, Anthropic, Ollama, LlamaCpp
- - Location: `src/llm/coordinator.rs`
-
-### Deprecated
-
-- OllamaToolCoordinator: Deprecated in favor of the new unified `ToolCoordinator`
- - Note: Removed in v0.6.0 - see migration guide above
- - Migrate to `ToolCoordinator` for cross-provider compatibility
-
-## [0.4.0] - 2026-02-01
-
-### Added
-
-- Anthropic Claude API Provider: Full support for Claude models via the Anthropic API
- - New `anthropic` feature flag
- - Supports Claude 3.5 Sonnet, Claude 3 Opus, Haiku, and all Claude model variants
- - Streaming support with tool calling
- - Implements full `LLMClient` trait
- - Location: `src/llm/anthropic.rs`
-
-- Token Usage Tracking: LLM responses now include token usage statistics
- - New `TokenUsage` struct with `prompt_tokens`, `completion_tokens`, `total_tokens`
- - Added `usage` field to `LLMResponse`
- - Tracked across all LLM providers
- - Location: `src/llm/types.rs`
-
-- New Feature Bundles for Local Embeddings:
- - `full-local-embeddings` - Full features with local embeddings (Linux/macOS only)
- - `full-ui-local-embeddings` - Full features with UI and local embeddings
-
-### Changed
-
-- **`full` feature no longer includes `local-embeddings`**: The `local-embeddings` feature has been removed from the `full` feature bundle due to ort-sys linker errors on Windows MSVC. Use `full-local-embeddings` on Linux/macOS if you need local embeddings.
-
-### Fixed
-
-- ort-sys Windows MSVC Linker Error: Added compile-time error for `local-embeddings` feature on Windows MSVC targets
- - Prevents cryptic linker errors by failing fast with a helpful message
- - Users on Windows must use WSL, remote embedding APIs, or Linux/macOS
- - Location: `src/rag/embeddings.rs`
-
-- lru security advisory: Updated `lru` to 0.16.3 to fix RUSTSEC-2026-0002 (stacked borrows unsound in IterMut)
-
-### Security
-
-- RUSTSEC-2026-0002: Fixed by updating `lru` crate to 0.16.3
-
-## [0.3.3] - 2026-01-28
-
-### Fixed
-
-#### Critical (P0)
-
-- Embedding Model Recreation: Fixed bug where embedding model was recreated on every call
- - Model now reused via `OnceLock` pattern, significantly improving performance
- - Location: `src/rag/embeddings.rs`
-
-- Rate Limiter Not Applied: Fixed rate limiting middleware not being applied to routes
- - Added `tower_governor` integration with proper state sharing
- - Location: `src/main.rs`, `Cargo.toml`
-
-- Character Chunking Bug: Fixed chunker splitting in middle of UTF-8 characters
- - Now uses `chars().count()` instead of byte length for character chunking
- - Location: `src/rag/chunker.rs`
-
-#### High priority (P1)
-
-- Refresh Token Invalidation: Fixed refresh tokens not being invalidated on logout
- - Added `delete_session_by_token_hash()` to `DbPool` trait for session cleanup on logout
- - Location: `src/api/handlers/auth.rs`, `src/db/traits.rs`
-
-- Model Config Params Not Passed: Fixed LLM clients ignoring temperature/top_p/max_tokens
- - All LLM clients now properly apply model configuration parameters
- - Location: `src/llm/ollama.rs`, `src/llm/openai.rs`, `src/llm/llamacpp.rs`
-
-- RAG Collection User Isolation: Added user isolation for RAG collections
- - Collections now prefixed with user ID to prevent cross-user access
- - Location: `src/api/handlers/rag.rs`
-
-- TOON Agents Not in Registry: Fixed TOON-defined agents not integrated with AgentRegistry
- - Added `register_toon_agents()` to load agents from TOML config into registry
- - Location: `src/agents/registry.rs`
-
-#### Medium priority (P2)
-
-- LRU Cache Not Evicting: Fixed `LruEmbeddingCache` not properly evicting oldest entries
- - Implemented proper LRU eviction with access ordering
- - Location: `src/rag/cache.rs`
-
-- BM25/Fuzzy Index Persistence: Added persistent BM25 and fuzzy search indices
- - Indices now saved to disk and loaded on startup
- - Location: `src/rag/search.rs`
-
-- Error Handling Inconsistent: Standardized error handling across codebase
- - Added structured `AppError` with consistent error codes and context
- - Location: `src/types/mod.rs`
-
-- Qdrant Missing get() Method: Added missing `get()` method to Qdrant vector store
- - Location: `src/db/qdrant.rs`
-
-#### Low priority (P3)
-
-- Health Endpoint: Added `/health` endpoint for load balancer probes
- - Returns JSON with status, version, and uptime
- - Location: `src/main.rs`
-
-- Logout Endpoint: Added `/api/auth/logout` endpoint
- - Properly invalidates refresh tokens and clears session
- - Location: `src/api/handlers/auth.rs`, `src/api/routes.rs`
-
-- AppError Structured Context: Fixed `AppError` to include structured context
- - Added `context` field for additional error metadata
- - Location: `src/types/mod.rs`
-
-- JWT Secret Validation: Added minimum length validation for JWT secret
- - Errors on startup if JWT_SECRET is less than 32 characters
- - Location: `src/utils/toml_config.rs`
-
-- Streaming Methods Missing: Added `stream_with_system()` and `stream_with_history()` to `LLMClient` trait
- - All LLM provider implementations now support streaming with system prompts and history
- - Location: `src/llm/client.rs`, `src/llm/ollama.rs`, `src/llm/openai.rs`, `src/llm/llamacpp.rs`
-
-- AgentType Extensibility: Made `AgentType` enum extensible with `Custom(String)` variant
- - Added `from_string()` method for parsing unknown agent types
- - Location: `src/types/mod.rs`, `src/agents/*.rs`
-
-### Changed
-
-- Updated test mocks to include new `LLMClient` streaming methods
-- Removed obsolete vector store stubs (already completed in prior version)
-
-## [0.3.2] - 2026-01-28
-
-### Added
-
-- Query-Level Typo Correction: Fuzzy search now corrects typos in search queries
- - `QueryCorrection` struct for vocabulary-based word correction
- - `correct_word()` and `correct_query()` methods using Levenshtein distance
- - `search_bm25_with_correction()` and `search_hybrid_with_correction()` methods
- - Vocabulary built from indexed documents for domain-specific corrections
- - Location: `src/rag/search.rs`
- - Closes GitHub issue #4
-
-- Embedding Cache: In-memory LRU cache for embedding vectors
- - `EmbeddingCache` trait with `get/set/invalidate/clear/stats` methods
- - `LruEmbeddingCache` implementation with SHA-256 hashing, configurable max entries, optional TTL
- - `CachedEmbeddingService` wrapper for transparent caching
- - Thread-safe with `parking_lot` RwLock
- - 12 complete tests
- - Location: `src/rag/cache.rs`
-
-### Changed
-
-- Updated documentation to reflect implemented features
- - `KNOWN_ISSUES.md`: Marked fuzzy search typo issue as resolved
- - `DIR-24_RAG_IMPLEMENTATION_PLAN.md`: Marked embedding cache as implemented
- - `FUTURE_ENHANCEMENTS.md`: Updated embedding cache section
- - `README.md`: Updated version reference
-
-### Removed
-
-- Stale session log file (`session-ses_43bd.md`)
-
-## [0.3.1] - 2026-01-16
-
-### Fixed
-
-- Vector Persistence (CRITICAL): Fixed bug where vectors were not saved to disk
- - Root cause: the HNSW index did not support iteration, so `save_collection()` saved empty files
- - Added `export_all()` method to `HnswIndex` in `crates/ares-vector/src/index.rs`
- - Added `export_all()` method to `Collection` in `crates/ares-vector/src/collection.rs`
- - Updated `save_collection()` in `crates/ares-vector/src/persistence.rs` to actually save vectors
- - Added regression tests: `test_vector_persistence_regression` and `test_metadata_persistence`
-
-- Race Condition in Parallel Model Loading (MEDIUM): Fixed concurrent download failures
- - Root cause: Multiple threads loading fastembed model simultaneously caused conflicts
- - Added per-model initialization locks using `OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>>`
- - Applied locks to `EmbeddingService::new()`, `embed_texts()`, and `embed_sparse()`
- - Location: `src/rag/embeddings.rs`
-
-### Known issues
-
-- Fuzzy Search with Query Typos (LOW): Query "progamming languge" returns 0 results
- - See GitHub issue #4 for details and proposed fix
- - Workaround: Use semantic search or spell queries correctly
-
-## [0.3.0] - 2026-01-13
-
-### Added
-
-- ares-vector: Pure-Rust vector database with HNSW indexing
- - No external dependencies (Qdrant, Milvus, etc. not required)
- - Memory-mapped persistence via `memmap2`
- - Multiple distance metrics: Cosine, Euclidean, Dot Product
- - Thread-safe with `parking_lot` RwLocks
- - Collection management (create, delete, list)
- - Located in `crates/ares-vector/`
-
-- RAG Pipeline: complete document retrieval system
- - Document ingestion with automatic chunking
- - Multiple chunking strategies: word, character, semantic
- - Configurable chunk size and overlap
-
-- Embedding Service: Multi-model embedding support
- - BGE family (small, base, large) via FastEmbed
- - All-MiniLM models (L6, L12)
- - Nomic Embed Text v1.5
- - Qwen3 Embeddings (via Candle)
- - GTE-Modern-BERT (via Candle)
- - Sparse embeddings (SPLADE) for hybrid search
-
-- Multi-Strategy Search: Multiple search algorithms
- - Semantic: Vector similarity search
- - BM25: Traditional TF-IDF keyword matching
- - Fuzzy: Levenshtein distance for typo tolerance
- - Hybrid: Weighted combination of semantic + BM25
-
-- Reranking: Cross-encoder reranking for improved relevance
- - MiniLM-L6-v2 cross-encoder
- - BGE Reranker support
-
-- RAG API Endpoints:
- - `POST /api/rag/ingest` - Ingest documents with chunking
- - `POST /api/rag/search` - Multi-strategy search with optional reranking
- - `GET /api/rag/collections` - List all collections
- - `DELETE /api/rag/collections/{name}` - Delete a collection
-
-- New feature flag: `ares-vector` for pure-Rust vector store
-
-### Changed
-
-- CI Workflow: Added `ares-vector` feature to test matrix across all platforms
-- Feature flags: Now 15+ feature flags (was 12+)
-
-## [0.2.5] - 2024-12-21
-
-### Changed
-
-- Swagger UI is now optional: The interactive API documentation (Swagger UI) is now behind the `swagger-ui` feature flag
- - This reduces the default binary size and build time
- - The core server no longer requires network access during build
- - Enable with `cargo build --features swagger-ui` or use the `full` bundle
- - When enabled, Swagger UI is available at `/swagger-ui/`
-
-- Improved docs.rs compatibility: Documentation builds now work on docs.rs
- - Removed problematic dependencies from docs.rs builds (`llamacpp`, `qdrant`, `swagger-ui`)
- - These features require native compilation or network access. docs.rs does not support them
-
-### Fixed
-
-- docs.rs build failures: Fixed build failures caused by:
- - `utoipa-swagger-ui` requiring network access to download Swagger UI assets
- - `llama-cpp-sys-2` requiring native C++ compilation
- - `qdrant-client` build script requiring filesystem write access
-
-## [0.2.4] - 2024-12-21
-
-### Fixed
-
-- CI workflow: Fixed rust-cache key validation errors caused by commas in feature matrix
-- Clippy errors: Fixed various clippy warnings treated as errors in CI
-- Test compilation: Fixed `ChatCompletionTools` enum pattern matching in OpenAI tests
-
-## 0.2.3
-
-### Added
-
-- CLI Commands: Full-featured command-line interface with colored TUI output
- - `ares-server init` - Scaffold a new A.R.E.S project with all configuration files
- - `ares-server config` - View and validate configuration
- - `ares-server agent list` - List all configured agents
- - `ares-server agent show <name>` - Show details for a specific agent
- - Global options: `--config`, `--verbose`, `--no-color`
- - Init options: `--force`, `--minimal`, `--no-examples`, `--provider`, `--host`, `--port`
-
-- Embedded Web UI: Leptos-based frontend that can be bundled with the backend
- - New `ui` feature flag to embed the UI in the server binary
- - New `full-ui` feature bundle (all features + UI)
- - UI served at `/` when enabled
- - SPA routing support for client-side navigation
-
-- Node.js Runtime Detection: Build-time check for bun, npm, or deno when UI feature is enabled
-
-- CLI Integration Tests: complete test suite for all CLI commands
- - Unit tests for output formatting
- - Unit tests for init scaffolding
- - Integration tests for command execution
-
-### Changed
-
-- Installation Experience: Users can now run `ares-server init` after installing via `cargo install`
- - No longer requires cloning the repository to get started
- - Auto-generates `ares.toml`, `.env.example`, and all TOON configuration files
- - Creates directory structure: `data/`, `config/agents/`, `config/models/`, etc.
-
-- Justfile: Added new commands
- - `just init` - Initialize project using CLI
- - `just build-ui` - Build with embedded UI (auto-detects Node.js runtime)
- - `just build-full-ui` - Build with all features including UI
- - `just run-ui` - Run server with UI feature
- - `just check-node` - Check for available Node.js runtime
-
-- CI Workflow: Updated to include CLI tests and UI builds
- - New `cli-tests` job for CLI integration tests
- - New `build-ui` job for UI feature compilation
- - Tests run on all supported platforms
-
-- Dockerfile: Updated for new CLI and binary name
- - Multi-stage build with UI support
- - Non-root user for improved security
- - Proper binary name (`ares-server`)
-
-- Documentation: complete updates
- - README.md: Added CLI commands, UI feature, troubleshooting, requirements sections
- - QUICK_REFERENCE.md: Added CLI quick reference
- - Added CHANGELOG.md
-
-### Fixed
-
-- Configuration loading no longer requires environment variables for info commands
- - `ares-server config` works without JWT_SECRET set
- - `ares-server agent list/show` works without environment variables
-
-## [0.2.2] - 2024-12-20
-
-### Added
-
-- Hot-reload configuration support for `ares.toml`
-- TOON format support for agent, model, tool, and workflow configurations
-- Dynamic configuration manager for runtime config changes
-- Per-agent tool filtering
-
-### Changed
-
-- Improved error messages for configuration validation
-- Better handling of missing configuration files
-
-## [0.2.1] - 2024-12-15
-
-### Added
-
-- Workflow engine for multi-agent orchestration
-- Deep research endpoint with parallel subagents
-- MCP (Model Context Protocol) server support
-
-### Fixed
-
-- Memory management for long conversations
-- Token counting accuracy for streaming responses
-
-## [0.2.0] - 2024-12-10
-
-### Added
-
-- Multi-provider LLM support (Ollama, OpenAI, LlamaCpp)
-- Tool calling with automatic schema generation
-- JWT-based authentication
-- Swagger UI for API documentation
-- RAG support with semantic search
-- Web search tool (no API key required)
-
-### Changed
-
-- Migrated to Axum web framework
-- Improved streaming response handling
-- Better error handling and logging
-
-## [0.1.0] - 2024-12-01
-
-### Added
-
-- Initial release
-- Basic chat functionality with Ollama
-- SQLite database support
-- Simple agent framework
-- REST API endpoints
+- All 5 execution sites (chat, v1, scheduler, trigger, pipeline) now delegate to `Execute`
+- `Tools`, `Llm`, and `Execute` public methods run through Cordis `waterfall_around` when `EventsService` is on ctx
+- `SkillsService` and `SkillEngine` LLM/tool steps use those same events instead of calling the tool or client directly
+- `resolve_agent` delegates to crate-private `Resolver` when available (legacy fallback retained)
+- Removed `AgentRegistryService` and `LlmFactoryService` wrappers (consumers use types directly)
+- Deleted deprecated `start_background_reload` function and its test
+- Calculator tool registered via `ctx.plugin(CalculatorService)` in addition to legacy path
+- Version bump to 0.9.0
+- `Tools`, `Llm`, `Execute`, and skills remain event-first on `EventsService` waterfalls
+- `run_server` still instantiates Overlay first, then remaining loader entries
+- Scheduler, pipeline, and trigger domain loops remain native ARES engines behind `Execute`
+- `ProviderRegistry` remains on `ares-llm` for `Llm::new` / `AgentRegistry::from_config`
+- Overlay lives in `crates/ares-http/src/overlay.rs`; the server still registers the Overlay factory
 
 ---
 
-[0.6.3]: https://github.com/dirmacs/ares/compare/v0.6.2...v0.6.3
-[0.5.0]: https://github.com/dirmacs/ares/compare/v0.4.0...v0.5.0
-[0.4.0]: https://github.com/dirmacs/ares/compare/v0.3.3...v0.4.0
-[0.3.3]: https://github.com/dirmacs/ares/compare/v0.3.2...v0.3.3
-[0.3.2]: https://github.com/dirmacs/ares/compare/v0.3.1...v0.3.2
-[0.3.1]: https://github.com/dirmacs/ares/compare/v0.3.0...v0.3.1
-[0.3.0]: https://github.com/dirmacs/ares/compare/v0.2.5...v0.3.0
-[0.2.5]: https://github.com/dirmacs/ares/compare/v0.2.4...v0.2.5
-[0.2.4]: https://github.com/dirmacs/ares/compare/v0.2.3...v0.2.4
-[0.2.3]: https://github.com/dirmacs/ares/compare/v0.2.2...v0.2.3
-[0.2.2]: https://github.com/dirmacs/ares/compare/v0.2.1...v0.2.2
-[0.2.1]: https://github.com/dirmacs/ares/compare/v0.2.0...v0.2.1
-[0.2.0]: https://github.com/dirmacs/ares/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/dirmacs/ares/releases/tag/v0.1.0
+## 0.8.0, 2026-08-21
+
+**Service-based architecture with dependency injection.**
+
+### Added
+
+- `cordis` crate: typed `Context` container, `Fiber` lifecycle, `Service` trait, `RegistryService` with plugin pattern, `Loader` with config reconciliation, `EventsService` with 5 dispatch modes, `ReflectService` for hot-reload coordination.
+- Unified services: `UnifiedToolService` (merges static, runtime, and MCP tools), `LlmService` (circuit breaker with failover), `AgentResolverService` (3-tier resolution: tenant, community, system).
+- Handler migration: 177 handlers moved from `State<AppState>` to `State<Arc<Context>>` with `ctx.get::<T>()`.
+- Admin API split from single 190KB file into 15 domain-specific modules.
+- V1 API split from 73KB file into 5 modules.
+- File-watch hot-reload with 500ms debounce (replaces 60s polling).
+- Rhai scripting support for custom tools and services.
+
+### Changed
+
+- `AppState` god-struct (17-22 fields) replaced by `pub type AppState = Arc<Context>`.
+- `build_router(ctx)` is the primary router constructor; `base_router` remains as deprecated shim.
+- Rust toolchain updated to 1.98.
+- All docs humanized (removed AI-sounding prose patterns).
+- `docs/src/SUMMARY.md` now includes Cordis chapters (mapping, remedies, capabilities, baseline, YAGNI, redesign) plus Architecture.
+- mdBook GH-pages rebuilt for 0.8.0 (`gh-pages` branch `docs: rebuild gh-pages book for 0.8.0 Cordis`).
+
+---
+
+## 0.7.3
+
+Previous release line (see git tags). Changes tracked in git history before changelog formalization.
+
+## 0.6.3
+
+**Multi-provider LLM, tenant agents, and enterprise metering.**
+
+This release transforms ARES from a single-provider system into a full multi-provider LLM platform with enterprise-grade tenant management.
+
+### Added
+
+- **Multi-provider LLM routing**: support for 4 providers (Groq, Anthropic, NVIDIA DeepSeek, Ollama) and 11 models through a unified API.
+- **Model tier system**: `fast`, `balanced`, `powerful`, `deepseek`, and `local` tiers with automatic provider routing.
+- **Tenant agent system**: agents stored in the database per tenant. Template-based provisioning with full CRUD via admin API.
+- **Agent templates**: seed templates applied automatically on startup. New tenants receive a default agent set.
+- **Usage metering**: `usage_events` table, `monthly_usage_cache`, and `daily_rate_limits` for tracking tokens, requests, and costs per tenant.
+- **API key authentication**: `Authorization: Bearer ares_xxx` on `/v1/*` routes with tenant scoping.
+- **Enterprise agent templates**: 4 specialized agent templates (`trade-classifier`, `trade-risk`, `trade-monitor`, `trade-reporter`) for the first enterprise deployment.
+- **Tenant-scoped API routes**: both JWT-protected (`/api/trading/*`) and API-key (`/v1/trading/*`) endpoints.
+- **Admin provisioning API**: atomic tenant creation: schema + agents + API key in a single operation.
+
+### Changed
+
+- Chat handler now resolves `tenant_id` from authentication context instead of hardcoded values.
+- Provider configuration moved from code to `ares.toml` for runtime flexibility.
+- Rate limit enforcement now operates at both the provider and tenant level.
+
+### Fixed
+
+- Chat handler tenant_id resolution for multi-tenant requests.
+
+---
+
+## 0.6.2
+
+**Streaming and SSE support.**
+
+### Added
+
+- **Server-Sent Events streaming**: `POST /v1/chat/stream` endpoint for real-time token-by-token responses.
+- **Stream handler**: unified streaming across all providers with consistent SSE format.
+- **Context continuation**: `context_id` parameter for maintaining conversation history across requests.
+
+### Changed
+
+- Response format standardized to `{"response", "agent", "context_id"}` across all endpoints.
+
+---
+
+## 0.6.1
+
+**Tool calling and RAG foundations.**
+
+### Added
+
+- **Tool calling framework**: define tools per agent. ARES manages the tool-call loop, execution, and response assembly.
+- **RAG pipeline**: retrieval-augmented generation with pluggable document stores.
+- **Workflow engine**: chain multiple agents into multi-step workflows with deterministic execution.
+
+### Changed
+
+- Agent configuration schema extended to support tool definitions and RAG settings.
+
+---
+
+## 0.5.0
+
+**JWT authentication and user management.**
+
+### Added
+
+- **User registration and login**: `POST /api/auth/register`, `POST /api/auth/login`.
+- **JWT token lifecycle**: 15-minute access tokens, refresh token rotation, logout/invalidation.
+- **Role-based access**: user roles with permission checks on protected routes.
+- **Admin authentication**: `X-Admin-Secret` header for internal administration endpoints.
+
+### Changed
+
+- All `/api/*` routes now require JWT authentication.
+- Error responses standardized with `error` and `code` fields.
+
+---
+
+## 0.4.0
+
+**PostgreSQL backend and multi-tenant schema.**
+
+### Added
+
+- **PostgreSQL integration**: full migration from in-memory storage to PostgreSQL with `sqlx`.
+- **Auto-migration**: `sqlx::migrate!()` runs on startup. No manual SQL required.
+- **Tenant schema**: `tenants`, `tenant_agents`, and `api_keys` tables with foreign key relationships.
+- **Tenant tiers**: Free, Dev, Pro, and Enterprise tiers with configurable limits.
+
+### Changed
+
+- All state persistence moved from in-memory structures to PostgreSQL.
+- Connection pooling via `sqlx::PgPool` with configurable pool size.
+
+---
+
+For the complete commit history, see the [ARES repository on GitHub](https://github.com/dirmacs/ares).

@@ -4,7 +4,7 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ---
 
-## Unreleased
+## 0.10.0 - 2026-08-26
 
 **Reactive fiber lifecycle, kernel interception points, guarded file writes, and opt-in intelligence controls.**
 

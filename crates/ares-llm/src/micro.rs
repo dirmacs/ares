@@ -7,6 +7,9 @@
 //! no directly parseable JSON is re-requested identically up to
 //! `json_retries` times before substring salvage gets a chance.
 //!
+//! Identical deterministic-class requests (same model, template, and input)
+//! are served from a bounded content-hash cache: see [`MicroCacheConfig`].
+//!
 //! # Example
 //!
 //! ```ignore
@@ -25,9 +28,13 @@
 //! }
 //! ```
 
+use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use parking_lot::Mutex;
 use futures::StreamExt;
 use serde_json::Value;
 
@@ -37,6 +44,45 @@ use ares_types::types::Result;
 /// Default number of identical re-requests after an answer whose JSON could
 /// not be parsed directly, before substring salvage runs.
 pub(crate) const DEFAULT_JSON_RETRIES: u32 = 2;
+
+/// Default maximum number of outcomes kept in the micro-call cache.
+pub(crate) const DEFAULT_CACHE_ENTRIES: usize = 256;
+
+/// Default time-to-live for a cached micro outcome.
+pub(crate) const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(15 * 60);
+
+/// Tuning knobs for the [`MicroEngine`] response cache.
+///
+/// Identical deterministic-class requests — classify/tag style calls whose
+/// answer came straight back as parseable JSON with zero retries — are served
+/// from a bounded least-recently-used map keyed by a content hash over
+/// `(model, system template, input)`. A hit skips the network entirely and
+/// reports `latency_ms: 0` with [`MicroOutcome::cache_hit`] set. Answers
+/// reached through retries or the salvage fallback are NEVER cached: the
+/// repeated or repaired request proves the call was not deterministic-class.
+///
+/// Defaults suit read-mostly enrichment workloads; disable entirely for
+/// intents where a fresh answer matters more than cost.
+#[derive(Debug, Clone)]
+pub struct MicroCacheConfig {
+    /// Master switch; `false` makes every call go to the network.
+    pub enabled: bool,
+    /// Maximum number of cached outcomes; the least recently used entry is
+    /// evicted when the bound is exceeded.
+    pub max_entries: usize,
+    /// How long a cached outcome stays fresh.
+    pub ttl: Duration,
+}
+
+impl Default for MicroCacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_entries: DEFAULT_CACHE_ENTRIES,
+            ttl: DEFAULT_CACHE_TTL,
+        }
+    }
+}
 
 /// One tiny structured request sent to a model.
 ///
@@ -73,6 +119,9 @@ pub struct MicroOutcome {
     /// Number of retries performed after failed attempts: transport errors
     /// and answers whose JSON could not be parsed directly.
     pub retries: u32,
+    /// `true` when this outcome was served from the response cache instead of
+    /// a network call; cached outcomes always report `latency_ms: 0`.
+    pub cache_hit: bool,
 }
 
 /// Bounded-concurrency runner for many tiny structured tasks over one client.
@@ -86,6 +135,77 @@ pub struct MicroEngine {
     max_retries: u32,
     max_concurrency: usize,
     json_retries: u32,
+    cache_config: MicroCacheConfig,
+    cache: Mutex<LruOutcomeCache>,
+}
+
+/// Bounded least-recently-used store of micro outcomes keyed by content hash.
+struct LruOutcomeCache {
+    entries: HashMap<u64, CachedOutcome>,
+    order: VecDeque<u64>,
+}
+
+/// One cached micro answer with the moment it was stored.
+struct CachedOutcome {
+    json: Option<Value>,
+    text: String,
+    stored_at: Instant,
+}
+
+impl LruOutcomeCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    /// Fresh entry for `key`, promoted to most-recently-used; expired or
+    /// missing entries are dropped and `None` is returned.
+    fn get(&mut self, key: u64, ttl: Duration) -> Option<CachedOutcome> {
+        let fresh = self
+            .entries
+            .get(&key)
+            .is_some_and(|entry| entry.stored_at.elapsed() <= ttl);
+        if !fresh {
+            self.remove(key);
+            return None;
+        }
+        self.promote(key);
+        let entry = &self.entries[&key];
+        Some(CachedOutcome {
+            json: entry.json.clone(),
+            text: entry.text.clone(),
+            stored_at: entry.stored_at,
+        })
+    }
+
+    fn insert(&mut self, key: u64, outcome: CachedOutcome, capacity: usize) {
+        self.promote(key);
+        self.entries.insert(key, outcome);
+        while self.entries.len() > capacity.max(1) {
+            match self.order.pop_front() {
+                Some(oldest) => {
+                    self.entries.remove(&oldest);
+                }
+                None => break,
+            }
+        }
+    }
+
+    fn remove(&mut self, key: u64) {
+        self.entries.remove(&key);
+        if let Some(position) = self.order.iter().position(|k| *k == key) {
+            self.order.remove(position);
+        }
+    }
+
+    fn promote(&mut self, key: u64) {
+        if let Some(position) = self.order.iter().position(|k| *k == key) {
+            self.order.remove(position);
+        }
+        self.order.push_back(key);
+    }
 }
 
 impl MicroEngine {
@@ -99,6 +219,8 @@ impl MicroEngine {
             max_retries,
             max_concurrency,
             json_retries: DEFAULT_JSON_RETRIES,
+            cache_config: MicroCacheConfig::default(),
+            cache: Mutex::new(LruOutcomeCache::new()),
         }
     }
 
@@ -107,6 +229,13 @@ impl MicroEngine {
     /// fallback runs. Defaults to [`DEFAULT_JSON_RETRIES`].
     pub fn with_json_retries(mut self, json_retries: u32) -> Self {
         self.json_retries = json_retries;
+        self
+    }
+
+    /// Override the response-cache knobs. Defaults cache up to
+    /// [`DEFAULT_CACHE_ENTRIES`] outcomes for [`DEFAULT_CACHE_TTL`].
+    pub fn with_cache_config(mut self, cache_config: MicroCacheConfig) -> Self {
+        self.cache_config = cache_config;
         self
     }
 
@@ -128,6 +257,20 @@ impl MicroEngine {
         let started = Instant::now();
         let mut retries = 0u32;
         let mut json_retries = 0u32;
+        let key = self.cache_key(task);
+        if self.cache_config.enabled {
+            if let Some(hit) = self.cache.lock().get(key, self.cache_config.ttl) {
+                tracing::debug!(task = task.name, "micro answer served from cache");
+                return Ok(MicroOutcome {
+                    task: task.name.to_string(),
+                    json: hit.json,
+                    text: hit.text,
+                    latency_ms: 0,
+                    retries: 0,
+                    cache_hit: true,
+                });
+            }
+        }
 
         loop {
             match self
@@ -139,12 +282,16 @@ impl MicroEngine {
                     let text = strip_code_fences(&content);
                     match serde_json::from_str::<Value>(text) {
                         Ok(json) => {
+                            if self.cache_config.enabled && retries == 0 && json_retries == 0 {
+                                self.store(key, Some(json.clone()), text);
+                            }
                             return Ok(MicroOutcome {
                                 task: task.name.to_string(),
                                 json: Some(json),
                                 text: text.to_string(),
                                 latency_ms: started.elapsed().as_millis(),
                                 retries,
+                                cache_hit: false,
                             });
                         }
                         Err(_) => {
@@ -172,6 +319,7 @@ impl MicroEngine {
                                 text: text.to_string(),
                                 latency_ms: started.elapsed().as_millis(),
                                 retries,
+                                cache_hit: false,
                             });
                         }
                     }
@@ -184,6 +332,27 @@ impl MicroEngine {
                 }
             }
         }
+    }
+
+    /// Content-hash cache key over `(model, system template, input)`.
+    fn cache_key(&self, task: &MicroTask<'_>) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.client.model_name().hash(&mut hasher);
+        task.system.hash(&mut hasher);
+        task.input.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn store(&self, key: u64, json: Option<Value>, text: &str) {
+        self.cache.lock().insert(
+            key,
+            CachedOutcome {
+                json,
+                text: text.to_string(),
+                stored_at: Instant::now(),
+            },
+            self.cache_config.max_entries,
+        );
     }
 
     /// Run many tasks with bounded fan-out, preserving input order.
@@ -569,5 +738,142 @@ mod tests {
             .expect("run ok");
 
         assert_eq!(outcome.json, Some(serde_json::json!({ "score": 4 })));
+    }
+
+    fn cache_config(max_entries: usize, ttl: Duration) -> MicroCacheConfig {
+        MicroCacheConfig {
+            enabled: true,
+            max_entries,
+            ttl,
+        }
+    }
+
+    #[tokio::test]
+    async fn identical_inputs_serve_cached_outcome() {
+        let client = Arc::new(BehaviorClient::new(|call| {
+            Ok(format!("{{\"call\":{}}}", call))
+        }));
+        let engine = MicroEngine::with_client(client.clone());
+
+        let first = engine.run(&task("check", "payload")).await.expect("run ok");
+        assert_eq!(client.call_count(), 1);
+        assert!(!first.cache_hit);
+
+        let second = engine.run(&task("check", "payload")).await.expect("run ok");
+        assert!(second.cache_hit, "identical request must hit the cache");
+        assert_eq!(second.latency_ms, 0, "cached outcome reports zero latency");
+        assert_eq!(second.retries, 0);
+        assert_eq!(
+            second.json, first.json,
+            "cache must serve the original answer"
+        );
+        assert_eq!(client.call_count(), 1, "cache hit must skip the network");
+
+        let other = engine
+            .run(&task("check", "different payload"))
+            .await
+            .expect("run ok");
+        assert!(!other.cache_hit);
+        assert_eq!(client.call_count(), 2, "a different input is a new key");
+    }
+
+    #[tokio::test]
+    async fn ttl_expiry_refetches() {
+        let client = Arc::new(BehaviorClient::new(|call| {
+            Ok(format!("{{\"call\":{}}}", call))
+        }));
+        let engine = MicroEngine::with_client(client.clone())
+            .with_cache_config(cache_config(8, Duration::from_millis(20)));
+
+        engine.run(&task("ttl", "payload")).await.expect("run ok");
+        let fresh = engine.run(&task("ttl", "payload")).await.expect("run ok");
+        assert!(fresh.cache_hit, "within the TTL the answer comes from cache");
+        assert_eq!(client.call_count(), 1);
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let expired = engine.run(&task("ttl", "payload")).await.expect("run ok");
+        assert!(!expired.cache_hit, "an expired entry must refetch");
+        assert_eq!(client.call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn lru_bounds_evict_oldest() {
+        let client = Arc::new(BehaviorClient::new(|call| {
+            Ok(format!("{{\"call\":{}}}", call))
+        }));
+        let engine = MicroEngine::with_client(client.clone())
+            .with_cache_config(cache_config(2, Duration::from_secs(60)));
+
+        engine.run(&task("lru", "a")).await.expect("run a");
+        engine.run(&task("lru", "b")).await.expect("run b");
+        // Refreshing `a` makes `b` the least recently used entry.
+        let refreshed = engine.run(&task("lru", "a")).await.expect("run a again");
+        assert!(refreshed.cache_hit);
+        assert_eq!(client.call_count(), 2);
+
+        engine.run(&task("lru", "c")).await.expect("run c");
+        assert_eq!(client.call_count(), 3);
+        assert_eq!(
+            engine.cache.lock().entries.len(),
+            2,
+            "capacity bound holds after eviction"
+        );
+
+        // `b` was evicted; `a` survived because its recent hit renewed it.
+        let survivor = engine.run(&task("lru", "a")).await.expect("run a third");
+        assert!(survivor.cache_hit, "recently used entry must survive");
+        assert_eq!(client.call_count(), 3);
+        let evicted = engine.run(&task("lru", "b")).await.expect("run b again");
+        assert!(!evicted.cache_hit, "oldest entry must have been evicted");
+        assert_eq!(client.call_count(), 4);
+    }
+
+    #[tokio::test]
+    async fn salvage_mutated_calls_not_cached() {
+        let client = Arc::new(BehaviorClient::new(|_| {
+            Ok("Sure! {\"score\": 4} — hope that helps.".to_string())
+        }));
+        let engine =
+            MicroEngine::with_client(client.clone()).with_json_retries(0);
+
+        let first = engine
+            .run(&task("salvage", "payload"))
+            .await
+            .expect("salvage yields an outcome");
+        assert_eq!(first.json, Some(serde_json::json!({ "score": 4 })));
+
+        let second = engine
+            .run(&task("salvage", "payload"))
+            .await
+            .expect("second identical call");
+        assert_eq!(
+            client.call_count(),
+            2,
+            "a salvaged answer proves the call was not deterministic-class"
+        );
+        assert!(!second.cache_hit);
+    }
+
+    #[tokio::test]
+    async fn transport_retried_calls_not_cached() {
+        let client = Arc::new(BehaviorClient::new(|call| {
+            if call == 0 {
+                Err(AppError::External("transport down".into()))
+            } else {
+                Ok("{\"late\":true}".to_string())
+            }
+        }));
+        let engine = MicroEngine::with_client(client.clone());
+
+        let first = engine.run(&task("flaky", "payload")).await.expect("run ok");
+        assert_eq!(first.retries, 1);
+
+        let second = engine.run(&task("flaky", "payload")).await.expect("run ok");
+        assert_eq!(
+            client.call_count(),
+            3,
+            "an answer reached through retries must not be cached"
+        );
+        assert!(!second.cache_hit);
     }
 }

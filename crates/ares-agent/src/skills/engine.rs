@@ -10,6 +10,11 @@ use ares_llm::{
 use ares_tools::Tools;
 use ares_types::AppError;
 use sqlx::PgPool;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::EmergencyStop;
 use std::sync::Arc;
 
 
@@ -32,6 +37,49 @@ fn estimated_cost_usd(prompt_tokens: i64, completion_tokens: i64) -> rust_decima
 
 const MAX_SKILL_CALL_DEPTH: usize = 8;
 const RUN_HISTORY_STATUS_SUCCESS: &str = "success";
+/// Stable marker prefixed to delegated-subtask cancellation aborts so
+/// callers can classify them without parsing prose.
+pub const SUBTASK_CANCELLED_MARKER: &str = "subtask_cancelled";
+
+/// Sticky cancel token for one delegated subtask.
+///
+/// Once flipped the token stays cancelled — there is no un-cancel — so a
+/// trigger racing a starting subtask still aborts it at its first call
+/// boundary. Tokens are keyed `"{run_id}/{skill_id}"` in the engine's
+/// registry; [`SkillEngine::cancel_subtask`] is the external trigger and
+/// every execution loop checks its governing token before starting the
+/// next LLM round or tool iteration.
+#[derive(Debug, Default)]
+pub struct SubtaskCancelToken {
+    cancelled: AtomicBool,
+}
+
+impl SubtaskCancelToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Flip the token. Every later [`Self::check`] keeps failing.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    /// Call-boundary gate: `Ok` while the subtask is active, one stable
+    /// [`SUBTASK_CANCELLED_MARKER`] error once it has been cancelled.
+    pub fn check(&self) -> Result<(), String> {
+        if self.is_cancelled() {
+            Err(format!(
+                "{SUBTASK_CANCELLED_MARKER}: delegated subtask was cancelled"
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
 
 /// Fixed cache-friendly preamble for delegated-result self-critique rounds.
 ///
@@ -212,6 +260,10 @@ pub struct SkillEngine {
     llm: Arc<Llm>,
     ambient: AmbientEnrichmentConfig,
     self_check_rounds: Option<u32>,
+    /// Sticky per-delegated-subtask cancel tokens keyed
+    /// `"{run_id}/{skill_id}"`. Entries appear when an external trigger or
+    /// registration names a subtask; execution only ever reads them.
+    cancels: Mutex<HashMap<String, Arc<SubtaskCancelToken>>>,
 }
 
 impl SkillEngine {
@@ -230,6 +282,7 @@ impl SkillEngine {
             llm,
             ambient: AmbientEnrichmentConfig::default(),
             self_check_rounds: None,
+            cancels: Mutex::new(HashMap::new()),
         }
     }
 
@@ -252,6 +305,75 @@ impl SkillEngine {
     pub fn with_self_check_rounds(mut self, rounds: Option<u32>) -> Self {
         self.self_check_rounds = rounds.filter(|r| *r >= 1);
         self
+    }
+    /// Register (or fetch) the sticky cancel token for one delegated
+    /// subtask. Idempotent: repeated registrations return the same token.
+    pub fn register_subtask_cancel(&self, subtask_id: &str) -> Arc<SubtaskCancelToken> {
+        self.cancels
+            .lock()
+            .expect("skill subtask cancel registry poisoned")
+            .entry(subtask_id.to_string())
+            .or_default()
+            .clone()
+    }
+
+    /// External trigger path: flip the sticky cancel token for
+    /// `subtask_id` (e.g. `"{run_id}/{skill_id}"`). Works before the
+    /// subtask starts — a later registration observes the same flipped
+    /// token — so a trigger racing delegation still aborts it at its first
+    /// call boundary. Returns `true` on the first flip of that token,
+    /// `false` when it was already cancelled.
+    pub fn cancel_subtask(&self, subtask_id: &str) -> bool {
+        let mut registry = self
+            .cancels
+            .lock()
+            .expect("skill subtask cancel registry poisoned");
+        let token = registry.entry(subtask_id.to_string()).or_default();
+        !token.cancelled.swap(true, Ordering::SeqCst)
+    }
+
+    fn registered_cancel_token(&self, subtask_id: &str) -> Option<Arc<SubtaskCancelToken>> {
+        self.cancels
+            .lock()
+            .expect("skill subtask cancel registry poisoned")
+            .get(subtask_id)
+            .cloned()
+    }
+
+    /// Delegate one nested `SkillCall`, gated by its per-subtask cancel
+    /// token at every call boundary. A cancelled child aborts cleanly with
+    /// the stable [`SUBTASK_CANCELLED_MARKER`] error; nothing it produced
+    /// integrates into the parent context because the error unwinds before
+    /// any context write. The pre-delegation gate catches triggers that
+    /// landed before the child started; the child re-checks its own key at
+    /// each of its own boundaries.
+    async fn delegate_skill_call(
+        &self,
+        skill_id: &str,
+        input: serde_json::Value,
+        tenant_id: &str,
+        run_id: &str,
+        ctx: &Arc<cordis::Context>,
+        depth: usize,
+    ) -> Result<serde_json::Value, String> {
+        ensure_execution_active(self, ctx, &format!("{run_id}/{skill_id}"))?;
+        let check_input = self.self_check_rounds.map(|_| input.clone());
+        let result = Box::pin(self.execute_skill_at_depth(
+            skill_id,
+            tenant_id,
+            input,
+            run_id,
+            ctx,
+            depth + 1,
+        ))
+        .await?;
+        Ok(match check_input {
+            Some(check_input) => {
+                self.self_check_nested_result(ctx, skill_id, &check_input, result)
+                    .await
+            }
+            None => result,
+        })
     }
 
     fn scoped_tool_context(
@@ -512,6 +634,7 @@ impl SkillEngine {
         depth: usize,
     ) -> Result<serde_json::Value, String> {
         validate_skill_call_depth(depth)?;
+        let subtask_key = format!("{run_id}/{skill_id}");
 
         // 1. Load the skill definition
         let skill_store = SkillStore::new(&self.pool);
@@ -530,6 +653,11 @@ impl SkillEngine {
         let mut step_index: i32 = 0;
 
         for step in steps {
+            // Call boundary: never start the next LLM round or tool
+            // iteration once cancellation latched. The governing token is
+            // re-read from the registry at every boundary so an external
+            // trigger racing the run is honored immediately.
+            ensure_execution_active(self, ctx, &subtask_key)?;
             match step {
                 SkillStep::ToolCall { tool_name, args } => {
                     tracing::info!("Step {}: tool_call {}", step_index, tool_name);
@@ -613,25 +741,10 @@ impl SkillEngine {
                 }
                 SkillStep::SkillCall { skill_id, input } => {
                     tracing::info!("Step {}: skill_call {}", step_index, skill_id);
-                    let check_input = self
-                        .self_check_rounds
-                        .map(|_| input.clone());
-                    let result = Box::pin(self.execute_skill_at_depth(
-                        &skill_id,
-                        tenant_id,
-                        input,
-                        run_id,
-                        ctx,
-                        depth + 1,
-                    ))
+                    let result = Box::pin(
+                        self.delegate_skill_call(&skill_id, input, tenant_id, run_id, ctx, depth),
+                    )
                     .await?;
-                    let result = match check_input {
-                        Some(check_input) => {
-                            self.self_check_nested_result(ctx, &skill_id, &check_input, result)
-                                .await
-                        }
-                        None => result,
-                    };
                     context[&format!("step_{}", step_index)] = successful_step_context(result);
                 }
                 SkillStep::Condition {
@@ -652,6 +765,7 @@ impl SkillEngine {
                                 sub_step_index,
                                 &mut context,
                                 depth,
+                                &subtask_key,
                             )
                             .await?;
                         }
@@ -674,7 +788,9 @@ impl SkillEngine {
         step_index: i32,
         context: &mut serde_json::Value,
         depth: usize,
+        cancel_key: &str,
     ) -> Result<(), String> {
+        ensure_execution_active(self, ctx, cancel_key)?;
         match step {
             SkillStep::ToolCall { tool_name, args } => {
                 tracing::info!("Sub-step {}: tool_call {}", step_index, tool_name);
@@ -747,23 +863,10 @@ impl SkillEngine {
             }
             SkillStep::SkillCall { skill_id, input } => {
                 tracing::info!("Sub-step {}: skill_call {}", step_index, skill_id);
-                let check_input = self.self_check_rounds.map(|_| input.clone());
-                let result = Box::pin(self.execute_skill_at_depth(
-                    skill_id,
-                    tenant_id,
-                    input.clone(),
-                    run_id,
-                    ctx,
-                    depth + 1,
-                ))
+                let result = Box::pin(
+                    self.delegate_skill_call(skill_id, input.clone(), tenant_id, run_id, ctx, depth),
+                )
                 .await?;
-                let result = match check_input {
-                    Some(check_input) => {
-                        self.self_check_nested_result(ctx, skill_id, &check_input, result)
-                            .await
-                    }
-                    None => result,
-                };
                 context[&format!("step_{}", step_index)] = successful_step_context(result);
             }
             SkillStep::Condition {
@@ -782,6 +885,7 @@ impl SkillEngine {
                             sub_step_index,
                             context,
                             depth,
+                            cancel_key,
                         ))
                         .await?;
                     }
@@ -921,6 +1025,30 @@ impl SkillEngine {
 
 fn runtime_tool_error_allows_static_fallback(error: &AppError) -> bool {
     matches!(error, AppError::NotFound(_))
+}
+
+/// Call-boundary gate shared by every skill-execution loop: refuse to start
+/// the next unit of work when the global emergency stop has latched or the
+/// governing per-subtask cancel token flipped. Both abort with the stable
+/// [`SUBTASK_CANCELLED_MARKER`] so callers classify them identically.
+fn ensure_execution_active(
+    engine: &SkillEngine,
+    ctx: &Arc<cordis::Context>,
+    subtask_key: &str,
+) -> Result<(), String> {
+    if let Some(stop) = ctx.get::<EmergencyStop>() {
+        if stop.is_active() {
+            return Err(format!(
+                "{SUBTASK_CANCELLED_MARKER}: emergency stop is active"
+            ));
+        }
+    }
+    // Fresh registry read on every boundary: an external trigger racing the
+    // run is honored at the very next LLM round or tool iteration.
+    if let Some(token) = engine.registered_cancel_token(subtask_key) {
+        token.check()?;
+    }
+    Ok(())
 }
 
 async fn ensure_tenant_tool_allowed(
@@ -1971,5 +2099,273 @@ mod tests {
             .await;
         assert_eq!(degraded, flawed, "first-round failure passes the original through");
         assert_eq!(first_fails.recorded_prompts().len(), 1);
+    }
+    // -------------------------------------------------------------------
+    // Per-subtask cancel tokens
+    // -------------------------------------------------------------------
+
+    /// Fixed run id for cancellation tests; subtask keys are
+    /// `"{CANCEL_TEST_RUN_ID}/{skill_id}"`.
+    const CANCEL_TEST_RUN_ID: &str = "run-cancel-test";
+
+    /// Shared fixture for the cancellation tests: a real test-pool engine
+    /// whose `llm.complete` waterfall records every prompt and can flip
+    /// cancel tokens at exact round boundaries.
+    struct CancelFixture {
+        engine: Arc<SkillEngine>,
+        ctx: Arc<Context>,
+        pool: PgPool,
+        tenant_id: String,
+        seen_prompts: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl CancelFixture {
+        async fn build() -> Option<Self> {
+            let pool = try_test_pool().await?;
+            let tenant_id = format!("tenant-{}", uuid::Uuid::new_v4());
+            TenantAllowlistStore::new(&pool)
+                .allow_model(&tenant_id, "test-model")
+                .await
+                .expect("allow model for tenant");
+
+            // get_client resolves before the waterfall short-circuits, so a
+            // fully-registered unreachable provider keeps the hook in charge.
+            let mut registry = ProviderRegistry::new();
+            registry.register_provider(
+                "local",
+                ares_llm::ProviderConfig::Ollama {
+                    api_key_env: "SKILL_ENGINE_CANCEL_TEST_KEY".to_string(),
+                    base_url: "http://127.0.0.1:9".to_string(),
+                    default_model: "test-model".to_string(),
+                },
+            );
+            registry.register_model(
+                "test-model",
+                ares_llm::ModelConfig {
+                    provider: "local".to_string(),
+                    model: "test-model".to_string(),
+                    temperature: 0.0,
+                    max_tokens: 32,
+                },
+            );
+            let llm = Arc::new(Llm::new(
+                Arc::new(registry),
+                Arc::new(ClientPool::with_defaults()),
+                None,
+            ));
+            let engine = Arc::new(SkillEngine::new(
+                pool.clone(),
+                Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new())),
+                llm,
+            ));
+            let ctx = Context::new_root();
+            ctx.provide(EventsService::new());
+
+            Some(Self {
+                engine,
+                ctx,
+                pool,
+                tenant_id,
+                seen_prompts: Arc::new(Mutex::new(Vec::new())),
+            })
+        }
+
+        /// Install the recording waterfall. `on_prompt` runs after each LLM
+        /// round is recorded — flip a token there to cancel between rounds.
+        fn install_prompt_hook(
+            &self,
+            on_prompt: impl Fn(&str, &SkillEngine) + Send + Sync + Clone + 'static,
+        ) {
+            let events = self.ctx.get::<EventsService>().expect("events service");
+            let prompts_for_handler = Arc::clone(&self.seen_prompts);
+            let engine_for_handler = Arc::clone(&self.engine);
+            events.on_waterfall("llm.complete".into(), move |payload, _next| {
+                let prompts = Arc::clone(&prompts_for_handler);
+                let engine = Arc::clone(&engine_for_handler);
+                let on_prompt = on_prompt.clone();
+                async move {
+                    let prompt = payload
+                        .get("prompt")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    prompts.lock().expect("prompt log").push(prompt.clone());
+                    on_prompt(&prompt, &engine);
+                    Ok(json!({"content": format!("answer-for-{prompt}")}))
+                }
+            });
+        }
+
+        /// Insert a skill owned by the fixture tenant; returns its id.
+        async fn create_skill(&self, label: &str, steps: serde_json::Value) -> String {
+            let label = format!("{label}-{}", uuid::Uuid::new_v4());
+            let created = SkillStore::new(&self.pool)
+                .create_skill(&ares_store::skills::CreateSkillRequest {
+                    tenant_id: self.tenant_id.clone(),
+                    name: label.clone(),
+                    display_name: label.clone(),
+                    description: None,
+                    skill_type: "workflow".to_string(),
+                    steps,
+                    input_schema: None,
+                    output_schema: None,
+                    tools: None,
+                    is_public: false,
+                    created_by: None,
+                })
+                .await
+                .expect("create skill");
+            created.id
+        }
+
+        async fn delete_skill(&self, skill_id: &str) {
+            let _ = SkillStore::new(&self.pool)
+                .delete_skill_for_tenant(&self.tenant_id, skill_id)
+                .await;
+        }
+        /// Insert the `agent_runs` row `run_llm_calls.run_id` requires.
+        async fn seed_run_row(&self, run_id: &str) {
+            sqlx::query(
+                "INSERT INTO tenants (id, name, tier, created_at, updated_at) \
+                 VALUES ($1, $2, 'free', 1, 1) ON CONFLICT (id) DO NOTHING",
+            )
+            .bind(&self.tenant_id)
+            .bind(&self.tenant_id)
+            .execute(&self.pool)
+            .await
+            .expect("seed tenant row");
+            sqlx::query(
+                "INSERT INTO agent_runs (id, tenant_id, agent_name, status, \
+                     input_tokens, output_tokens, duration_ms, created_at) \
+                 VALUES ($1, $2, 'skill_cancel_test', 'completed', 0, 0, 0, 1) \
+                 ON CONFLICT (id) DO NOTHING",
+            )
+            .bind(run_id)
+            .bind(&self.tenant_id)
+            .execute(&self.pool)
+            .await
+            .expect("seed agent run row");
+        }
+
+        fn prompts(&self) -> Vec<String> {
+            self.seen_prompts.lock().expect("prompt log").clone()
+        }
+    }
+
+    fn two_llm_rounds(first: &str, second: &str) -> serde_json::Value {
+        json!([
+            {"type": "llm_call", "prompt": first, "model_tier": "test-model"},
+            {"type": "llm_call", "prompt": second, "model_tier": "test-model"},
+        ])
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancel_token_aborts_subtask_between_rounds() {
+        let Some(fixture) = CancelFixture::build().await else {
+            return;
+        };
+        let skill_id = fixture
+            .create_skill(
+                "cancel-between-rounds",
+                two_llm_rounds("cancel-round-0", "cancel-round-1"),
+            )
+            .await;
+        let subtask_id = format!("{}/{}", CANCEL_TEST_RUN_ID, skill_id);
+        let hook_subtask_id = subtask_id.clone();
+        fixture.install_prompt_hook(move |prompt, engine| {
+            if prompt.contains("round-0") {
+                // External trigger racing the run: flips between rounds.
+                engine.cancel_subtask(&hook_subtask_id);
+            }
+        });
+
+        fixture.seed_run_row(CANCEL_TEST_RUN_ID).await;
+        let err = fixture
+            .engine
+            .execute_skill(
+                &skill_id,
+                &fixture.tenant_id,
+                json!({}),
+                CANCEL_TEST_RUN_ID,
+                &fixture.ctx,
+            )
+            .await
+            .expect_err("cancelled execution must abort");
+
+        assert!(
+            err.contains(SUBTASK_CANCELLED_MARKER),
+            "abort must carry the stable marker, got {err}"
+        );
+        assert_eq!(
+            fixture.prompts(),
+            vec!["cancel-round-0".to_string()],
+            "execution must abort between rounds, not mid-call or after"
+        );
+        assert!(
+            !fixture.engine.cancel_subtask(&subtask_id),
+            "sticky token flips exactly once"
+        );
+
+        fixture.delete_skill(&skill_id).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancelled_result_not_integrated() {
+        let Some(fixture) = CancelFixture::build().await else {
+            return;
+        };
+        let child_id = fixture
+            .create_skill(
+                "cancel-child",
+                two_llm_rounds("child-round-0", "child-round-1"),
+            )
+            .await;
+        let parent_steps = json!([
+            {"type": "llm_call", "prompt": "parent-zero", "model_tier": "test-model"},
+            {"type": "skill_call", "skill_id": child_id, "input": {}},
+            {"type": "llm_call", "prompt": "parent-tail", "model_tier": "test-model"},
+        ]);
+        let parent_id = fixture.create_skill("cancel-parent", parent_steps).await;
+        let hook_child_key = format!("{}/{}", CANCEL_TEST_RUN_ID, child_id);
+        fixture.install_prompt_hook(move |prompt, engine| {
+            if prompt.contains("child-round-0") {
+                // The child produced one partial round; abort it before its
+                // result could integrate into the parent context.
+                engine.cancel_subtask(&hook_child_key);
+            }
+        });
+
+        fixture.seed_run_row(CANCEL_TEST_RUN_ID).await;
+        let err = fixture
+            .engine
+            .execute_skill(
+                &parent_id,
+                &fixture.tenant_id,
+                json!({}),
+                CANCEL_TEST_RUN_ID,
+                &fixture.ctx,
+            )
+            .await
+            .expect_err("cancelled delegation must unwind the parent run");
+
+        assert!(
+            err.contains(SUBTASK_CANCELLED_MARKER),
+            "unwind must carry the stable marker, got {err}"
+        );
+        assert_eq!(
+            fixture.prompts(),
+            vec![
+                "parent-zero".to_string(),
+                "child-round-0".to_string(),
+            ],
+            "parent tail and child round 1 must never start after cancellation"
+        );
+        assert!(
+            !err.contains("answer-for-child-round-0"),
+            "partial child output must not leak into the reported result"
+        );
+
+        fixture.delete_skill(&parent_id).await;
+        fixture.delete_skill(&child_id).await;
     }
 }

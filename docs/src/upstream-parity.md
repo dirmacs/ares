@@ -34,6 +34,16 @@ This file is the audit ledger for those decisions.
 | 17 | Validation errors carry paths | Pre-flight failures surface `message` + `path` issues beside the legacy string |
 | 18 | Logger adopted natively | Ring buffer, effect-owned exporters, per-name routing live in the kernel crate |
 | 19 | Timers adopted natively | Six fiber-scoped primitives share one std-only wheel thread |
+| 20 | Accessor traffic bypasses interception | Name-keyed computed properties resolve outside the `internal/get` / `internal/set` waterfalls entirely |
+| 21 | Intercept layers are ordered and inspectable | Append-on-set keeps the innermost layer effective; `intercept_chain` returns outermost..innermost |
+| 22 | Restart errors keep the old application | `Fiber::update` propagates errors with the fiber still `Active`; a veto parks `vetoed_config` and returns `Ok` |
+| 23 | Config interception covers activation | The `internal/config` waterfall consults on first activation too, not only re-applies |
+| 24 | Module changes fan out through one graph | `change_many` computes the affected set read-only first, reloads each plugin once per transaction, and rollback keeps siblings `Active` (EXCEEDS upstream: no module-graph concept) |
+| 25 | Entries relocate without losing identity | PATCH move-then-update answers 409 on conflict; `/move` renames the `{id}:*` subtree; in-place refresh preserves the fiber (EXCEEDS upstream: flat key list only) |
+| 26 | Subtask cancellation is wired end to end | Sticky cancel tokens honored at step boundaries plus an external trigger (EXCEEDS upstream: reference defines the hook but never wires it) |
+| 27 | Deterministic micro calls are cached | LRU+TTL keyed `(model, system, input)` with `cache_hit` telemetry; salvage/retry results never cached (EXCEEDS upstream: roadmap prose only) |
+| 28 | Guided grammars ride typed hints | Schema-shaped values become `json_schema` everywhere; raw GBNF stays a provider extension; absent hint = byte-identical wire |
+| 29 | Duplicate embeddings cost one backend call | Content-hash dedup on local and HTTP paths fans vectors back to duplicate slots (EXCEEDS upstream: roadmap prose only) |
 
 
 Each row expands below with the claim, the rationale, and the evidence.
@@ -279,6 +289,104 @@ Each row expands below with the claim, the rationale, and the evidence.
 - Rationale: timers must die with the fiber that owns them or they leak firings past teardown; a shared thread keeps thousands of registrations at one thread's cost with no async runtime dependency.
 - Source: `timeout` / `sleep` / `interval` / `interval_stream` / `debounce` / `throttle`, `with_current_fiber`, `Scheduled`, `Interval` in `crates/cordis/src/timer.rs`
 - Tests: `timeout_fires_once_and_disposes_with_fiber`, `timeout_dispose_before_deadline_prevents_fire`, `interval_ticks_repeatedly_and_stops_on_dispose`, `interval_stream_final_err_on_dispose`, `debounce_collapses_bursts`, `throttle_trailing_edge_respected`
+
+### 20. Accessor traffic bypasses interception
+
+- Upstream expectation: every value read or write consults the `internal/get` / `internal/set` veto waterfalls.
+- Claim: name-keyed computed properties (`register_accessor`) resolve OUTSIDE both waterfalls — resolving an accessor never consults or re-enters a veto chain.
+- Detail: `Accessor::{read_only, read_write, setter_only}` installs a getter/setter pair beside the TypeId service store; registration returns an `EffectHandle` whose disposal removes the declaration and every alias.
+- Detail: `Context::alias` binds an alternate name through the SAME registration; duplicate declarations (including alias collisions) are rejected with `DuplicateProvider`.
+- Detail: typed reads surface `CordisError::PropertyTypeMismatch` instead of a silent `None`; writes to a read-only property are refused with `CordisError::ReadOnlyProperty`.
+- Rationale: computed properties are policy plumbing, not provider state — vetoing them would let an interceptor break accessor invariants it cannot see.
+- Source: `Context::register_accessor`, `Accessor`, `Context::alias`, `EffectHandle` in `crates/cordis/src/context.rs`
+- Tests: `accessor_read_write_roundtrip`, `duplicate_accessor_declaration_rejected`, `readonly_property_rejects_set`, `dispose_accessor_resolves_none`, `alias_resolves_same_value`, `accessor_bypasses_intercept_waterfalls`
+
+### 21. Intercept layers are ordered, append-on-set, and inspectable
+
+- Upstream expectation: one intercept binding per key; later registrations replace earlier ones (last-write-wins).
+- Claim: intercept layers per TypeId form an ordered outermost..innermost sequence; NEW registrations APPEND, so the innermost layer stays effective for all existing getters.
+- Detail: append-on-set means no existing caller observes a behavior change when another layer joins.
+- Detail: `Context::intercept_chain(tid)` returns every layer outermost..innermost for inspection and restart-decision logic.
+- Detail: `Context::chains_structurally_equal` compares two chains by shared-instance identity (`Arc::ptr_eq`) per layer pair; erased values carry no comparable contract, so freshly-built values compare unequal by design.
+- Rationale: layered policies need composition without clobbering, and restart decisions need an honest equality test over opaque layers.
+- Source: `Context::intercept_chain`, `Context::chains_structurally_equal`, layer storage in `crates/cordis/src/context.rs`
+- Tests: `chained_layers_append_innermost_effective`, `intercept_chain_returns_all_layers_in_order`
+
+### 22. Restart errors keep the old application; vetoes defer loudly
+
+- Upstream expectation: an update-pass failure leaves the fiber in an unspecified mid-transition state.
+- Claim: `Fiber::update` returns `Result<(), CordisError>` — a restart-path error propagates to the caller and the fiber stays `Active` serving its OLD configuration; an `internal/update` veto parks the deferred config in `Fiber::vetoed_config` and returns `Ok`.
+- Detail: error propagation never disposes effects of the still-running application.
+- Detail: the vetoed config remains inspectable through `vetoed_config()` so operators can see what was declined and why.
+- Rationale: a failed restart must not destroy the working instance, and a silent skip must still be observable.
+- Source: `Fiber::update`, `vetoed_config` in `crates/cordis/src/fiber.rs`
+- Tests: `update_error_stays_active_old_config`, `update_veto_defers_config_and_returns_ok`
+
+### 23. Config interception covers the activation path
+
+- Upstream expectation: config rewriting applies only on later re-applies; first activation runs the raw config.
+- Claim: the `internal/config` waterfall is consulted on the ACTIVATION path too, so rewrites apply on first activation identically to re-applies.
+- Detail: the same non-null-terminal-becomes-effective-config semantics hold on both paths (row 14).
+- Rationale: activation-time-only rewrites would make a policy's effect depend on whether the fiber happened to start fresh.
+- Source: config-waterfall consult in the register/activation path in `crates/cordis/src/registry.rs`
+- Test: `config_waterfall_covers_activation_path`
+
+### 24. Module changes fan out through one dependency graph
+
+- Upstream expectation: no module-level change propagation exists; each watcher event maps to at most one reload target.
+- Claim: `ModuleGraph` maps module keys to dependencies; `change_many` computes the TRANSITIVE affected plugin set read-only FIRST, then reloads each affected plugin EXACTLY ONCE per transaction; a failing reload rolls back that plugin while successfully reloaded siblings stay `Active`.
+- Detail: `ModuleReload` implementations perform the reloads; `ChangeOutcome` classifies the transaction result.
+- Detail: the file watcher's debounced batch fans through a registered `ModuleGraph` when one is provided on the context; WITHOUT registration the watcher path is unchanged (opt-in).
+- Rationale: batched filesystem events must not reload shared dependents N times or leave siblings dead because one peer failed.
+- Source: `ModuleGraph`, `ModuleEntry`, `ModuleReload`, `ChangeOutcome`, `change_many` in `crates/cordis/src/module_graph.rs`; fan-out wiring in `crates/cordis/src/watcher.rs`
+- Tests: `dependency_change_reloads_dependents_transitively`, `batched_changes_reload_each_plugin_once`, `rollback_keeps_successful_siblings_active`, `watcher_module_graph_fan_out_reloads_dependents`, `module_graph_without_registration_is_ignored`
+
+### 25. Entries relocate without losing fiber identity (we exceed upstream)
+
+- Upstream expectation: entries form a flat id-keyed list; relocation means delete-plus-recreate with a fresh fiber.
+- Claim: PATCH accepts optional `parent` / `position` (`EntryPosition`) applied move-THEN-update (invalid placements answer 409 before any mutation), `POST /admin/cordis/entries/{id}/move` relocates an entry with its whole `{id}:*` subtree in one rename cascade, and a valid move preserves fiber identity via in-place refresh.
+- Detail: moving into a descendant is refused; disabled groups move suppressed-then-restored.
+- Detail: invalid moves touch neither the entries file nor the live tree; unknown ids answer 404.
+- Rationale: hierarchical entry organization must not cost consumer-visible dispose/recreate windows.
+- Source: `EntryPosition`, `EntryTree::move_entry`, `subtree_ids`, `Loader::move_entry` in `crates/cordis/src/loader.rs`; `patch` / `move_cordis_entry` handlers in `crates/ares-http/src/api/handlers/admin/cordis.rs`
+- Tests: `move_preserves_fiber_identity_and_lands_update_in_new_parent`, `descendant_move_refused`, `subtree_rename_cascades_descendants`, `disabled_group_move_suppresses_start_then_restores`, `patch_endpoint_moves_entry`, `patch_endpoint_invalid_move_conflicts_without_mutating`
+
+### 26. Subtask cancellation is wired end to end (we exceed upstream)
+
+- Upstream expectation: the reference client defines cancellation hooks but never wires them into its delegation loop.
+- Claim: delegated subtasks register sticky cancel tokens keyed by run/skill id; `SkillEngine::cancel_subtask()` flips a token exactly once and is honored at step boundaries alongside the `EmergencyStop` hook; an aborted subtask integrates nothing into the parent.
+- Detail: quote-aware delegation argument parsing: double-quoted segments are single tokens (backslash escapes inside quotes); `--parallel` latches split-per-token mode with `|` separators ignored, `--model` consumes exactly one token, `--tools` enables the inner tool loop; precedence is flags > profile > global.
+- Rationale: long-running delegated work needs an external off switch that lands between model rounds, not only at process exit.
+- Source: `SubtaskCancelToken`, `SkillEngine::cancel_subtask`, `registered_cancel_token`, step-boundary checks in `crates/ares-agent/src/skills/engine.rs`; `parse_flags` tokenizer in `crates/ares-agent/src/skills/mod.rs`
+- Tests: `cancel_token_aborts_subtask_between_rounds`, `parse_flags_quote_aware_tokens`
+
+### 27. Deterministic micro calls are cached; repaired answers are not (we exceed upstream)
+
+- Upstream expectation: the reference roadmap describes response caching but ships none; every identical micro call re-hits the network.
+- Claim: deterministic-class micro outcomes serve from a bounded LRU map keyed by a content hash over `(model, system template, input)`; answers reached through retries or salvage fallback are NEVER cached.
+- Detail: default 256 entries, 15-minute TTL, master switch via `MicroCacheConfig`.
+- Detail: hits skip the network entirely, report `latency_ms: 0`, and carry the `cache_hit` telemetry flag.
+- Rationale: classify/tag-style enrichment calls dominate micro traffic and their answers are stable; a repeated or repaired request proves the call was NOT deterministic-class, so caching it would pin a bad answer.
+- Source: `MicroCacheConfig`, `MicroOutcome::cache_hit`, `cache_key`, `LruOutcomeCache` in `crates/ares-llm/src/micro.rs`
+- Tests: `identical_inputs_serve_cached_outcome`, `retries_exhausted_falls_back_to_salvage` (salvage path stays uncached by construction)
+
+### 28. Guided grammars ride typed hints with byte-identical absence
+
+- Upstream expectation: constrained output requires per-provider request surgery with no portable hint channel.
+- Claim: `GenerationHints::guided_grammar` carries a schema-shaped JSON value as `response_format` `json_schema` on every OpenAI-compatible path; raw GBNF/EBNF text rides the provider-specific `guided_grammar` extension field on NON-streaming OpenAI-compatible requests; providers without a channel silently ignore the hint; an ABSENT hint leaves the wire byte-identical.
+- Detail: classification is structural — a JSON object with an object root is a schema; anything else is raw grammar text.
+- Rationale: one opt-in hint field covers structured outputs where supported and vendor grammar extensions where they are not, without changing default requests.
+- Source: `GenerationHints::guided_grammar` in `crates/ares-llm/src/client.rs`; classification and `GUIDED_GRAMMAR_EXTENSION` in `crates/ares-llm/src/openai.rs`
+- Test: `grammar_hint_present_reaches_request_builder`
+
+### 29. Duplicate embeddings cost exactly one backend call (we exceed upstream)
+
+- Upstream expectation: the reference roadmap mentions embedding dedup but implements none; every input in a batch hits the backend.
+- Claim: per-request content-hash dedup collapses duplicate inputs (whitespace-normalized SHA-256) BEFORE the backend call on BOTH local and HTTP embedding paths; computed vectors fan back to every duplicate slot.
+- Detail: `DedupPlan` maps duplicates to the first occurrence's slot; callers receive full-length results.
+- Rationale: identical texts in one batch are common (templates, retries) and each costs a paid embedding call.
+- Source: `DedupPlan`, `content_hash_hex`, `normalize_for_dedup` in `crates/ares-rag/src/embeddings.rs`
+- Tests: `dedup_plan_maps_duplicates_to_first_occurrence_slot`, `duplicate_texts_single_backend_call_vectors_fanned_back`, `content_hash_hex_ignores_whitespace_differences_only`
 
 ## Properties we prove beyond the paper
 

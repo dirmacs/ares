@@ -20,6 +20,10 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 - Target-carrying dispatch family: `bail_from` / `waterfall_from` / `waterfall_async_from` run the Bail / Waterfall / around-waterfall chains with an optional per-dispatch `ListenerFilter`; a filtered-out listener skips that one dispatch and stays registered
 - Readiness barriers: `register_with_readiness` takes a composable `ReadinessBarrier` — `ReadinessBarrier::new(pred)`, `.and(..)` / `with_readiness([a, b])` AND-composition (empty is vacuously ready), `.watching([TypeId])` re-kicks the gated fiber when those providers settle through the `ReflectService` fan-out. While the gate is closed the fiber rests inspectable `Pending` — quiet waiting that never becomes `Failed` — with the factory run once up front and strict `get` keeping the service out of consumer reach. Complements (does not replace) availability predicates, which still fail loudly to `Failed`
 - Cascade batching: concurrent config updates against one provider collapse to a single dependent convergence wave. Providers mid-reapply are marked in an in-flight ledger; dependents defer during the window and converge once per settled batch instead of once per patch
+- Name-keyed computed properties: `Context::register_accessor(name, Accessor::{read_only, read_write, setter_only})` installs a computed property beside the TypeId service store and returns an `EffectHandle` whose disposal removes the declaration and every alias. `Context::alias` binds an alternate name through the same registration. Typed reads surface `PropertyTypeMismatch` instead of a silent `None`; writes to a read-only property are refused with `ReadOnlyProperty`; duplicates (including alias collisions) are rejected. Accessor traffic BYPASSES the `internal/get` / `internal/set` intercept waterfalls entirely
+- Layered intercept chains: intercept layers per TypeId form an ordered outermost..innermost sequence; new registrations APPEND, so the innermost layer stays effective for all existing getters (no caller breakage). `Context::intercept_chain` returns every layer in dispatch order, and `Context::chains_structurally_equal` compares two chains by shared-instance identity for restart-decision checks
+- Lifecycle riders: `Fiber::update` returns `Result<(), CordisError>` — an error on the restart path propagates to the caller and the fiber stays `Active` serving its OLD configuration. An `internal/update` veto parks the deferred config in `Fiber::vetoed_config` and returns `Ok`. The `internal/config` waterfall now also covers the activation path, so rewrites apply on first activation, not only on re-applies
+- Module graph fan-out (opt-in): `cordis::module_graph::ModuleGraph` maps module keys to their dependencies and, given a `ModuleReload` implementation, `change_many` computes the TRANSITIVE affected plugin set read-only FIRST, then reloads each affected plugin exactly once per transaction; a failing reload rolls back that plugin while successfully reloaded siblings stay `Active`. When a `ModuleGraph` is registered on the context, the file watcher's debounced batch fans through it; without one, watcher behavior is unchanged
 
 **Logger**
 
@@ -32,6 +36,7 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 **Admin HTTP**
 
 - Structured validation errors on the same PATCH endpoint: a config pre-flight can reject with `ValidationIssue { message, path }` items aggregated in a `ValidationError`; the 4xx body then carries a machine-readable `issues` array beside the legacy `error` string (success carries none, and a failed trial leaves no stale slot behind)
+- Entry moves: PATCH accepts optional `parent` / `position` (`EntryPosition`) applied move-THEN-update — an invalid placement answers 409 without touching the file or the live tree. `POST /admin/cordis/entries/{id}/move` relocates an entry together with its whole `{id}:*` subtree in one rename cascade. A valid move preserves fiber identity through in-place refresh, so consumers never observe a dispose/recreate window
 
 **Tools fence**
 
@@ -42,6 +47,17 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 - Retry-before-salvage JSON policy: the micro engine re-requests a malformed-JSON answer identically up to `json_retries` times (default 2) before the substring-salvage fallback runs
 - Per-provider concurrency governor: optional pool setting `max_in_flight` caps simultaneous dispatches per provider, with `governor_acquire_timeout` (default 30 s) bounding the wait. Permits release only at terminal stream items, and saturation fails closed. Without the setting, behavior is unchanged and no wrappers install
 - Model-profile catalog: one cross-provider `ModelProfile` table (capabilities, context window, speed tier, cost) merging the static tables with runtime catalog entries. `lean_hint` renders the whole catalog for prompt injection in well under 50 tokens, `describe_full` prints one record, and `route` picks the cheapest capable model for a modality. The catalog is opt-in; nothing wires it into default model selection
+- Guided-output grammar hints: `GenerationHints::guided_grammar` carries a schema-shaped value (JSON object with a `"type": "object"` root) as `response_format` `json_schema` on every OpenAI-compatible path; raw GBNF/EBNF-style text rides the provider-specific `guided_grammar` extension field on non-streaming OpenAI-compatible requests instead. Providers without a channel silently ignore the hint, and an ABSENT hint leaves the wire byte-identical
+- Micro-call response cache: deterministic-class micro outcomes are served from a bounded least-recently-used map keyed by a content hash over `(model, system template, input)` — default 256 entries with a 15-minute TTL and a master switch via `MicroCacheConfig`. Hits skip the network entirely, report `latency_ms: 0`, and carry a `cache_hit` telemetry flag. Answers reached through retries or the salvage fallback are NEVER cached
+
+**Agent**
+
+- Per-subtask cancellation: delegated subtasks register sticky cancel tokens keyed by run/skill id; `SkillEngine::cancel_subtask()` flips a token exactly once and is honored at step boundaries alongside the existing `EmergencyStop` hook. An aborted subtask integrates nothing into the parent context
+- Quote-aware delegation arguments: double-quoted segments parse as single tokens that may contain spaces and `|` separators; `--parallel` latches split-per-token mode (separators ignored), `--model` consumes exactly one token, and `--tools` enables the inner tool loop for delegated tasks. Precedence is flags > profile > global
+
+**RAG**
+
+- Embedding dedup per request: duplicate inputs collapse by whitespace-normalized SHA-256 content hash before the backend call on both the local and HTTP embedding paths; computed vectors fan back to every duplicate slot, so callers receive full-length results while identical texts cost exactly one backend call
 
 **Skills**
 

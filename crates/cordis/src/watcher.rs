@@ -254,6 +254,28 @@ pub fn watch_many_with(
                 continue;
             }
 
+            // MODULE GRAPH FAN-OUT: explicit file/plugin edges beside the
+            // service-level TypeId BFS below. Each changed path maps to its
+            // file stem as a module key; when a `ModuleGraph` is provided on
+            // ctx its transitive dependents reload exactly once per settled
+            // batch. No graph registered → zero cost, TypeId path unchanged.
+            if let Some(graph) = ctx_clone.get::<crate::module_graph::ModuleGraph>() {
+                let keys: Vec<String> = changed
+                    .iter()
+                    .filter_map(|p| {
+                        p.file_stem()
+                            .map(|s| s.to_string_lossy().into_owned())
+                    })
+                    .collect();
+                if !keys.is_empty() {
+                    let outcome = graph.change_many(&ctx_clone, &keys);
+                    tracing::info!(
+                        outcome = %outcome.summary(),
+                        "Cordis module-graph fan-out applied"
+                    );
+                }
+            }
+
             tracing::info!(
                 paths = ?changed.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
                 tid = ?tid,
@@ -931,5 +953,93 @@ mod tests {
             outcomes.lock()
         );
         drop(_handle);
+    }
+
+    /// Integration: the debounced batch path feeds changed file stems into a
+    /// registered [`crate::module_graph::ModuleGraph`] as fan-out layer — the
+    /// transitive dependent plugin reloads through the apply seam exactly
+    /// once per settled batch.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn watcher_module_graph_fan_out_reloads_dependents() {
+        use crate::module_graph::{ModuleGraph, ModuleReload};
+        use crate::service::CordisError;
+
+        struct RecordingReload {
+            ops: parking_lot::Mutex<Vec<String>>,
+        }
+        impl ModuleReload for RecordingReload {
+            fn reload(&self, _ctx: &Arc<Context>, plugin: &str) -> Result<(), CordisError> {
+                self.ops.lock().push(format!("reload:{plugin}"));
+                Ok(())
+            }
+            fn rollback(&self, _ctx: &Arc<Context>, plugin: &str) -> Result<(), CordisError> {
+                self.ops.lock().push(format!("rollback:{plugin}"));
+                Ok(())
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let agents_dir = dir.path().join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        let mod_a = agents_dir.join("mod_a.toon");
+        std::fs::write(&mod_a, "v1").unwrap();
+
+        let ctx = Context::new_root();
+        let reflect = ctx.provide(ReflectService::new());
+        reflect.set_context(&ctx);
+
+        // mod_a <- mod_b chain; changing mod_a must transitively reload both.
+        let reloader = Arc::new(RecordingReload {
+            ops: parking_lot::Mutex::new(Vec::new()),
+        });
+        let graph = Arc::new(ModuleGraph::with_reloader(reloader.clone()));
+        graph.register_module("mod_a", vec![], "plugin.a");
+        graph.register_module("mod_b", vec!["mod_a".into()], "plugin.b");
+        ctx.provide_arc(graph);
+
+        let _handle = watch_many(
+            ctx.clone(),
+            reflect,
+            vec![agents_dir.clone()],
+            TypeId::of::<crate::ReflectService>(),
+        )
+        .expect("watcher should start");
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        std::fs::write(&mod_a, "v2").unwrap();
+
+        // Settle window is WATCH_DEBOUNCE (500 ms); allow generous headroom.
+        let settled = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if !reloader.ops.lock().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .is_ok();
+        let ops = reloader.ops.lock().clone();
+        assert!(settled, "module-graph fan-out never fired; ops={ops:?}");
+        // Both plugins reloaded, each exactly once, propagation order.
+        assert_eq!(ops, s(&["reload:plugin.a", "reload:plugin.b"]));
+        drop(_handle);
+    }
+
+    /// Sanity: without a registered ModuleGraph the watcher path stays
+    /// unchanged (`change_many` on a fresh empty graph classifies Ignored and
+    /// touches no plugin).
+    #[tokio::test]
+    async fn module_graph_without_registration_is_ignored() {
+        use crate::module_graph::{ChangeOutcome, ModuleGraph};
+
+        let graph = ModuleGraph::new();
+        let ctx = Context::new_root();
+        let outcome = graph.change_many(&ctx, &["anything".to_string()]);
+        assert_eq!(outcome, ChangeOutcome::Ignored);
+    }
+
+    fn s(items: &[&str]) -> Vec<String> {
+        items.iter().map(|i| i.to_string()).collect()
     }
 }

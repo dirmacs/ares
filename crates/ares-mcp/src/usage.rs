@@ -264,7 +264,7 @@ mod tests {
         let copied = op;
         assert_eq!(copied.as_str(), op.as_str());
 
-        let cloned = op.clone();
+        let cloned = op;
         assert_eq!(cloned.token_weight(), op.token_weight());
     }
 

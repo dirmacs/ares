@@ -13,8 +13,10 @@ default = []
 # Compile-time factory collection (mirrors the server root feature)
 inventory = ["dep:inventory", "cordis/inventory"]
 search-tools = ["dep:daedra", "dep:scraper"]
-mcp = ["dep:ares-mcp", "ares-mcp/mcp"]
+mcp = ["dep:ares-mcp", "ares-mcp/mcp", "ares-mcp/postgres"]
 postgres = ["dep:sqlx", "dep:ares-store", "ares-store/postgres"]
+# Sandboxed script engines (boa JS + rhai); the root facade enables this by default
+script-tools = ["dep:boa_engine", "dep:rhai"]
 
 [dependencies]
 ares-types = { workspace = true }
@@ -36,8 +38,8 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 daedra = { version = "0.1.4", optional = true }
 scraper = { version = "0.25.0", optional = true }
-boa_engine = "0.20"
-rhai = { workspace = true }
+boa_engine = { version = "0.20", optional = true }
+rhai = { workspace = true, optional = true }
 sqlx = { workspace = true, optional = true }
 
 [dev-dependencies]

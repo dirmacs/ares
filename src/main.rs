@@ -1556,7 +1556,7 @@ mod boot_tests {
         )
         .expect("write entries");
 
-        let _ = init_tracing("debug");
+        init_tracing("debug");
         let ctx = Context::new_root();
         ctx.plugin(cordis::ReflectService::new())
             .await

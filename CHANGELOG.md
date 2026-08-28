@@ -4,6 +4,34 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ---
 
+## 0.10.1 - 2026-08-28
+
+**Switchable http, cli, and script features. A real headless build. A complete facade.**
+
+### Added
+
+- Root features `http`, `cli`, and `script-tools`. All three are on by default, so the product build is unchanged. `http` selects the Axum stack (`ares-http`, `axum`, `tower-http`, `tower_governor`, `utoipa`). `cli` selects the command-line build (`clap`, `owo-colors`, `reqwest`, `dotenvy`, `tracing-subscriber`). `script-tools` selects the Boa and Rhai tool engines in `ares-tools`.
+- Feature `ollama` on the root package and on `ares-agent`. Both forward `ares-llm/ollama`. Neither is a default.
+- `required-features = ["http", "cli"]` on the `ares-server` binary target. A build without them skips the binary instead of compiling it.
+- `examples/headless.rs` in the root package. It imports only `ares_server` paths and proves the facade covers the library guide.
+- Facade re-exports in `src/lib.rs`: `Entry`, `CordisError`, `Disposable`, `EventsService`, `FiberId`, `ServiceInitFuture`, `TypedEvent` from the kernel; `AgentResponse`, `AgentSource`, `ContextProvider`, `ExecutionMetadata`, `RunTracker` from `ares-agent`; `ProviderConfig`, `ProviderRegistry`, `TokenUsage` from `ares-llm`; `CalculatorConfig`, `CalculatorService` from `ares-tools`; `Message`, `ToolCall` from `ares-types`. Embedders no longer add `ares-cordis` to follow the docs.
+- Version `0.10.1`. The nine internal path-dep pins match it.
+
+### Changed
+
+- `--no-default-features` compiles the library without axum, clap, sqlx, Ollama, Boa, or Rhai. The headless claim in the README and the library guide is now true.
+- `ares-agent` no longer force-enables `ares-llm/ollama` on its dependency line. The provider still arrives through the `ollama` feature or the `postgres` chain, so the server build keeps it.
+- `ares-agent`, `ares-llm`, `ares-store`, and `ares-http` now use `cordis` with `default-features = false`. Each keeps its own `inventory` forward, so the kernel default no longer pulls `inventory` into every build.
+- Default features are `postgres`, `openai`, `ares-vector`, `mcp`, `inventory`, `rhai-policy`, `http`, `cli`, `script-tools`. Forwards to optional deps use `dep?/feature` syntax, so one feature can no longer force an optional dependency on.
+- `ares-mcp` is optional on the root package and the `mcp` feature enables it.
+
+### Removed
+
+- 19 unused root dependencies: `tower`, `tower-sessions`, `argon2`, `jsonwebtoken`, `config`, `async-stream`, `lancor`, `anyhow`, `schemars`, `rmcp`, `notify`, `arc-swap`, `toml`, `dirs`, `rand`, `sha2`, `hex`, `cron`, `thiserror`. Nothing in `src/` referenced them.
+- `futures`, `toon-format`, and `parking_lot` moved to `[dev-dependencies]`. Only tests use them.
+
+---
+
 ## 0.10.0 - 2026-08-26
 
 **Reactive fiber lifecycle, kernel interception points, guarded file writes, and opt-in intelligence controls.**

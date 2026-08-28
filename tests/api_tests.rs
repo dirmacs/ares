@@ -1,3 +1,5 @@
+#![cfg(feature = "http")]
+
 use axum::{routing::get, Router};
 use axum_test::TestServer;
 use serde_json::json;

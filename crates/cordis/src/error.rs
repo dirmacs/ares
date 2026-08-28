@@ -170,7 +170,7 @@ mod tests {
         assert!(plain.validation_error().is_none());
 
         // The aggregate serializes for API payloads.
-        let json = serde_json::to_value(&roundtripped).expect("serialize");
+        let json = serde_json::to_value(roundtripped).expect("serialize");
         assert_eq!(
             json,
             serde_json::json!({

@@ -770,9 +770,9 @@ mod tests {
         assert_eq!(detector.check("short"), LoopStatus::Ok);
         assert_eq!(detector.check("short"), LoopStatus::Ok);
         let long = "This output is long enough for custom config.";
-        assert_eq!(detector.check(&long), LoopStatus::Ok);
-        assert_eq!(detector.check(&long), LoopStatus::Ok);
-        match detector.check(&long) {
+        assert_eq!(detector.check(long), LoopStatus::Ok);
+        assert_eq!(detector.check(long), LoopStatus::Ok);
+        match detector.check(long) {
             LoopStatus::LoopDetected { .. } => {}
             other => panic!("custom threshold should detect loop, got {other:?}"),
         }

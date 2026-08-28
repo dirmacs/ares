@@ -1072,15 +1072,12 @@ mod tests {
 
         // Emission is success-only: drain briefly and assert nothing fired.
         let mut saw_fired = false;
-        loop {
-            match tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await {
-                Ok(Ok((event, _))) => {
-                    if event == "trigger.fired" {
-                        saw_fired = true;
-                        break;
-                    }
-                }
-                _ => break,
+        while let Ok(Ok((event, _))) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
+        {
+            if event == "trigger.fired" {
+                saw_fired = true;
+                break;
             }
         }
         assert!(

@@ -142,8 +142,9 @@ mod tests {
 
     #[test]
     fn result_type_alias_accepts_ok() {
-        let ok: Result<i32> = Ok(7);
-        assert_eq!(ok.unwrap(), 7);
+        let value = 7;
+        let ok: Result<i32> = Ok(value);
+        assert!(matches!(ok, Ok(got) if got == value));
     }
 
     #[test]

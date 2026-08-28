@@ -6,6 +6,9 @@
 //! cannot be referenced from an integration test. Instead this test proves
 //! collection for every LIBRARY crate the binary links, and the live smoke
 //! (boot + entries apply) covers the server-owned factories end to end.
+//! Gated on `http`: this file force-links `ares_http`, now an optional
+//! dependency of this package, and asserts its `Http` factory.
+#![cfg(feature = "http")]
 
 #[test]
 fn server_libraries_collect_full_factory_set() {

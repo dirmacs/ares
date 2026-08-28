@@ -1284,6 +1284,55 @@ pub fn reflect_notify_stub(ctx: &Arc<cordis::Context>) {
     let _ = tid;
 }
 
+/// Derive the tenant id from the context's isolate namespace for [`Llm`],
+/// stripping a leading `tenant:`/`user:` prefix.
+///
+/// Isolate labels win. When unlabeled for `Llm`, falls back to a
+/// [`ares_types::models::TenantContext`] intercept (`tenant_id` if non-empty).
+/// Empty labels/ids yield `None` (fleet-wide resolution).
+pub(crate) fn tenant_from_ctx(ctx: &std::sync::Arc<cordis::Context>) -> Option<String> {
+    ctx.isolate_label(std::any::TypeId::of::<crate::Llm>())
+        .and_then(|label| {
+            label
+                .strip_prefix("tenant:")
+                .or_else(|| label.strip_prefix("user:"))
+                .map(|s| s.to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .or_else(|| {
+            ctx.get::<ares_types::models::TenantContext>()
+                .map(|tc| tc.tenant_id.clone())
+                .filter(|s| !s.is_empty())
+        })
+}
+
+// Cordis Service impl — allows ctx.get::<ProviderRegistry>() for crate wiring.
+// Per-tenant provider-secret isolate labels key on TypeId::of::<Llm>(), not this type.
+impl cordis::Service for ProviderRegistry {
+    fn name(&self) -> &'static str {
+        "provider_registry"
+    }
+    fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+    fn check(&self) -> bool {
+        true
+    }
+}
+
+// Cordis Service impl — allows direct ctx.get::<ConfigBasedLLMFactory>() without wrapper
+impl cordis::Service for ConfigBasedLLMFactory {
+    fn name(&self) -> &'static str {
+        "llm_factory"
+    }
+    fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+    fn check(&self) -> bool {
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2105,54 +2154,5 @@ mod tests {
         ));
         let isolated = intercepted.isolate::<crate::Llm>("tenant:from-isolate");
         assert_eq!(tenant_from_ctx(&isolated), Some("from-isolate".to_string()));
-    }
-}
-
-/// Derive the tenant id from the context's isolate namespace for [`Llm`],
-/// stripping a leading `tenant:`/`user:` prefix.
-///
-/// Isolate labels win. When unlabeled for `Llm`, falls back to a
-/// [`ares_types::models::TenantContext`] intercept (`tenant_id` if non-empty).
-/// Empty labels/ids yield `None` (fleet-wide resolution).
-pub(crate) fn tenant_from_ctx(ctx: &std::sync::Arc<cordis::Context>) -> Option<String> {
-    ctx.isolate_label(std::any::TypeId::of::<crate::Llm>())
-        .and_then(|label| {
-            label
-                .strip_prefix("tenant:")
-                .or_else(|| label.strip_prefix("user:"))
-                .map(|s| s.to_string())
-                .filter(|s| !s.is_empty())
-        })
-        .or_else(|| {
-            ctx.get::<ares_types::models::TenantContext>()
-                .map(|tc| tc.tenant_id.clone())
-                .filter(|s| !s.is_empty())
-        })
-}
-
-// Cordis Service impl — allows ctx.get::<ProviderRegistry>() for crate wiring.
-// Per-tenant provider-secret isolate labels key on TypeId::of::<Llm>(), not this type.
-impl cordis::Service for ProviderRegistry {
-    fn name(&self) -> &'static str {
-        "provider_registry"
-    }
-    fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
-        Box::pin(async { Ok(None) })
-    }
-    fn check(&self) -> bool {
-        true
-    }
-}
-
-// Cordis Service impl — allows direct ctx.get::<ConfigBasedLLMFactory>() without wrapper
-impl cordis::Service for ConfigBasedLLMFactory {
-    fn name(&self) -> &'static str {
-        "llm_factory"
-    }
-    fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
-        Box::pin(async { Ok(None) })
-    }
-    fn check(&self) -> bool {
-        true
     }
 }

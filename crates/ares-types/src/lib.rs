@@ -20,8 +20,10 @@ mod tests {
             "prefix".into(),
             "key".into(),
         );
-        let result: Result<()> = Err(AppError::NotFound("missing".into()));
-        assert!(matches!(result.unwrap_err().code(), ErrorCode::NotFound));
+        let err = AppError::NotFound("missing".into());
+        assert!(matches!(err.code(), ErrorCode::NotFound));
+        let result: Result<()> = Err(err);
+        assert!(result.is_err());
         assert_eq!(ctx.quota.requests_per_month, quota.requests_per_month);
         assert_eq!(QuotaExceeded::Monthly.message(), "Monthly request quota exceeded");
     }

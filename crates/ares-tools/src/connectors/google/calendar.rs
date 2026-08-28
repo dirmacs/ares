@@ -421,6 +421,9 @@ mod tests {
     use wiremock::matchers::{bearer_token, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    // Client factory for a full request-shape test; current tests mount the
+    // mocks but cannot reach this client without a mocked DB credential store.
+    #[allow(dead_code)]
     fn mock_client(server_uri: &str) -> GoogleClient {
         use ares_store::MasterKey;
         use sqlx::PgPool;

@@ -300,7 +300,7 @@ mod alert_tests {
         let alert = resolved_alert();
         let json = serde_json::to_value(&alert).unwrap();
         let restored: Alert = serde_json::from_value(json).unwrap();
-        assert_eq!(restored.resolved, true);
+        assert!(restored.resolved);
         assert_eq!(restored.resolved_at, Some(1_700_000_200));
         assert_eq!(restored.resolved_by.as_deref(), Some("admin"));
     }

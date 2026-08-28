@@ -1185,7 +1185,7 @@ mod tests {
             .bind("product")
             .bind("Broken")
             .bind(Option::<String>::None)
-            .bind(&serde_json::json!({ "model": "default", "parallel_tools": "yes" }))
+            .bind(serde_json::json!({ "model": "default", "parallel_tools": "yes" }))
             .bind(now_ts)
             .execute(&pool)
             .await
@@ -1229,7 +1229,7 @@ mod tests {
             .bind("product")
             .bind("Broken")
             .bind(Option::<String>::None)
-            .bind(&serde_json::json!({ "model": "" }))
+            .bind(serde_json::json!({ "model": "" }))
             .bind(now_ts)
             .execute(&pool)
             .await

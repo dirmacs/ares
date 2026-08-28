@@ -130,7 +130,7 @@ pub async fn reload_entries_from_disk(
 mod tests {
     use super::*;
     use crate::context::Context;
-    use crate::loader::{EntryTree, Loader};
+    use crate::loader::EntryTree;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// Minimal factory providing one Probe service; instance value mirrors

@@ -9,10 +9,11 @@
 //! registration first.
 //!
 //! Feature notes: the root package has no standalone `rhai`/`scheduler`/
-//! `pipeline`/`trigger`/`http` features — `postgres` (default) pulls the
-//! engines, `rhai-policy` (default) pulls Rhai, and `Http` is registered by
-//! the binary's own fallback chain only when the optional dep is active, so
-//! it is asserted via the runtime probe below rather than compile-time cfg.
+//! `pipeline`/`trigger` features — `postgres` (default) pulls the engines and
+//! `rhai-policy` (default) pulls Rhai. The `http` feature (default) gates the
+//! optional `ares-http` dependency; this whole file is gated on it below, so
+//! the `Http` factory is asserted unconditionally here.
+#![cfg(feature = "http")]
 
 use cordis::PluginRegistry;
 
@@ -28,8 +29,9 @@ fn inventory_registry_matches_expected_factory_set() {
     ares_tools::register_plugins(&force);
     ares_llm::register_plugins(&force);
     ares_agent::register_plugins(&force);
-    // ares_http is an unconditional dependency of this package; force-link
-    // it so its factory submissions survive dead-code elimination.
+    // ares_http is an optional (`http` feature) dependency and this file
+    // only compiles with `http` on; force-link it so its factory
+    // submissions survive dead-code elimination.
     ares_http::register_plugins(&force);
     drop(force);
 

@@ -982,7 +982,7 @@ mod tests {
         };
         let json = serde_json::to_string(&config).unwrap();
         let restored: UserAgentExtraConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.parallel_tools, false);
+        assert!(!restored.parallel_tools);
         assert_eq!(restored.max_tool_iterations, 5);
         assert_eq!(restored.custom.get("tier"), Some(&serde_json::json!("pro")));
         assert_eq!(restored.custom.get("quota"), Some(&serde_json::json!(100)));

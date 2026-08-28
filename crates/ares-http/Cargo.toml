@@ -20,7 +20,7 @@ postgres = [
     "ares-agent/workflows",
     "ares-tools/postgres",
 ]
-mcp = ["dep:ares-mcp", "ares-mcp/mcp", "ares-tools/mcp"]
+mcp = ["dep:ares-mcp", "ares-mcp/mcp", "ares-mcp/postgres", "ares-tools/mcp"]
 openai = ["ares-llm/openai"]
 swagger-ui = ["dep:utoipa-swagger-ui"]
 inventory = ["dep:inventory", "cordis/inventory"]
@@ -30,7 +30,7 @@ local-embeddings = ["ares-rag/local-embeddings"]
 ares-vector = ["dep:ares-vector", "ares-store/ares-vector"]
 
 [dependencies]
-cordis = { workspace = true }
+cordis = { workspace = true, default-features = false }
 ares-types = { workspace = true }
 ares-agent = { workspace = true }
 ares-tools = { workspace = true }

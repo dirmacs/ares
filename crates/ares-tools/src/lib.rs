@@ -8,7 +8,9 @@ pub mod fence;
 pub mod http_tool;
 pub mod plugins;
 pub(crate) mod registry;
+#[cfg(feature = "script-tools")]
 pub mod rhai_tool;
+#[cfg(feature = "script-tools")]
 pub mod script_tool;
 pub mod tool_service;
 pub mod tools;
@@ -37,6 +39,7 @@ pub mod connectors;
 pub use calculator::{Calculator, CalculatorConfig, CalculatorService};
 pub use plugins::register_plugins;
 pub use registry::Tool;
+#[cfg(feature = "script-tools")]
 pub use rhai_tool::{RhaiTool, RhaiToolConfig};
 pub use tool_service::Tools;
 

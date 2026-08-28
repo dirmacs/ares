@@ -758,7 +758,7 @@ mod tests {
         assert!(req_ctx.get::<ModelOverride>().is_some());
         assert_eq!(req_ctx.get::<ModelOverride>().unwrap().model, "gpt-4o-mini");
         // Llm composition fields exist
-        assert!(!Arc::as_ptr(&svc.provider_registry).is_null());
+        let _ = Arc::clone(&svc.provider_registry);
         let _ = svc.catalog.clone();
         let _ = svc.pool.provider_names();
         // Service check guarded withdrawal comment path

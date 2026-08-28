@@ -1,3 +1,5 @@
+#![cfg(feature = "http")]
+
 use axum::{
     routing::{get, post},
     Json, Router,

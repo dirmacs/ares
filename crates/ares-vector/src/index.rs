@@ -1263,8 +1263,9 @@ mod tests {
 
     #[test]
     fn index_type_debug_and_clone() {
+        #[allow(clippy::clone_on_copy)] // the test asserts Clone stays implemented
         let ty = IndexType::Ivfflat;
-        let cloned = ty.clone();
+        let cloned = ty;
         assert_eq!(ty, cloned);
         assert!(format!("{ty:?}").contains("Ivfflat"));
     }

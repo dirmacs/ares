@@ -2,39 +2,6 @@
 //!
 //! These tests verify the connection pooling functionality for LLM clients.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
-
-// Mock imports for testing
-use async_trait::async_trait;
-
-/// A mock LLM client for testing pool behavior
-#[derive(Clone)]
-struct MockLLMClient {
-    id: usize,
-    model: String,
-    call_count: Arc<AtomicUsize>,
-}
-
-impl MockLLMClient {
-    fn new(id: usize) -> Self {
-        Self {
-            id,
-            model: format!("mock-model-{}", id),
-            call_count: Arc::new(AtomicUsize::new(0)),
-        }
-    }
-
-    fn with_shared_counter(id: usize, counter: Arc<AtomicUsize>) -> Self {
-        Self {
-            id,
-            model: format!("mock-model-{}", id),
-            call_count: counter,
-        }
-    }
-}
-
 #[cfg(test)]
 mod pool_config_tests {
     use ares_llm::pool::PoolConfig;

@@ -1307,7 +1307,7 @@ mod tests {
         let summaries = list_skills(&config);
         // Should still load; description defaults to empty string
         if !summaries.is_empty() {
-            assert!(summaries[0].description.is_empty() || summaries[0].description.len() > 0);
+            assert!(summaries[0].description.is_empty());
         }
     }
 

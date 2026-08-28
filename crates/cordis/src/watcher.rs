@@ -411,7 +411,7 @@ mod tests {
         let handle = watch_cordis_entries(
             ctx.clone(),
             reflect.clone(),
-            dir.path().to_path_buf(),
+            dir.path(),
             file_path.clone(),
             TypeId::of::<FooService>(),
         )

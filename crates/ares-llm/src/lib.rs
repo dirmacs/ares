@@ -114,7 +114,7 @@ pub mod openai;
 pub use capabilities::{
     CapabilityRequirements, CapabilityRequirementsBuilder, ModelCapabilities, ModelWithCapabilities,
 };
-pub use client::{GenerationHints, LLMClient, LLMClientFactory, LLMResponse, Provider};
+pub use client::{GenerationHints, LLMClient, LLMClientFactory, LLMResponse, Provider, TokenUsage};
 pub use compact::{
     CompactConfig, CompactEvent, CompactionSnapshot, CompactionState, Compactor, TurnEntry,
 };

@@ -27,7 +27,7 @@ postgres = ["dep:sqlx", "ares-store/postgres"]
 ares-types = { workspace = true }
 ares-tools = { workspace = true }
 ares-store = { workspace = true, optional = true }
-cordis = { workspace = true }
+cordis = { workspace = true, default-features = false }
 inventory = { workspace = true, optional = true }
 chrono = { workspace = true }
 sqlx = { workspace = true, optional = true }

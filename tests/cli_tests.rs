@@ -2,6 +2,7 @@
 //!
 //! Tests the command-line interface functionality including the init command,
 //! config command, and agent commands.
+#![cfg(feature = "cli")]
 
 use std::fs;
 use std::process::Command;

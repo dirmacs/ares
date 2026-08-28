@@ -21,3 +21,21 @@ jobs:
         run: cargo install cargo-crap
       - name: Run CRAP check
         run: cargo crap --workspace --format json --threshold 30 --fail-above
+  headless:
+    name: Headless Facade Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check headless library build
+        run: cargo check -p ares-server --lib --no-default-features --features openai
+      - name: Check headless example (facade completeness)
+        run: cargo check -p ares-server --example headless --no-default-features --features openai
+      - name: Assert headless dependency tree
+        run: |
+          if cargo tree -p ares-server -e normal --no-default-features --features openai \
+            | grep -E '^(axum|ares-http|clap|tower|tower-http|tower-sessions|tower_governor|boa_engine|rhai|ollama-rs|sqlx|ares-mcp|rmcp|argon2|jsonwebtoken) '; then
+            echo "::error::headless build pulled a web/CLI/script dependency into the tree"
+            exit 1
+          fi

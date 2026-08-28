@@ -13,6 +13,7 @@ default = []
 # Compile-time factory collection (mirrors the server root feature)
 inventory = ["dep:inventory", "cordis/inventory"]
 postgres = ["dep:sqlx", "dep:ares-store", "ares-store/postgres", "ares-llm/postgres", "ares-llm/ollama", "ares-tools/postgres"]
+ollama = ["ares-llm/ollama"]
 eruka-context = []
 scheduler = ["postgres", "dep:cron"]
 pipeline = ["postgres"]
@@ -22,10 +23,10 @@ workflows = ["postgres"]
 
 [dependencies]
 ares-types = { workspace = true }
-ares-llm = { workspace = true, features = ["ollama"] }
+ares-llm = { workspace = true }
 ares-tools = { workspace = true }
 ares-store = { workspace = true, optional = true }
-cordis = { workspace = true }
+cordis = { workspace = true, default-features = false }
 inventory = { workspace = true, optional = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }

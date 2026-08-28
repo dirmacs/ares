@@ -131,20 +131,6 @@ impl ObservabilitySink for RunObservability {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn run_cost_aggregation_request_preserves_run_identity() {
-        let req = run_cost_aggregation_request("run-1", "tenant-a", "agent-a", 42);
-        assert_eq!(req.run_id, "run-1");
-        assert_eq!(req.tenant_id, "tenant-a");
-        assert_eq!(req.agent_name, "agent-a");
-        assert_eq!(req.duration_ms, 42);
-    }
-}
-
 #[cfg(feature = "postgres")]
 impl RunObservability {
     /// Check whether the tenant's budget would be exceeded by the estimated cost.
@@ -263,5 +249,19 @@ impl RunObservability {
         if let Err(e) = store.upsert_run_cost(&record).await {
             tracing::warn!(error = %e, run_id = %self.run_id, "Failed to upsert run cost");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_cost_aggregation_request_preserves_run_identity() {
+        let req = run_cost_aggregation_request("run-1", "tenant-a", "agent-a", 42);
+        assert_eq!(req.run_id, "run-1");
+        assert_eq!(req.tenant_id, "tenant-a");
+        assert_eq!(req.agent_name, "agent-a");
+        assert_eq!(req.duration_ms, 42);
     }
 }

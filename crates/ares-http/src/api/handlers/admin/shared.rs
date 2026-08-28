@@ -768,10 +768,7 @@ mod tests {
             scope: None,
         };
 
-        assert!(matches!(
-            normalize_oauth_credential_request("path-tenant".to_string(), &mut req),
-            Err(_)
-        ));
+        assert!(normalize_oauth_credential_request("path-tenant".to_string(), &mut req).is_err());
     }
 
     #[test]
@@ -784,10 +781,7 @@ mod tests {
 
     #[test]
     fn oauth_provider_mapping_rejects_unknown_connector() {
-        assert!(matches!(
-            oauth_provider_config("unknown"),
-            Err(_)
-        ));
+        assert!(oauth_provider_config("unknown").is_err());
     }
 
     #[test]

@@ -1218,6 +1218,39 @@ async fn execute_scheduled_agent(
     })
 }
 
+fn inject_or_get<T: cordis::Service + 'static>(
+    ctx: &std::sync::Arc<cordis::Context>,
+) -> Result<std::sync::Arc<T>, cordis::CordisError> {
+    if let Some(v) = ctx.get::<T>() {
+        return Ok(v);
+    }
+    Ok(tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(ctx.inject::<T>())
+    }))
+}
+
+/// Typed installer for [`SchedulerService`].
+pub struct SchedulerPlugin;
+
+impl cordis::Plugin for SchedulerPlugin {
+    type Config = SchedulerConfig;
+    type Provides = SchedulerService;
+
+    fn apply(
+        &self,
+        ctx: &std::sync::Arc<cordis::Context>,
+        config: Self::Config,
+    ) -> Result<std::sync::Arc<Self::Provides>, cordis::CordisError> {
+        let execution = inject_or_get::<crate::Execute>(ctx)?;
+        let db = inject_or_get::<ares_store::PostgresClient>(ctx)?;
+        Ok(std::sync::Arc::new(SchedulerService::new(
+            db,
+            execution,
+            config.tick_ms,
+        )))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1461,7 +1494,7 @@ mod tests {
         assert!(next > Utc::now());
         let diff = (next - Utc::now()).num_seconds();
         assert!(
-            diff >= 55 && diff <= 65,
+            (55..=65).contains(&diff),
             "fallback diff {} should be ~60s",
             diff
         );
@@ -1624,7 +1657,7 @@ mod tests {
         let denied = service
             .admit_run(&ctx, serde_json::json!({ "agent_name": "a", "deny": true }))
             .await;
-        assert_eq!(denied, false, "deny:true payload should NOT be admitted");
+        assert!(!denied, "deny:true payload should NOT be admitted");
 
         let admitted = service
             .admit_run(
@@ -1632,7 +1665,7 @@ mod tests {
                 serde_json::json!({ "agent_name": "a", "deny": false }),
             )
             .await;
-        assert_eq!(admitted, true, "deny:false payload should be admitted");
+        assert!(admitted, "deny:false payload should be admitted");
 
         disposable.dispose();
     }
@@ -1907,38 +1940,5 @@ mod tests {
             scheduler_admit(&ctx, plain).await,
             "run without the injected marker must be admitted"
         );
-    }
-}
-
-fn inject_or_get<T: cordis::Service + 'static>(
-    ctx: &std::sync::Arc<cordis::Context>,
-) -> Result<std::sync::Arc<T>, cordis::CordisError> {
-    if let Some(v) = ctx.get::<T>() {
-        return Ok(v);
-    }
-    Ok(tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(ctx.inject::<T>())
-    }))
-}
-
-/// Typed installer for [`SchedulerService`].
-pub struct SchedulerPlugin;
-
-impl cordis::Plugin for SchedulerPlugin {
-    type Config = SchedulerConfig;
-    type Provides = SchedulerService;
-
-    fn apply(
-        &self,
-        ctx: &std::sync::Arc<cordis::Context>,
-        config: Self::Config,
-    ) -> Result<std::sync::Arc<Self::Provides>, cordis::CordisError> {
-        let execution = inject_or_get::<crate::Execute>(ctx)?;
-        let db = inject_or_get::<ares_store::PostgresClient>(ctx)?;
-        Ok(std::sync::Arc::new(SchedulerService::new(
-            db,
-            execution,
-            config.tick_ms,
-        )))
     }
 }

@@ -48,6 +48,7 @@ impl MockLLMClient {
     }
 
     /// Create a mock client that returns both a response and tool calls.
+    #[allow(dead_code)] // Used by llm_tests and api_tests; other binaries compile this shared module without it.
     pub fn with_tool_calls(response: &str, tool_calls: Vec<ToolCall>) -> Self {
         Self {
             response: response.to_string(),

@@ -961,9 +961,8 @@ mod tests {
         assert!(log
             .iter()
             .all(|entry| entry.guard_kind == Some(WriteGuard::Unconditional)));
-        assert_eq!(
+        assert!(
             log.first().expect("ring nonempty").ts_millis > 0,
-            true,
             "entries carry timestamps"
         );
     }

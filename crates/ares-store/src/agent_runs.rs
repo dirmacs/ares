@@ -1280,7 +1280,7 @@ mod tests {
                 "completed",
                 i,
                 i,
-                i as i64 * 10,
+                i * 10,
                 None,
                 "m",
                 "p",

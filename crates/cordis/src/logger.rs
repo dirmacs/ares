@@ -854,9 +854,7 @@ mod tests {
         let pretty_b = serde_json::to_string_pretty(&serde_json::json!({"b": [1]})).unwrap();
         assert_eq!(
             text,
-            format!(
-                "user=42 -7 2.5 {{\"a\":1}} % %q trailing extra"
-            )
+            "user=42 -7 2.5 {\"a\":1} % %q trailing extra".to_string()
         );
 
         // %O renders pretty JSON; %% collapses; %c colorizes with the

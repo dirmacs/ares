@@ -24,6 +24,7 @@ use ares_types::types::{AppError, Result, ToolDefinition};
 
 use crate::http_tool::HttpTool;
 use crate::registry::Tool;
+#[cfg(feature = "script-tools")]
 use crate::script_tool::ScriptTool;
 
 #[cfg(any(feature = "postgres", test))]
@@ -268,6 +269,7 @@ impl RuntimeToolRegistry {
     /// Create a new empty registry backed by `pool`.
     ///
     /// Call [`reload`] to populate the cache.
+    #[cfg(feature = "postgres")]
     pub(crate) fn new(pool: sqlx::PgPool) -> Self {
         Self::with_interval(pool, 60)
     }
@@ -325,8 +327,8 @@ impl RuntimeToolRegistry {
     pub fn validate_execution_config(tool_type: &str, execution_config: &Value) -> Result<()> {
         match tool_type {
             "http" => HttpTool::parse_config(execution_config).map(|_| ()),
-            "rhai" => crate::rhai_tool::RhaiTool::parse_config(execution_config).map(|_| ()),
-            "script" => ScriptTool::parse_config(execution_config).map(|_| ()),
+            "rhai" => Self::validate_rhai_config(execution_config),
+            "script" => Self::validate_script_config(execution_config),
             "sql" => Self::validate_sql_config(execution_config),
             "mcp" => Self::validate_mcp_config(execution_config),
             _ => Err(AppError::Configuration(format!(
@@ -356,6 +358,30 @@ impl RuntimeToolRegistry {
     fn validate_mcp_config(_execution_config: &Value) -> Result<()> {
         Err(AppError::FeatureDisabled(
             "MCP tools require mcp feature".into(),
+        ))
+    }
+
+    #[cfg(feature = "script-tools")]
+    fn validate_script_config(execution_config: &Value) -> Result<()> {
+        ScriptTool::parse_config(execution_config).map(|_| ())
+    }
+
+    #[cfg(not(feature = "script-tools"))]
+    fn validate_script_config(_execution_config: &Value) -> Result<()> {
+        Err(AppError::FeatureDisabled(
+            "Script tools require script-tools feature".into(),
+        ))
+    }
+
+    #[cfg(feature = "script-tools")]
+    fn validate_rhai_config(execution_config: &Value) -> Result<()> {
+        crate::rhai_tool::RhaiTool::parse_config(execution_config).map(|_| ())
+    }
+
+    #[cfg(not(feature = "script-tools"))]
+    fn validate_rhai_config(_execution_config: &Value) -> Result<()> {
+        Err(AppError::FeatureDisabled(
+            "Rhai tools require script-tools feature".into(),
         ))
     }
 
@@ -391,6 +417,7 @@ impl RuntimeToolRegistry {
         )))
     }
 
+    #[cfg(feature = "script-tools")]
     fn materialise_script(row: &RuntimeTool) -> Result<Arc<dyn Tool>> {
         let config = ScriptTool::parse_config(&row.execution_config)?;
         Ok(Arc::new(ScriptTool::new(
@@ -401,6 +428,14 @@ impl RuntimeToolRegistry {
         )))
     }
 
+    #[cfg(not(feature = "script-tools"))]
+    fn materialise_script(_row: &RuntimeTool) -> Result<Arc<dyn Tool>> {
+        Err(AppError::FeatureDisabled(
+            "Script tools require script-tools feature".into(),
+        ))
+    }
+
+    #[cfg(feature = "script-tools")]
     fn materialise_rhai(row: &RuntimeTool) -> Result<Arc<dyn Tool>> {
         let config = crate::rhai_tool::RhaiTool::parse_config(&row.execution_config)?;
         Ok(Arc::new(crate::rhai_tool::RhaiTool::new(
@@ -409,6 +444,13 @@ impl RuntimeToolRegistry {
             row.parameters_schema.clone(),
             config,
         )?))
+    }
+
+    #[cfg(not(feature = "script-tools"))]
+    fn materialise_rhai(_row: &RuntimeTool) -> Result<Arc<dyn Tool>> {
+        Err(AppError::FeatureDisabled(
+            "Rhai tools require script-tools feature".into(),
+        ))
     }
 
     #[cfg(any(feature = "postgres", test))]
@@ -764,6 +806,7 @@ mod tests {
         assert_eq!(tool.unwrap().name(), "test_http");
     }
 
+    #[cfg(feature = "script-tools")]
     #[tokio::test]
     async fn materialise_script_tool() {
         let mut row = sample_runtime_tool("test_script", "script", true);

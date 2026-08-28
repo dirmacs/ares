@@ -2104,6 +2104,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // ARES_API_KEY is process-global; guard must span the awaits so concurrent test threads can't mutate it mid-authenticate (deadlock impossible: each test owns a current-thread runtime on its own OS thread)
     async fn authenticate_missing_api_key_returns_error() {
         let _guard = AUTH_ENV_LOCK.lock().expect("auth env lock");
         std::env::remove_var("ARES_API_KEY");
@@ -2115,6 +2116,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // see authenticate_missing_api_key_returns_error: guard spans awaits by design
     async fn authenticate_invalid_key_format_returns_error() {
         let _guard = AUTH_ENV_LOCK.lock().expect("auth env lock");
         std::env::set_var("ARES_API_KEY", "not-a-valid-key");
@@ -2125,6 +2127,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // see authenticate_missing_api_key_returns_error: guard spans awaits by design
     async fn authenticate_valid_format_db_failure_returns_error() {
         let _guard = AUTH_ENV_LOCK.lock().expect("auth env lock");
         std::env::set_var("ARES_API_KEY", "ares_abcdefgh12345678");
@@ -2631,12 +2634,12 @@ mod tests {
     fn tool_call_dispatch_builtin_tools() {
         for name in BUILTIN_TOOL_NAMES {
             let dispatch = tool_call_dispatch(name, json!({})).unwrap();
-            match name {
-                &"ares_list_agents" => assert_eq!(dispatch, ToolDispatch::ListAgents),
-                &"ares_run_agent" => assert!(matches!(dispatch, ToolDispatch::RunAgent(_))),
-                &"ares_get_status" => assert!(matches!(dispatch, ToolDispatch::GetStatus(_))),
-                &"ares_deploy_agent" => assert!(matches!(dispatch, ToolDispatch::DeployAgent(_))),
-                &"ares_get_usage" => assert!(matches!(dispatch, ToolDispatch::GetUsage(_))),
+            match *name {
+                "ares_list_agents" => assert_eq!(dispatch, ToolDispatch::ListAgents),
+                "ares_run_agent" => assert!(matches!(dispatch, ToolDispatch::RunAgent(_))),
+                "ares_get_status" => assert!(matches!(dispatch, ToolDispatch::GetStatus(_))),
+                "ares_deploy_agent" => assert!(matches!(dispatch, ToolDispatch::DeployAgent(_))),
+                "ares_get_usage" => assert!(matches!(dispatch, ToolDispatch::GetUsage(_))),
                 _ => unreachable!(),
             }
         }
@@ -2784,6 +2787,7 @@ mod tests {
 
     // 3. start_mcp_server returns error (does not panic) when auth fails
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // see authenticate_missing_api_key_returns_error: guard spans awaits by design
     async fn start_mcp_server_does_not_panic_on_auth_failure() {
         let client = PostgresClient::new_test();
         let pool = client.pool.clone();

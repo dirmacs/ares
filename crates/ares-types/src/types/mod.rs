@@ -817,10 +817,8 @@ mod tests {
             },
             embedding: None,
         };
-        let filters = vec![
-            SearchFilter { field: "tags".into(), value: "rust".into() },
-            SearchFilter { field: "source".into(), value: "docs/rust".into() },
-        ];
+        let filters = [SearchFilter { field: "tags".into(), value: "rust".into() },
+            SearchFilter { field: "source".into(), value: "docs/rust".into() }];
         let matches = filters.iter().all(|f| match f.field.as_str() {
             "tags" => doc.metadata.tags.iter().any(|t| t == &f.value),
             "source" => doc.metadata.source == f.value,

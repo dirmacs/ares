@@ -122,11 +122,10 @@ impl Tool for WebScrape {
                     if matches!(
                         tag,
                         "p" | "div" | "br" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li" | "tr"
-                    ) {
-                        if !text.ends_with('\n') {
+                    )
+                        && !text.ends_with('\n') {
                             text.push('\n');
                         }
-                    }
                 } else if let Some(t) = node.value().as_text() {
                     // Check if any ancestor is a script/style
                     let mut skip = false;

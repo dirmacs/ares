@@ -2889,7 +2889,7 @@ disabled = false
         let actions = Loader::apply(&ctx, &mut current, &desired_a, &journal).await;
         assert_eq!(actions[0].action, "begin");
         assert!(actions[0].status.is_ok());
-        assert_eq!(actions[0].verified, true);
+        assert!(actions[0].verified);
         let svc = ctx.get::<Swappable>().expect("initial provider");
         assert_eq!(svc.0.load(Ordering::SeqCst), 1);
 
@@ -2918,7 +2918,7 @@ disabled = false
         let actions = Loader::apply(&ctx, &mut current, &desired_b, &journal).await;
         assert_eq!(actions[0].action, "rebuild-fiber");
         assert!(actions[0].status.is_ok(), "rebuild ok");
-        assert_eq!(actions[0].verified, true, "same-type swap must be verified");
+        assert!(actions[0].verified, "same-type swap must be verified");
 
         let continuous = prober.await.expect("prober task");
         assert!(continuous, "service must stay resolvable during swap");
@@ -3169,7 +3169,7 @@ disabled = false
         let actions = Loader::apply(&ctx, &mut current, &desired, &journal).await;
         assert_eq!(actions[0].action, "rebuild-fiber");
         assert!(actions[0].status.is_ok());
-        assert_eq!(actions[0].verified, false, "fallback is unverified");
+        assert!(!actions[0].verified, "fallback is unverified");
         assert!(ctx.get::<Fallback>().is_some(), "entry instantiated");
     }
 
@@ -4116,7 +4116,7 @@ plugin = "Bar"
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn staged_batch_applies_in_order_on_success() {
         use crate::RegistryService;
-        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::atomic::AtomicU64;
 
         let ctx = Context::new_root();
         let journal = LoaderJournal::provide_new(&ctx);

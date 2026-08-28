@@ -3,7 +3,7 @@
 //! HTTP integration checks require `local-embeddings` and `ares-vector` because
 //! RAG routes are only compiled when both features are enabled.
 
-#![cfg(feature = "postgres")]
+#![cfg(all(feature = "postgres", feature = "http"))]
 
 use ares_types::types::{Document, DocumentMetadata, RagIngestRequest, RagSearchRequest};
 use ares_http::overlay::RagConfig;

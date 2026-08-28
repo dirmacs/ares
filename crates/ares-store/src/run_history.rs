@@ -1629,8 +1629,10 @@ mod tests {
         assert_eq!(for_run[0].id, inserted.id);
 
         // List with filter
-        let mut q = ListLlmCallsQuery::default();
-        q.tenant_id = Some(req.tenant_id.clone());
+        let q = ListLlmCallsQuery {
+            tenant_id: Some(req.tenant_id.clone()),
+            ..Default::default()
+        };
         let listed = store.list_llm_calls(&q).await.expect("list_llm_calls");
         assert!(listed.iter().any(|c| c.id == inserted.id));
 
@@ -1782,8 +1784,10 @@ mod tests {
         assert_eq!(for_run[0].id, inserted.id);
 
         // List with filter
-        let mut q = ListToolCallsQuery::default();
-        q.tenant_id = Some(req.tenant_id.clone());
+        let q = ListToolCallsQuery {
+            tenant_id: Some(req.tenant_id.clone()),
+            ..Default::default()
+        };
         let listed = store.list_tool_calls(&q).await.expect("list_tool_calls");
         assert!(listed.iter().any(|c| c.id == inserted.id));
 

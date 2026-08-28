@@ -13,21 +13,20 @@ repository. Each section names the source it adapts.
 ```toml
 [dependencies]
 ares-server = "0.10"
-ares-cordis = "0.10"   # kernel types beyond the facade re-exports
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 serde_json = "1"
 ```
 
 The default features are the server defaults: `postgres`, `openai`,
-`ares-vector`, `mcp`, `inventory`, and `rhai-policy`. For a lean embed build,
-turn them off:
+`ares-vector`, `mcp`, `inventory`, `rhai-policy`, `http`, `cli`, and
+`script-tools`. For a lean embed build, turn them off:
 
 ```toml
-ares-server = { version = "0.10", default-features = false }
+ares-server = { version = "0.10", default-features = false, features = ["openai"] }
 ```
 
-The Axum HTTP stack stays a compiled dependency of the package either way.
-It never binds a socket unless the `Http` service runs.
+The headless build compiles no Axum, CLI, sqlx, Ollama, Boa, or Rhai code. It
+binds no socket. Enable the `http` feature only when you embed the router.
 
 ## The public surface
 
@@ -44,6 +43,11 @@ It never binds a socket unless the `Http` service runs.
 | `Loader`, `PluginRegistry` | Entries-file loader and its factory table |
 | `Dispatch` | Event dispatch modes |
 | `register_plugins` | Registers all capability-crate factories |
+| `EventsService`, `CordisError`, `FiberId` | Kernel event bus, error enum, fiber id |
+| `Entry`, `Disposable`, `ServiceInitFuture`, `TypedEvent` | Loader entry and lifecycle types |
+| `CalculatorService`, `CalculatorConfig` | Built-in calculator service and its config |
+| `ProviderConfig`, `ProviderRegistry`, `TokenUsage` | Provider selection and usage accounting |
+| `ContextProvider`, `AgentResponse`, `RunTracker` | Agent context hook, reply shape, run observer |
 
 Types such as `AgentRequest`, `ExecutionResult`, `LLMClient`, `LLMResponse`,
 `Tool`, `ToolDefinition`, `TenantContext`, and `AppError` ride the same
@@ -69,7 +73,6 @@ compiles and passes in this repository:
 ```toml
 [dependencies]
 ares-server = "0.10"
-ares-cordis = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 serde_json = "1"
 ```
@@ -86,7 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // The event bus. Tool calls fan their arguments through a
     // `tools.execute` waterfall when this service is present.
-    ctx.provide(cordis::EventsService::new());
+    ctx.provide(ares_server::EventsService::new());
 
     // A tool set with one real tool. Calculator answers
     // {"result": <number>} for basic arithmetic.
@@ -144,8 +147,7 @@ can run the same pass with two calls. This example adapts the in-tree test
 factory-registration helper `register_loader_factories` in the same file:
 
 ```rust
-use ares_server::{Context, Loader, PluginRegistry, register_plugins};
-use cordis::loader::Entry;
+use ares_server::{Context, Entry, Loader, PluginRegistry, register_plugins};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -167,7 +169,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Loader::instantiate(&ctx, &entry.plugin, &entry.config, &entry.id)?;
 
     // The factory provided a live service. Call it.
-    let calc = ctx.get::<ares_tools::CalculatorService>().expect("calculator");
+    let calc = ctx.get::<ares_server::CalculatorService>().expect("calculator");
     let output = calc
         .execute(serde_json::json!({ "operation": "add", "a": 2.0, "b": 3.0 }))
         .await?;
@@ -319,11 +321,14 @@ fiber for lifecycle and hot reload. The trait lives in
 `crates/cordis/src/registry.rs`; the shape below follows `PipelinePlugin`
 (`crates/ares-agent/src/pipeline.rs`) and the kernel's own registry tests:
 
+`RegistryService` is an advanced kernel type beyond the facade. Add
+`ares-cordis = "0.10"` as a direct dependency to name it.
+
 ```rust
 use std::sync::Arc;
 
-use ares_server::{Context, Plugin, Service};
-use cordis::{CordisError, RegistryService};
+use ares_server::{Context, CordisError, Plugin, Service};
+use cordis::RegistryService;
 
 pub struct GreetingService {
     prefix: String,
@@ -382,7 +387,7 @@ The closure-free function form follows the capability-crate factories in
 fn factory_greeting(
     ctx: &Arc<Context>,
     config: &serde_json::Value,
-) -> Result<cordis::FiberId, cordis::CordisError> {
+) -> Result<ares_server::FiberId, ares_server::CordisError> {
     let cfg: GreetingConfig = serde_json::from_value(config.clone())
         .map_err(|e| CordisError::Configuration(e.to_string()))?;
     let svc = GreetingService { prefix: cfg.prefix };
@@ -426,8 +431,7 @@ with the `Disposable` shape; the kernel pushes it onto the owning fiber's
 undo accumulator. Use it to close connections or cancel background work:
 
 ```rust
-use cordis::effect::Disposable;
-use cordis::ServiceInitFuture;
+use ares_server::{Disposable, ServiceInitFuture};
 
 impl Service for PoolService {
     fn name(&self) -> &'static str { "pool" }
@@ -475,8 +479,12 @@ Kernel calls return `Result<_, CordisError>` (`crates/cordis/src/service.rs`).
 The enum has ten variants. Match the ones you can act on and let the rest
 bubble:
 
+`ValidationIssue` is an advanced kernel type beyond the facade. Add
+`ares-cordis = "0.10"` as a direct dependency to name it.
+
 ```rust
-use cordis::{CordisError, ValidationIssue};
+use ares_server::CordisError;
+use cordis::ValidationIssue;
 
 fn describe(err: &CordisError) -> String {
     match err {

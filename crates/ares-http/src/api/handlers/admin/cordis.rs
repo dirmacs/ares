@@ -1213,7 +1213,7 @@ mod tests {
         fiber.refresh(&ctx).await;
         assert!(matches!(fiber.state(), ::cordis::FiberState::Active { .. }));
 
-        retire_cordis_service(State(ctx.clone()), Path("events_service".into()))
+        let _ = retire_cordis_service(State(ctx.clone()), Path("events_service".into()))
             .await
             .expect("handler");
         // remove() notified dependents; give the spawned refresh a beat.
@@ -1223,7 +1223,7 @@ mod tests {
             ::cordis::FiberState::Inactive { .. }
         ));
 
-        provide_cordis_service(State(ctx.clone()), Path("events_service".into()))
+        let _ = provide_cordis_service(State(ctx.clone()), Path("events_service".into()))
             .await
             .expect("handler");
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -1233,7 +1233,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reload_endpoint_applies_add_and_retire_from_file() {
         use cordis::loader::{Entry, EntryTree, Loader};
-        let loader = Loader;
+        let _loader = Loader;
 
         let ctx = Context::new_root();
         ctx.provide(ReflectService::new());

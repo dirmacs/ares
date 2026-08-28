@@ -72,7 +72,16 @@ Basic usage:
 use ares_server::{Context, Execute, Tools, Llm};
 ```
 
-The default features of `ares-server` are postgres, openai, ares-vector, mcp, inventory, and rhai-policy. Embed-only builds pass `--no-default-features --features openai,postgres,mcp` to Cargo. `ProviderRegistry` remains on the constructor path for `AgentRegistry` / `Llm` until those take `Llm` only.
+The default features of `ares-server` are postgres, openai, ares-vector, mcp, inventory, rhai-policy, http, cli, and script-tools. That is the full server library: the Axum router and the CLI compile, and sqlx, Ollama, Boa, and Rhai come with them. `ProviderRegistry` remains on the constructor path for `AgentRegistry` / `Llm` until those take `Llm` only.
+
+For a headless embed, turn the defaults off and name only what you need:
+
+```toml
+[dependencies]
+ares-server = { version = "0.10", default-features = false, features = ["openai"] }
+```
+
+The headless build compiles no axum, clap, sqlx, Ollama, Boa, or Rhai code. Every type the library guide uses is reachable through the `ares_server` facade. See `docs/src/library.md`.
 
 ### As a binary
 
@@ -173,7 +182,7 @@ ollama serve
 ### 3. Build and run
 
 ```bash
-# Build with default features (local-db + ollama)
+# Build with default features (postgres + openai + http + cli)
 cargo build
 # Or: just build
 
@@ -192,8 +201,8 @@ ARES uses Cargo features for conditional compilation:
 
 | Feature | Description | Default |
 |---------|-------------|---------|
-| `ollama` | Ollama local inference |  Yes |
-| `openai` | OpenAI API (and compatible) | No |
+| `ollama` | Ollama local inference | No (opt-in; on with `postgres`) |
+| `openai` | OpenAI API (and compatible) | Yes |
 | `anthropic` | Anthropic Claude API | No |
 | `llamacpp` | Direct GGUF model loading | No |
 | `llamacpp-cuda` | LlamaCpp with CUDA | No |
@@ -229,6 +238,16 @@ ARES uses Cargo features for conditional compilation:
 
 > **Warning:** The `local-embeddings` feature does not work on Windows MSVC. Cause: `ort-sys` linker errors. Use WSL, Linux, macOS, or remote embedding APIs instead.
 
+### Server surfaces
+
+| Feature | Description | Default |
+|---------|-------------|---------|
+| `http` | Axum stack: `ares-http`, `axum`, `tower-http`, `tower_governor`, `utoipa` | Yes |
+| `cli` | Command-line build: `clap`, `owo-colors`, `reqwest`, `dotenvy`, `tracing-subscriber` | Yes |
+| `script-tools` | Boa JavaScript and Rhai tool engines in `ares-tools` | Yes |
+
+The `ares-server` binary needs both `http` and `cli`. A build without them skips the binary. Turn all three off for an embed, then name the provider you need.
+
 ### Feature bundles
 
 | Feature | Includes |
@@ -246,7 +265,7 @@ ARES uses Cargo features for conditional compilation:
 ### Building with features
 
 ```bash
-# Default (ollama + local-db)
+# Default (postgres + openai + http + cli)
 cargo build
 # Or: just build
 
@@ -513,8 +532,7 @@ ARES works as a library. The `ares_server` lib injects `Execute`, `Tools`, and `
 ### Library (no axum)
 
 ```rust
-use ares_server::{Context, Execute, Tools, Llm, register_plugins};
-use cordis::PluginRegistry;
+use ares_server::{Context, Execute, Tools, Llm, PluginRegistry, register_plugins};
 
 let ctx = Context::new_root();
 let reg = PluginRegistry::new();
@@ -526,7 +544,7 @@ register_plugins(&reg);
 
 ```rust
 use std::sync::Arc;
-use cordis::Context;
+use ares_server::Context;
 use ares_http::Http;
 
 let ctx: Arc<Context> = /* your configured context with Http provided */;
@@ -538,7 +556,7 @@ let ctx: Arc<Context> = /* your configured context with Http provided */;
 The trait now lives in ares-agent (`ares_agent::context_provider::ContextProvider`). It injects external context into agent calls before LLM invocation. This is one focused hook, not the general extension mechanism; for broader extension, write a plugin or a loader entry (see ARCHITECTURE.md).
 
 ```rust
-use ares::agents::context_provider::ContextProvider;
+use ares_server::ContextProvider;
 use async_trait::async_trait;
 
 struct MyContextProvider { /* your state */ }

@@ -5,6 +5,7 @@
 //! - Registry creation from config
 //! - Agent creation from registry
 //! - Workflow execution
+#![cfg(feature = "http")]
 
 use std::collections::HashMap;
 use std::sync::Arc;

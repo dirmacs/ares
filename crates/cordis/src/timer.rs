@@ -833,7 +833,7 @@ mod tests {
     fn block_on_bounded<F: Future>(fut: F, budget: Duration) -> F::Output {
         let started = Instant::now();
         let waker = Waker::noop();
-        let mut cx = TaskContext::from_waker(&waker);
+        let mut cx = TaskContext::from_waker(waker);
         let mut fut = Box::pin(fut);
         loop {
             match fut.as_mut().poll(&mut cx) {
@@ -852,7 +852,7 @@ mod tests {
     /// Single-threaded stream poll; `None` means "not ready yet".
     fn poll_stream_once(stream: &mut Interval) -> Option<TickResult> {
         let waker = Waker::noop();
-        let mut cx = TaskContext::from_waker(&waker);
+        let mut cx = TaskContext::from_waker(waker);
         match Stream::poll_next(Pin::new(stream), &mut cx) {
             Poll::Ready(item) => item,
             Poll::Pending => None,
@@ -876,7 +876,7 @@ mod tests {
         assert_eq!(hits.load(Ordering::SeqCst), 1, "callback must run exactly once");
 
         // Disposal via the owning fiber cancels the effect.
-        block_on_bounded(fiber.dispose(), Duration::from_secs(2));
+        block_on_bounded(fiber.dispose(), Duration::from_secs(2)).unwrap();
         assert!(handle.is_cancelled(), "fiber disposal must cancel timers");
         assert_eq!(hits.load(Ordering::SeqCst), 1, "no extra fire after disposal");
     }
@@ -959,7 +959,7 @@ mod tests {
         }
 
         // Dispose through the owning fiber.
-        block_on_bounded(fiber.dispose(), Duration::from_secs(2));
+        block_on_bounded(fiber.dispose(), Duration::from_secs(2)).unwrap();
 
         // Exactly ONE final Err(InactiveEffect), then end-of-stream.
         let final_item =
@@ -981,7 +981,7 @@ mod tests {
         // Accumulate several live ticks WITHOUT polling, then dispose; the
         // final observation must be the error, not a stale Ok.
         std::thread::sleep(Duration::from_millis(18));
-        block_on_bounded(fiber.dispose(), Duration::from_secs(2));
+        block_on_bounded(fiber.dispose(), Duration::from_secs(2)).unwrap();
 
         let mut saw_err = false;
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -1020,7 +1020,7 @@ mod tests {
         assert_eq!(extra, None, "one burst collapses into exactly one delivery");
 
         // Fiber disposal cancels the emitter; later calls are no-ops.
-        block_on_bounded(fiber.dispose(), Duration::from_secs(2));
+        block_on_bounded(fiber.dispose(), Duration::from_secs(2)).unwrap();
         assert!(sched.is_cancelled());
         sched.call(9);
         assert_eq!(sched.receive_timeout(Duration::from_millis(50)), None);
@@ -1047,7 +1047,7 @@ mod tests {
         let extra = sched.receive_timeout(Duration::from_millis(120));
         assert_eq!(extra, None, "exactly leading + trailing per burst");
 
-        block_on_bounded(fiber.dispose(), Duration::from_secs(2));
+        block_on_bounded(fiber.dispose(), Duration::from_secs(2)).unwrap();
         assert!(sched.is_cancelled());
     }
 
@@ -1099,7 +1099,7 @@ mod tests {
         assert_eq!(timeout_hits.load(Ordering::SeqCst), 0, "timeout still pending");
 
         // Fiber death: every timer effect must be cancelled.
-        block_on_bounded(fiber.dispose(), Duration::from_secs(2));
+        block_on_bounded(fiber.dispose(), Duration::from_secs(2)).unwrap();
 
         std::thread::sleep(Duration::from_millis(150));
         assert_eq!(

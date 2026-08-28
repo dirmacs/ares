@@ -217,8 +217,12 @@ fn test_provider_from_env_no_config() {
     #[cfg(feature = "ollama")]
     assert!(result.is_ok());
 
-    #[cfg(not(any(feature = "ollama", feature = "openai", feature = "llamacpp")))]
+    #[cfg(not(any(feature = "ollama", feature = "openai")))]
     assert!(result.is_err());
+
+    // openai-only builds resolve the provider from runtime env; nothing to assert.
+    #[cfg(all(feature = "openai", not(feature = "ollama")))]
+    let _ = &result;
 }
 
 // ============= Tool Definition Tests =============
@@ -280,7 +284,8 @@ fn test_llm_client_factory_creation() {
 fn test_llm_client_factory_creation() {
     // When ollama feature is not enabled, we just verify types exist
     // This is a placeholder test that always passes
-    assert!(true);
+    let factory_size = std::mem::size_of::<LLMClientFactory>();
+    assert!(factory_size > 0);
 }
 
 // ============= Multi-Message Conversation Tests =============

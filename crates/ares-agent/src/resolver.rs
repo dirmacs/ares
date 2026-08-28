@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn config_get_agent_returns_none_for_unknown_name() {
         let config = minimal_overlay_config("router", agent_config());
-        assert!(config.get("ghost").is_none());
+        assert!(!config.contains_key("ghost"));
     }
 
     // ── Serde roundtrips ──────────────────────────────────────────────────

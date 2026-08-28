@@ -416,6 +416,14 @@ impl Default for AgentRegistryBuilder {
     }
 }
 
+impl cordis::Service for AgentRegistry {
+    fn name(&self) -> &'static str { "agent_registry" }
+    fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+    fn check(&self) -> bool { true }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1057,13 +1065,5 @@ mod tests {
             Some("TOON system prompt".to_string())
         );
     }
-}
-
-impl cordis::Service for AgentRegistry {
-    fn name(&self) -> &'static str { "agent_registry" }
-    fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
-        Box::pin(async { Ok(None) })
-    }
-    fn check(&self) -> bool { true }
 }
 

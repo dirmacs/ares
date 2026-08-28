@@ -21,7 +21,7 @@ pinecone = ["dep:pinecone-sdk"]
 pgvector = ["postgres"]
 [dependencies]
 ares-types = { workspace = true }
-cordis = { workspace = true }
+cordis = { workspace = true, default-features = false }
 inventory = { workspace = true, optional = true }
 aes-gcm = "0.10"
 arc-swap = "1.7.1"

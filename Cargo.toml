@@ -10,7 +10,7 @@ exclude = ["ui"]
 resolver = "2"
 
 [workspace.package]
-version = "0.10.0"
+version = "0.10.1"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/dirmacs/ares"
@@ -30,15 +30,15 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10.4"
 async-trait = "0.1"
 
-ares-types = { version = "0.10.0", path = "crates/ares-types" }
-ares-rag = { version = "0.10.0", path = "crates/ares-rag" }
-ares-tools = { version = "0.10.0", path = "crates/ares-tools" }
-ares-llm = { version = "0.10.0", path = "crates/ares-llm" }
-ares-store = { version = "0.10.0", path = "crates/ares-store" }
-ares-mcp = { version = "0.10.0", path = "crates/ares-mcp" }
-ares-agent = { version = "0.10.0", path = "crates/ares-agent" }
-ares-http = { version = "0.10.0", path = "crates/ares-http" }
-cordis = { version = "0.10.0", path = "crates/cordis", package = "ares-cordis" }
+ares-types = { version = "0.10.1", path = "crates/ares-types" }
+ares-rag = { version = "0.10.1", path = "crates/ares-rag" }
+ares-tools = { version = "0.10.1", path = "crates/ares-tools" }
+ares-llm = { version = "0.10.1", path = "crates/ares-llm" }
+ares-store = { version = "0.10.1", path = "crates/ares-store" }
+ares-mcp = { version = "0.10.1", path = "crates/ares-mcp", default-features = false }
+ares-agent = { version = "0.10.1", path = "crates/ares-agent" }
+ares-http = { version = "0.10.1", path = "crates/ares-http" }
+cordis = { version = "0.10.1", path = "crates/cordis", package = "ares-cordis", default-features = false }
 anyhow = "1.0.100"
 hex = "0.4"
 rand = "0.9.2"
@@ -104,15 +104,32 @@ path = "src/lib.rs"
 [[bin]]
 name = "ares-server"
 path = "src/main.rs"
+required-features = ["http", "cli"]
 
 [features]
 # Default features for NVIDIA NIM cloud inference
-default = ["postgres", "openai", "ares-vector", "mcp", "inventory", "rhai-policy"]
+default = ["postgres", "openai", "ares-vector", "mcp", "inventory", "rhai-policy", "http", "cli", "script-tools"]
+# ============= Build Surfaces =============
+# HTTP server stack: the ares-http router surface plus axum/tower/utoipa.
+# The `ares-server` binary requires both `http` and `cli`; the library only
+# links axum when this feature is on.
+http = ["dep:ares-http", "dep:axum", "dep:tower-http", "dep:tower_governor", "dep:utoipa"]
+
+# CLI surface: clap subcommands, colored output, dotenv loading, and the
+# tracing subscriber used by the binary.
+cli = ["dep:clap", "dep:owo-colors", "dep:reqwest", "dep:dotenvy", "dep:tracing-subscriber"]
+
+# Ollama local-model provider (opt-in; not part of the default product build).
+ollama = ["ares-llm/ollama"]
+
+# Boa/Rhai script tool engines (default ON; lives in ares-tools).
+script-tools = ["ares-tools/script-tools"]
+
 # Cordis static registration via inventory (compile-time)
 inventory = [
     "dep:inventory",
     "cordis/inventory",
-    "ares-http/inventory",
+    "ares-http?/inventory",
     "ares-store/inventory",
     "ares-tools/inventory",
     "ares-llm/inventory",
@@ -121,7 +138,7 @@ inventory = [
 
 # ============= LLM Providers =============
 # OpenAI - OpenAI API and compatible endpoints (e.g. NVIDIA NIM)
-openai = ["ares-llm/openai", "ares-http/openai"]
+openai = ["ares-llm/openai", "ares-http?/openai"]
 
 # Azure AI Foundry - OpenAI-compatible chat completions with Foundry auth headers
 azure = ["ares-llm/azure"]
@@ -131,7 +148,7 @@ bedrock = ["ares-llm/bedrock"]
 
 # ============= Database Backends =============
 # PostgreSQL database via sqlx (default)
-postgres = ["dep:sqlx", "ares-store/postgres", "ares-agent/postgres", "ares-agent/scheduler", "ares-agent/pipeline", "ares-agent/trigger", "ares-agent/workflows", "ares-mcp/postgres", "ares-tools/postgres", "ares-http/postgres"]
+postgres = ["dep:sqlx", "ares-store/postgres", "ares-agent/postgres", "ares-agent/scheduler", "ares-agent/pipeline", "ares-agent/trigger", "ares-agent/workflows", "ares-mcp?/postgres", "ares-tools/postgres", "ares-http?/postgres"]
 
 # Turso/libSQL - Edge-native SQLite-compatible database
 turso = ["dep:libsql", "ares-store/turso"]
@@ -139,7 +156,7 @@ turso = ["dep:libsql", "ares-store/turso"]
 # ============= Vector Store Backends =============
 # ares-vector - Pure Rust embedded vector database with HNSW (default, local-first)
 # No native dependencies, compiles anywhere Rust does
-ares-vector = ["dep:ares-vector", "ares-store/ares-vector", "ares-http/ares-vector"]
+ares-vector = ["dep:ares-vector", "ares-store/ares-vector", "ares-http?/ares-vector"]
 
 # LanceDB - Serverless, embedded vector database
 # Note: Requires protoc compilation, may have issues on Windows MSVC
@@ -169,15 +186,15 @@ pinecone = ["dep:pinecone-sdk", "ares-store/pinecone"]
 # 0.7.3 compile break when mcp was enabled alone); 0.7.5 moves server/usage
 # behind `cfg(all(mcp, postgres))` so library consumers can use mcp without
 # dragging sqlx into their dependency graph.
-mcp = ["ares-mcp/mcp", "ares-tools/mcp", "ares-http/mcp"]
+mcp = ["dep:ares-mcp", "ares-mcp/mcp", "ares-mcp?/postgres", "ares-tools/mcp", "ares-http?/mcp"]
 
 # Eruka context injection - fetches per-agent context from Eruka with caching
-eruka-context = ["ares-agent/eruka-context", "ares-http/eruka-context"]
+eruka-context = ["ares-agent/eruka-context", "ares-http?/eruka-context"]
 
 # Local embeddings - fastembed-based ONNX embedding models
 # WARNING: This feature does NOT work on Windows MSVC due to ort-sys linker errors.
 # Use WSL, Linux, or macOS for local embeddings, or use remote embedding APIs instead.
-local-embeddings = ["ares-rag/local-embeddings", "ares-http/local-embeddings"]
+local-embeddings = ["ares-rag/local-embeddings", "ares-http?/local-embeddings"]
 
 # HMR via libloading — off by default. Forwards to cordis/hmr (dlopen plugin .so).
 hmr = ["cordis/hmr"]
@@ -185,7 +202,7 @@ hmr = ["cordis/hmr"]
 rhai-policy = ["cordis/rhai"]
 
 # Skills - SKILL.md file discovery and loading via thulp
-skills = ["dep:thulp-skill-files", "ares-http/skills", "ares-agent/skills"]
+skills = ["dep:thulp-skill-files", "ares-http?/skills", "ares-agent/skills"]
 
 # Email sending via SMTP (opt-in, requires lettre feature)
 email = ["dep:lettre"]
@@ -198,7 +215,7 @@ search-tools = ["ares-tools/search-tools"]
 ui = ["dep:rust-embed", "dep:mime_guess"]
 
 # Swagger UI - interactive API documentation (requires network during build)
-swagger-ui = ["dep:utoipa-swagger-ui", "ares-http/swagger-ui"]
+swagger-ui = ["dep:utoipa-swagger-ui", "ares-http?/swagger-ui"]
 
 # ============= Feature Bundles =============
 # All LLM providers
@@ -235,61 +252,36 @@ ares-rag = { workspace = true }
 ares-tools = { workspace = true }
 ares-llm = { workspace = true }
 ares-store = { workspace = true }
-ares-mcp = { workspace = true }
+ares-mcp = { workspace = true, default-features = false, optional = true }
 ares-agent = { workspace = true }
-ares-http = { workspace = true }
+ares-http = { workspace = true, optional = true }
 cordis = { workspace = true }
 inventory = { workspace = true, optional = true }
 
-# HuggingFace model downloads (DRY — reuse lancor's hub client)
-lancor = "0.2"
-
-# CLI and TUI
-clap = { version = "4.5", features = ["derive", "color", "env", "suggestions"] }
-owo-colors = "4.1"
+# CLI and TUI (optional; `cli` feature)
+clap = { version = "4.5", features = ["derive", "color", "env", "suggestions"], optional = true }
+owo-colors = { version = "4.1", optional = true }
 
 # Core dependencies
-anyhow = "1.0.100"
-async-stream = "0.3.6"
 async-trait = "0.1.89"
 chrono = { version = "0.4.42", features = ["serde"] }
-futures = "0.3.31"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
-thiserror = "2.0.17"
 tokio = { version = "1.48.0", features = ["rt-multi-thread", "macros", "net", "sync", "time", "io-util", "signal", "fs", "process"] }
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
+tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"], optional = true }
 uuid = { version = "1.19.0", features = ["v4", "serde"] }
 
-# Web framework
-axum = { version = "0.8.7", features = ["macros", "multipart"] }
-tower = { version = "0.5.2", features = ["util", "timeout"] }
-tower-http = { version = "0.6.8", features = ["trace", "cors", "limit"] }
-tower-sessions = "0.14.0"
-tower_governor = "0.8"
+# Web framework (optional; `http` feature)
+axum = { version = "0.8.7", features = ["macros", "multipart"], optional = true }
+tower-http = { version = "0.6.8", features = ["trace", "cors", "limit"], optional = true }
+tower_governor = { version = "0.8", optional = true }
 
-# HTTP client
-reqwest = { version = "0.12.26", default-features = false, features = ["json", "rustls-tls", "multipart"] }
+# HTTP client (optional; `cli` feature)
+reqwest = { version = "0.12.26", default-features = false, features = ["json", "rustls-tls", "multipart"], optional = true }
 
-# Authentication
-argon2 = "0.5.3"
-jsonwebtoken = { version = "10.3.0", features = ["use_pem", "rust_crypto"] }
-sha2 = "0.10.9"
-rand = "0.9.2"
-hex = "0.4"
-
-# Cron parsing for scheduler
-cron = "0.15"
-
-# Configuration
-config = "0.15.19"
-dotenvy = "0.15.7"
-toml = "0.9.8"
-toon-format = { version = "0.4.1", default-features = false }  # cli feature drags in tiktoken-rs, syntect, arboard, ratatui
-notify = "8.2.0"
-parking_lot = "0.12.5"
-arc-swap = "1.7.1"
+# Configuration (optional; `cli` feature)
+dotenvy = { version = "0.15.7", optional = true }
 rust_decimal = { workspace = true }
 
 # Vector database (optional)
@@ -311,13 +303,9 @@ thulp-skill-files = { version = "0.3", optional = true }
 # OpenSSL vendored build (for systems without pkg-config/libssl-dev)
 # openssl = { version = "0.10", features = ["vendored"] }
 
-# Schema and documentation
-schemars = { version = "1.1.0", features = ["derive"] }
-utoipa = { version = "5.4.0", features = ["axum_extras", "chrono", "uuid"] }
+# Schema and documentation (utoipa optional; `http` feature)
+utoipa = { version = "5.4.0", features = ["axum_extras", "chrono", "uuid"], optional = true }
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"], optional = true }
-
-# MCP support (optional)
-rmcp = { version = "3.1.4", features = ["server", "client", "transport-io", "macros"], optional = true }
 
 # Email sending via SMTP (optional — gated by email feature)
 lettre = { version = "0.11", features = ["tokio1-native-tls", "builder", "smtp-transport"], optional = true }
@@ -325,11 +313,13 @@ lettre = { version = "0.11", features = ["tokio1-native-tls", "builder", "smtp-t
 # UI embedding (optional)
 rust-embed = { version = "8.9", optional = true }
 mime_guess = { version = "2.0", optional = true }
-dirs = "6.0.0"
 
 [dev-dependencies]
 # Testing utilities
 axum-test = "18.4.1"
+futures = "0.3.31"
+toon-format = { version = "0.4.1", default-features = false }  # cli feature drags in tiktoken-rs, syntect, arboard, ratatui
+parking_lot = "0.12.5"
 mockall = "0.14.0"
 rstest = "0.26.1"
 tempfile = "3.23.0"

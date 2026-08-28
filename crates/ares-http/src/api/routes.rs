@@ -877,6 +877,10 @@ mod route_path_tests {
 }
 
 #[cfg(all(test, feature = "postgres"))]
+// ADMIN_ENV_LOCK serializes tests that mutate the process-global ADMIN_API_KEY
+// env var; the guard must span the awaited requests because handlers read the
+// env var mid-await, so scoping it earlier would reintroduce the race.
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use std::sync::Mutex;
     static ADMIN_ENV_LOCK: Mutex<()> = Mutex::new(());

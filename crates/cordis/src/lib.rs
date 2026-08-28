@@ -1434,7 +1434,7 @@ mod tests {
     /// Failed fibers stay tracked.
     #[tokio::test]
     async fn reflect_prune_disposed_drops_dead_fibers_only() {
-        let ctx = Context::new_root();
+        let _ctx = Context::new_root();
         let reflect = ReflectService::new();
 
         let dead = Arc::new(Fiber::new());

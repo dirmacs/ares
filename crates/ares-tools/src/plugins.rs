@@ -212,7 +212,7 @@ mod tests {
             "mcps_dir": "config/mcps"
         }))
         .unwrap();
-        assert!(map.get("calculator").is_some());
+        assert!(map.contains_key("calculator"));
         assert!(map.get("calculator").unwrap().enabled);
     }
 

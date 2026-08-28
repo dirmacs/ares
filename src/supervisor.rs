@@ -112,7 +112,7 @@ fn next_backoff(consecutive_unhealthy: u32) -> Duration {
 /// children without sleeping.
 fn now() -> u64 {
     #[cfg(test)]
-    if let Some(ms) = NOW_OVERRIDE.lock().clone() {
+    if let Some(ms) = *NOW_OVERRIDE.lock() {
         return ms;
     }
     std::time::SystemTime::now()

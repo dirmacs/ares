@@ -4,6 +4,7 @@
 //! - TOON config files can be loaded from directories
 //! - DynamicConfigManager provides correct access to configs
 //! - TOON format serialization/deserialization works correctly
+#![cfg(feature = "http")]
 
 use ares_http::toon_config::{
     DynamicConfigManager, ToonAgentConfig, ToonModelConfig, ToonToolConfig, ToonWorkflowConfig,

@@ -4,7 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-publish = false
+# Published so downstream dev-dependency resolution succeeds during the 0.10.1 train.
+publish = true
 description = "Shared live-test database harness for ARES integration tests (dev-only)"
 
 [dependencies]

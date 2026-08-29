@@ -1725,11 +1725,9 @@ mod tool_hygiene_tests {
     use sqlx::PgPool;
     use std::sync::Arc;
 
-    /// Real pool from `TEST_DATABASE_URL`; `None` skips DB-backed tests.
-    async fn try_test_pool() -> Option<PgPool> {
-        let url = std::env::var("TEST_DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://dirmacs@localhost/ares_test".to_string());
-        PgPool::connect(&url).await.ok()
+    /// Shared live-test pool; an unreachable DB fails loudly with fix hints.
+    async fn try_test_pool() -> PgPool {
+        ares_test_support::pool().await
     }
 
     /// Upsert one skill row with a fixed id (parent steps reference child ids).
@@ -1876,10 +1874,7 @@ mod tool_hygiene_tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn tool_round_cap_aborts_execution_after_three_tool_steps() {
         // block_in_place inside Tools::execute requires the multi-thread runtime.
-        let Some(pool) = try_test_pool().await else {
-            eprintln!("SKIP: no postgres");
-            return;
-        };
+        let pool = try_test_pool().await;
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let root = Context::new_root();
         root.provide(EventsService::new());
@@ -1929,10 +1924,7 @@ mod tool_hygiene_tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn sanitize_strips_command_lines_from_delegated_skill_result() {
         // block_in_place inside Tools::execute requires the multi-thread runtime.
-        let Some(pool) = try_test_pool().await else {
-            eprintln!("SKIP: no postgres");
-            return;
-        };
+        let pool = try_test_pool().await;
         let root = Context::new_root();
         root.provide(EventsService::new());
         root.provide(ares_store::PostgresClient {

@@ -1034,12 +1034,7 @@ mod tests {
     // direct-helper coverage: full-path covered by scheduler-side integration tests
     #[tokio::test(flavor = "multi_thread")]
     async fn trigger_fired_emitted_on_execute_trigger_success_path() {
-        let database_url = std::env::var("TEST_DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://dirmacs@localhost/ares_test".to_string());
-        let Ok(pool) = sqlx::PgPool::connect(&database_url).await else {
-            eprintln!("SKIP: no postgres");
-            return;
-        };
+        let pool = ares_test_support::pool().await;
 
         let app_state = Context::new_root();
         app_state.provide(cordis::EventsService::new());

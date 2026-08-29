@@ -186,7 +186,6 @@ pub use crate::auth::middleware::AuthUser;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ares_store::PostgresClient;
     use ares_types::models::{TenantContext, TenantTier};
     use axum::{
         body::Body,
@@ -196,11 +195,9 @@ mod tests {
         routing::get,
         Router,
     };
-    use std::sync::{Arc, Once};
+    use std::sync::Arc;
     use tower::ServiceExt;
 
-    static LOAD_ENV: Once = Once::new();
-    static INIT_SCHEMA: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     static DB_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     async fn response_error_message(response: axum::response::Response) -> String {
@@ -209,37 +206,6 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         json["error"].as_str().unwrap().to_string()
-    }
-
-    fn ensure_env_loaded() {
-        LOAD_ENV.call_once(|| {
-            let _ = dotenvy::dotenv();
-        });
-    }
-
-    fn test_db_url() -> String {
-        ensure_env_loaded();
-        if let Ok(url) = std::env::var("TEST_DATABASE_URL") {
-            return url;
-        }
-        if let Ok(url) = std::env::var("DATABASE_URL") {
-            if url.contains("/ares") && !url.contains("ares_test") {
-                return url.replace("/ares", "/ares_test");
-            }
-            return url;
-        }
-        "postgres://dirmacs@localhost:5432/ares_test".to_string()
-    }
-
-    async fn create_test_db() -> PostgresClient {
-        let url = test_db_url();
-        let db = PostgresClient::new_remote(url, String::new())
-            .await
-            .expect("Failed to connect to ares_test. Ensure it exists and migrations are applied.");
-
-        ensure_test_schema(&db).await;
-
-        db
     }
 
     async fn protected_handler(Extension(ctx): Extension<TenantContext>) -> String {
@@ -276,36 +242,6 @@ mod tests {
                     }
                 },
             ))
-    }
-
-    async fn ensure_test_schema(db: &PostgresClient) {
-        let exists: (bool,) = sqlx::query_as(
-            "SELECT EXISTS (
-                SELECT FROM information_schema.tables
-                WHERE table_schema = 'public' AND table_name = 'api_keys'
-            )",
-        )
-        .fetch_one(&db.pool)
-        .await
-        .expect("schema check");
-
-        if !exists.0 {
-            sqlx::query("DELETE FROM _sqlx_migrations")
-                .execute(&db.pool)
-                .await
-                .ok();
-            ares_store::MIGRATOR
-                .run(&db.pool)
-                .await
-                .expect("rebuild schema");
-        }
-    }
-
-    async fn restore_test_schema(db: &PostgresClient) {
-        ares_store::MIGRATOR
-            .run(&db.pool)
-            .await
-            .expect("restore schema after destructive test");
     }
 
     async fn provision_tenant(tenant_db: &TenantDb, name: &str) -> (String, String) {
@@ -724,7 +660,7 @@ mod tests {
     async fn test_middleware_valid_api_key_passes() {
         let _db_guard = DB_TEST_LOCK.lock().await;
 
-        let db = Arc::new(create_test_db().await);
+        let db = Arc::new(ares_test_support::client().await);
         let tenant_db = Arc::new(TenantDb::new(db));
         let (tenant_id, api_key) = provision_tenant(&tenant_db, "auth-pass").await;
         let app = build_app(tenant_db);
@@ -750,7 +686,7 @@ mod tests {
     async fn test_middleware_invalid_api_key_rejected() {
         let _db_guard = DB_TEST_LOCK.lock().await;
 
-        let db = Arc::new(create_test_db().await);
+        let db = Arc::new(ares_test_support::client().await);
         let tenant_db = Arc::new(TenantDb::new(db));
         let (_tenant_id, _api_key) = provision_tenant(&tenant_db, "auth-invalid").await;
         let app = build_app(tenant_db);
@@ -773,7 +709,7 @@ mod tests {
     async fn test_middleware_monthly_quota_exceeded() {
         let _db_guard = DB_TEST_LOCK.lock().await;
 
-        let db = Arc::new(create_test_db().await);
+        let db = Arc::new(ares_test_support::client().await);
         let tenant_db = Arc::new(TenantDb::new(db));
         let (_tenant_id, api_key) = provision_tenant(&tenant_db, "auth-monthly").await;
 
@@ -806,7 +742,7 @@ mod tests {
     async fn test_middleware_event_denial_maps_to_quota_response() {
         let _db_guard = DB_TEST_LOCK.lock().await;
 
-        let db = Arc::new(create_test_db().await);
+        let db = Arc::new(ares_test_support::client().await);
         let tenant_db = Arc::new(TenantDb::new(db));
         let (_tenant_id, api_key) = provision_tenant(&tenant_db, "auth-event-deny").await;
         let ctx = Context::new_root();
@@ -838,7 +774,7 @@ mod tests {
     async fn test_middleware_daily_quota_exceeded() {
         let _db_guard = DB_TEST_LOCK.lock().await;
 
-        let db = Arc::new(create_test_db().await);
+        let db = Arc::new(ares_test_support::client().await);
         let tenant_db = Arc::new(TenantDb::new(db));
         let (_tenant_id, api_key) = provision_tenant(&tenant_db, "auth-daily").await;
 
@@ -871,7 +807,7 @@ mod tests {
     async fn test_middleware_invalid_auth_header_bytes() {
         let _db_guard = DB_TEST_LOCK.lock().await;
 
-        let db = Arc::new(create_test_db().await);
+        let db = Arc::new(ares_test_support::client().await);
         let tenant_db = Arc::new(TenantDb::new(db.clone()));
         let app = build_app(tenant_db);
 
@@ -899,7 +835,7 @@ mod tests {
     async fn test_middleware_verify_api_key_db_error() {
         let _db_guard = DB_TEST_LOCK.lock().await;
 
-        let db = Arc::new(create_test_db().await);
+        let db = Arc::new(ares_test_support::client().await);
         let tenant_db = Arc::new(TenantDb::new(db.clone()));
         let (_tenant_id, api_key) = provision_tenant(&tenant_db, "auth-db-verify").await;
 
@@ -934,7 +870,7 @@ mod tests {
     async fn test_middleware_monthly_usage_db_error() {
         let _db_guard = DB_TEST_LOCK.lock().await;
 
-        let db = Arc::new(create_test_db().await);
+        let db = Arc::new(ares_test_support::client().await);
         let tenant_db = Arc::new(TenantDb::new(db.clone()));
         let (_tenant_id, api_key) = provision_tenant(&tenant_db, "auth-db-monthly").await;
 
@@ -969,7 +905,7 @@ mod tests {
     async fn test_middleware_daily_usage_db_error() {
         let _db_guard = DB_TEST_LOCK.lock().await;
 
-        let db = Arc::new(create_test_db().await);
+        let db = Arc::new(ares_test_support::client().await);
         let tenant_db = Arc::new(TenantDb::new(db.clone()));
         let (_tenant_id, api_key) = provision_tenant(&tenant_db, "auth-db-daily").await;
 

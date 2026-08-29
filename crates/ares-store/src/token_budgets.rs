@@ -531,25 +531,8 @@ mod tests {
         assert!(validate_period("yearly").is_err());
     }
 
-    fn test_db_url() -> String {
-        if let Ok(url) = std::env::var("TEST_DATABASE_URL") {
-            return url;
-        }
-        if let Ok(url) = std::env::var("DATABASE_URL") {
-            if url.contains("/ares") && !url.contains("ares_test") {
-                return url.replace("/ares", "/ares_test");
-            }
-            return url;
-        }
-        "postgres://postgres:postgres@localhost:5432/ares_test".into()
-    }
-
-    async fn try_test_pool() -> Option<PgPool> {
-        let db = crate::PostgresClient::new_remote(test_db_url(), String::new())
-            .await
-            .ok()?;
-        crate::MIGRATOR.run(&db.pool).await.ok()?;
-        Some(db.pool)
+    async fn try_test_pool() -> PgPool {
+        ares_test_support::pool().await
     }
 
     #[test]
@@ -576,10 +559,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_set_budget_resets_usage_when_period_changes() {
-        let Some(pool) = try_test_pool().await else {
-            eprintln!("SKIP: no postgres");
-            return;
-        };
+        let pool = try_test_pool().await;
         let store = TokenBudgetStore::new(&pool);
         let tenant_id = format!("integration-token-budget-{}", uuid::Uuid::new_v4());
 

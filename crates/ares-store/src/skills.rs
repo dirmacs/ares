@@ -650,33 +650,13 @@ mod tests {
         assert!(validate_connector_request(&req).is_err());
     }
 
-    fn test_db_url() -> String {
-        if let Ok(url) = std::env::var("TEST_DATABASE_URL") {
-            return url;
-        }
-        if let Ok(url) = std::env::var("DATABASE_URL") {
-            if url.contains("/ares") && !url.contains("ares_test") {
-                return url.replace("/ares", "/ares_test");
-            }
-            return url;
-        }
-        "postgres://postgres:postgres@localhost:5432/ares_test".into()
-    }
-
-    async fn try_test_pool() -> Option<PgPool> {
-        let db = crate::PostgresClient::new_remote(test_db_url(), String::new())
-            .await
-            .ok()?;
-        crate::MIGRATOR.run(&db.pool).await.ok()?;
-        Some(db.pool)
+    async fn try_test_pool() -> PgPool {
+        ares_test_support::pool().await
     }
 
     #[tokio::test]
     async fn integration_update_connector_is_tenant_scoped() {
-        let Some(pool) = try_test_pool().await else {
-            eprintln!("SKIP: no postgres");
-            return;
-        };
+        let pool = try_test_pool().await;
         let store = ConnectorStore::new(&pool);
         let _ = sqlx::query("DELETE FROM connectors WHERE name LIKE 'integration-connector-%'")
             .execute(&pool)

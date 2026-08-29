@@ -1300,15 +1300,9 @@ mod tests {
         assert!(!reached.load(Ordering::SeqCst));
     }
 
-    fn test_db_url() -> Option<String> {
-        std::env::var("TEST_DATABASE_URL")
-            .ok()
-            .or_else(|| std::env::var("DATABASE_URL").ok())
-    }
-
-    async fn try_test_pool() -> Option<PgPool> {
-        let pool = PgPool::connect(&test_db_url()?).await.ok()?;
-        Some(pool)
+    /// Shared live-test pool; an unreachable DB fails loudly with fix hints.
+    async fn try_test_pool() -> PgPool {
+        ares_test_support::pool().await
     }
 
     fn collect_ready_skill_calls<'a>(
@@ -1350,9 +1344,7 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_tenant_tool_allowed_defaults_to_deny() {
-        let Some(pool) = try_test_pool().await else {
-            return;
-        };
+        let pool = try_test_pool().await;
         let tenant_id = format!("tenant-{}", uuid::Uuid::new_v4());
         let err = ensure_tenant_tool_allowed(&pool, &tenant_id, "calendar")
             .await
@@ -1362,9 +1354,7 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_tenant_tool_allowed_accepts_enabled_row() {
-        let Some(pool) = try_test_pool().await else {
-            return;
-        };
+        let pool = try_test_pool().await;
         let tenant_id = format!("tenant-{}", uuid::Uuid::new_v4());
         let store = TenantAllowlistStore::new(&pool);
         store
@@ -1379,9 +1369,7 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_tenant_model_allowed_defaults_to_deny() {
-        let Some(pool) = try_test_pool().await else {
-            return;
-        };
+        let pool = try_test_pool().await;
         let tenant_id = format!("tenant-{}", uuid::Uuid::new_v4());
         let err = ensure_tenant_model_allowed(&pool, &tenant_id, "gpt-4o")
             .await
@@ -1391,9 +1379,7 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_tenant_model_allowed_accepts_enabled_row() {
-        let Some(pool) = try_test_pool().await else {
-            return;
-        };
+        let pool = try_test_pool().await;
         let tenant_id = format!("tenant-{}", uuid::Uuid::new_v4());
         let store = TenantAllowlistStore::new(&pool);
         store
@@ -2120,8 +2106,8 @@ mod tests {
     }
 
     impl CancelFixture {
-        async fn build() -> Option<Self> {
-            let pool = try_test_pool().await?;
+        async fn build() -> Self {
+            let pool = try_test_pool().await;
             let tenant_id = format!("tenant-{}", uuid::Uuid::new_v4());
             TenantAllowlistStore::new(&pool)
                 .allow_model(&tenant_id, "test-model")
@@ -2161,13 +2147,13 @@ mod tests {
             let ctx = Context::new_root();
             ctx.provide(EventsService::new());
 
-            Some(Self {
+            Self {
                 engine,
                 ctx,
                 pool,
                 tenant_id,
                 seen_prompts: Arc::new(Mutex::new(Vec::new())),
-            })
+            }
         }
 
         /// Install the recording waterfall. `on_prompt` runs after each LLM
@@ -2261,9 +2247,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn cancel_token_aborts_subtask_between_rounds() {
-        let Some(fixture) = CancelFixture::build().await else {
-            return;
-        };
+        let fixture = CancelFixture::build().await;
         let skill_id = fixture
             .create_skill(
                 "cancel-between-rounds",
@@ -2311,9 +2295,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn cancelled_result_not_integrated() {
-        let Some(fixture) = CancelFixture::build().await else {
-            return;
-        };
+        let fixture = CancelFixture::build().await;
         let child_id = fixture
             .create_skill(
                 "cancel-child",

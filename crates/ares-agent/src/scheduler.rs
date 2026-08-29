@@ -1727,17 +1727,13 @@ mod tests {
 
     // ── Phase 5 choreography: policy events through the real tick path ────
 
-    /// Real Postgres-backed [`ares_store::TenantDb`] built from
-    /// `TEST_DATABASE_URL`. Note that `PostgresClient::new_test()`'s lazy
-    /// pool points at a placeholder URL that can never execute queries, so
-    /// tests asserting persisted rows must connect through the env URL.
+    /// Real Postgres-backed [`ares_store::TenantDb`] from the shared
+    /// live-test harness: connected, migrated and truncated once per
+    /// binary, failing loudly when the database is unreachable. Lazy
+    /// placeholder clients can never execute queries, so tests asserting
+    /// persisted rows must connect through this pool.
     async fn live_tenant_db() -> ares_store::TenantDb {
-        let url = std::env::var("TEST_DATABASE_URL")
-            .unwrap_or_else(|_| "postgres:///ares_test".to_string());
-        let client = ares_store::PostgresClient::new_remote(url, String::new())
-            .await
-            .expect("test database should be reachable");
-        ares_store::TenantDb::new(std::sync::Arc::new(client))
+        ares_store::TenantDb::new(std::sync::Arc::new(ares_test_support::client().await))
     }
 
     /// `agent_runs.tenant_id` carries a FK to `tenants(id)`, so fabricated

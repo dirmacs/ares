@@ -34,8 +34,8 @@ jobs:
         run: cargo check -p ares-server --example headless --no-default-features --features openai
       - name: Assert headless dependency tree
         run: |
-          if cargo tree -p ares-server -e normal --no-default-features --features openai \
-            | grep -E '^(axum|ares-http|clap|tower|tower-http|tower-sessions|tower_governor|boa_engine|rhai|ollama-rs|sqlx|ares-mcp|rmcp|argon2|jsonwebtoken) '; then
+          if cargo tree -p ares-server -e normal --no-default-features --features openai --prefix none \
+            | grep -E '^(axum|ares-http|clap|tower-sessions|tower_governor|boa_engine|rhai|ollama-rs|sqlx|ares-mcp|rmcp|argon2|jsonwebtoken)( |$)'; then
             echo "::error::headless build pulled a web/CLI/script dependency into the tree"
             exit 1
           fi

@@ -389,10 +389,7 @@ mod tests {
     static OAUTH_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     async fn create_test_pool() -> PgPool {
-        let database_url = std::env::var("TEST_DATABASE_URL")
-            .or_else(|_| std::env::var("DATABASE_URL"))
-            .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/ares".to_string());
-        PgPool::connect(&database_url).await.unwrap()
+        ares_test_support::pool().await
     }
 
     fn ensure_master_key() {

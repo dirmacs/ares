@@ -43,6 +43,7 @@ rhai = { workspace = true, optional = true }
 sqlx = { workspace = true, optional = true }
 
 [dev-dependencies]
+ares-test-support = { workspace = true }
 ares-mcp = { workspace = true, features = ["mcp"] }
 ares-store = { workspace = true, features = ["postgres"] }
 tracing = { workspace = true }

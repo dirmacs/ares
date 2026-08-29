@@ -963,22 +963,8 @@ mod tests {
 
     // ── Integration test helpers ─────────────────────────────────────────
 
-    fn test_db_url() -> String {
-        if let Ok(url) = std::env::var("DATABASE_URL") {
-            if url.contains("/ares") && !url.contains("ares_test") {
-                return url.replace("/ares", "/ares_test");
-            }
-            return url;
-        }
-        "postgres://dirmacs@localhost:5432/ares_test".to_string()
-    }
-
-    async fn try_test_pool() -> Option<PgPool> {
-        let db = crate::PostgresClient::new_remote(test_db_url(), String::new())
-            .await
-            .ok()?;
-        crate::MIGRATOR.run(&db.pool).await.ok()?;
-        Some(db.pool)
+    async fn try_test_pool() -> PgPool {
+        ares_test_support::pool().await
     }
 
     fn unique_tenant() -> String {
@@ -1030,10 +1016,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_insert_agent_run_with_real_pool() {
-        let Some(pool) = try_test_pool().await else {
-            eprintln!("SKIP: no postgres");
-            return;
-        };
+        let pool = try_test_pool().await;
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
 
@@ -1074,10 +1057,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_insert_agent_run_with_metadata() {
-        let Some(pool) = try_test_pool().await else {
-            eprintln!("SKIP: no postgres");
-            return;
-        };
+        let pool = try_test_pool().await;
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
 
@@ -1141,10 +1121,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_insert_agent_run_with_supplied_id_and_metadata() {
-        let Some(pool) = try_test_pool().await else {
-            eprintln!("SKIP: no postgres");
-            return;
-        };
+        let pool = try_test_pool().await;
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
         let run_id = format!("run-test-{}", uuid::Uuid::new_v4());
@@ -1192,10 +1169,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_list_agent_runs_with_agent_name_filter() {
-        let Some(pool) = try_test_pool().await else {
-            eprintln!("SKIP: no postgres");
-            return;
-        };
+        let pool = try_test_pool().await;
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
 
@@ -1264,10 +1238,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_list_agent_runs_pagination() {
-        let Some(pool) = try_test_pool().await else {
-            eprintln!("SKIP: no postgres");
-            return;
-        };
+        let pool = try_test_pool().await;
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
 
@@ -1312,10 +1283,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_get_agent_run_stats_aggregation() {
-        let Some(pool) = try_test_pool().await else {
-            eprintln!("SKIP: no postgres");
-            return;
-        };
+        let pool = try_test_pool().await;
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
 
@@ -1386,10 +1354,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_get_platform_stats_counts() {
-        let Some(pool) = try_test_pool().await else {
-            eprintln!("SKIP: no postgres");
-            return;
-        };
+        let pool = try_test_pool().await;
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
         seed_tenant_agent(&pool, &tenant_id, "plat-agent").await;
@@ -1441,10 +1406,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_list_all_agents_returns_entry() {
-        let Some(pool) = try_test_pool().await else {
-            eprintln!("SKIP: no postgres");
-            return;
-        };
+        let pool = try_test_pool().await;
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
         seed_tenant_agent(&pool, &tenant_id, "all-agent").await;

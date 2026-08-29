@@ -1538,9 +1538,12 @@ mod boot_tests {
         ));
         std::fs::create_dir_all(&dir).expect("tmpdir");
 
-        let db_url = std::env::var("TEST_DATABASE_URL")
-            .or_else(|_| std::env::var("DATABASE_URL"))
-            .unwrap_or_else(|_| "postgres://dirmacs@%2Fvar%2Frun%2Fpostgresql/ares_test".into());
+        let db_url = ares_test_support::test_db_url();
+        // Overlay validates these at instantiation; without them set the
+        // loader reports no active Overlay entry and exits the whole test
+        // process.
+        std::env::set_var("JWT_SECRET_TEST_BOOT", "boot-test-secret-not-used");
+        std::env::set_var("API_KEY_TEST_BOOT", "boot-test-api-key-not-used");
 
         std::fs::write(
             dir.join("ares.toml"),

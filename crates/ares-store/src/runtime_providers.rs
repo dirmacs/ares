@@ -298,10 +298,7 @@ mod tests {
     use sqlx::PgPool;
 
     async fn create_test_pool() -> PgPool {
-        let database_url = std::env::var("TEST_DATABASE_URL")
-            .or_else(|_| std::env::var("DATABASE_URL"))
-            .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/ares".to_string());
-        PgPool::connect(&database_url).await.unwrap()
+        ares_test_support::pool().await
     }
 
     #[tokio::test]
@@ -388,13 +385,7 @@ mod tests {
 
     #[tokio::test]
     async fn scoped_identity_allows_global_and_tenant_same_name() {
-        let database_url = std::env::var("TEST_DATABASE_URL")
-            .or_else(|_| std::env::var("DATABASE_URL"))
-            .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/ares".to_string());
-        let Ok(pool) = PgPool::connect(&database_url).await else {
-            eprintln!("SKIP: no postgres");
-            return;
-        };
+        let pool = ares_test_support::pool().await;
         ensure_scoped_runtime_provider_index(&pool).await;
         let store = RuntimeProviderStore::new(&pool);
         let name = "test_shared_provider_scope";

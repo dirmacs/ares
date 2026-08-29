@@ -718,7 +718,6 @@ mod tests {
         use crate::AgentConfig;
         use ares_llm::ProviderRegistry;
         use ares_llm::{ModelConfig, ProviderConfig};
-        use ares_store::postgres::PostgresClient;
         use ares_store::tenant_agents::{
             create_tenant_agent as db_create_tenant_agent, update_tenant_agent,
             CreateTenantAgentRequest, UpdateTenantAgentRequest,
@@ -730,46 +729,10 @@ mod tests {
         use serde_json::{json, Value};
         use sqlx::PgPool;
         use std::collections::HashMap;
-        use std::sync::{Arc, Once};
-
-        static LOAD_ENV: Once = Once::new();
-        static INIT_SCHEMA: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-
-        fn ensure_env_loaded() {
-            LOAD_ENV.call_once(|| {
-                let _ = dotenvy::dotenv();
-            });
-        }
-
-        fn test_db_url() -> String {
-            ensure_env_loaded();
-
-            if let Ok(url) = std::env::var("TEST_DATABASE_URL") {
-                return url;
-            }
-            if let Ok(url) = std::env::var("DATABASE_URL") {
-                if url.contains("/ares") && !url.contains("ares_test") {
-                    return url.replace("/ares", "/ares_test");
-                }
-                return url;
-            }
-            "postgres://dirmacs@localhost:5432/ares_test".to_string()
-        }
+        use std::sync::Arc;
 
         async fn test_pool() -> PgPool {
-            let url = test_db_url();
-            let db = PostgresClient::new_remote(url, String::new())
-                .await
-                .expect("connect to ares_test");
-
-            if INIT_SCHEMA.set(()).is_ok() {
-                ares_store::MIGRATOR
-                    .run(&db.pool)
-                    .await
-                    .expect("run migrations on ares_test");
-            }
-
-            db.pool
+            ares_test_support::pool().await
         }
 
         fn unique_id(prefix: &str) -> String {

@@ -1643,28 +1643,10 @@ mod tests {
     #[cfg(feature = "postgres")]
     mod postgres_integration {
         use super::*;
-        use crate::postgres::PostgresClient;
         use sqlx::PgPool;
 
-        fn test_db_url() -> String {
-            if let Ok(url) = std::env::var("TEST_DATABASE_URL") {
-                return url;
-            }
-            if let Ok(url) = std::env::var("DATABASE_URL") {
-                if url.contains("/ares") && !url.contains("ares_test") {
-                    return url.replace("/ares", "/ares_test");
-                }
-                return url;
-            }
-            "postgres://dirmacs@localhost:5432/ares_test".to_string()
-        }
-
-        async fn try_test_pool() -> Option<PgPool> {
-            let db = PostgresClient::new_remote(test_db_url(), String::new())
-                .await
-                .ok()?;
-            crate::MIGRATOR.run(&db.pool).await.ok()?;
-            Some(db.pool)
+        async fn try_test_pool() -> PgPool {
+            ares_test_support::pool().await
         }
 
         fn unique_tenant() -> String {
@@ -1673,10 +1655,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_create_get_delete_tenant_agent() {
-            let Some(pool) = try_test_pool().await else {
-                eprintln!("SKIP: no postgres");
-                return;
-            };
+            let pool = try_test_pool().await;
             let tenant_id = unique_tenant();
             sqlx::query("INSERT INTO tenants (id, name, tier, created_at, updated_at) VALUES ($1, $2, 'free', 1, 1) ON CONFLICT (id) DO NOTHING")
                 .bind(&tenant_id).bind("Test Tenant").execute(&pool).await.expect("tenant");
@@ -1707,9 +1686,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_create_rejects_invalid_config() {
-            let Some(pool) = try_test_pool().await else {
-                return;
-            };
+            let pool = try_test_pool().await;
             let err = create_tenant_agent(
                 &pool,
                 &unique_tenant(),
@@ -1727,9 +1704,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_list_tenant_agents_orders_by_name() {
-            let Some(pool) = try_test_pool().await else {
-                return;
-            };
+            let pool = try_test_pool().await;
             let tenant_id = unique_tenant();
             sqlx::query("INSERT INTO tenants (id, name, tier, created_at, updated_at) VALUES ($1, $2, 'free', 1, 1) ON CONFLICT (id) DO NOTHING")
                 .bind(&tenant_id).bind("List Tenant").execute(&pool).await.expect("tenant");

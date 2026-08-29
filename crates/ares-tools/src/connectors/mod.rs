@@ -482,7 +482,7 @@ mod tests {
     #[tokio::test]
     async fn register_prebuilt_connector_tools_registers_all_bundled_tools() {
         let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgres://dirmacs@localhost/ares_test")
+            .connect_lazy(&ares_test_support::test_db_url())
             .expect("lazy pool");
         let master_key = MasterKey::from_secret("test-only-master-key");
         let mut registry = crate::registry::ToolRegistry::new();

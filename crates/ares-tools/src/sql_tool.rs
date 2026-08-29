@@ -401,23 +401,12 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // DB-backed integration tests (skipped when TEST_DATABASE_URL is unset)
+    // DB-backed integration tests (live ares_test via ares_test_support)
     // -------------------------------------------------------------------------
-
-    async fn try_test_pool() -> Option<PgPool> {
-        let url = std::env::var("TEST_DATABASE_URL").ok()?;
-        sqlx::postgres::PgPoolOptions::new()
-            .max_connections(1)
-            .connect(&url)
-            .await
-            .ok()
-    }
 
     #[tokio::test]
     async fn test_simple_select() {
-        let Some(pool) = try_test_pool().await else {
-            return;
-        };
+        let pool = ares_test_support::pool().await;
         let config = SqlToolConfig {
             query_template: "SELECT $1::int as a, $2::text as b".to_string(),
             ..Default::default()
@@ -436,9 +425,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mising_args_extra_ignored() {
-        let Some(pool) = try_test_pool().await else {
-            return;
-        };
+        let pool = ares_test_support::pool().await;
         let config = SqlToolConfig {
             query_template: "SELECT $1::int as n".to_string(),
             ..Default::default()
@@ -456,9 +443,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_result_set() {
-        let Some(pool) = try_test_pool().await else {
-            return;
-        };
+        let pool = ares_test_support::pool().await;
         let config = SqlToolConfig {
             query_template: "SELECT * FROM (VALUES (1)) t WHERE false".to_string(),
             ..Default::default()
@@ -470,9 +455,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_max_rows_enforced() {
-        let Some(pool) = try_test_pool().await else {
-            return;
-        };
+        let pool = ares_test_support::pool().await;
         let config = SqlToolConfig {
             query_template: "SELECT generate_series(1, $1::int) as n".to_string(),
             max_rows: Some(5),
@@ -489,9 +472,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_max_rows_within_limit_ok() {
-        let Some(pool) = try_test_pool().await else {
-            return;
-        };
+        let pool = ares_test_support::pool().await;
         let config = SqlToolConfig {
             query_template: "SELECT generate_series(1, $1::int) as n".to_string(),
             max_rows: Some(100),
@@ -504,9 +485,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_timeout_enforced() {
-        let Some(pool) = try_test_pool().await else {
-            return;
-        };
+        let pool = ares_test_support::pool().await;
         let config = SqlToolConfig {
             query_template: "SELECT pg_sleep($1::int) as result".to_string(),
             timeout_secs: Some(1),
@@ -523,9 +502,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_null_bool_number_params() {
-        let Some(pool) = try_test_pool().await else {
-            return;
-        };
+        let pool = ares_test_support::pool().await;
         // Args bind alphabetically: flag→$1, name→$2, num→$3.
         let config = SqlToolConfig {
             query_template: "SELECT $1::boolean as flag, $2::text as name, $3::int as num"
@@ -545,9 +522,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_json_param_and_column() {
-        let Some(pool) = try_test_pool().await else {
-            return;
-        };
+        let pool = ares_test_support::pool().await;
         let config = SqlToolConfig {
             query_template: "SELECT $1::jsonb as payload".to_string(),
             ..Default::default()
@@ -563,9 +538,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_multiple_rows() {
-        let Some(pool) = try_test_pool().await else {
-            return;
-        };
+        let pool = ares_test_support::pool().await;
         let config = SqlToolConfig {
             query_template: "SELECT $1::int + generate_series(0, 2) as val".to_string(),
             ..Default::default()
@@ -581,9 +554,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sql_error_propagated() {
-        let Some(pool) = try_test_pool().await else {
-            return;
-        };
+        let pool = ares_test_support::pool().await;
         let config = SqlToolConfig {
             query_template: "SELECT no_such_column FROM no_such_table".to_string(),
             ..Default::default()

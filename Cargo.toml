@@ -4,7 +4,7 @@ members = [
     ".", "crates/ares-vector", "crates/ares-types",
     "crates/ares-rag", "crates/ares-tools", "crates/ares-llm",
     "crates/ares-store", "crates/ares-mcp", "crates/ares-agent",
-    "crates/ares-http", "crates/cordis",
+    "crates/ares-http", "crates/cordis", "crates/ares-test-support",
 ]
 exclude = ["ui"]
 resolver = "2"
@@ -39,6 +39,7 @@ ares-mcp = { version = "0.10.1", path = "crates/ares-mcp", default-features = fa
 ares-agent = { version = "0.10.1", path = "crates/ares-agent" }
 ares-http = { version = "0.10.1", path = "crates/ares-http" }
 cordis = { version = "0.10.1", path = "crates/cordis", package = "ares-cordis", default-features = false }
+ares-test-support = { version = "0.10.1", path = "crates/ares-test-support" }
 anyhow = "1.0.100"
 hex = "0.4"
 rand = "0.9.2"
@@ -316,6 +317,7 @@ mime_guess = { version = "2.0", optional = true }
 
 [dev-dependencies]
 # Testing utilities
+ares-test-support = { workspace = true }
 axum-test = "18.4.1"
 futures = "0.3.31"
 toon-format = { version = "0.4.1", default-features = false }  # cli feature drags in tiktoken-rs, syntect, arboard, ratatui

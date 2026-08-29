@@ -24,6 +24,7 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 - `ares-agent`, `ares-llm`, `ares-store`, and `ares-http` now use `cordis` with `default-features = false`. Each keeps its own `inventory` forward, so the kernel default no longer pulls `inventory` into every build.
 - Default features are `postgres`, `openai`, `ares-vector`, `mcp`, `inventory`, `rhai-policy`, `http`, `cli`, `script-tools`. Forwards to optional deps use `dep?/feature` syntax, so one feature can no longer force an optional dependency on.
 - `ares-mcp` is optional on the root package and the `mcp` feature enables it.
+- New dev-only crate `ares-test-support`. One socket-first resolver replaces the per-crate test database URL helpers. Live tests connect to `ares_test` over the unix socket with no password, truncate the schema before and after each test binary, and fail with fix instructions when the database is unreachable.
 
 ### Removed
 

@@ -63,7 +63,7 @@ Add this dependency to your project:
 
 ```toml
 [dependencies]
-ares-server = "0.10"
+ares-server = "0.10.1"
 ```
 
 Basic usage:
@@ -78,7 +78,7 @@ For a headless embed, turn the defaults off and name only what you need:
 
 ```toml
 [dependencies]
-ares-server = { version = "0.10", default-features = false, features = ["openai"] }
+ares-server = { version = "0.10.1", default-features = false, features = ["openai"] }
 ```
 
 The headless build compiles no axum, clap, sqlx, Ollama, Boa, or Rhai code. Every type the library guide uses is reachable through the `ares_server` facade. See `docs/src/library.md`.
@@ -87,10 +87,10 @@ The headless build compiles no axum, clap, sqlx, Ollama, Boa, or Rhai code. Ever
 
 ```bash
 # Install from crates.io
-cargo install ares-server
+cargo install ares-server --locked
 
 # Install with embedded Web UI
-cargo install ares-server --features ui
+cargo install ares-server --locked --features ui
 
 # Initialize a new project (creates ares.toml and config files)
 ares-server init

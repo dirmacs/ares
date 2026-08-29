@@ -137,6 +137,10 @@ pub struct Execute {
     agent_registry: Option<Arc<crate::registry::AgentRegistry>>,
     /// Run tracker for observability (Phase 4: extracted from root crate ActiveRuns).
     run_tracker: Option<Arc<dyn RunTracker>>,
+    /// Fail closed instead of falling back: when `true`, every echo/fallback
+    /// path in `execute` returns `Err` so consumers never receive echoed
+    /// input or fallback-LLM content mistaken for a real agent run.
+    strict_fallbacks: bool,
 }
 
 impl Execute {
@@ -147,7 +151,21 @@ impl Execute {
             context_provider: None,
             agent_registry: None,
             run_tracker: None,
+            strict_fallbacks: false,
         }
+    }
+
+    /// Enable strict fallback mode: every echo/fallback entry in `execute`
+    /// returns `Err(AppError::Unavailable)` whose message starts with
+    /// `strict_fallbacks:` instead of echoing the request.
+    pub fn with_strict_fallbacks(mut self, strict: bool) -> Self {
+        self.strict_fallbacks = strict;
+        self
+    }
+
+    /// Whether strict fallback mode is enabled.
+    pub fn strict_fallbacks(&self) -> bool {
+        self.strict_fallbacks
     }
 
     /// Emit the `agent.started` event through the Cordis event bus with
@@ -665,7 +683,16 @@ You are {}.",
         ));
         let _ = base_messages;
 
-        if let Some(llm) = ctx.get::<ares_llm::Llm>() {
+        let llm = match ctx.get::<ares_llm::Llm>() {
+            Some(llm) => Some(llm),
+            None if self.strict_fallbacks => {
+                return Err(AppError::Unavailable(
+                    "strict_fallbacks: no Llm service on context".into(),
+                ));
+            }
+            None => None,
+        };
+        if let Some(llm) = llm {
             match llm
                 .get_client_boxed(ctx, ares_llm::CapabilityRequirements::default())
                 .await
@@ -734,15 +761,32 @@ You are {}.",
                             });
                         }
                         Err(e) => {
+                            if self.strict_fallbacks {
+                                return Err(AppError::Unavailable(format!(
+                                    "strict_fallbacks: ToolCoordinator::execute failed: {e}"
+                                )));
+                            }
                             tracing::warn!(error = %e, "ToolCoordinator loop failed, trying fallback LLM chain");
                         }
                     }
                 }
                 Err(e) => {
+                    if self.strict_fallbacks {
+                        return Err(AppError::Unavailable(format!(
+                            "strict_fallbacks: Llm::get_client_boxed failed: {e}"
+                        )));
+                    }
                     tracing::warn!(error = %e, "Llm::get_client failed");
                 }
             }
 
+            // Strict mode never reaches here (both Err arms above return
+            // early), but guard anyway: fallback-LLM content is refused.
+            if self.strict_fallbacks {
+                return Err(AppError::Unavailable(
+                    "strict_fallbacks: fallback LLM chain unavailable".into(),
+                ));
+            }
             if let Ok(fb_client) = llm
                 .get_client(ctx, ares_llm::CapabilityRequirements::default())
                 .await
@@ -770,6 +814,12 @@ You are {}.",
         let mut detector = crate::loop_detector::LoopDetector::new();
         let _status = detector.check(&req.message);
         let _ = crate::loop_detector::LoopConfig::default();
+
+        if self.strict_fallbacks {
+            return Err(AppError::Unavailable(
+                "strict_fallbacks: no LLM response available".into(),
+            ));
+        }
 
         Ok(AgentResponse {
             content: if req.message.is_empty() {
@@ -1235,6 +1285,41 @@ mod tests {
             "waterfall rewrite of message must reach echo execute, got {:?}",
             result.response.content
         );
+    }
+
+    #[tokio::test]
+    async fn strict_fallbacks_errors_without_llm() {
+        let svc = Execute::new().with_strict_fallbacks(true);
+        let ctx = Context::new_root();
+        let req = AgentRequest {
+            agent_name: "echo".into(),
+            message: "hi".into(),
+            ..Default::default()
+        };
+        let err = svc.run(&req, &ctx).await.expect_err("strict must refuse");
+        match err {
+            AppError::Unavailable(m) => {
+                assert!(
+                    m.starts_with("strict_fallbacks:"),
+                    "unexpected refusal message: {m}"
+                );
+            }
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn default_execute_still_echoes_without_llm() {
+        let svc = Execute::new();
+        assert!(!svc.strict_fallbacks());
+        let ctx = Context::new_root();
+        let req = AgentRequest {
+            agent_name: "echo".into(),
+            message: "hello-echo".into(),
+            ..Default::default()
+        };
+        let result = svc.run(&req, &ctx).await.expect("echo fallback");
+        assert_eq!(result.response.content, "hello-echo");
     }
 
     #[tokio::test]

@@ -20,6 +20,9 @@ fn create_test_config() -> ares_http::overlay::AresConfig {
     unsafe {
         std::env::set_var("TEST_JWT_SECRET", "test-jwt-secret-at-least-32-chars");
         std::env::set_var("TEST_API_KEY", "test-api-key");
+        // Providers in this config reference TEST_KEY; auth references
+        // TEST_API_KEY — validation requires both to exist.
+        std::env::set_var("TEST_KEY", "test-api-key");
     }
 
     let mut providers = HashMap::new();

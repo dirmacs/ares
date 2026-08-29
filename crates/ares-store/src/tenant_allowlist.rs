@@ -325,25 +325,8 @@ mod tests {
     use super::*;
     use sqlx::PgPool;
 
-    fn test_db_url() -> String {
-        if let Ok(url) = std::env::var("TEST_DATABASE_URL") {
-            return url;
-        }
-        if let Ok(url) = std::env::var("DATABASE_URL") {
-            if url.contains("/ares") && !url.contains("ares_test") {
-                return url.replace("/ares", "/ares_test");
-            }
-            return url;
-        }
-        "postgres:///ares_test".to_string()
-    }
-
-    async fn try_test_pool() -> Option<PgPool> {
-        let db = crate::PostgresClient::new_remote(test_db_url(), String::new())
-            .await
-            .ok()?;
-        crate::MIGRATOR.run(&db.pool).await.ok()?;
-        Some(db.pool)
+    async fn try_test_pool() -> PgPool {
+        ares_test_support::pool().await
     }
 
     async fn cleanup_test_tenant(pool: &PgPool, tenant_id: &str) {
@@ -419,9 +402,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_allowlists_are_default_deny() {
-        let Some(pool) = try_test_pool().await else {
-            return;
-        };
+        let pool = try_test_pool().await;
         let tenant_id = test_tenant_id("default_deny");
         cleanup_test_tenant(&pool, &tenant_id).await;
 
@@ -441,9 +422,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_methods_return_enabled_rows_only() {
-        let Some(pool) = try_test_pool().await else {
-            return;
-        };
+        let pool = try_test_pool().await;
         let tenant_id = test_tenant_id("enabled_only");
         cleanup_test_tenant(&pool, &tenant_id).await;
 

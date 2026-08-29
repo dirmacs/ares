@@ -971,12 +971,7 @@ mod tests {
     /// `pipeline.fanout.completed` on the Cordis event bus.
     #[tokio::test(flavor = "multi_thread")]
     async fn pipeline_boundary_events_emitted_around_step_and_fanout() {
-        let database_url = std::env::var("TEST_DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://dirmacs@localhost/ares_test".to_string());
-        let Ok(pool) = sqlx::PgPool::connect(&database_url).await else {
-            eprintln!("SKIP: no postgres");
-            return;
-        };
+        let pool = ares_test_support::pool().await;
 
         let app_state = Context::new_root();
         app_state.provide(cordis::EventsService::new());

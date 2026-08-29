@@ -995,18 +995,8 @@ mod tests {
         use super::*;
         use sqlx::PgPool;
 
-        fn test_db_url() -> String {
-            std::env::var("TEST_DATABASE_URL")
-                .or_else(|_| std::env::var("DATABASE_URL"))
-                .unwrap_or_else(|_| "postgres:///ares_test".to_string())
-        }
-
-        async fn try_test_pool() -> Option<PgPool> {
-            let client = PostgresClient::new_remote(test_db_url(), String::new())
-                .await
-                .ok()?;
-            crate::MIGRATOR.run(&client.pool).await.ok()?;
-            Some(client.pool)
+        async fn try_test_pool() -> PgPool {
+            ares_test_support::pool().await
         }
 
         fn unique(prefix: &str) -> String {
@@ -1015,10 +1005,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_new_remote_connects_with_valid_url() {
-            let Some(pool) = try_test_pool().await else {
-                eprintln!("SKIP: no postgres");
-                return;
-            };
+            let pool = try_test_pool().await;
             let row: (i32,) = sqlx::query_as("SELECT 1")
                 .fetch_one(&pool)
                 .await
@@ -1029,7 +1016,7 @@ mod tests {
         #[tokio::test]
         async fn integration_connect_with_config_respects_max_connections() {
             let config = PostgresConfig {
-                url: test_db_url(),
+                url: ares_test_support::test_db_url(),
                 max_connections: 3,
             };
             let client = PostgresClient::new_remote(config.url.clone(), String::new())
@@ -1066,10 +1053,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_user_crud() {
-            let Some(pool) = try_test_pool().await else {
-                eprintln!("SKIP: no postgres");
-                return;
-            };
+            let pool = try_test_pool().await;
             let client = PostgresClient { pool };
             let id = unique("user");
             let email = format!("{}@test.com", unique("email"));
@@ -1109,10 +1093,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_session_lifecycle() {
-            let Some(pool) = try_test_pool().await else {
-                eprintln!("SKIP: no postgres");
-                return;
-            };
+            let pool = try_test_pool().await;
             let client = PostgresClient { pool };
             let user_id = unique("session-user");
             let email = format!("{}@test.com", unique("session-email"));
@@ -1173,10 +1154,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_conversation_and_messages() {
-            let Some(pool) = try_test_pool().await else {
-                eprintln!("SKIP: no postgres");
-                return;
-            };
+            let pool = try_test_pool().await;
             let client = PostgresClient { pool };
             let user_id = unique("conv-user");
             let email = format!("{}@test.com", unique("conv-email"));
@@ -1220,10 +1198,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_memory_facts_roundtrip() {
-            let Some(pool) = try_test_pool().await else {
-                eprintln!("SKIP: no postgres");
-                return;
-            };
+            let pool = try_test_pool().await;
             let client = PostgresClient { pool };
             let fact = MemoryFact {
                 id: unique("fact"),
@@ -1247,10 +1222,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_preferences_roundtrip() {
-            let Some(pool) = try_test_pool().await else {
-                eprintln!("SKIP: no postgres");
-                return;
-            };
+            let pool = try_test_pool().await;
             let client = PostgresClient { pool };
             let user_id = unique("pref-user");
             let pref = Preference {
@@ -1274,10 +1246,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_transaction_rollback() {
-            let Some(pool) = try_test_pool().await else {
-                eprintln!("SKIP: no postgres");
-                return;
-            };
+            let pool = try_test_pool().await;
             let mut tx = pool.begin().await.expect("begin transaction");
             let id = unique("tx-user");
             sqlx::query("INSERT INTO users (id, email, password_hash, name, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)")
@@ -1301,10 +1270,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_transaction_commit() {
-            let Some(pool) = try_test_pool().await else {
-                eprintln!("SKIP: no postgres");
-                return;
-            };
+            let pool = try_test_pool().await;
             let mut tx = pool.begin().await.expect("begin transaction");
             let id = unique("tx-user");
             sqlx::query("INSERT INTO users (id, email, password_hash, name, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)")
@@ -1328,10 +1294,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_conversation_snapshot_roundtrip() {
-            let Some(pool) = try_test_pool().await else {
-                eprintln!("SKIP: no postgres");
-                return;
-            };
+            let pool = try_test_pool().await;
             let client = PostgresClient { pool };
             let session_id = unique("snap-session");
 

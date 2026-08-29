@@ -1533,25 +1533,8 @@ mod tests {
     // Integration tests (require a live Postgres instance)
     // -------------------------------------------------------------------------
 
-    fn test_db_url() -> String {
-        if let Ok(url) = std::env::var("TEST_DATABASE_URL") {
-            return url;
-        }
-        if let Ok(url) = std::env::var("DATABASE_URL") {
-            if url.contains("/ares") && !url.contains("ares_test") {
-                return url.replace("/ares", "/ares_test");
-            }
-            return url;
-        }
-        "postgres://postgres:postgres@localhost:5432/ares_test".into()
-    }
-
-    async fn try_test_pool() -> Option<PgPool> {
-        let db = crate::PostgresClient::new_remote(test_db_url(), String::new())
-            .await
-            .ok()?;
-        crate::MIGRATOR.run(&db.pool).await.ok()?;
-        Some(db.pool)
+    async fn try_test_pool() -> PgPool {
+        ares_test_support::pool().await
     }
 
     /// Seed the tenant and agent_runs parents required by run-history FKs.
@@ -1573,10 +1556,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_llm_call_crud_roundtrip() {
-        let Some(pool) = try_test_pool().await else {
-            eprintln!("SKIP: no postgres");
-            return;
-        };
+        let pool = try_test_pool().await;
         let store = RunHistoryStore::new(&pool);
         seed_integration_parents(&pool, "tenant-integration", "run-integration-1").await;
 
@@ -1646,10 +1626,7 @@ mod tests {
     /// `cache_hit_stats` aggregates them per model.
     #[tokio::test]
     async fn integration_llm_call_cache_telemetry_roundtrip_and_stats() {
-        let Some(pool) = try_test_pool().await else {
-            eprintln!("SKIP: no postgres");
-            return;
-        };
+        let pool = try_test_pool().await;
         let store = RunHistoryStore::new(&pool);
         seed_integration_parents(&pool, "tenant-integration", "run-integration-cache").await;
 
@@ -1730,10 +1707,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_tool_call_crud_roundtrip() {
-        let Some(pool) = try_test_pool().await else {
-            eprintln!("SKIP: no postgres");
-            return;
-        };
+        let pool = try_test_pool().await;
         let store = RunHistoryStore::new(&pool);
         seed_integration_parents(&pool, "tenant-integration", "run-integration-2").await;
 
@@ -1800,10 +1774,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_insert_tool_call_validates_status() {
-        let Some(pool) = try_test_pool().await else {
-            eprintln!("SKIP: no postgres");
-            return;
-        };
+        let pool = try_test_pool().await;
         let store = RunHistoryStore::new(&pool);
 
         let req = LogToolCallRequest {
@@ -1828,10 +1799,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_budget_crud_roundtrip() {
-        let Some(pool) = try_test_pool().await else {
-            eprintln!("SKIP: no postgres");
-            return;
-        };
+        let pool = try_test_pool().await;
         let store = RunHistoryStore::new(&pool);
         let tenant_id = format!("integration-test-{}", uuid::Uuid::new_v4());
 
@@ -1878,10 +1846,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_alert_crud_roundtrip() {
-        let Some(pool) = try_test_pool().await else {
-            eprintln!("SKIP: no postgres");
-            return;
-        };
+        let pool = try_test_pool().await;
         let store = RunHistoryStore::new(&pool);
         let id = format!("alert-{}", uuid::Uuid::new_v4());
 
@@ -1949,10 +1914,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_health_metrics_crud_roundtrip() {
-        let Some(pool) = try_test_pool().await else {
-            eprintln!("SKIP: no postgres");
-            return;
-        };
+        let pool = try_test_pool().await;
         let store = RunHistoryStore::new(&pool);
         let id = format!("health-{}", uuid::Uuid::new_v4());
 

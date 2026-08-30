@@ -1001,6 +1001,7 @@ async fn execute_scheduled_agent(
         message: exec_message,
         history: Vec::new(),
         ctx_provider: None,
+        ..Default::default()
     };
 
     // Skill runs need their id before tool steps can write run_tool_calls.

@@ -4,6 +4,28 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ---
 
+## 0.11.0 - 2026-08-30
+
+**genai replaces HTTP LLM adapters. reqwest 0.13. Embed, vision, and Responses on LLMClient.**
+
+### Changed
+
+- HTTP provider adapters in `ares-llm` are replaced by `genai` 0.7.0-beta.19 (rustls). One client covers OpenAI, Azure Foundry, Anthropic, Gemini, Bedrock bearer, Ollama, and the rest of the genai adapter set.
+- Workspace version is `0.11.0`. `ares-vector` stays `0.1.4`.
+- Workspace `reqwest` is `0.13` with `json`, `rustls`, and `multipart`. No ARES manifest pins reqwest 0.12.
+- `LLMClient` adds `embed`, `supports_vision`, and `supports_provider_web_search`. Chat requests carry optional `parts` (vision and files), `previous_response_id` (OpenAI Responses), and `web_search`.
+- Provider-native web search uses the tool name `provider_web_search`. The daedra tool stays `web_search`.
+- Headless CI checks `--no-default-features` only. genai arrives through the `ares-llm` default feature.
+- Default root features no longer list `openai`. Headless embed examples drop `features = ["openai"]`.
+
+### Removed
+
+- Root and crate features `openai`, `azure`, `bedrock`, `ollama`, `anthropic`, and `all-llm`.
+- Vendor SDK crates `async-openai`, `ollama-rs`, and `claude-sdk`.
+- `ares-http` feature `openai` and `ares-agent` feature `ollama`. `ares-agent` `postgres` no longer forwards `ares-llm/ollama`.
+
+---
+
 ## 0.10.1 - 2026-08-28
 
 **Switchable http, cli, and script features. A real headless build. A complete facade.**

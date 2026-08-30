@@ -6,7 +6,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use ares_types::types::{AppError, Message};
+use ares_types::types::{AppError, ContentPart, Message};
 use cordis::{Context, CordisError, EventsService, Service};
 
 /// Result of `Execute::run` including resolution metadata.
@@ -70,6 +70,12 @@ pub struct AgentRequest {
     /// Optional per-request context provider override (overrides service-level
     /// provider when `Some`).
     pub ctx_provider: Option<Arc<dyn crate::context_provider::ContextProvider>>,
+    /// Multimodal parts for the current user turn (in-flight only; not persisted).
+    pub parts: Vec<ContentPart>,
+    /// OpenAI Responses continuation id for this turn.
+    pub previous_response_id: Option<String>,
+    /// When true, enable the LLM provider's built-in web search.
+    pub web_search: bool,
 }
 
 /// Internal marker for skill-triggered executions.
@@ -114,8 +120,39 @@ impl std::fmt::Debug for AgentRequest {
                 "ctx_provider",
                 &self.ctx_provider.as_ref().map(|_| "Some(ContextProvider)"),
             )
+            .field("parts_len", &self.parts.len())
+            .field("previous_response_id", &self.previous_response_id)
+            .field("web_search", &self.web_search)
             .finish()
     }
+}
+
+/// Apply per-turn generation hints on a resolved LLM client.
+pub fn apply_generation_hints(
+    client: &dyn ares_llm::LLMClient,
+    web_search: bool,
+    previous_response_id: Option<String>,
+) {
+    if !web_search && previous_response_id.is_none() {
+        return;
+    }
+    client.set_hints(ares_llm::GenerationHints {
+        web_search,
+        previous_response_id,
+        ..Default::default()
+    });
+}
+
+/// Build the in-flight user turn, attaching multimodal parts and a continuation id.
+pub fn user_message_with_parts(
+    content: impl Into<String>,
+    parts: Vec<ContentPart>,
+    previous_response_id: Option<String>,
+) -> ares_llm::coordinator::ConversationMessage {
+    let mut msg = ares_llm::coordinator::ConversationMessage::user(content);
+    msg.parts = parts;
+    msg.previous_response_id = previous_response_id;
+    msg
 }
 
 /// Unified agent execution service — the single place handling:
@@ -496,6 +533,11 @@ impl Execute {
             agent.set_tools(tools);
         }
         agent.bind_request_ctx(ctx.clone());
+        agent.set_user_turn(
+            req.parts.clone(),
+            req.previous_response_id.clone(),
+            req.web_search,
+        );
 
         let run_id = uuid::Uuid::new_v4().to_string();
         if let Some(tracker) = &self.run_tracker {
@@ -678,10 +720,11 @@ You are {}.",
             };
             base_messages.push(cm);
         }
-        base_messages.push(ares_llm::coordinator::ConversationMessage::user(
+        base_messages.push(user_message_with_parts(
             req.message.clone(),
+            req.parts.clone(),
+            req.previous_response_id.clone(),
         ));
-        let _ = base_messages;
 
         let llm = match ctx.get::<ares_llm::Llm>() {
             Some(llm) => Some(llm),
@@ -698,6 +741,36 @@ You are {}.",
                 .await
             {
                 Ok(client) => {
+                    apply_generation_hints(
+                        client.as_ref(),
+                        req.web_search,
+                        req.previous_response_id.clone(),
+                    );
+                    if !req.parts.is_empty() || req.previous_response_id.is_some() {
+                        match client
+                            .generate_with_tools_and_history(&base_messages, &tool_definitions)
+                            .await
+                        {
+                            Ok(resp) => {
+                                return Ok(AgentResponse {
+                                    content: resp.content,
+                                    usage: resp.usage,
+                                    metadata: None,
+                                });
+                            }
+                            Err(e) => {
+                                if self.strict_fallbacks {
+                                    return Err(AppError::Unavailable(format!(
+                                        "strict_fallbacks: generate_with_tools_and_history failed: {e}"
+                                    )));
+                                }
+                                tracing::warn!(
+                                    error = %e,
+                                    "multimodal generate failed, trying fallback LLM chain"
+                                );
+                            }
+                        }
+                    } else {
                     let config = ares_llm::coordinator::ToolCallingConfig::default();
                     let coordinator = ares_llm::coordinator::ToolCoordinator::new(
                         client,
@@ -769,6 +842,7 @@ You are {}.",
                             tracing::warn!(error = %e, "ToolCoordinator loop failed, trying fallback LLM chain");
                         }
                     }
+                    }
                 }
                 Err(e) => {
                     if self.strict_fallbacks {
@@ -791,6 +865,11 @@ You are {}.",
                 .get_client(ctx, ares_llm::CapabilityRequirements::default())
                 .await
             {
+                apply_generation_hints(
+                    fb_client.as_ref(),
+                    req.web_search,
+                    req.previous_response_id.clone(),
+                );
                 if let Ok(content) = fb_client.generate(&req.message).await {
                     if let Some(_db) = tenant_db(ctx) {
                         tracing::debug!("fallback observability run_history/agent_runs");

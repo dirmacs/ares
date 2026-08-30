@@ -63,7 +63,7 @@ Secrets live in environment variables by name, never in `ares.toml`. Expiry valu
 
 ### `[providers.*]` group
 
-Each named provider deserializes into `ProviderConfig` (`crates/ares-llm/src/config.rs`), tagged by `type = "..."`. Variants: `openai` (fields `api_key_env`, `api_base`, `default_model`; also serves NVIDIA NIM and compatible endpoints), `azure` (`api_key_env`, `base_url_env`, `default_model`), `anthropic` (`api_key_env`, `default_model`), `bedrock` (`api_key_env`, `region_env`, `default_model`), and `ollama` (`base_url`, `default_model`). A missing environment variable fails at client creation with a clear error.
+Each named provider deserializes into `ProviderConfig` (`crates/ares-llm/src/config.rs`), tagged by `type = "..."`. Existing shapes (`openai`, `azure`, `anthropic`, `bedrock`, `ollama`) stay valid. Additional variants match every genai `AdapterKind` name (`gemini`, `groq`, `openrouter`, `openai_resp`, `bedrock_api`, and the rest). `type = "openai"` auto-routes `gpt-5*` to the OpenAI Responses adapter. A missing environment variable fails at client creation with a clear error.
 
 An optional `[nvidia]` group (`NvidiaConfig`) adds catalog settings: `api_key_env`, `api_base`, `models_url`, `catalog_refresh_seconds`, and `default_model`. When absent, the registry synthesizes one NVIDIA provider from defaults.
 

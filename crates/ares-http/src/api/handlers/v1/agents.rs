@@ -327,6 +327,7 @@ pub async fn run_agent(
         message: effective_message.clone(),
         history: agent_context.conversation_history.clone(),
         ctx_provider: None,
+        ..Default::default()
     };
     let result = exec
         .run(&req, &state_ctx)

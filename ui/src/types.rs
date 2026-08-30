@@ -25,6 +25,26 @@ pub struct AuthResponse {
     pub expires_in: i64,
 }
 
+/// A multimodal content part on a chat request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentPart {
+    Text { text: String },
+    ImageUrl { url: String },
+    ImageBase64 { mime: String, data: String },
+    FileUrl {
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mime: Option<String>,
+    },
+    FileBase64 {
+        mime: String,
+        data: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+}
+
 /// Chat request
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatRequest {
@@ -33,6 +53,12 @@ pub struct ChatRequest {
     pub context_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts: Option<Vec<ContentPart>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_response_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_search: Option<bool>,
 }
 
 /// Chat response

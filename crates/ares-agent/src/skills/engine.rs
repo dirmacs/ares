@@ -532,6 +532,8 @@ impl SkillEngine {
                 tool_calls: Vec::new(),
                 finish_reason: "stop".to_string(),
                 usage: None,
+                reasoning_content: None,
+                response_id: None,
             },
         );
         let metadata = match (&self.ambient, &response) {

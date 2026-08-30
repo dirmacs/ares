@@ -10,6 +10,7 @@
 //! - `rag::reranker` - Cross-encoder reranking for improved relevance **[requires `local-embeddings` feature]**
 //! - [`rag::chunker`](crate::chunker) - Text chunking for document processing
 //! - [`rag::cache`](crate::cache) - Embedding cache for avoiding recomputation
+//! - [`rag::llm_embed`](crate::llm_embed) - Remote embeddings via `Llm` **[always compiled]**
 //!
 //! # Feature Flags
 //!
@@ -21,6 +22,8 @@
 //! in `ort-sys`. Use WSL, Linux, or macOS for local embeddings, or use remote embedding APIs.
 //!
 //! Without `local-embeddings`, you can still use:
+//! - [`embed_with_llm`] when an [`ares_llm::Llm`] service is on the context
+//!   (`ctx.get::<Llm>()` then `llm.embed`; never import genai)
 //! - Remote embedding APIs (OpenAI embeddings, Ollama embeddings, etc.)
 //! - The chunker and search modules
 //! - The cache module (if you have embeddings from elsewhere)
@@ -84,6 +87,8 @@ pub mod cache;
 pub mod chunker;
 #[cfg(feature = "local-embeddings")]
 pub mod embeddings;
+pub mod llm_embed;
+pub use llm_embed::embed_with_llm;
 #[cfg(feature = "local-embeddings")]
 pub mod reranker;
 pub mod search;
@@ -102,5 +107,10 @@ mod lib_tests {
     #[test]
     fn search_module_is_linked() {
         let _ = std::any::type_name::<crate::search::SearchStrategy>();
+    }
+
+    #[test]
+    fn llm_embed_is_linked() {
+        let _ = crate::embed_with_llm;
     }
 }

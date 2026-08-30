@@ -136,6 +136,9 @@ pub async fn send_chat(
         message: message.to_string(),
         context_id,
         agent_type,
+        parts: None,
+        previous_response_id: None,
+        web_search: None,
     };
     post_with_auth::<_, ChatResponse>(&url, &body, Some(token.to_string())).await
 }
@@ -196,6 +199,9 @@ where
         message: message.to_string(),
         context_id,
         agent_type,
+        parts: None,
+        previous_response_id: None,
+        web_search: None,
     };
     let body_json = serde_json::to_string(&body)
         .map_err(|e| format!("Failed to serialize request: {}", e))?;
@@ -298,10 +304,4 @@ where
                     on_event(event);
                 } else {
                     tracing::warn!("Failed to parse SSE event: {}", data);
-                }
-            }
-        }
-    }
-    
-    Ok(())
-}
+

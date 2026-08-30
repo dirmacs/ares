@@ -19,10 +19,9 @@
 //! OLLAMA_MODEL=mistral OLLAMA_LIVE_TESTS=1 cargo test --test ollama_live_tests -- --ignored
 //! ```
 
-#![cfg(feature = "ollama")]
-
-use ares_llm::{LLMClient, Provider};
+use ares_llm::{AdapterKind, GenaiProvider, LLMClient, Provider};
 use futures::StreamExt;
+use std::collections::HashMap;
 
 // ============= Helper Functions =============
 
@@ -43,13 +42,24 @@ fn get_model() -> String {
     std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "ministral-3:3b".to_string())
 }
 
+fn ollama_provider(base_url: String, model: String) -> Provider {
+    Provider::Genai(GenaiProvider {
+        kind: AdapterKind::Ollama,
+        api_key: None,
+        endpoint: Some(base_url),
+        model,
+        params: Default::default(),
+        headers: HashMap::new(),
+        region: None,
+        vertex_project: None,
+        vertex_location: None,
+        custom_index: None,
+    })
+}
+
 /// Create a live Ollama client
 async fn create_live_client() -> Box<dyn LLMClient> {
-    let provider = Provider::Ollama {
-        base_url: get_ollama_url(),
-        model: get_model(),
-        params: Default::default(),
-    };
+    let provider = ollama_provider(get_ollama_url(), get_model());
     provider
         .create_client()
         .await
@@ -256,11 +266,10 @@ async fn test_live_ollama_generate_with_tools() {
 async fn test_live_ollama_invalid_model() {
     skip_if_not_live!();
 
-    let provider = Provider::Ollama {
-        base_url: get_ollama_url(),
-        model: "nonexistent-model-that-does-not-exist-12345".to_string(),
-        params: Default::default(),
-    };
+    let provider = ollama_provider(
+        get_ollama_url(),
+        "nonexistent-model-that-does-not-exist-12345".to_string(),
+    );
 
     let client = provider
         .create_client()

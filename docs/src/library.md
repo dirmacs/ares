@@ -26,7 +26,7 @@ ares-server = { version = "0.11.0", default-features = false }
 ```
 
 The headless build compiles no Axum, CLI, sqlx, Ollama, Boa, or Rhai code. It
-binds no socket. Enable the `http` feature only when you embed the router.
+binds no socket. If you embed the router, enable the `http` feature.
 
 ## The public surface
 
@@ -570,8 +570,8 @@ The hybrid form registers your string-keyed factory beside
 `register_plugins`, then names it from an entry. The factory table and the
 typed store meet inside the kernel: an entry instantiates through the
 factory, and the produced value lands as a typed provider like any direct
-provide. Use this when library users should wire your plugin declaratively
-while your own tests keep constructing it directly.
+provide. Use this when library users wire your plugin from entries.
+Keep direct construction in your own tests.
 
 ## Tenant isolation
 

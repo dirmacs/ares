@@ -91,13 +91,13 @@ QDRANT_URL=http://localhost:6334
 ### Building the project
 
 ```bash
-# Build with default features (postgres + openai + ares-vector + mcp)
+# Build with default features (postgres, ares-vector, mcp). HTTP LLM providers come from genai.
 cargo build
 # Or: just build
 
-# Build with specific features
-cargo build --features "ollama,openai"
-# Or: just build-features "ollama,openai"
+# Optional in-process GGUF
+cargo build --features llamacpp
+# Or: just build-features llamacpp
 
 # Build with all features
 cargo build --all-features
@@ -115,9 +115,9 @@ cargo build --release
 cargo run
 # Or: just run
 
-# Run with specific features
-cargo run --features "openai"
-# Or: just run-features "openai"
+# Run with optional GGUF
+cargo run --features llamacpp
+# Or: just run-features llamacpp
 
 # With debug logging
 RUST_LOG=debug cargo run
@@ -130,21 +130,20 @@ RUST_LOG=trace cargo run
 
 ## Feature flags
 
-A.R.E.S uses feature flags for conditional compilation. Know these flags before you develop:
+A.R.E.S uses Cargo features for optional compile-time components. Know these flags before you develop:
 
 ### LLM providers
 
+HTTP LLM providers ship through the default `genai` feature of `ares-llm`.
+Select OpenAI, Azure, Anthropic, Gemini, Bedrock bearer, and Ollama at run time with `type` in `ares.toml`.
+These Cargo features were removed: `openai`, `azure`, `bedrock`, `ollama`, `anthropic`, `all-llm`.
+
 | Feature | Description | Dependencies |
 |---------|-------------|--------------|
-| `openai` | OpenAI API support | `async-openai` |
-| `azure` | Azure AI Foundry chat completions | Foundry credentials |
-| `bedrock` | AWS Bedrock Runtime | AWS credentials |
-| `ollama` | Ollama integration (ares-llm crate) | `ollama-rs` |
-| `llamacpp` | Direct GGUF loading (ares-llm crate) | `llama-cpp-2` |
+| `llamacpp` | Direct GGUF loading (root forwards to ares-llm) | `llama-cpp-2` |
 | `llamacpp-cuda` | LlamaCpp + CUDA | GPU drivers |
 | `llamacpp-metal` | LlamaCpp + Metal | macOS only |
-
-The root package forwards `openai`, `azure`, and `bedrock`. The `ollama` and `llamacpp` families live on the ares-llm crate.
+| `llamacpp-vulkan` | LlamaCpp + Vulkan | Vulkan SDK |
 
 ### Database backends
 
@@ -171,24 +170,23 @@ The root package forwards `openai`, `azure`, and `bedrock`. The `ollama` and `ll
 | `ui` | Embedded Leptos web UI served from the backend |
 | `swagger-ui` | Interactive Swagger UI API documentation at `/swagger-ui/` |
 
-> **Note:** v0.2.5 made the `swagger-ui` feature optional to reduce binary size and build time. It requires network access during the build to download Swagger UI assets.
+> **Note:** v0.2.5 made the `swagger-ui` feature optional. The binary is smaller. The build is faster. The feature needs network access during the build to download Swagger UI assets.
 
 ### Feature bundles
 
 | Feature | Includes |
 |---------|----------|
-| `all-llm` | openai + azure + bedrock |
 | `all-db` | postgres |
 | `all-vectorstores` | ares-vector + qdrant + pgvector + chromadb + pinecone |
-| `full` | All main optional features: openai, azure, bedrock, postgres, qdrant, ares-vector, mcp, swagger-ui |
+| `full` | postgres, qdrant, ares-vector, mcp, swagger-ui |
 | `full-ui` | full + ui |
 | `minimal` | No optional features |
 
 ### Working with features
 
 ```bash
-# Test with specific feature combination
-cargo test --features "openai,qdrant"
+# Test with a specific feature combination
+cargo test --features qdrant
 
 # Check that code compiles with minimal features
 cargo check --features "minimal"
@@ -489,7 +487,7 @@ cargo test --test cli_tests
 # Or: just test-filter cli
 
 # Run with specific features
-cargo test --features "openai,openai"
+cargo test --features llamacpp
 
 # Run a specific test
 cargo test test_name

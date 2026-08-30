@@ -72,7 +72,7 @@ Four safeguards keep the loop responsive (`src/supervisor.rs`):
 
 - **Rapid-restart guard.** Five exits inside any 30-second window stop the loop. This bounds a crash loop that a misbehaving child cannot out-wait.
 - **Health ladder reset.** A child that ran for at least 10 minutes before exiting counts as healthy. The next crash sequence starts its backoff from zero, not from stale strikes.
-- **Exponential backoff.** A child that exited within 10 seconds never proved it could serve. The daemon delays the respawn: 100 ms first, then double each consecutive unhealthy run, capped at 5 s.
+- **Exponential backoff.** A child that exited within 10 seconds never proved that it can serve. The daemon delays the respawn: 100 ms first, then double each consecutive unhealthy run, capped at 5 s.
 - **Stop grace.** A stopped worker gets 10 seconds to exit after its standard input closes. A worker that ignores the request is force-killed.
 
 ### Exit codes
@@ -223,7 +223,7 @@ All options (`--help` output):
 | `--docs-path <DIR>` | Directory with the documents. Required |
 | `--chunking-strategy <KIND>` | `word` (default), `semantic`, or `character` |
 | `--tag <TAG>` | Attach a tag. Repeat for multiple tags |
-| `--dry-run` | List the files that would be ingested. Send no requests |
+| `--dry-run` | List candidate files. Send no requests |
 | `--host <URL>` | ARES server base URL. Default: `http://localhost:3000` |
 | `--user` / `--password` | Login credentials |
 | `--token <TOKEN>` | Bearer token; skips login |

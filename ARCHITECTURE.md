@@ -32,7 +32,7 @@ HTTP request
 |-------|---------|
 | `ares-types` | Shared types, error definitions |
 | `ares-store` | PostgreSQL client, migrations, tenant DB, fleet secrets |
-| `ares-llm` | Provider registry, LLM clients (OpenAI-compatible, Azure, Bedrock, Ollama) |
+| `ares-llm` | Provider registry and `Llm` service. HTTP providers use genai. LlamaCpp is optional. |
 | `ares-agent` | Agent trait, ConfigurableAgent, Execute service, 3-tier resolver |
 | `ares-tools` | Tool trait, built-in tools, runtime tool registry |
 | `ares-mcp` | MCP client integration |
@@ -42,7 +42,7 @@ HTTP request
 
 ## Key services
 
-**Execute** (in `ares-agent`): The single entry point to run agents. It resolves the agent configuration through the 3-tier resolver, creates the agent through `AgentRegistry`, tracks the run through `RunTracker`, and drives the multi-turn loop. All call sites (chat, v1 API, scheduler, pipeline, trigger, MCP runner) delegate here.
+**Execute** (in `ares-agent`): The single entry point to run agents. It resolves the agent through the 3-tier resolver. It creates the agent through `AgentRegistry`. It tracks the run through `RunTracker` and drives the multi-turn loop. All call sites (chat, v1 API, scheduler, pipeline, trigger, MCP runner) delegate here.
 
 **Agent resolver** (in `ares-agent`): 3-tier agent resolution. It queries the tenant DB first, then community agents, then system configuration. It returns the resolved agent configuration and the source tier.
 
@@ -99,20 +99,24 @@ The kernel guarantees in `cordis::metatheory` cover guarded withdrawal (provider
 2. Register the tool in the registry that the ares-tools plugin factory builds
 3. Optionally implement `Service` and register through `ctx.plugin(MyToolService)`
 
-## Adding a new LLM provider
+## Adding a new HTTP LLM provider
 
-1. Implement the `LLMClient` trait in `crates/ares-llm/src/`
-2. Add the provider to the provider registry in configuration
-3. The circuit breaker wraps it automatically
+1. Add a `ProviderConfig` variant in `crates/ares-llm/src/config.rs`.
+2. Map that variant to a genai `AdapterKind` in `crates/ares-llm/src/client.rs`.
+3. Keep HTTP traffic in `crates/ares-llm/src/genai_client.rs`. Do not add a crate feature. Do not add `openai.rs`.
+4. Add the model configuration to `ares.example.toml`.
 
 ## Build
 
 ```bash
-# Default build (postgres, openai, ares-vector, mcp, inventory, rhai-policy)
+# Default build (postgres, ares-vector, mcp, inventory, rhai-policy, http, cli)
 cargo build
 
 # Embed-only build without the server defaults
-cargo build --no-default-features --features openai,postgres,mcp
+cargo build --no-default-features --features postgres,mcp
+
+# Optional in-process GGUF
+cargo build --features llamacpp
 
 # Release
 cargo build --release

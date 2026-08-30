@@ -738,12 +738,8 @@ async fn run_server(
     // =================================================================
     // Build OpenAPI Documentation (only when swagger-ui is enabled)
     // =================================================================
-    // Version with RAG endpoints (requires both local-embeddings and ares-vector)
-    #[cfg(all(
-        feature = "swagger-ui",
-        feature = "local-embeddings",
-        feature = "ares-vector"
-    ))]
+    // Version with RAG endpoints (requires ares-vector)
+    #[cfg(all(feature = "swagger-ui", feature = "ares-vector"))]
     #[derive(OpenApi)]
     #[openapi(
         paths(
@@ -802,11 +798,8 @@ async fn run_server(
     )]
     struct ApiDoc;
 
-    // Version without RAG endpoints (when local-embeddings is not available)
-    #[cfg(all(
-        feature = "swagger-ui",
-        not(all(feature = "local-embeddings", feature = "ares-vector"))
-    ))]
+    // Version without RAG endpoints (when ares-vector is not available)
+    #[cfg(all(feature = "swagger-ui", not(feature = "ares-vector")))]
     #[derive(OpenApi)]
     #[openapi(
         paths(

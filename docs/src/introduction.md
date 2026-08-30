@@ -4,7 +4,7 @@ ARES (Agentic Runtime Extensible Server) is an agent server written in Rust. It 
 
 ## The Cordis kernel
 
-Every ARES component is a service on a typed `Context`. Services declare dependencies, and the Cordis kernel resolves them at run time. You can add, replace, or intercept services while the server runs.
+Every ARES component is a service on a typed `Context`. Services declare dependencies. The Cordis kernel resolves them at run time. You can add, replace, or intercept services while the server runs.
 
 ![ARES × Cordis — the live service graph, zero-downtime provider replacement, guarded operations, and fail-closed policy gates](assets/cli-demo.svg)
 
@@ -44,7 +44,7 @@ New to ARES? Follow [Installation](getting-started/installation.md), then build 
 
 ## Key capabilities
 
-- Multi-provider LLM routing through one API: OpenAI-compatible endpoints, Azure AI Foundry, AWS Bedrock, and Ollama.
+- Multi-provider LLM routing through genai: OpenAI-compatible endpoints, Azure AI Foundry, AWS Bedrock, and Ollama. Select the provider at run time with `type` in `ares.toml`.
 - Tool calling: define tools in configuration. ARES runs the tool-call loop and assembles the response.
 - Retrieval-augmented generation: ingest documents into collections and ground responses in them.
 - Workflows: chain agents into multi-step flows with entry and fallback agents.

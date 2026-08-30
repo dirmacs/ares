@@ -1,6 +1,6 @@
 # First Server
 
-This chapter runs your first ARES server. You scaffold a project, validate the configuration, start the server, and send one chat request.
+This chapter runs your first ARES server. Scaffold a project. Validate the configuration. Start the server. Send one chat request.
 
 The commands use `ares-server` from your `PATH`. Substitute your binary path if you built from source.
 
@@ -16,8 +16,8 @@ ares-server init
 `init` accepts a target path, `--force` to overwrite, and these switches:
 
 - `--no-examples` skips the example TOON files under `config/`. Verified against 0.10.0: the run then creates only `ares.toml`, `.env.example`, `.gitignore`, and empty directories.
-- `--provider openai|both` selects which provider template lands in `ares.toml`; the default is `ollama`.
-- `--minimal` asks for a smaller configuration. In 0.10.0 both modes write the same file set; prefer plain `init`.
+- `--provider openai|both` selects which provider template lands in `ares.toml`. The default is `ollama`. HTTP types need no extra Cargo feature.
+- `--minimal` asks for a smaller configuration. In 0.10.0 both modes write the same file set. Prefer plain `init`.
 
 The command creates this layout:
 
@@ -104,7 +104,7 @@ The limiter is `tower_governor` (`src/main.rs`, rate-limit layer build): it admi
 
 **`[database]`** holds one connection URL. The template writes a local file path for an embedded store. A production deployment points at `postgres://user:pass@host/db`; the store then runs embedded migrations from `ares_store::MIGRATOR` on first connect.
 
-**`[providers.<name>]`** defines one LLM provider. `<name>` (`ollama-local` here) is your label for it; agents reference this label. `type` picks the client implementation. `base_url` is where the client sends requests. `default_model` applies when an agent names no model of its own.
+**`[providers.<name>]`** defines one LLM provider. `<name>` (`ollama-local` here) is your label. Agents reference this label. `type` is a runtime type such as `openai` or `ollama`. HTTP types need no extra Cargo feature. `base_url` is where the client sends requests. `default_model` applies when an agent names no model of its own.
 
 **`[tools.<name>]`** declares one tool in the main file: an `enabled` switch, a description the model sees, and a `timeout_secs` cap. The matching TOON file under `config/tools/` carries the same fields for hot reload.
 

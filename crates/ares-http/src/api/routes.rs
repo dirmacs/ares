@@ -127,8 +127,8 @@ pub fn create_router(
             );
     }
 
-    // RAG routes (requires local-embeddings feature for ONNX-based embeddings and ares-vector for vector storage)
-    #[cfg(all(feature = "local-embeddings", feature = "ares-vector"))]
+    // RAG routes (requires ares-vector for vector storage)
+    #[cfg(feature = "ares-vector")]
     {
         protected_routes = protected_routes
             .route("/rag/ingest", post(crate::api::handlers::rag::ingest))
@@ -678,8 +678,8 @@ pub fn create_router(
             delete(crate::api::handlers::v1::delete_tenant_data),
         );
 
-    // Semantic search (requires local-embeddings and ares-vector features)
-    #[cfg(all(feature = "local-embeddings", feature = "ares-vector"))]
+    // Semantic search (requires ares-vector for vector storage)
+    #[cfg(feature = "ares-vector")]
     let v1_routes = v1_routes.route(
         "/search/semantic",
         post(crate::api::handlers::v1::semantic_search),

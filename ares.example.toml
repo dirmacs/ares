@@ -53,11 +53,10 @@ url = "./data/ares.db"
 # =============================================================================
 # LLM Providers
 # =============================================================================
-# Define named provider configurations. These are referenced by [models].
-# Each provider type requires its Cargo feature to be enabled:
-#   - ollama: default
-#   - openai: cargo build --features openai
-#   - llamacpp: cargo build --features llamacpp
+# Define named provider configurations. Models reference these names.
+# HTTP provider types (openai, ollama, azure, bedrock, and the rest) need no extra Cargo feature.
+# type = "openai" is a runtime type. Select it in this file.
+# llamacpp still needs the llamacpp Cargo feature.
 
 # Ollama - Local inference (no API key required)
 [providers.ollama-local]
@@ -87,21 +86,21 @@ type = "ollama"
 base_url = "http://localhost:11434"
 default_model = "ministral-3:3b"
 
-# OpenAI API (requires 'openai' feature and OPENAI_API_KEY env var)
+# OpenAI API (runtime type openai. Needs OPENAI_API_KEY. No extra Cargo feature.)
 # [providers.openai]
 # type = "openai"
 # api_key_env = "OPENAI_API_KEY"
 # api_base = "https://api.openai.com/v1"
 # default_model = "gpt-4"
 
-# Azure AI Foundry (requires 'azure' feature, AZURE_FOUNDRY_API_KEY, and AZURE_FOUNDRY_BASE_URL)
+# Azure AI Foundry (runtime type azure. Needs AZURE_FOUNDRY_API_KEY and AZURE_FOUNDRY_BASE_URL. No extra Cargo feature.)
 # [providers.azure]
 # type = "azure"
 # api_key_env = "AZURE_FOUNDRY_API_KEY"
 # base_url_env = "AZURE_FOUNDRY_BASE_URL"
 # default_model = "DeepSeek-V4-Flash"
 
-# AWS Bedrock Claude (requires 'bedrock' feature, AWS_BEARER_TOKEN_BEDROCK, and AWS_REGION)
+# AWS Bedrock Claude (runtime type bedrock. Bearer token via AWS_BEARER_TOKEN_BEDROCK. No SigV4. No extra Cargo feature.)
 # [providers.bedrock]
 # type = "bedrock"
 # api_key_env = "AWS_BEARER_TOKEN_BEDROCK"

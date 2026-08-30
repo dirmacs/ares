@@ -43,7 +43,7 @@ fiber cancels it automatically.
 
 ### Inert handles
 
-Two APIs return handles that may be *inert*: disposing them flips
+Two APIs return handles that can be *inert*: disposing them flips
 nothing.
 
 - Event listener registration rides the `internal/listener` veto point.
@@ -81,8 +81,8 @@ The driver loop has two phases:
 2. **Drain.** Re-acquire the lock, pop every entry whose deadline is at
    or before now, release, then run each job. Callbacks run outside the
    lock on purpose: an interval callback re-arms itself by calling
-   `schedule`, which needs the lock. Holding it across callbacks would
-   deadlock every self-re-arming pattern, including debounce and
+   `schedule`, which needs the lock. If you hold it across callbacks,
+   every self-re-arming pattern deadlocks, including debounce and
    throttle emits.
 
 Cancellation is cooperative through `EffectHandle`. Disposal flips the

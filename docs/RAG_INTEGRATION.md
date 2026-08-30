@@ -63,20 +63,22 @@ The ARES RAG (Retrieval-Augmented Generation) pipeline provides semantic search 
 
 ## Feature flags
 
-The RAG pipeline requires two features at compile time:
+RAG HTTP routes compile when `ares-vector` is on. Local ONNX embeddings also need `local-embeddings`.
 
 ```bash
-# Build with RAG support
+# Routes plus local ONNX embeddings
 cargo build --features "ares-vector,local-embeddings" --no-default-features
 
-# Full feature set
-cargo build --features "ares-vector,local-embeddings,postgres,openai,mcp"
+# Default server plus local embeddings
+cargo build --features local-embeddings
 ```
+
+If `local-embeddings` is off, ingest and search call `ares_rag::embed_with_llm(&ctx, texts)`. That helper does `ctx.get::<Llm>()` and then `llm.embed`.
 
 ### Feature dependencies
 
-- `ares-vector`: HNSW vector database written in Rust. It has no native dependencies, it compiles anywhere Rust works, and it stores data persistently or in memory.
-- `local-embeddings`: ONNX embedding models through the fastembed crate. Model downloads go through lancor, which handles the HuggingFace CDN correctly. Windows MSVC does not work. Use WSL, Linux, or macOS.
+- `ares-vector`: HNSW vector database written in Rust. It has no native dependencies, it compiles anywhere Rust works, and it stores data persistently or in memory. Routes need this feature.
+- `local-embeddings`: ONNX embedding models through the fastembed crate. Model downloads go through lancor, which handles the HuggingFace CDN correctly. Windows MSVC does not work. Use WSL, Linux, or macOS. Remote `embed_with_llm` does not need this feature.
 
 ## API endpoints
 
@@ -173,7 +175,7 @@ All RAG collections get a per-user scope to prevent data leakage:
 Use the generic Rust CLI for local document ingestion. The CLI has no built-in corpus paths or collection names. Provide deployment-specific values explicitly. Alternatively, pass them from your own wrapper outside this repository.
 
 ```bash
-# Preview the documents that would be ingested
+# Preview the documents. Send no ingest requests.
 ares-server rag ingest-dir \
   --host http://localhost:3000 \
   --token "$ARES_TOKEN" \

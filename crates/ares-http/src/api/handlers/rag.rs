@@ -10,16 +10,19 @@ use crate::{
     db::{tenant_allowlist as allowlist, AresVectorStore, VectorStore},
     rag::{
         chunker::{ChunkingStrategy, TextChunker},
-        embeddings::{EmbeddingModelType, EmbeddingService},
-        reranker::{Reranker, RerankerConfig, RerankerModelType},
         search::{HybridWeights, SearchEngine, SearchStrategy},
     },
     types::{
         AppError, Document, DocumentMetadata, RagDeleteCollectionRequest,
         RagDeleteCollectionResponse, RagIngestRequest, RagIngestResponse, RagSearchRequest,
-        RagSearchResponse, RagSearchResult, Result,
+        RagSearchResponse, RagSearchResult,
     },
-    HttpError,
+    HttpError, Result,
+};
+#[cfg(feature = "local-embeddings")]
+use crate::rag::{
+    embeddings::{EmbeddingModelType, EmbeddingService},
+    reranker::{Reranker, RerankerConfig, RerankerModelType},
 };
 use axum::{extract::State, Json};
 use chrono::Utc;
@@ -74,7 +77,8 @@ fn filter_collections_by_allowed_sources(
 /// Pre-downloads model files via lancor (reqwest) before fastembed init,
 /// because fastembed's hf-hub/ureq client fails on HuggingFace's xethub CDN.
 /// Context is the singleton: callers must `provide_arc` after construction.
-async fn construct_embedding_service() -> Result<Arc<EmbeddingService>> {
+#[cfg(feature = "local-embeddings")]
+async fn construct_embedding_service() -> ares_types::types::Result<Arc<EmbeddingService>> {
     // Pre-download ONNX model via lancor before fastembed tries with ureq
     let model = EmbeddingModelType::default();
     let cache_dir =
@@ -142,9 +146,10 @@ async fn construct_embedding_service() -> Result<Arc<EmbeddingService>> {
 /// Resolve EmbeddingService from Context, constructing on miss.
 /// Construction (model download) happens on first RAG request, not at boot.
 /// Context is the singleton; there is no process-global cache.
+#[cfg(feature = "local-embeddings")]
 pub async fn embedding_service_from_ctx(
     ctx: &std::sync::Arc<cordis::Context>,
-) -> Result<Arc<EmbeddingService>> {
+) -> ares_types::types::Result<Arc<EmbeddingService>> {
     if let Some(existing) = ctx.get::<EmbeddingService>() {
         return Ok(existing);
     }
@@ -158,13 +163,31 @@ pub async fn embedding_service_from_ctx(
 pub async fn vector_store_from_ctx(
     ctx: &std::sync::Arc<cordis::Context>,
     vector_path: &str,
-) -> Result<Arc<AresVectorStore>> {
+) -> ares_types::types::Result<Arc<AresVectorStore>> {
     if let Some(existing) = ctx.get::<AresVectorStore>() {
         return Ok(existing);
     }
     let store = Arc::new(AresVectorStore::new(Some(vector_path.to_string())).await?);
     ctx.provide_arc(store.clone());
     Ok(store)
+}
+
+/// Embed texts for RAG ingest and search.
+///
+/// Local path uses [`EmbeddingService`]. Remote path uses [`ares_rag::embed_with_llm`].
+async fn embed_for_rag(
+    ctx: &Arc<Context>,
+    texts: &[String],
+) -> ares_types::types::Result<Vec<Vec<f32>>> {
+    #[cfg(feature = "local-embeddings")]
+    {
+        let embedding_service = embedding_service_from_ctx(ctx).await?;
+        embedding_service.embed_texts(texts).await
+    }
+    #[cfg(not(feature = "local-embeddings"))]
+    {
+        ares_rag::embed_with_llm(ctx, texts).await
+    }
 }
 
 // ============================================================================
@@ -216,7 +239,6 @@ pub async fn ingest(
     let scoped_collection = user_scoped_collection(&claims.sub, &payload.collection);
 
     // Get services
-    let embedding_service = embedding_service_from_ctx(&ctx).await?;
     let config = ctx
         .get::<crate::overlay::AresConfigManager>()
         .expect("not provided")
@@ -248,17 +270,18 @@ pub async fn ingest(
         )));
     }
 
-    // Ensure collection exists
-    let dimensions = embedding_service.dimensions();
+    // Generate embeddings for each chunk, then size the collection from the first vector.
+    let chunk_texts: Vec<String> = chunks.iter().map(|c| c.content.clone()).collect();
+    let embeddings = embed_for_rag(&ctx, &chunk_texts).await?;
+    let dimensions = embeddings
+        .first()
+        .map(|v| v.len())
+        .ok_or_else(|| AppError::Internal("No embedding generated".to_string()))?;
     if !vector_store.collection_exists(&scoped_collection).await? {
         vector_store
             .create_collection(&scoped_collection, dimensions)
             .await?;
     }
-
-    // Generate embeddings for each chunk
-    let chunk_texts: Vec<String> = chunks.iter().map(|c| c.content.clone()).collect();
-    let embeddings = embedding_service.embed_texts(&chunk_texts).await?;
 
     // Create documents
     let base_id = Uuid::new_v4().to_string();
@@ -352,7 +375,6 @@ pub async fn search(
     let scoped_collection = user_scoped_collection(&claims.sub, &payload.collection);
 
     // Get services
-    let embedding_service = embedding_service_from_ctx(&ctx).await?;
     let config = ctx
         .get::<crate::overlay::AresConfigManager>()
         .expect("not provided")
@@ -376,7 +398,11 @@ pub async fn search(
         .unwrap_or(SearchStrategy::Semantic);
 
     // Generate query embedding
-    let query_embedding = embedding_service.embed_text(&payload.query).await?;
+    let embeddings = embed_for_rag(&ctx, std::slice::from_ref(&payload.query)).await?;
+    let query_embedding = embeddings
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::Internal("No embedding generated".to_string()))?;
 
     // Perform vector search
     let vector_results = vector_store
@@ -389,6 +415,7 @@ pub async fn search(
         .await?;
 
     // Apply additional search strategies if needed
+    #[cfg_attr(not(feature = "local-embeddings"), allow(unused_mut))]
     let mut results: Vec<RagSearchResult> = match strategy {
         SearchStrategy::Semantic => {
             // Pure semantic search - already done
@@ -451,7 +478,8 @@ pub async fn search(
         }
     };
 
-    // Apply reranking if requested
+    // Apply reranking if requested. Remote embeddings skip the cross-encoder.
+    #[cfg(feature = "local-embeddings")]
     let reranked = if payload.rerank && !results.is_empty() {
         // Parse reranker model
         let model_type: RerankerModelType = payload
@@ -499,6 +527,8 @@ pub async fn search(
     } else {
         false
     };
+    #[cfg(not(feature = "local-embeddings"))]
+    let reranked = false;
 
     let total = results.len();
     let strategy_name = format!("{:?}", strategy).to_lowercase();
@@ -726,6 +756,7 @@ mod tests {
         assert!(filtered.is_empty());
     }
 
+    #[cfg(feature = "local-embeddings")]
     #[tokio::test]
     async fn embedding_service_from_ctx_none_without_provide() {
         let ctx = cordis::Context::new_root();
@@ -745,6 +776,7 @@ mod tests {
         assert_service::<AresVectorStore>();
     }
 
+    #[cfg(feature = "local-embeddings")]
     #[tokio::test(flavor = "multi_thread")]
     async fn embedding_service_from_ctx_reuses_provided_instance() {
         let ctx = cordis::Context::new_root();
@@ -754,9 +786,110 @@ mod tests {
         assert!(Arc::ptr_eq(&service, &got));
     }
 
+    #[cfg(feature = "local-embeddings")]
     #[test]
     fn embedding_service_impls_cordis_service() {
         fn assert_service<T: cordis::Service>() {}
         assert_service::<EmbeddingService>();
+    }
+
+    #[cfg(not(feature = "local-embeddings"))]
+    #[tokio::test]
+    async fn embed_for_rag_errors_when_llm_missing() {
+        let ctx = Context::new_root();
+        let err = embed_for_rag(&ctx, &[String::from("hello")])
+            .await
+            .expect_err("missing Llm must fail closed");
+        match err {
+            AppError::Configuration(msg) => {
+                assert_eq!(msg, "Llm service is not provided for remote embeddings");
+            }
+            other => panic!("expected Configuration, got {other:?}"),
+        }
+    }
+
+    #[cfg(not(feature = "local-embeddings"))]
+    #[tokio::test]
+    async fn embed_for_rag_llm_short_circuit_returns_vectors() {
+        use ares_llm::{ConversationMessage, LLMClient, LLMResponse, Llm};
+        use ares_types::types::ToolDefinition;
+        use async_trait::async_trait;
+        use cordis::EventsService;
+
+        struct DummyEmbedClient;
+
+        #[async_trait]
+        impl LLMClient for DummyEmbedClient {
+            async fn generate(&self, _prompt: &str) -> ares_types::types::Result<String> {
+                Err(AppError::Internal("embed-only mock".into()))
+            }
+            async fn generate_with_system(
+                &self,
+                _system: &str,
+                _prompt: &str,
+            ) -> ares_types::types::Result<String> {
+                Err(AppError::Internal("embed-only mock".into()))
+            }
+            async fn generate_with_history(
+                &self,
+                _messages: &[(String, String)],
+            ) -> ares_types::types::Result<LLMResponse> {
+                Err(AppError::Internal("embed-only mock".into()))
+            }
+            async fn generate_with_tools(
+                &self,
+                _prompt: &str,
+                _tools: &[ToolDefinition],
+            ) -> ares_types::types::Result<LLMResponse> {
+                Err(AppError::Internal("embed-only mock".into()))
+            }
+            async fn generate_with_tools_and_history(
+                &self,
+                _messages: &[ConversationMessage],
+                _tools: &[ToolDefinition],
+            ) -> ares_types::types::Result<LLMResponse> {
+                Err(AppError::Internal("embed-only mock".into()))
+            }
+            async fn stream(
+                &self,
+                _prompt: &str,
+            ) -> ares_types::types::Result<
+                Box<dyn futures::Stream<Item = ares_types::types::Result<String>> + Send + Unpin>,
+            > {
+                Err(AppError::Internal("embed-only mock".into()))
+            }
+            async fn stream_with_system(
+                &self,
+                _system: &str,
+                _prompt: &str,
+            ) -> ares_types::types::Result<
+                Box<dyn futures::Stream<Item = ares_types::types::Result<String>> + Send + Unpin>,
+            > {
+                Err(AppError::Internal("embed-only mock".into()))
+            }
+            async fn stream_with_history(
+                &self,
+                _messages: &[(String, String)],
+            ) -> ares_types::types::Result<
+                Box<dyn futures::Stream<Item = ares_types::types::Result<String>> + Send + Unpin>,
+            > {
+                Err(AppError::Internal("embed-only mock".into()))
+            }
+            fn model_name(&self) -> &str {
+                "embed-mock"
+            }
+        }
+
+        let ctx = Context::new_root();
+        ctx.provide(Llm::from_client(Arc::new(DummyEmbedClient)));
+        let events = ctx.provide(EventsService::new());
+        events.on_waterfall(
+            cordis::events_catalog::ev::LLM_EMBED.to_string(),
+            |_payload, _next| async move { Ok(serde_json::json!({ "embeddings": [[1.0, 2.0]] })) },
+        );
+        let out = embed_for_rag(&ctx, &[String::from("hi")])
+            .await
+            .expect("short-circuit embed");
+        assert_eq!(out, vec![vec![1.0, 2.0]]);
     }
 }

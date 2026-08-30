@@ -1,5 +1,7 @@
 # A.R.E.S project status & completion summary
 
+> **0.11.0:** Current workspace version is **0.11.0**. This file is a historical snapshot. See `CHANGELOG.md` [0.11.0] and `docs/src/changelog.md`.
+
 Date: 2024-12-15 
 Updated: 2026-02-03 
 Status: All Core Features Implemented and Tested 

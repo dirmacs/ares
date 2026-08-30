@@ -55,7 +55,7 @@ Built by [DIRMACS](https://dirmacs.com). **[Documentation](https://dirmacs.githu
 
 ## Installation
 
-You can run ARES as a **standalone server**. You can also use it as a **library** in your Rust project.
+Run ARES as a **standalone server**. You can also embed it as a **library** in a Rust project.
 
 ### As a library
 
@@ -72,7 +72,7 @@ Basic usage:
 use ares_server::{Context, Execute, Tools, Llm};
 ```
 
-The default features of `ares-server` are postgres, ares-vector, mcp, inventory, rhai-policy, http, cli, and script-tools. That is the full server library: the Axum router and the CLI compile, and sqlx, Boa, and Rhai come with them. `ProviderRegistry` remains on the constructor path for `AgentRegistry` / `Llm` until those take `Llm` only.
+The default features of `ares-server` are postgres, ares-vector, mcp, inventory, rhai-policy, http, cli, and script-tools. That is the full server library. The Axum router and the CLI compile. sqlx, Boa, and Rhai come with them. `ProviderRegistry` remains on the constructor path for `AgentRegistry` / `Llm` until those take `Llm` only.
 
 For a headless embed, turn the defaults off and name only what you need:
 
@@ -101,7 +101,7 @@ ares-server
 
 ## CLI commands
 
-The CLI gives full-featured commands with colored output:
+The CLI prints colored output for every command:
 
 ```bash
 # Initialize a new project with all configuration files
@@ -157,14 +157,14 @@ ares-server --no-color init
 - **Ollama** for local LLM inference (recommended). See [Install Ollama](https://ollama.ai)
 - **just** as the command runner (recommended). See [Install just](https://just.systems)
 
-### 1. Clone and setup
+### 1. Clone and configure
 
 ```bash
 git clone https://github.com/dirmacs/ares.git
 cd ares
 cp .env.example .env
 
-# Or use just to set up everything:
+# Or run just to configure the project:
 just setup
 ```
 
@@ -195,13 +195,16 @@ The server runs on `http://localhost:3000`
 
 ## Feature flags
 
-ARES uses Cargo features for conditional compilation:
+ARES uses Cargo features for optional compile-time components:
 
 ### LLM providers
 
-HTTP LLM providers (OpenAI, Azure Foundry, Anthropic, Gemini, Bedrock bearer, Ollama, and the rest of the genai adapter set) ship through `ares-llm`'s default `genai` feature. The root package has no `openai`, `azure`, `bedrock`, `ollama`, `anthropic`, or `all-llm` feature.
+HTTP LLM providers ship through the default `genai` feature of `ares-llm`.
+The set includes OpenAI, Azure Foundry, Anthropic, Gemini, Bedrock bearer, and Ollama.
+The root package has no per-provider LLM Cargo features. These features were removed: `openai`, `azure`, `bedrock`, `ollama`, `anthropic`, `all-llm`.
+Select the provider at run time with `type` in `ares.toml`.
 
-LlamaCpp remains an `ares-llm` feature (`llamacpp`, `llamacpp-cuda`, `llamacpp-metal`, `llamacpp-vulkan`), not a root feature.
+The root package forwards optional `llamacpp`, `llamacpp-cuda`, `llamacpp-metal`, and `llamacpp-vulkan` to `ares-llm`.
 
 ### Database & vector stores
 
@@ -222,7 +225,7 @@ LlamaCpp remains an `ares-llm` feature (`llamacpp`, `llamacpp-cuda`, `llamacpp-m
 | `ui` | Embedded Leptos web UI served from backend | No |
 | `swagger-ui` | Interactive API documentation at `/swagger-ui/` | No |
 
-> **Note:** v0.2.5 made `swagger-ui` optional. This change reduces the binary size and the build time. The feature needs network access during the build to download the Swagger UI assets.
+> **Note:** v0.2.5 made `swagger-ui` optional. The binary is smaller. The build is faster. The feature needs network access during the build to download the Swagger UI assets.
 
 ### Embeddings
 
@@ -230,7 +233,7 @@ LlamaCpp remains an `ares-llm` feature (`llamacpp`, `llamacpp-cuda`, `llamacpp-m
 |---------|-------------|---------|
 | `local-embeddings` | Local ONNX embedding models via fastembed | No |
 
-> **Warning:** The `local-embeddings` feature does not work on Windows MSVC. Cause: `ort-sys` linker errors. Use WSL, Linux, macOS, or remote embedding APIs instead.
+> **Warning:** The `local-embeddings` feature does not work on Windows MSVC. Cause: `ort-sys` linker errors. Use WSL, Linux, macOS, or a remote embedding API.
 
 ### Server surfaces
 
@@ -240,7 +243,7 @@ LlamaCpp remains an `ares-llm` feature (`llamacpp`, `llamacpp-cuda`, `llamacpp-m
 | `cli` | Command-line build: `clap`, `owo-colors`, `reqwest`, `dotenvy`, `tracing-subscriber` | Yes |
 | `script-tools` | Boa JavaScript and Rhai tool engines in `ares-tools` | Yes |
 
-The `ares-server` binary needs both `http` and `cli`. A build without them skips the binary. Turn all three off for a headless embed. genai stays on through the `ares-llm` default.
+The `ares-server` binary needs both `http` and `cli`. A build without them skips the binary. Turn `http`, `cli`, and `script-tools` off for a headless embed. genai stays on through the `ares-llm` default.
 
 ### Feature bundles
 
@@ -262,11 +265,11 @@ The `ares-server` binary needs both `http` and `cli`. A build without them skips
 cargo build
 # Or: just build
 
-# With direct GGUF loading (ares-llm)
-cargo build -p ares-llm --features "llamacpp"
+# Optional in-process GGUF
+cargo build --features llamacpp
 
-# With CUDA GPU acceleration (ares-llm)
-cargo build -p ares-llm --features "llamacpp-cuda"
+# Optional GGUF with CUDA
+cargo build --features llamacpp-cuda
 
 # Full feature set
 cargo build --features "full"
@@ -321,13 +324,13 @@ api_key_env = "API_KEY"
 [database]
 url = "./data/ares.db"
 
-# LLM Providers (define named providers)
+# LLM providers. HTTP types need no extra Cargo feature. type = "openai" is a runtime type.
 [providers.ollama-local]
 type = "ollama"
 base_url = "http://localhost:11434"
 default_model = "ministral-3:3b"
 
-[providers.openai]  # Optional
+[providers.openai]  # Optional. Runtime type openai. No Cargo feature.
 type = "openai"
 api_key_env = "OPENAI_API_KEY"
 default_model = "gpt-4"

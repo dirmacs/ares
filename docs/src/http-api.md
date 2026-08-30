@@ -245,7 +245,7 @@ data: {"event":"token","content":"Here "}
 data: {"event":"error","context_id":"8f14e45f-...","error":"Stream error: provider closed connection"}
 ```
 
-The endpoint attaches an SSE keep-alive comment every 15 seconds (`Sse::keep_alive` in `chat_stream_response`). Idle connections therefore never time out silently; clients should ignore comment frames.
+The endpoint attaches an SSE keep-alive comment every 15 seconds (`Sse::keep_alive` in `chat_stream_response`). Idle connections therefore never time out silently. Clients ignore comment frames.
 
 The `GET` variant takes the request fields as query parameters (`ChatStreamQuery`): `message` (required), plus optional `agent_type`, `context_id`, and `workspace_id`. Authenticate it with `Authorization: Bearer` or the `?token=` fallback:
 

@@ -35,7 +35,7 @@ The two `rate_limit_*` keys drive one middleware built at startup (`src/main.rs`
 - When `rate_limit_per_second > 0`, the app wraps in `tower_governor::GovernorLayer`. The governor runs the Generic Cell Rate Algorithm (GCRA) per client IP: `per_second` sets the sustained refill rate, and `burst_size` permits short bursts above it before rejections start.
 - `use_headers()` adds standard `x-ratelimit-*` headers to responses, so clients can observe their budget.
 - A background task prunes stale per-IP state every 60 seconds to bound memory.
-- Setting `rate_limit_per_second = 0` skips the layer entirely. Startup then logs a warning that disabling limiting is not recommended for production.
+- If you set `rate_limit_per_second = 0`, the limiter is off. Startup logs a warning. Do not disable limiting in production.
 
 A second, independent limiter lives in the API-key auth middleware: tenant daily usage accumulates in the PostgreSQL `daily_rate_limits` table keyed by `(tenant_id, usage_date)` and caches per tenant in memory (`crates/ares-store/src/tenants.rs`). If the database check itself fails, requests fail closed with HTTP 500 `Failed to check rate limit`.
 
@@ -63,7 +63,7 @@ Secrets live in environment variables by name, never in `ares.toml`. Expiry valu
 
 ### `[providers.*]` group
 
-Each named provider deserializes into `ProviderConfig` (`crates/ares-llm/src/config.rs`), tagged by `type = "..."`. Existing shapes (`openai`, `azure`, `anthropic`, `bedrock`, `ollama`) stay valid. Additional variants match every genai `AdapterKind` name (`gemini`, `groq`, `openrouter`, `openai_resp`, `bedrock_api`, and the rest). `type = "openai"` auto-routes `gpt-5*` to the OpenAI Responses adapter. A missing environment variable fails at client creation with a clear error.
+Each named provider deserializes into `ProviderConfig` (`crates/ares-llm/src/config.rs`), tagged by `type`. HTTP types need no extra Cargo feature. Existing shapes (`openai`, `azure`, `anthropic`, `bedrock`, `ollama`) stay valid. Extra variants match genai `AdapterKind` names. `type = "openai"` auto-routes `gpt-5*` to OpenAI Responses. If an environment variable is missing, client creation fails.
 
 An optional `[nvidia]` group (`NvidiaConfig`) adds catalog settings: `api_key_env`, `api_base`, `models_url`, `catalog_refresh_seconds`, and `default_model`. When absent, the registry synthesizes one NVIDIA provider from defaults.
 
@@ -85,7 +85,7 @@ The client pool takes a `PoolConfig` (`crates/ares-llm/src/pool.rs`) with these 
 - `acquire_timeout` — wait budget for borrowing a pooled client. Default 30 seconds.
 - `enable_health_check` — default true.
 
-A permit spans the whole call including streams; saturation fails closed. This admission model rejects excess callers instead of queueing them onto the backend, so a saturated provider degrades loudly and early rather than silently stretching latencies.
+A permit spans the whole call, including streams. Saturation fails closed. Excess callers are rejected. A saturated provider fails early.
 
 ## Supervised operation runbook
 
@@ -165,7 +165,7 @@ There is no Prometheus endpoint; scrape-style monitoring must read the admin end
 ARES fails closed on its trust boundaries:
 
 - RAG ingestion and search require authentication and check tenant allowlists before touching data.
-- Delegation arguments, review gates, and tool allowlists restrict what agents may call; unknown tools stay blocked when `allowed_tools` names a set.
+- Delegation arguments, review gates, and tool allowlists restrict what agents can call. Unknown tools stay blocked when `allowed_tools` names a set.
 - Provider governors cap concurrent dispatches and reject excess callers instead of queueing them onto the backend.
 - Secrets resolve from named environment variables at use time; config files hold only variable names.
 

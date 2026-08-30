@@ -23,7 +23,7 @@ pub mod field_change;
 /// Loop-mode agent lifecycle handlers (start/list/stop).
 pub mod loops;
 /// RAG (document ingestion/search) handlers.
-#[cfg(all(feature = "local-embeddings", feature = "ares-vector"))]
+#[cfg(feature = "ares-vector")]
 pub mod rag;
 /// Research coordination handlers.
 pub mod research;

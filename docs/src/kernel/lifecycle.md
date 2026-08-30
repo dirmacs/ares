@@ -9,7 +9,7 @@ A fiber is the lifecycle owner of one registration. Its state machine has seven 
 | `Inactive { error }` | Not serving. Pristine, waiting for a first apply, or resting after an unsatisfied declaration. |
 | `Loading` | A plugin activation is in flight. |
 | `Active { epoch }` | Serving. `epoch` encodes every declared dependency version. |
-| `Reloading` | A refresh pass runs. Effects may be undone and re-applied. |
+| `Reloading` | A refresh pass runs. Effects can be undone and re-applied. |
 | `Unloading { error }` | Effects are being disposed in reverse order (LIFO). |
 | `Pending` | Reactive waiting. Effects were disposed, but the fiber is not disposed. It waits for dependencies or its readiness gate. |
 | `Failed { error }` | Terminal after an apply error, or inspectable after an availability-predicate rejection. |
@@ -81,9 +81,9 @@ that waited on strict `get` now resolve it.
 
 Two details matter in production:
 
-- If the plugin factory had errored during any pass, region 3 would have
-  set the terminal marker instead. Region 2's short-circuit then returns
-  forever. Recovery means explicit re-registration with a fresh fiber id.
+- If the plugin factory errored during any pass, region 3 set the terminal
+  marker instead. Region 2's short-circuit then returns forever. Recovery
+  means explicit re-registration with a fresh fiber id.
 - A constraint refusal over a live provider never reaches region 4. The
   provider still reports available, so the fiber rests `Inactive`, not
   `Pending`. See the version rules below.
@@ -228,7 +228,7 @@ sequenceDiagram
     D2->>D2: Pending -> Loading -> Active
 ```
 
-Without batching, each concurrent patch would trigger one full cascade
+Without batching, each concurrent patch triggers one full cascade
 wave through every dependent. With three patches landing together, that
 is three teardown-rebuild cycles per dependent. Batching collapses them
 into one.

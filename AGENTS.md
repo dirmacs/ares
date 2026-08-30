@@ -7,8 +7,8 @@ ARES is the agentic chatbot server at the core of the Dirmacs platform. It orche
 ## Architecture Context
 
 - Multi-tenant: Tenants have API keys, usage quotas, and isolated agent configurations.
-- Provider-agnostic: LLM calls go through an abstraction layer (`crates/ares-llm/src/client.rs`). Ollama, OpenAI, Anthropic, and LlamaCpp are interchangeable providers.
-- Feature-gated: Heavy optional features (MCP, specific vector stores, UI embedding) sit behind Cargo feature flags.
+- Provider-agnostic: LLM calls go through `Llm` and `LLMClient`. HTTP providers use genai. Select the provider at run time with `type` in `ares.toml`.
+- Feature-gated: Heavy optional features (MCP, vector stores, UI, `llamacpp`) sit behind Cargo feature flags. HTTP providers are not Cargo features.
 - Configuration-driven: Agents, models, tools, and workflows come from TOML/TOON configuration files with hot reload. The server reads `ares.toml` at startup.
 
 Before you touch gated code, make sure that the relevant Cargo features are enabled.
@@ -22,11 +22,11 @@ Before you touch gated code, make sure that the relevant Cargo features are enab
 3. If the endpoint needs new shared types, put them in `crates/ares-types`.
 4. Add the matching hurl test in `hurl/cases/`.
 
-### Adding a new LLM provider
+### Adding a new HTTP LLM provider
 
-1. Create `crates/ares-llm/src/new_provider.rs` with an implementation of the `LLMClient` trait.
-2. Declare the feature in `crates/ares-llm/Cargo.toml`.
-3. Register the module in `crates/ares-llm/src/lib.rs` behind `#[cfg(feature = "new_provider")]`.
+1. Add a `ProviderConfig` variant in `crates/ares-llm/src/config.rs`.
+2. Map that variant to a genai `AdapterKind` in `crates/ares-llm/src/client.rs`.
+3. Keep HTTP traffic in `crates/ares-llm/src/genai_client.rs`. Do not add a crate feature. Do not add `openai.rs`.
 4. Add the model configuration to `ares.example.toml`.
 
 ### Adding a new tool

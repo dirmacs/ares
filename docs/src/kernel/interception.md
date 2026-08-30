@@ -129,7 +129,7 @@ Each scenario shows the payload shape and one verdict path. Payloads are
 JSON objects; shapes come from the bridge implementations in
 `events.rs` and its tests.
 
-**Scenario: tenant A may not read the billing service.**
+**Scenario: tenant A must not read the billing service.**
 A listener on `internal/get` receives:
 
 ```json
@@ -262,7 +262,7 @@ otherwise                  -> park and run the bail chain
 ```
 
 Fall-open means fail-open by design choice. Registration and reads are
-core APIs; refusing them because of a runtime flavor would break every
-test harness and embedded use. The warning names the skipped veto so
+core APIs. If the kernel refuses them because of a runtime flavor, every
+test harness and embedded use breaks. The warning names the skipped veto so
 deployments notice when they expected enforcement. Product deployments
 run multi-thread flavors, where the chain always runs.

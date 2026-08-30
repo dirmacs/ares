@@ -10,7 +10,7 @@ ARES is a Cargo workspace. One root package, `ares-server`, holds the binary and
 | `cordis` (`ares-cordis`) | Kernel. Typed `Context`, plugins, loader, fibers, events, intercepts. | none |
 | `ares-types` | Shared types and errors (`AppError`, `TenantContext`). | `cordis` |
 | `ares-vector` | Embedded vector store with HNSW. Standalone; no workspace dependencies. | none |
-| `ares-rag` | Retrieval-augmented generation pipeline and embeddings. | `ares-types`, `cordis` |
+| `ares-rag` | Retrieval-augmented generation pipeline and embeddings. | `ares-types`, `ares-llm`, `cordis` |
 | `ares-store` | Persistence. PostgreSQL through sqlx, Turso/libSQL behind a feature. Embeds migrations. | `ares-types`, `cordis`; optional `sqlx`, `libsql`, `ares-vector` |
 | `ares-tools` | Tool trait, static and runtime tool registry, calculator. | `ares-types`, `cordis`; optional `ares-store`, `ares-mcp` |
 | `ares-llm` | Provider clients, factory, pool, circuit breaker, `Llm` service. | `ares-types`, `ares-tools`, `cordis`; optional `ares-store` |
@@ -34,7 +34,7 @@ The same crates with one-line data-flow notes each:
 | `ares-agent` | The run pipeline: admitted request, tool-call rounds against `Tools`/`Llm`, assembled final response, run records toward storage. |
 | `ares-http` | HTTP in, responses out. Middleware attaches tenant identity and usage; handlers open realms and call `Execute`. |
 
-Feature flags forward down the chain: `postgres` enables sqlx in store, agent, mcp, tools, http. HTTP LLM providers compile in through `ares-llm`'s default `genai` feature; `llamacpp` remains optional.
+Feature flags forward down the chain. `postgres` enables sqlx in store, agent, mcp, tools, and http. HTTP LLM providers compile in through the default `genai` feature of `ares-llm`. `llamacpp` remains optional.
 
 ## Process lifecycle
 

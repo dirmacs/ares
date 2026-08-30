@@ -9,16 +9,16 @@ ARES is a **GENERIC** multi-tenant AI agent runtime. It contains zero client-spe
 ## Build
 
 ```bash
-cargo build --release --no-default-features --features openai,postgres,mcp
+cargo build --release --no-default-features --features postgres,mcp
 ```
 
-If cargo runs out of memory, run `CARGO_BUILD_JOBS=1 cargo build --release --no-default-features --features openai,postgres,mcp`.
+If cargo runs out of memory, run `CARGO_BUILD_JOBS=1 cargo build --release --no-default-features --features postgres,mcp`.
 
 ## After rebuild
 
 ```bash
 sudo systemctl restart ares
-curl -s localhost:3000/health  # confirm it is up
+curl -s localhost:3000/health  # make sure that the server is up
 ```
 
 ## Route parameters

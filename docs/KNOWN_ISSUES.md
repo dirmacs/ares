@@ -2,23 +2,23 @@
 
 ## OpenAI integration
 
-Status: Compiles against async-openai 0.31.1; needs live API verification
+Status: The adapter is genai. A live API check is still required.
 
-Issue: The provider now uses the 0.31.1 API (tool enums, tool list conversion, and tool-call parsing). The compile errors are resolved; runtime/tool-calling correctness still needs validation with a real OpenAI endpoint.
+Issue: HTTP OpenAI traffic uses `ares-llm` genai. The `async-openai` crate is gone. Compile success does not prove tool calling or streaming on a real endpoint.
 
-Impact: 
-- Builds succeed with the `openai` feature
-- Tool calling will probably work, but no one has exercised it against the real API
-- Further adjustments can become necessary after end-to-end testing
+Impact:
+- The default build includes the OpenAI HTTP adapter through genai.
+- Root has no `openai` Cargo feature.
+- Tool calling on the live API is not verified.
 
 Workaround:
-- Prefer Ollama or LlamaCpp for local-first workflows
-- If you use OpenAI, run targeted E2E tests with a real API key
+- Use Ollama or LlamaCpp for local work.
+- If you use OpenAI, run targeted E2E tests with a real API key.
 
 Next Steps:
-1. Run live tests with a real OpenAI key to validate tool calling and streaming
-2. Add mocked/OpenAI-contract tests if the project can add them
-3. Update docs with any model-specific nuances
+1. Run live tests with a real OpenAI key. Check tool calling and streaming.
+2. Add mocked contract tests if the project can add them.
+3. Update docs with any model-specific facts after that run.
 
 ## GPU backend compilation
 
@@ -36,10 +36,10 @@ Impact:
 Workaround:
 ```bash
 # Use specific features instead of --all-features
-cargo build --features "ollama,llamacpp,local-db"
+cargo build --features llamacpp
 
-# Or enable GPU only if SDK is installed
-cargo build --features "llamacpp-cuda"  # if CUDA is available
+# If the CUDA SDK is installed, enable GPU
+cargo build --features llamacpp-cuda
 ```
 
 **Documentation**: See `docs/GGUF_USAGE.md` for GPU setup instructions
@@ -52,12 +52,12 @@ cargo build --features "llamacpp-cuda"  # if CUDA is available
 - 277+ tests total (152 lib + 125 integration)
 - Ollama: Full coverage with wiremock
 - LlamaCpp: Needs integration tests with real GGUF models
-- OpenAI: Tests disabled pending API fixes
+- OpenAI: Live API tests are still required
 
 **Recommendations**:
 1. Add E2E tests with a real Ollama instance in CI
 2. Add LlamaCpp tests with a tiny test model
-3. Fix OpenAI and re-enable the tests
+3. Run live OpenAI tests and re-enable them
 
 ## Windows-specific
 
@@ -182,7 +182,7 @@ Resolved (verified against locked versions):
 - postcss @ 8.5.26, nanoid @ 3.3.18 (ui), resolved via bun and npm lockfiles.
 
 Residual (low severity, accepted; also the cause of the stale high-severity alert 28):
-- rustls-webpki 0.101.7 and 0.102.8 (alerts 19/20, GHSA-82j2-j2ch-gfr8 / -xgp8-3hg3-c2mh / -965h-392x-2mh5). These legacy TLS lines are reachable only through optional features (`chromadb` -> `minreq` 2.x -> rustls 0.21; `libsql`/`turso` and gRPC clients -> `tonic` 0.11 -> hyper-rustls 0.25 -> rustls 0.22), none of which is in the production build (`postgres, openai, ares-vector, mcp, inventory`) or the verification matrix (`openai, postgres, mcp`). Both holdouts are at their maximum stable release: `chromadb 2.3.0` pins `minreq ^2` (rustls ^0.21) and `libsql 0.6.0` pins `tonic ^0.11` (rustls ^0.22). No stable upgrade path exists (libsql's next release is 0.10.0-pre). CRL revocation checking is opt-in in rustls-webpki; the default configuration is not affected. Alert 28 (high) stays listed because Dependabot evaluates the advisory across every version in the lockfile; the production-relevant `rustls-webpki 0.103.15` (used by reqwest 0.12) is fixed.
+- rustls-webpki 0.101.7 and 0.102.8 (alerts 19/20, GHSA-82j2-j2ch-gfr8 / -xgp8-3hg3-c2mh / -965h-392x-2mh5). These legacy TLS lines are reachable only through optional features (`chromadb` -> `minreq` 2.x -> rustls 0.21; `libsql`/`turso` and gRPC clients -> `tonic` 0.11 -> hyper-rustls 0.25 -> rustls 0.22), none of which is in the production build (`postgres, ares-vector, mcp, inventory`) or the verification matrix (`postgres, mcp`). Both holdouts are at their maximum stable release: `chromadb 2.3.0` pins `minreq ^2` (rustls ^0.21) and `libsql 0.6.0` pins `tonic ^0.11` (rustls ^0.22). No stable upgrade path exists (libsql's next release is 0.10.0-pre). CRL revocation checking is opt-in in rustls-webpki; the default configuration is not affected. Alert 28 (high) stays listed because Dependabot evaluates the advisory across every version in the lockfile; the production-relevant `rustls-webpki 0.103.15` (used by reqwest 0.12) is fixed.
 
 **RESOLVED (2026-08-24):** the root-crate integration tests compile again post-redesign — `cargo check --workspace --tests` reports zero errors. The pre-redesign `AppState`-style literals were migrated during rounds 1–9. Note: root-CI's CRAP Score Gate (`cargo crap --threshold 30`) still fails on ~4,200 workspace-wide untested complex functions; that debt predates the Cordis redesign entirely (gate added 2026-06-04, CI red ever since).
 

@@ -47,6 +47,7 @@ pub use ares_agent::workflows;
 pub use ares_agent::EmergencyStop;
 
 pub use ares_llm::ConfigBasedLLMFactory;
+pub use ares_rag as rag;
 pub use ares_types::{models, types};
 pub use config::{AuthConfig, ServerConfig};
 pub use error::{app_error_into_response, HttpError};

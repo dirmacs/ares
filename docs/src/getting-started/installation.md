@@ -20,13 +20,13 @@ Install Rust through [rustup](https://rustup.rs) if you do not have it.
 The crate is published as [`ares-server`](https://crates.io/crates/ares-server). Install it without pinning a version:
 
 ```bash
-cargo install ares-server
+cargo install ares-server --locked
 ```
 
 To include the embedded web UI in the build, add the `ui` feature:
 
 ```bash
-cargo install ares-server --features ui
+cargo install ares-server --locked --features ui
 ```
 
 The install puts the binary in `$HOME/.cargo/bin`. Make sure that directory is on your `PATH`.
@@ -45,7 +45,7 @@ The binary lands at `target/release/ares-server`. Copy it to a directory on your
 
 ## Feature flags
 
-Features select LLM providers, database backends, and vector stores. The table lists every feature of the `ares-server` package.
+Features select database backends, vector stores, and optional extras. HTTP LLM providers come from the default `genai` feature of `ares-llm`. The table lists every feature of the `ares-server` package.
 
 | Feature | What it enables |
 |---|---|
@@ -78,7 +78,7 @@ Feature bundles combine several flags:
 | `all-db` | `postgres` |
 | `all-vectorstores` | `ares-vector`, `qdrant`, `pgvector`, `chromadb`, `pinecone` |
 | `local-vectorstores` | `ares-vector` only |
-| `full` | All LLM providers, `postgres`, `qdrant`, `ares-vector`, `mcp`, `swagger-ui` |
+| `full` | `postgres`, `qdrant`, `ares-vector`, `mcp`, `swagger-ui` |
 | `full-ui` | `full` plus `ui` |
 | `minimal` | Nothing optional |
 
@@ -86,15 +86,15 @@ Feature bundles combine several flags:
 
 Features compose along three independent axes. Pick one option per axis:
 
-1. **LLM providers**. HTTP adapters ship through `ares-llm`'s default `genai` feature. Select OpenAI, Azure, Anthropic, Gemini, Bedrock, Ollama, and the rest of the genai adapter set in `ares.toml`. Optional `llamacpp` adds in-process GGUF.
+1. **LLM providers**. HTTP adapters ship through the default `genai` feature of `ares-llm`. Select OpenAI, Azure, Anthropic, Gemini, Bedrock, and Ollama in `ares.toml`. Optional `llamacpp` adds in-process GGUF.
 2. **Database backend** (`postgres` or `turso`). The server binary requires the `postgres` feature. A binary built without it prints a rebuild hint and exits with code 1 at startup (`src/main.rs` compiles a stub `main` without it). Keep `postgres` unless you embed the library and run no HTTP server.
 3. **Vector store** (`ares-vector`, `qdrant`, `pgvector`, `chromadb`, `pinecone`, `lancedb`). Clients are additive. `local-vectorstores` keeps the build small because only the embedded store compiles.
 
-Cross-axis rules worth knowing:
+Cross-axis rules:
 
 - `postgres` also gates sqlx code paths in `ares-store`, `ares-agent`, `ares-mcp`, `ares-tools`, and `ares-http` through feature forwarding.
-- `mcp`, `inventory`, and `rhai-policy` ride in `default`; dropping `default` drops all three. Re-add them explicitly if you build with `--no-default-features` plus your own picks.
-- `swagger-ui` needs nothing extra, but the OpenAPI document includes RAG paths only when both `local-embeddings` and `ares-vector` are on (see the `#[cfg(all(...))]` gate around the `OpenApi` derive in `src/main.rs`).
+- `mcp`, `inventory`, and `rhai-policy` ride in `default`. If you drop `default`, all three drop. Re-add them if you build with `--no-default-features` plus your own picks.
+- `swagger-ui` needs nothing extra. The OpenAPI document includes RAG paths when `ares-vector` is on. Local ONNX embeddings still need `local-embeddings`.
 
 Some features cost real compile time or native dependencies:
 
@@ -105,7 +105,7 @@ Some features cost real compile time or native dependencies:
 | `ui` | Builds the embedded Leptos UI as part of the crate; longest cold build of any single feature |
 | `full-ui` | Everything above together; budget several minutes on a modest machine |
 
-For a first install, stay on defaults plus what you actually call. Defaults already give you `postgres`, `ares-vector`, `mcp`, `inventory`, `rhai-policy`, and HTTP genai providers.
+For a first install, stay on defaults plus what you actually call. Defaults already give you `postgres`, `ares-vector`, `mcp`, `inventory`, `rhai-policy`, and HTTP genai providers. Root has no `openai` Cargo feature.
 
 ### Build offline or air-gapped
 
@@ -135,14 +135,14 @@ Build with `cargo build --release --offline`. Two notes apply:
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `package \`ares-server v0.10.0\` cannot be built because it requires rustc 1.98 or newer` | Toolchain older than the declared `rust-version` | Run `rustup update stable`, then retry |
+| `package \`ares-server v0.11.0\` cannot be built because it requires rustc 1.98 or newer` | Toolchain older than the declared `rust-version` | Run `rustup update stable`, then retry |
 | Installed binary prints `requires the \`postgres\` feature` and exits 1 | Built or installed with `--no-default-features` or without `postgres` | Reinstall with `--features postgres`, or keep `default` |
 | `error: failed to run custom build command` naming `protoc` | `lancedb` enabled without Protocol Buffers compiler | Install `protoc`, or drop `lancedb` from `--features` |
 | Link errors mentioning ONNXRuntime under `local-embeddings` | Missing ONNX Runtime library, or Windows MSVC host | Install ONNX Runtime, or use a remote embeddings endpoint without the feature |
 | `ares-server: command not found` after install | `$HOME/.cargo/bin` missing from `PATH` | Add `export PATH="$HOME/.cargo/bin:$PATH"` to your shell profile |
 | Build succeeds but `/ui` returns 404 | `ui` feature absent from this binary | Rebuild with `--features ui` |
 
-Compile-time versus run time still matters for `llamacpp` and for database or vector-store features. HTTP LLM providers are compiled in by default; `ares.toml` selects among them at run time.
+Compile-time versus run time still matters for `llamacpp` and for database or vector-store features. HTTP LLM providers compile in by default. `ares.toml` selects among them at run time.
 
 ## Verify the install
 
@@ -150,5 +150,5 @@ Print the version:
 
 ```console
 $ ares-server --version
-ares-server 0.10.0
+ares-server 0.11.0
 ```

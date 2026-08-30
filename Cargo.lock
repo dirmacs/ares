@@ -295,6 +295,7 @@ dependencies = [
  "hex",
  "inventory",
  "jsonwebtoken",
+ "lancor",
  "notify",
  "parking_lot",
  "rand 0.9.5",

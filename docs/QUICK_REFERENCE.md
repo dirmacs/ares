@@ -122,15 +122,14 @@ just --list             # All commands
 ## Build commands (cargo)
 
 ```bash
-# Default build (postgres, openai, ares-vector, mcp, inventory, rhai-policy)
+# Default build (postgres, ares-vector, mcp, inventory, rhai-policy)
 cargo build
 # Or: just build
 
-# With specific features
-cargo build --features "llamacpp"
-cargo build --features "openai"
-cargo build --features "llamacpp-cuda"
-# Or: just build-features "llamacpp"
+# Optional in-process GGUF
+cargo build --features llamacpp
+cargo build --features llamacpp-cuda
+# Or: just build-features llamacpp
 
 # All features
 cargo build --features "full"
@@ -145,7 +144,7 @@ cargo build --features "full-ui"
 # Or: just build-full-ui
 
 # Release build
-cargo build --release --features "ollama"
+cargo build --release
 # Or: just build-release
 
 # Minimal build
@@ -356,7 +355,7 @@ PORT=3000
 # Database (postgres by default; TURSO_URL selects Turso instead)
 DATABASE_URL=postgres://localhost/ares
 
-# OpenAI-compatible provider (default feature)
+# OpenAI-compatible provider (runtime type openai. No extra Cargo feature.)
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4
 
@@ -492,11 +491,10 @@ Then open `http://localhost:3000/swagger-ui/`.
 ## Feature flags
 
 ### LLM providers
-- `openai` (default) - OpenAI API and compatible endpoints such as NVIDIA NIM
-- `azure` - Azure AI Foundry chat completions
-- `bedrock` - Claude on AWS Bedrock
-
-Ollama, Anthropic, and LlamaCpp support lives in `crates/ares-llm` behind the features of that crate.
+HTTP LLM providers ship through the default `genai` feature of `ares-llm`.
+Select OpenAI, Azure, Anthropic, Gemini, Bedrock bearer, and Ollama at run time with `type` in `ares.toml`.
+These Cargo features were removed: `openai`, `azure`, `bedrock`, `ollama`, `anthropic`, `all-llm`.
+- `llamacpp` - optional in-process GGUF (root forwards to ares-llm)
 
 ### Databases and vector stores
 - `postgres` (default) - PostgreSQL through sqlx
@@ -520,9 +518,8 @@ Ollama, Anthropic, and LlamaCpp support lives in `crates/ares-llm` behind the fe
 `swagger-ui` became optional in v0.2.5 to reduce binary size and build time. The build downloads Swagger UI assets from the network.
 
 ### Bundles
-- `all-llm` - openai, azure, bedrock
 - `all-db` - postgres
-- `full` - openai, azure, bedrock, postgres, qdrant, ares-vector, mcp, swagger-ui
+- `full` - postgres, qdrant, ares-vector, mcp, swagger-ui
 - `full-ui` - `full` plus `ui`
 - `full-local-embeddings` - `full` plus `local-embeddings` (Linux/macOS)
 - `full-ui-local-embeddings` - `full-ui` plus `local-embeddings` (Linux/macOS)
@@ -564,7 +561,7 @@ ls -lh models/*.gguf
 cat .env | grep LLAMACPP_MODEL_PATH
 
 # Test loading
-file models/*.gguf  # Should show "GGUF model file"
+file models/*.gguf  # Make sure that the file is a GGUF model
 ```
 
 ### Compilation errors
@@ -668,8 +665,9 @@ cargo run --features llamacpp
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4
 # Comment out LlamaCpp
+# Set type = "openai" in ares.toml. No extra Cargo feature.
 
-cargo run --features openai
+cargo run
 ```
 
 **To Anthropic:**
@@ -677,8 +675,9 @@ cargo run --features openai
 # .env
 ANTHROPIC_API_KEY=sk-ant-...
 ANTHROPIC_MODEL=claude-sonnet-4-20250514
+# Set type = "anthropic" in ares.toml. No extra Cargo feature.
 
-cargo run --features anthropic
+cargo run
 ```
 
 ## Security checklist

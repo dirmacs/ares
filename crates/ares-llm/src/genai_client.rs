@@ -4,7 +4,7 @@
 //! (never a bare `&str` model name, which genai would silently treat as Ollama).
 
 use crate::client::{
-    CacheControl, GenerationHints, GenaiProvider, LLMClient, LLMResponse, TokenUsage,
+    CacheControl, GenaiProvider, GenerationHints, LLMClient, LLMResponse, TokenUsage,
 };
 use crate::coordinator::{ConversationMessage, MessageRole};
 use ares_types::types::{AppError, ContentPart as AresPart, Result, ToolCall, ToolDefinition};
@@ -47,10 +47,7 @@ impl GenaiClient {
     }
 
     fn snapshot_hints(&self) -> GenerationHints {
-        self.hints
-            .read()
-            .map(|g| g.clone())
-            .unwrap_or_default()
+        self.hints.read().map(|g| g.clone()).unwrap_or_default()
     }
 
     fn effective_kind(&self) -> AdapterKind {
@@ -116,8 +113,7 @@ impl GenaiClient {
             if let Ok(schema) = serde_json::from_str::<serde_json::Value>(grammar) {
                 if schema.get("type").is_some() {
                     opts = opts.with_response_format(ChatResponseFormat::JsonSpec(JsonSpec::new(
-                        "guided",
-                        schema,
+                        "guided", schema,
                     )));
                 }
             }
@@ -157,7 +153,10 @@ impl GenaiClient {
                 .and_then(|v| v.get("type").cloned())
                 .is_none()
             {
-                extra.insert("guided_grammar".into(), serde_json::Value::String(grammar.to_string()));
+                extra.insert(
+                    "guided_grammar".into(),
+                    serde_json::Value::String(grammar.to_string()),
+                );
             }
         }
         if !extra.is_empty() {
@@ -211,7 +210,8 @@ impl GenaiClient {
 #[async_trait]
 impl LLMClient for GenaiClient {
     async fn generate(&self, prompt: &str) -> Result<String> {
-        Ok(self.generate_with_history(&[("user".into(), prompt.to_string())])
+        Ok(self
+            .generate_with_history(&[("user".into(), prompt.to_string())])
             .await?
             .content)
     }
@@ -238,11 +238,8 @@ impl LLMClient for GenaiClient {
         tools: &[ToolDefinition],
     ) -> Result<LLMResponse> {
         let hints = self.snapshot_hints();
-        let request = request_from_role_content(
-            &[("user".into(), prompt.to_string())],
-            Some(tools),
-            &hints,
-        );
+        let request =
+            request_from_role_content(&[("user".into(), prompt.to_string())], Some(tools), &hints);
         self.exec(request, &hints, true).await
     }
 
@@ -261,7 +258,8 @@ impl LLMClient for GenaiClient {
         prompt: &str,
     ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
         let hints = self.snapshot_hints();
-        let request = request_from_role_content(&[("user".into(), prompt.to_string())], None, &hints);
+        let request =
+            request_from_role_content(&[("user".into(), prompt.to_string())], None, &hints);
         self.exec_stream(request, &hints).await
     }
 
@@ -522,9 +520,11 @@ fn ares_parts_to_genai(parts: &[AresPart], fallback: &str) -> Vec<ContentPart> {
                 url.clone(),
                 None,
             )),
-            AresPart::FileBase64 { mime, data, name } => {
-                ContentPart::Binary(Binary::from_base64(mime.clone(), data.clone(), name.clone()))
-            }
+            AresPart::FileBase64 { mime, data, name } => ContentPart::Binary(Binary::from_base64(
+                mime.clone(),
+                data.clone(),
+                name.clone(),
+            )),
         })
         .collect()
 }
@@ -601,8 +601,6 @@ fn map_error(err: genai::Error) -> AppError {
     };
     if status.map(|s| s.as_u16()) == Some(429) {
         AppError::RateLimited(message)
-    } else if status.is_some() {
-        AppError::LLM(message)
     } else {
         AppError::LLM(message)
     }
@@ -738,7 +736,9 @@ mod tests {
             AresPart::ImageUrl {
                 url: "https://example.com/x.png".into(),
             },
-            AresPart::Text { text: "world".into() },
+            AresPart::Text {
+                text: "world".into(),
+            },
         ];
         assert_eq!(join_parts(&parts), "hello world");
         assert_eq!(join_parts(&[]), "");
@@ -762,11 +762,16 @@ mod tests {
         assert_eq!(mapped.len(), 2);
         assert_eq!(mapped[0].name.as_str(), "lookup");
         assert!(matches!(mapped[1].name, genai::chat::ToolName::WebSearch));
-        assert!(mapped.iter().all(|t| t.name.as_str() != PROVIDER_WEB_SEARCH));
+        assert!(mapped
+            .iter()
+            .all(|t| t.name.as_str() != PROVIDER_WEB_SEARCH));
 
         let hint_only = map_tools(&[], true);
         assert_eq!(hint_only.len(), 1);
-        assert!(matches!(hint_only[0].name, genai::chat::ToolName::WebSearch));
+        assert!(matches!(
+            hint_only[0].name,
+            genai::chat::ToolName::WebSearch
+        ));
 
         let none = map_tools(&[], false);
         assert!(none.is_empty());

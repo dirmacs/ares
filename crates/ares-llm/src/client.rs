@@ -296,6 +296,7 @@ impl GenaiProvider {
 /// LLM Provider configuration
 #[derive(Debug, Clone)]
 #[non_exhaustive]
+#[allow(clippy::large_enum_variant)] // GenaiProvider owns the genai Client
 pub enum Provider {
     /// Any HTTP provider routed through genai.
     Genai(GenaiProvider),
@@ -371,8 +372,7 @@ impl Provider {
                 let api_base = std::env::var(AZURE_BASE_URL_ENV).map_err(|_| {
                     AppError::Configuration(format!(
                         "{} must be set when {} is configured",
-                        AZURE_BASE_URL_ENV,
-                        AZURE_API_KEY_ENV
+                        AZURE_BASE_URL_ENV, AZURE_API_KEY_ENV
                     ))
                 })?;
                 let model = std::env::var(AZURE_MODEL_ENV)
@@ -575,9 +575,7 @@ impl Provider {
 
 fn require_env(name: &str, what: &str) -> Result<String> {
     std::env::var(name).map_err(|_| {
-        AppError::Configuration(format!(
-            "{what} environment variable '{name}' is not set"
-        ))
+        AppError::Configuration(format!("{what} environment variable '{name}' is not set"))
     })
 }
 
@@ -617,8 +615,7 @@ fn genai_from_config(
             Ok(GenaiProvider::openai(
                 api_key.clone(),
                 azure_normalize_base_url(&api_base),
-                azure_strip_model_prefix(&pick_model(model_override, default_model))
-                    .to_string(),
+                azure_strip_model_prefix(&pick_model(model_override, default_model)).to_string(),
                 params,
                 azure_foundry_headers(&api_key),
             ))
@@ -749,9 +746,7 @@ fn genai_from_config(
     }
 }
 
-fn simple_genai_fields(
-    config: &ProviderConfig,
-) -> (AdapterKind, &str, Option<String>, &str) {
+fn simple_genai_fields(config: &ProviderConfig) -> (AdapterKind, &str, Option<String>, &str) {
     match config {
         ProviderConfig::OpenAIResp {
             api_key_env,
@@ -817,12 +812,22 @@ fn simple_genai_fields(
             api_key_env,
             api_base,
             default_model,
-        } => (AdapterKind::Kimi, api_key_env, api_base.clone(), default_model),
+        } => (
+            AdapterKind::Kimi,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
         ProviderConfig::Mimo {
             api_key_env,
             api_base,
             default_model,
-        } => (AdapterKind::Mimo, api_key_env, api_base.clone(), default_model),
+        } => (
+            AdapterKind::Mimo,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
         ProviderConfig::Moonshot {
             api_key_env,
             api_base,
@@ -847,7 +852,12 @@ fn simple_genai_fields(
             api_key_env,
             api_base,
             default_model,
-        } => (AdapterKind::Xai, api_key_env, api_base.clone(), default_model),
+        } => (
+            AdapterKind::Xai,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
         ProviderConfig::DeepSeek {
             api_key_env,
             api_base,
@@ -862,7 +872,12 @@ fn simple_genai_fields(
             api_key_env,
             api_base,
             default_model,
-        } => (AdapterKind::Zai, api_key_env, api_base.clone(), default_model),
+        } => (
+            AdapterKind::Zai,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
         ProviderConfig::BigModel {
             api_key_env,
             api_base,
@@ -927,7 +942,12 @@ fn simple_genai_fields(
             api_key_env,
             api_base,
             default_model,
-        } => (AdapterKind::Omlx, api_key_env, api_base.clone(), default_model),
+        } => (
+            AdapterKind::Omlx,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
         ProviderConfig::GithubCopilot {
             api_key_env,
             api_base,
@@ -1678,7 +1698,11 @@ mod tests {
             client.set_hints(GenerationHints::default());
 
             let recorded = client.hints.lock();
-            assert_eq!(recorded.len(), 2, "every set_hints call is recorded in order");
+            assert_eq!(
+                recorded.len(),
+                2,
+                "every set_hints call is recorded in order"
+            );
             assert!(recorded[0].json_mode && recorded[0].max_tokens == Some(256));
             assert_eq!(
                 recorded[1],

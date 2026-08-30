@@ -521,6 +521,7 @@ mod tests {
                 role: MessageRole::User,
                 content: format!("Message {}", i),
                 timestamp: Utc::now(),
+                parts: vec![],
             })
             .collect();
 
@@ -564,6 +565,7 @@ mod tests {
                 role: MessageRole::User,
                 content: format!("Message {}", i),
                 timestamp: Utc::now(),
+                parts: vec![],
             })
             .collect();
 
@@ -638,6 +640,7 @@ mod tests {
             role: MessageRole::User,
             content: "only one".to_string(),
             timestamp: Utc::now(),
+            parts: vec![],
         }];
         let truncated = truncate_history(&history, 5);
         assert_eq!(truncated.len(), 1);
@@ -651,6 +654,7 @@ mod tests {
                 role: MessageRole::User,
                 content: format!("word {}", i),
                 timestamp: Utc::now(),
+                parts: vec![],
             })
             .collect();
 
@@ -717,6 +721,7 @@ mod tests {
             role: MessageRole::Assistant,
             content: "hello".to_string(),
             timestamp: Utc::now(),
+            parts: vec![],
         };
         let json = serde_json::to_string(&msg).expect("serialize Message");
         let parsed: Message = serde_json::from_str(&json).expect("deserialize Message");
@@ -809,6 +814,7 @@ mod tests {
                 role: MessageRole::User,
                 content: format!("msg {i}"),
                 timestamp: Utc::now(),
+                parts: vec![],
             })
             .collect();
         assert!(truncate_history(&history, 0).is_empty());
@@ -820,6 +826,7 @@ mod tests {
             role: MessageRole::User,
             content: "non-empty".to_string(),
             timestamp: Utc::now(),
+            parts: vec![],
         }];
         assert!(truncate_history_to_tokens(&history, 0).is_empty());
     }
@@ -831,6 +838,7 @@ mod tests {
                 role: MessageRole::User,
                 content: format!("Message {}", i),
                 timestamp: Utc::now(),
+                parts: vec![],
             })
             .collect();
 
@@ -887,11 +895,13 @@ mod tests {
                 role: MessageRole::User,
                 content: "a".repeat(40),
                 timestamp: Utc::now(),
+                parts: vec![],
             },
             Message {
                 role: MessageRole::User,
                 content: "short".to_string(),
                 timestamp: Utc::now(),
+                parts: vec![],
             },
         ];
         let truncated = truncate_history_to_tokens(&history, 5);

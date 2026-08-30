@@ -1,17 +1,25 @@
 use crate::config::{ModelConfig, ProviderConfig};
 use ares_types::types::{AppError, Result, ToolCall, ToolDefinition};
 use async_trait::async_trait;
+#[cfg(feature = "genai")]
 use genai::adapter::AdapterKind;
+#[cfg(feature = "genai")]
 use std::collections::HashMap;
 
 /// Azure AI Foundry env/header helpers (no LLMClient). Inlined after
 /// `azure.rs` was removed from this crate.
+#[cfg(feature = "genai")]
 pub(crate) const AZURE_API_KEY_ENV: &str = "AZURE_FOUNDRY_API_KEY";
+#[cfg(feature = "genai")]
 pub(crate) const AZURE_BASE_URL_ENV: &str = "AZURE_FOUNDRY_BASE_URL";
+#[cfg(feature = "genai")]
 pub(crate) const AZURE_MODEL_ENV: &str = "AZURE_FOUNDRY_MODEL";
+#[cfg(feature = "genai")]
 pub(crate) const AZURE_DEFAULT_MODEL: &str = "DeepSeek-V4-Flash";
+#[cfg(feature = "genai")]
 const AZURE_MODEL_PREFIX: &str = "azure/";
 
+#[cfg(feature = "genai")]
 pub(crate) fn azure_strip_model_prefix(model: &str) -> &str {
     let trimmed = model.trim();
     trimmed
@@ -21,10 +29,12 @@ pub(crate) fn azure_strip_model_prefix(model: &str) -> &str {
         .unwrap_or(trimmed)
 }
 
+#[cfg(feature = "genai")]
 pub(crate) fn azure_normalize_base_url(api_base: &str) -> String {
     api_base.trim().trim_end_matches('/').to_string()
 }
 
+#[cfg(feature = "genai")]
 pub(crate) fn azure_foundry_headers(api_key: &str) -> HashMap<String, String> {
     let mut headers = HashMap::with_capacity(2);
     headers.insert("api-key".to_string(), api_key.to_string());
@@ -161,6 +171,21 @@ pub trait LLMClient: Send + Sync {
         ))
     }
 
+    /// Stream a completion with conversation history AND tool definitions.
+    ///
+    /// Yields [`LlmStreamEvent::Text`] chunks as they arrive, then one
+    /// [`LlmStreamEvent::ToolCalls`] if any tool calls were captured.
+    /// Default: not supported.
+    async fn stream_with_tools_and_history(
+        &self,
+        _messages: &[crate::coordinator::ConversationMessage],
+        _tools: &[ToolDefinition],
+    ) -> Result<Box<dyn futures::Stream<Item = Result<LlmStreamEvent>> + Send + Unpin>> {
+        Err(AppError::FeatureDisabled(
+            "streaming with tools and history is not supported by this client".into(),
+        ))
+    }
+
     /// Whether this client can send image/file parts.
     fn supports_vision(&self) -> bool {
         false
@@ -170,6 +195,15 @@ pub trait LLMClient: Send + Sync {
     fn supports_provider_web_search(&self) -> bool {
         false
     }
+}
+
+/// Event yielded by [`LLMClient::stream_with_tools_and_history`].
+#[derive(Debug, Clone)]
+pub enum LlmStreamEvent {
+    /// Incremental assistant text.
+    Text(String),
+    /// Tool calls captured from the completed stream (at most one of these).
+    ToolCalls(Vec<ToolCall>),
 }
 
 /// Token usage statistics from an LLM generation call
@@ -246,6 +280,7 @@ impl ModelParams {
 }
 
 /// Resolved genai HTTP provider (kind + credentials + endpoint).
+#[cfg(feature = "genai")]
 #[derive(Debug, Clone)]
 pub struct GenaiProvider {
     /// genai adapter kind used for every call.
@@ -270,6 +305,7 @@ pub struct GenaiProvider {
     pub custom_index: Option<u8>,
 }
 
+#[cfg(feature = "genai")]
 impl GenaiProvider {
     fn openai(
         api_key: String,
@@ -296,9 +332,10 @@ impl GenaiProvider {
 /// LLM Provider configuration
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-#[allow(clippy::large_enum_variant)] // GenaiProvider owns the genai Client
+#[cfg_attr(feature = "genai", allow(clippy::large_enum_variant))] // GenaiProvider owns the genai Client
 pub enum Provider {
     /// Any HTTP provider routed through genai.
+    #[cfg(feature = "genai")]
     Genai(GenaiProvider),
     /// Local GGUF inference via llama.cpp.
     #[cfg(feature = "llamacpp")]
@@ -320,6 +357,7 @@ impl Provider {
     /// Create an LLM client from this provider configuration
     pub async fn create_client(&self) -> Result<Box<dyn LLMClient>> {
         match self {
+            #[cfg(feature = "genai")]
             Provider::Genai(provider) => Ok(Box::new(crate::genai_client::GenaiClient::new(
                 provider.clone(),
             )?)),
@@ -331,6 +369,8 @@ impl Provider {
             Provider::TestStub { model } => {
                 Ok(Box::new(test_support::MockLLMClient::new(model.clone())))
             }
+            #[cfg(not(any(feature = "genai", feature = "llamacpp", test)))]
+            _ => unreachable!("no LLM providers compiled in this build"),
         }
     }
 
@@ -339,6 +379,7 @@ impl Provider {
     /// Priority: OPENAI_API_KEY, NVIDIA_API_KEY, AZURE_FOUNDRY_API_KEY,
     /// AWS_BEARER_TOKEN_BEDROCK, ANTHROPIC_API_KEY, GEMINI_API_KEY, else
     /// Ollama localhost.
+    #[cfg(feature = "genai")]
     pub fn from_env() -> Result<Self> {
         if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
             if !api_key.is_empty() {
@@ -467,31 +508,46 @@ impl Provider {
         }))
     }
 
+    /// Create a provider from environment variables.
+    #[cfg(not(feature = "genai"))]
+    pub fn from_env() -> Result<Self> {
+        Err(AppError::Configuration(
+            "HTTP LLM providers require the `genai` feature".into(),
+        ))
+    }
+
     /// Get the provider name as a string
     pub fn name(&self) -> &'static str {
         match self {
+            #[cfg(feature = "genai")]
             Provider::Genai(p) => p.kind.as_lower_str(),
             #[cfg(feature = "llamacpp")]
             Provider::LlamaCpp { .. } => "llamacpp",
             #[cfg(test)]
             Provider::TestStub { .. } => "test-stub",
+            #[cfg(not(any(feature = "genai", feature = "llamacpp", test)))]
+            _ => unreachable!("no LLM providers compiled in this build"),
         }
     }
 
     /// Check if this provider requires an API key
     pub fn requires_api_key(&self) -> bool {
         match self {
+            #[cfg(feature = "genai")]
             Provider::Genai(p) => !matches!(p.kind, AdapterKind::Ollama),
             #[cfg(feature = "llamacpp")]
             Provider::LlamaCpp { .. } => false,
             #[cfg(test)]
             Provider::TestStub { .. } => false,
+            #[cfg(not(any(feature = "genai", feature = "llamacpp", test)))]
+            _ => unreachable!("no LLM providers compiled in this build"),
         }
     }
 
     /// Check if this provider is local (no network required)
     pub fn is_local(&self) -> bool {
         match self {
+            #[cfg(feature = "genai")]
             Provider::Genai(p) => {
                 if matches!(p.kind, AdapterKind::Ollama | AdapterKind::Omlx) {
                     return true;
@@ -505,6 +561,8 @@ impl Provider {
             Provider::LlamaCpp { .. } => true,
             #[cfg(test)]
             Provider::TestStub { .. } => true,
+            #[cfg(not(any(feature = "genai", feature = "llamacpp", test)))]
+            _ => unreachable!("no LLM providers compiled in this build"),
         }
     }
 
@@ -517,6 +575,7 @@ impl Provider {
     }
 
     /// Create a provider from TOML configuration with model parameters
+    #[cfg(feature = "genai")]
     pub fn from_config_with_params(
         provider_config: &ProviderConfig,
         model_override: Option<&str>,
@@ -529,6 +588,20 @@ impl Provider {
         )?))
     }
 
+    /// Create a provider from TOML configuration with model parameters.
+    #[cfg(not(feature = "genai"))]
+    pub fn from_config_with_params(
+        provider_config: &ProviderConfig,
+        model_override: Option<&str>,
+        params: ModelParams,
+    ) -> Result<Self> {
+        let _ = (model_override, params);
+        Err(AppError::Configuration(format!(
+            "provider type '{}' requires the `genai` feature",
+            provider_config.type_name()
+        )))
+    }
+
     /// Create a provider from a model configuration and its associated provider config
     pub fn from_model_config(
         model_config: &ModelConfig,
@@ -539,6 +612,7 @@ impl Provider {
     }
 
     /// Create a runtime OpenAI-compatible provider from a runtime provider entry.
+    #[cfg(feature = "genai")]
     pub fn from_runtime_openai(
         api_key: String,
         api_base: String,
@@ -552,6 +626,7 @@ impl Provider {
     }
 
     /// Create a runtime Bedrock provider from a runtime provider entry.
+    #[cfg(feature = "genai")]
     pub fn from_runtime_bedrock(
         api_key: String,
         region: String,
@@ -573,18 +648,21 @@ impl Provider {
     }
 }
 
+#[cfg(feature = "genai")]
 fn require_env(name: &str, what: &str) -> Result<String> {
     std::env::var(name).map_err(|_| {
         AppError::Configuration(format!("{what} environment variable '{name}' is not set"))
     })
 }
 
+#[cfg(feature = "genai")]
 fn pick_model(model_override: Option<&str>, default_model: &str) -> String {
     model_override
         .map(String::from)
         .unwrap_or_else(|| default_model.to_string())
 }
 
+#[cfg(feature = "genai")]
 fn genai_from_config(
     config: &ProviderConfig,
     model_override: Option<&str>,
@@ -746,6 +824,7 @@ fn genai_from_config(
     }
 }
 
+#[cfg(feature = "genai")]
 fn simple_genai_fields(config: &ProviderConfig) -> (AdapterKind, &str, Option<String>, &str) {
     match config {
         ProviderConfig::OpenAIResp {
@@ -1195,6 +1274,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "genai")]
     fn genai_openai(api_base: &str, model: &str) -> Provider {
         Provider::Genai(GenaiProvider::openai(
             "sk-test".into(),
@@ -1264,12 +1344,14 @@ mod tests {
         assert_eq!(response.usage.as_ref().unwrap().total_tokens, 75);
     }
 
+    #[cfg(feature = "genai")]
     #[test]
     fn test_factory_creation() {
         let factory = LLMClientFactory::new(genai_openai("https://api.openai.com/v1", "test"));
         assert_eq!(factory.default_provider().name(), "openai");
     }
 
+    #[cfg(feature = "genai")]
     #[test]
     fn test_openai_provider_properties() {
         let provider = genai_openai("https://api.openai.com/v1", "gpt-4");
@@ -1278,6 +1360,7 @@ mod tests {
         assert!(!provider.is_local());
     }
 
+    #[cfg(feature = "genai")]
     #[test]
     fn test_openai_local_provider() {
         let provider = genai_openai("http://localhost:8000/v1", "local-model");
@@ -1438,6 +1521,7 @@ mod tests {
         assert_eq!(cloned.usage.unwrap().total_tokens, 30);
     }
 
+    #[cfg(feature = "genai")]
     #[test]
     fn test_openai_from_config_missing_env_var() {
         std::env::remove_var("TEST_OPENAI_MISSING_KEY");

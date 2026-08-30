@@ -16,13 +16,14 @@ use ares_llm::observability::{LlmCallRecord, ObservabilitySink, ToolCallRecord};
 #[cfg(feature = "postgres")]
 use ares_llm::compact::{CompactConfig, CompactionState, TurnEntry};
 use ares_llm::compact::Compactor;
-use ares_llm::{LLMClient, LLMResponse};
+use ares_llm::{LLMClient, LLMResponse, LlmStreamEvent};
 use ares_tools::Tools;
 use ares_types::types::{AgentContext, AgentType, AppError, ContentPart, Result, ToolDefinition};
 use async_trait::async_trait;
 use cordis::{Context, CordisError, EventsService};
 use std::future::Future;
 use std::sync::Arc;
+use futures::StreamExt;
 
 // cordis Phase6: runtime postgres availability via Service::check() — replaces compile-time #[cfg(feature="postgres")] branching
 // Previously: `#[cfg(feature = "postgres")] token_budget_pool: Option<PgPool>`
@@ -52,6 +53,13 @@ struct LlmAttemptResponse {
     response: LLMResponse,
     provider_name: String,
     model_name: String,
+}
+
+enum OpenedLlmStream {
+    Events(
+        Box<dyn futures::Stream<Item = Result<LlmStreamEvent>> + Send + Unpin>,
+    ),
+    Plain(Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>),
 }
 
 /// Maximum tracked sessions before the whole map is cleared.
@@ -1349,13 +1357,14 @@ When referencing facts above, cite [E1], [E2] etc.",
         } else {
             // Add recent conversation history (last 5 messages)
             for msg in context.conversation_history.iter().rev().take(5).rev() {
-                let cm = match msg.role {
+                let mut cm = match msg.role {
                     ares_types::types::MessageRole::User => ConversationMessage::user(&msg.content),
                     ares_types::types::MessageRole::Assistant => {
                         ConversationMessage::assistant(&msg.content, vec![])
                     }
                     _ => ConversationMessage::system(&msg.content),
                 };
+                cm.parts = msg.parts.clone();
                 messages.push(cm);
             }
         }
@@ -1657,6 +1666,187 @@ When referencing facts above, cite [E1], [E2] etc.",
                 provider_name: last_provider_name,
             }),
         })
+    }
+
+    async fn open_iteration_stream(
+        &self,
+        messages: &[ConversationMessage],
+        tools: &[ToolDefinition],
+        input: &str,
+    ) -> Result<OpenedLlmStream> {
+        let empty = tools.is_empty() && self.user_parts.is_empty();
+        match self.llm.stream_with_tools_and_history(messages, tools).await {
+            Ok(s) => Ok(OpenedLlmStream::Events(s)),
+            Err(e) => {
+                let disabled = matches!(e, AppError::FeatureDisabled(_));
+                if disabled && empty {
+                    match self.llm.stream(input).await {
+                        Ok(s) => return Ok(OpenedLlmStream::Plain(s)),
+                        Err(stream_err) => {
+                            if self.fallback_llms.is_empty() {
+                                return Err(stream_err);
+                            }
+                        }
+                    }
+                } else if self.fallback_llms.is_empty() {
+                    return Err(e);
+                }
+                let mut last_err = e;
+                for (i, fallback) in self.fallback_llms.iter().enumerate() {
+                    tracing::warn!(
+                        agent = %self.name,
+                        fallback_idx = %i,
+                        "Primary LLM stream failed, trying fallback"
+                    );
+                    match fallback
+                        .llm
+                        .stream_with_tools_and_history(messages, tools)
+                        .await
+                    {
+                        Ok(s) => {
+                            tracing::info!(
+                                agent = %self.name,
+                                fallback_idx = %i,
+                                provider = %fallback.provider_name,
+                                "Fallback LLM stream succeeded"
+                            );
+                            return Ok(OpenedLlmStream::Events(s));
+                        }
+                        Err(fe) => {
+                            let fb_disabled = matches!(fe, AppError::FeatureDisabled(_));
+                            if fb_disabled && empty {
+                                match fallback.llm.stream(input).await {
+                                    Ok(s) => return Ok(OpenedLlmStream::Plain(s)),
+                                    Err(se) => last_err = se,
+                                }
+                            } else {
+                                last_err = fe;
+                            }
+                        }
+                    }
+                }
+                Err(last_err)
+            }
+        }
+    }
+
+    /// Stream this agent as text chunks. Tool calls stay inside the loop.
+    ///
+    /// Takes `self` by value so the returned stream is `'static`.
+    pub async fn execute_stream(
+        self,
+        input: String,
+        context: AgentContext,
+    ) -> Result<crate::execution::TokenStream> {
+        self.apply_turn_hints();
+        let tools = self.get_filtered_tool_definitions();
+        tracing::debug!(
+            agent = %self.name,
+            allowed_tools = ?self.allowed_tools,
+            tool_count = tools.len(),
+            "execute_stream: tool definitions loaded"
+        );
+
+        let mut messages: Vec<ConversationMessage> = Vec::new();
+        let effective_prompt = self.effective_system_prompt();
+        messages.push(ConversationMessage::system(&effective_prompt));
+
+        // Stream path skips compaction so the `'static` stream does not hold a
+        // session Compactor. Unary `execute` still compact.
+        for msg in context.conversation_history.iter().rev().take(5).rev() {
+            let mut cm = match msg.role {
+                ares_types::types::MessageRole::User => ConversationMessage::user(&msg.content),
+                ares_types::types::MessageRole::Assistant => {
+                    ConversationMessage::assistant(&msg.content, vec![])
+                }
+                _ => ConversationMessage::system(&msg.content),
+            };
+            cm.parts = msg.parts.clone();
+            messages.push(cm);
+        }
+
+        messages.push(crate::execution::user_message_with_parts(
+            input.clone(),
+            self.user_parts.clone(),
+            self.previous_response_id.clone(),
+        ));
+
+        let max_tool_iterations = self.max_tool_iterations;
+        Ok(Box::pin(async_stream::stream! {
+            let agent = self;
+            for _iteration in 0..max_tool_iterations {
+                let opened = match agent
+                    .open_iteration_stream(&messages, &tools, &input)
+                    .await
+                {
+                    Ok(o) => o,
+                    Err(e) => {
+                        yield Err(e);
+                        return;
+                    }
+                };
+                match opened {
+                    OpenedLlmStream::Plain(mut s) => {
+                        while let Some(item) = s.next().await {
+                            yield item;
+                        }
+                        return;
+                    }
+                    OpenedLlmStream::Events(mut s) => {
+                        let mut tool_calls = Vec::new();
+                        let mut text_acc = String::new();
+                        let mut failed = false;
+                        while let Some(ev) = s.next().await {
+                            match ev {
+                                Ok(LlmStreamEvent::Text(chunk)) => {
+                                    text_acc.push_str(&chunk);
+                                    yield Ok(chunk);
+                                }
+                                Ok(LlmStreamEvent::ToolCalls(calls)) => {
+                                    tool_calls = calls;
+                                }
+                                Err(e) => {
+                                    yield Err(e);
+                                    failed = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if failed {
+                            return;
+                        }
+                        if tool_calls.is_empty() {
+                            return;
+                        }
+                        messages.push(ConversationMessage::assistant(
+                            &text_acc,
+                            tool_calls.clone(),
+                        ));
+                        for tc in &tool_calls {
+                            if !agent.can_use_tool(&tc.name) {
+                                tracing::warn!(
+                                    agent = %agent.name,
+                                    tool = %tc.name,
+                                    allowed_tools = ?agent.allowed_tools,
+                                    "Tool not in allowed_tools list — denying execution"
+                                );
+                                yield Err(AppError::Auth(format!(
+                                    "Tool '{}' is not allowed for this agent",
+                                    tc.name
+                                )));
+                                return;
+                            }
+                            let result = agent.dispatch_tool(&tc.name, tc.arguments.clone()).await;
+                            let result_value = match result {
+                                Ok(v) => v,
+                                Err(e) => serde_json::json!({"error": e.to_string()}),
+                            };
+                            messages.push(ConversationMessage::tool_result(&tc.id, &result_value));
+                        }
+                    }
+                }
+            }
+        }))
     }
 }
 
@@ -2080,6 +2270,7 @@ mod tests {
                     role,
                     content: content.to_string(),
                     timestamp: Utc::now(),
+                    parts: vec![],
                 })
                 .collect(),
             user_memory: None,

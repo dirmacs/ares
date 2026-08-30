@@ -415,7 +415,6 @@ pub async fn search(
         .await?;
 
     // Apply additional search strategies if needed
-    #[cfg_attr(not(feature = "local-embeddings"), allow(unused_mut))]
     let mut results: Vec<RagSearchResult> = match strategy {
         SearchStrategy::Semantic => {
             // Pure semantic search - already done
@@ -478,7 +477,7 @@ pub async fn search(
         }
     };
 
-    // Apply reranking if requested. Remote embeddings skip the cross-encoder.
+    // Apply reranking if requested.
     #[cfg(feature = "local-embeddings")]
     let reranked = if payload.rerank && !results.is_empty() {
         // Parse reranker model
@@ -528,7 +527,31 @@ pub async fn search(
         false
     };
     #[cfg(not(feature = "local-embeddings"))]
-    let reranked = false;
+    let reranked = if payload.rerank && !results.is_empty() {
+        let input: Vec<_> = results
+            .iter()
+            .map(|r| (r.id.clone(), r.content.clone(), r.score))
+            .collect();
+        let reranked_results =
+            ares_rag::rerank_with_llm(&ctx, &payload.query, &input, payload.limit).await?;
+        results = reranked_results
+            .into_iter()
+            .filter_map(|rr| {
+                results
+                    .iter()
+                    .find(|r| r.id == rr.id)
+                    .map(|r| RagSearchResult {
+                        id: r.id.clone(),
+                        content: r.content.clone(),
+                        score: rr.final_score,
+                        metadata: r.metadata.clone(),
+                    })
+            })
+            .collect();
+        true
+    } else {
+        false
+    };
 
     let total = results.len();
     let strategy_name = format!("{:?}", strategy).to_lowercase();

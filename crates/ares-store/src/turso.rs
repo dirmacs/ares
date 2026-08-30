@@ -1,6 +1,6 @@
 use super::postgres::{Conversation, User, UserAgent};
 use super::traits::{ConversationSummary, DatabaseClient};
-use ares_types::types::{AppError, MemoryFact, Message, MessageRole, Preference, Result};
+use ares_types::types::{AppError, ContentPart, MemoryFact, Message, MessageRole, Preference, Result};
 use async_trait::async_trait;
 use chrono::Utc;
 use libsql::{params, Builder, Connection, Database};
@@ -158,12 +158,21 @@ impl TursoClient {
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 timestamp INTEGER NOT NULL,
+                parts TEXT NOT NULL DEFAULT '[]',
                 FOREIGN KEY (conversation_id) REFERENCES conversations(id)
             )",
             (),
         )
         .await
         .map_err(|e| AppError::Database(format!("Failed to create messages table: {}", e)))?;
+
+        // Existing databases created before parts: add the column if missing.
+        let _ = conn
+            .execute(
+                "ALTER TABLE messages ADD COLUMN parts TEXT NOT NULL DEFAULT '[]'",
+                (),
+            )
+            .await;
 
         // Memory facts table
         conn.execute(
@@ -477,6 +486,19 @@ impl TursoClient {
         role: MessageRole,
         content: &str,
     ) -> Result<()> {
+        self.add_message_with_parts(id, conversation_id, role, content, &[])
+            .await
+    }
+
+    /// Adds a message, persisting multimodal parts as JSON.
+    pub async fn add_message_with_parts(
+        &self,
+        id: &str,
+        conversation_id: &str,
+        role: MessageRole,
+        content: &str,
+        parts: &[ContentPart],
+    ) -> Result<()> {
         let conn = self.operation_conn().await?;
         let now = Utc::now().timestamp();
         let role_str = match role {
@@ -484,11 +506,12 @@ impl TursoClient {
             MessageRole::User => "user",
             MessageRole::Assistant => "assistant",
         };
+        let parts_json = serde_json::to_string(parts).unwrap_or_else(|_| "[]".to_string());
 
         conn.execute(
-            "INSERT INTO messages (id, conversation_id, role, content, timestamp)
-             VALUES (?, ?, ?, ?, ?)",
-            (id, conversation_id, role_str, content, now),
+            "INSERT INTO messages (id, conversation_id, role, content, timestamp, parts)
+             VALUES (?, ?, ?, ?, ?, ?)",
+            (id, conversation_id, role_str, content, now, parts_json),
         )
         .await
         .map_err(|e| AppError::Database(format!("Failed to add message: {}", e)))?;
@@ -502,7 +525,7 @@ impl TursoClient {
 
         let mut rows = conn
             .query(
-                "SELECT role, content, timestamp FROM messages
+                "SELECT role, content, timestamp, parts FROM messages
                  WHERE conversation_id = ? ORDER BY timestamp ASC",
                 [conversation_id],
             )
@@ -523,6 +546,7 @@ impl TursoClient {
                 _ => MessageRole::User,
             };
 
+            let parts_raw: String = row.get(3).map_err(|e| AppError::Database(e.to_string()))?;
             messages.push(Message {
                 role,
                 content: row.get(1).map_err(|e| AppError::Database(e.to_string()))?,
@@ -532,6 +556,7 @@ impl TursoClient {
                     0,
                 )
                 .unwrap(),
+                parts: serde_json::from_str(&parts_raw).unwrap_or_default(),
             });
         }
 
@@ -1530,7 +1555,7 @@ mod tests {
 
     #[test]
     fn conversation_history_sql_orders_by_timestamp() {
-        let sql = "SELECT role, content, timestamp FROM messages
+        let sql = "SELECT role, content, timestamp, parts FROM messages
                  WHERE conversation_id = ? ORDER BY timestamp ASC";
         assert!(sql.contains("conversation_id = ?"));
         assert!(sql.contains("ORDER BY timestamp ASC"));

@@ -393,6 +393,9 @@ pub struct Message {
     pub content: String,
     /// When the message was sent.
     pub timestamp: DateTime<Utc>,
+    /// Multimodal parts. Empty means text-only. serde default `[]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<ContentPart>,
 }
 
 /// Role of a message sender in a conversation.
@@ -1087,11 +1090,38 @@ mod tests {
             role: MessageRole::User,
             content: "emoji 🚀 & unicode ñ".into(),
             timestamp: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            parts: vec![],
         };
         let parsed: Message =
             serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
         assert_eq!(parsed.content, "emoji 🚀 & unicode ñ");
         assert!(matches!(parsed.role, MessageRole::User));
+    }
+
+    #[test]
+    fn test_message_parts_serde_default_and_roundtrip() {
+        let parsed: Message = serde_json::from_str(
+            r#"{"role":"user","content":"hi","timestamp":"2024-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+        assert!(parsed.parts.is_empty());
+
+        let msg = Message {
+            role: MessageRole::User,
+            content: "hi".into(),
+            timestamp: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            parts: vec![ContentPart::Text {
+                text: "photo".into(),
+            }],
+        };
+        let parsed: Message =
+            serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
+        assert_eq!(
+            parsed.parts,
+            vec![ContentPart::Text {
+                text: "photo".into(),
+            }]
+        );
     }
 
     #[test]

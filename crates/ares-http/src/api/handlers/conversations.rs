@@ -242,6 +242,7 @@ mod tests {
             role: MessageRole::User,
             content: "hello".to_string(),
             timestamp: Utc.with_ymd_and_hms(2024, 6, 1, 12, 0, 0).unwrap(),
+            parts: vec![],
         };
         let api = message_to_api("conv-9", 1, msg);
         assert_eq!(api.id, "conv-9-1");
@@ -389,6 +390,7 @@ mod tests {
             role: MessageRole::Assistant,
             content: "done".to_string(),
             timestamp: Utc.with_ymd_and_hms(2024, 7, 4, 9, 30, 0).unwrap(),
+            parts: vec![],
         };
         let api = message_to_api("thread-1", 0, msg);
         assert_eq!(api.id, "thread-1-0");
@@ -403,6 +405,7 @@ mod tests {
             role: MessageRole::System,
             content: "be helpful".to_string(),
             timestamp: Utc.with_ymd_and_hms(2024, 8, 15, 0, 0, 0).unwrap(),
+            parts: vec![],
         };
         let api = message_to_api("sys-conv", 3, msg);
         assert_eq!(api.id, "sys-conv-3");

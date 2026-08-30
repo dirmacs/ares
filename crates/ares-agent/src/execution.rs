@@ -8,6 +8,26 @@ use std::sync::Arc;
 
 use ares_types::types::{AppError, ContentPart, Message};
 use cordis::{Context, CordisError, EventsService, Service};
+use futures::StreamExt;
+
+/// SSE token stream: text chunks only. Tool calls stay inside the loop.
+pub type TokenStream =
+    Pin<Box<dyn futures::Stream<Item = Result<String, AppError>> + Send + 'static>>;
+
+fn once_text_stream(text: String) -> TokenStream {
+    Box::pin(async_stream::stream! {
+        yield Ok(text);
+    })
+}
+
+#[cfg(feature = "postgres")]
+struct PreparedResolvedAgent {
+    agent: crate::ConfigurableAgent,
+    source: AgentSource,
+    user_id: String,
+    run_id: String,
+    agent_context: ares_types::types::AgentContext,
+}
 
 /// Result of `Execute::run` including resolution metadata.
 ///
@@ -70,7 +90,7 @@ pub struct AgentRequest {
     /// Optional per-request context provider override (overrides service-level
     /// provider when `Some`).
     pub ctx_provider: Option<Arc<dyn crate::context_provider::ContextProvider>>,
-    /// Multimodal parts for the current user turn (in-flight only; not persisted).
+    /// Multimodal parts for the current user turn (HTTP persists these via add_message_with_parts).
     pub parts: Vec<ContentPart>,
     /// OpenAI Responses continuation id for this turn.
     pub previous_response_id: Option<String>,
@@ -395,6 +415,76 @@ impl Execute {
         })
     }
 
+    /// Stream an agent response as text chunks. Tool calls stay inside the loop.
+    ///
+    /// Does not wrap in `agent.run` / `waterfall_around` — a stream cannot buffer JSON.
+    pub async fn run_stream(
+        &self,
+        req: &AgentRequest,
+        ctx: &Arc<Context>,
+    ) -> Result<TokenStream, AppError> {
+        crate::admit(ctx).await?;
+        if let Some(dispatch) = ctx.get::<SkillDispatch>() {
+            let result = self.run_skill(req, ctx, &dispatch).await?;
+            return Ok(once_text_stream(result.response.content));
+        }
+        #[cfg(feature = "postgres")]
+        {
+            if let Some(prepared) = self.prepare_resolved_agent(req, ctx).await {
+                let prepared = prepared?;
+                let PreparedResolvedAgent {
+                    agent,
+                    source: _,
+                    user_id,
+                    run_id,
+                    agent_context,
+                } = prepared;
+                let exec = self.clone();
+                let ctx_owned = Arc::clone(ctx);
+                let agent_name = req.agent_name.clone();
+                match agent
+                    .execute_stream(req.message.clone(), agent_context)
+                    .await
+                {
+                    Ok(inner) => {
+                        return Ok(Box::pin(async_stream::stream! {
+                            let mut inner = inner;
+                            let mut ok = true;
+                            while let Some(item) = inner.next().await {
+                                if item.is_err() {
+                                    ok = false;
+                                }
+                                yield item;
+                            }
+                            exec.finish_resolved_run(
+                                &ctx_owned,
+                                &agent_name,
+                                &user_id,
+                                &run_id,
+                                None,
+                                ok,
+                            )
+                            .await;
+                        }));
+                    }
+                    Err(e) => {
+                        self.finish_resolved_run(
+                            ctx,
+                            &req.agent_name,
+                            &user_id,
+                            &run_id,
+                            None,
+                            false,
+                        )
+                        .await;
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        self.execute_stream_fallback(req.clone(), ctx).await
+    }
+
     async fn run_resolved_or_execute(
         &self,
         req: &AgentRequest,
@@ -477,13 +567,11 @@ impl Execute {
     }
 
     #[cfg(feature = "postgres")]
-    async fn run_resolved(
+    async fn prepare_resolved_agent(
         &self,
         req: &AgentRequest,
         ctx: &Arc<Context>,
-    ) -> Option<std::result::Result<ExecutionResult, AppError>> {
-        use crate::Agent;
-
+    ) -> Option<std::result::Result<PreparedResolvedAgent, AppError>> {
         let registry_owned = self
             .agent_registry
             .clone()
@@ -570,60 +658,93 @@ impl Execute {
             user_memory: None,
         };
 
-        let result = agent.execute(&req.message, &agent_context).await;
+        Some(Ok(PreparedResolvedAgent {
+            agent,
+            source,
+            user_id: user_id.to_string(),
+            run_id,
+            agent_context,
+        }))
+    }
 
+    #[cfg(feature = "postgres")]
+    async fn finish_resolved_run(
+        &self,
+        ctx: &Arc<Context>,
+        agent_name: &str,
+        user_id: &str,
+        run_id: &str,
+        usage: Option<&ares_llm::client::TokenUsage>,
+        ok: bool,
+    ) {
         if let Some(tracker) = &self.run_tracker {
-            let status = if result.is_ok() {
-                "completed"
-            } else {
-                "failed"
-            };
-            tracker.finish_run(&run_id, status);
+            tracker.finish_run(run_id, if ok { "completed" } else { "failed" });
         }
-
-        if let Ok(response) = result.as_ref() {
-            if let Some(usage) = &response.usage {
-                self.emit_observability_typed::<cordis::AgentUsageEvent>(
-                    ctx,
-                    &cordis::AgentUsagePayload {
-                        tenant: Some(user_id.to_string()),
-                        prompt: usage.prompt_tokens as i64,
-                        completion: usage.completion_tokens as i64,
-                        total: usage.total_tokens as i64,
-                    },
-                )
-                .await;
-            }
+        if let Some(usage) = usage {
+            self.emit_observability_typed::<cordis::AgentUsageEvent>(
+                ctx,
+                &cordis::AgentUsagePayload {
+                    tenant: Some(user_id.to_string()),
+                    prompt: usage.prompt_tokens as i64,
+                    completion: usage.completion_tokens as i64,
+                    total: usage.total_tokens as i64,
+                },
+            )
+            .await;
         }
-
         self.emit_observability_typed::<cordis::AgentCompletedEvent>(
             ctx,
             &cordis::AgentCompletedPayload {
-                agent_name: req.agent_name.clone(),
-                run_id: run_id.clone(),
-                status: if result.is_ok() {
-                    "completed"
-                } else {
-                    "failed"
-                }
-                .to_string(),
+                agent_name: agent_name.to_string(),
+                run_id: run_id.to_string(),
+                status: if ok { "completed" } else { "failed" }.to_string(),
                 event: cordis::events_catalog::ev::AGENT_COMPLETED.to_string(),
             },
         )
         .await;
-        if result.is_err() {
+        if !ok {
             self.emit_observability_typed::<cordis::AgentFailedEvent>(
                 ctx,
                 &cordis::AgentFailedPayload {
-                    agent_name: req.agent_name.clone(),
-                    run_id: run_id.clone(),
+                    agent_name: agent_name.to_string(),
+                    run_id: run_id.to_string(),
                     tenant: user_id.to_string(),
                     event: cordis::events_catalog::ev::AGENT_FAILED.to_string(),
                 },
             )
             .await;
         }
+    }
 
+    #[cfg(feature = "postgres")]
+    async fn run_resolved(
+        &self,
+        req: &AgentRequest,
+        ctx: &Arc<Context>,
+    ) -> Option<std::result::Result<ExecutionResult, AppError>> {
+        use crate::Agent;
+
+        let prepared = match self.prepare_resolved_agent(req, ctx).await? {
+            Ok(p) => p,
+            Err(e) => return Some(Err(e)),
+        };
+        let PreparedResolvedAgent {
+            agent,
+            source,
+            user_id,
+            run_id,
+            agent_context,
+        } = prepared;
+        let result = agent.execute(&req.message, &agent_context).await;
+        self.finish_resolved_run(
+            ctx,
+            &req.agent_name,
+            &user_id,
+            &run_id,
+            result.as_ref().ok().and_then(|r| r.usage.as_ref()),
+            result.is_ok(),
+        )
+        .await;
         Some(result.map(|response| ExecutionResult {
             response,
             source,
@@ -709,7 +830,7 @@ You are {}.",
             system_prompt.clone(),
         ));
         for msg in &req.history {
-            let cm = match msg.role {
+            let mut cm = match msg.role {
                 ares_types::types::MessageRole::User => {
                     ares_llm::coordinator::ConversationMessage::user(&msg.content)
                 }
@@ -718,6 +839,7 @@ You are {}.",
                 }
                 _ => ares_llm::coordinator::ConversationMessage::system(&msg.content),
             };
+            cm.parts = msg.parts.clone();
             base_messages.push(cm);
         }
         base_messages.push(user_message_with_parts(
@@ -910,6 +1032,232 @@ You are {}.",
             metadata: None,
         })
     }
+
+    /// Stream fallback used when Resolver/TenantDb are absent on ctx.
+    ///
+    /// Mirrors `execute` setup (memory, tools, history with parts, hints) but
+    /// streams tokens. Does not use `ToolCoordinator`.
+    async fn execute_stream_fallback(
+        &self,
+        req: AgentRequest,
+        ctx: &Arc<Context>,
+    ) -> Result<TokenStream, AppError> {
+        if let Some(tenant_db) = tenant_db(ctx) {
+            let _pool = tenant_db.pool();
+            tracing::debug!(history_len = req.history.len(), "history load via TenantDb");
+            let _ = _pool;
+        }
+
+        if let (Some(policy), Some(ovr)) = (
+            ctx.get::<ares_llm::TenantModelPolicy>(),
+            ctx.get::<ModelOverride>(),
+        ) {
+            policy.authorize(&ovr.model)?;
+        }
+
+        let tenant = tenant_from_request_ctx(ctx, None);
+
+        let mut injected_context: Option<String> = None;
+        let provider_opt: Option<Arc<dyn crate::context_provider::ContextProvider>> = req
+            .ctx_provider
+            .clone()
+            .or_else(|| self.context_provider.clone());
+        if let Some(provider) = provider_opt {
+            let tid = tenant.clone().unwrap_or_default();
+            let rt_ctx = crate::context_provider::AgentRuntimeContext::new(
+                tid.clone(),
+                &req.agent_name,
+                "agent_execution",
+            );
+            if let Some(s) = provider.get_context_for_run(&rt_ctx).await {
+                tracing::debug!(
+                    len = s.len(),
+                    "memory injected via ContextProvider::get_context_for_run"
+                );
+                injected_context = Some(s);
+            } else if let Some(s) = provider.get_context(&req.agent_name, &tid).await {
+                tracing::debug!(
+                    len = s.len(),
+                    "memory injected via ContextProvider::get_context"
+                );
+                injected_context = Some(s);
+            }
+        }
+
+        let tools = ctx.get::<ares_tools::Tools>().unwrap_or_else(|| {
+            Arc::new(ares_tools::Tools::from_static(std::iter::empty::<
+                Arc<dyn ares_tools::Tool>,
+            >()))
+        });
+        let tool_definitions = tools.list(ctx);
+        tracing::debug!(
+            count = tool_definitions.len(),
+            has_service = true,
+            "tools resolved via Tools::list"
+        );
+        let _resolve_probe = tools.resolve(ctx, "__probe__");
+
+        let system_prompt = if let Some(extra) = injected_context.clone() {
+            format!(
+                "{}
+
+You are {}.",
+                extra, req.agent_name
+            )
+        } else {
+            format!("You are {}.", req.agent_name)
+        };
+
+        let mut base_messages: Vec<ares_llm::coordinator::ConversationMessage> = Vec::new();
+        base_messages.push(ares_llm::coordinator::ConversationMessage::system(
+            system_prompt.clone(),
+        ));
+        for msg in &req.history {
+            let mut cm = match msg.role {
+                ares_types::types::MessageRole::User => {
+                    ares_llm::coordinator::ConversationMessage::user(&msg.content)
+                }
+                ares_types::types::MessageRole::Assistant => {
+                    ares_llm::coordinator::ConversationMessage::assistant(&msg.content, vec![])
+                }
+                _ => ares_llm::coordinator::ConversationMessage::system(&msg.content),
+            };
+            cm.parts = msg.parts.clone();
+            base_messages.push(cm);
+        }
+        base_messages.push(user_message_with_parts(
+            req.message.clone(),
+            req.parts.clone(),
+            req.previous_response_id.clone(),
+        ));
+
+        let echo_text = if req.message.is_empty() {
+            system_prompt.clone()
+        } else {
+            req.message.clone()
+        };
+
+        let llm = match ctx.get::<ares_llm::Llm>() {
+            Some(llm) => Some(llm),
+            None if self.strict_fallbacks => {
+                return Err(AppError::Unavailable(
+                    "strict_fallbacks: no Llm service on context".into(),
+                ));
+            }
+            None => None,
+        };
+
+        if let Some(llm) = llm {
+            match llm
+                .get_client_boxed(ctx, ares_llm::CapabilityRequirements::default())
+                .await
+            {
+                Ok(client) => {
+                    apply_generation_hints(
+                        client.as_ref(),
+                        req.web_search,
+                        req.previous_response_id.clone(),
+                    );
+                    let ctx = Arc::clone(ctx);
+                    let req_message = req.message.clone();
+                    let req_parts_empty = req.parts.is_empty();
+                    let max_iters =
+                        ares_llm::coordinator::ToolCallingConfig::default().max_iterations;
+                    return Ok(Box::pin(async_stream::stream! {
+                        for _iteration in 0..max_iters {
+                            match client
+                                .stream_with_tools_and_history(&base_messages, &tool_definitions)
+                                .await
+                            {
+                                Ok(mut evs) => {
+                                    let mut tool_calls = Vec::new();
+                                    let mut text_acc = String::new();
+                                    let mut failed = false;
+                                    while let Some(ev) = evs.next().await {
+                                        match ev {
+                                            Ok(ares_llm::LlmStreamEvent::Text(chunk)) => {
+                                                text_acc.push_str(&chunk);
+                                                yield Ok(chunk);
+                                            }
+                                            Ok(ares_llm::LlmStreamEvent::ToolCalls(calls)) => {
+                                                tool_calls = calls;
+                                            }
+                                            Err(e) => {
+                                                yield Err(e);
+                                                failed = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if failed {
+                                        return;
+                                    }
+                                    if tool_calls.is_empty() {
+                                        return;
+                                    }
+                                    base_messages.push(
+                                        ares_llm::coordinator::ConversationMessage::assistant(
+                                            &text_acc,
+                                            tool_calls.clone(),
+                                        ),
+                                    );
+                                    for tc in &tool_calls {
+                                        let result = tools
+                                            .execute(&ctx, &tc.name, tc.arguments.clone())
+                                            .await;
+                                        let result_value = match result {
+                                            Ok(v) => v,
+                                            Err(e) => serde_json::json!({"error": e.to_string()}),
+                                        };
+                                        base_messages.push(
+                                            ares_llm::coordinator::ConversationMessage::tool_result(
+                                                &tc.id,
+                                                &result_value,
+                                            ),
+                                        );
+                                    }
+                                }
+                                Err(e)
+                                    if matches!(e, AppError::FeatureDisabled(_))
+                                        && tool_definitions.is_empty()
+                                        && req_parts_empty =>
+                                {
+                                    match client.stream(&req_message).await {
+                                        Ok(mut s) => {
+                                            while let Some(item) = s.next().await {
+                                                yield item;
+                                            }
+                                        }
+                                        Err(e) => yield Err(e),
+                                    }
+                                    return;
+                                }
+                                Err(e) => {
+                                    yield Err(e);
+                                    return;
+                                }
+                            }
+                        }
+                    }));
+                }
+                Err(e) => {
+                    if self.strict_fallbacks {
+                        return Err(AppError::Unavailable(format!(
+                            "strict_fallbacks: Llm::get_client_boxed failed: {e}"
+                        )));
+                    }
+                    tracing::warn!(error = %e, "Llm::get_client failed");
+                }
+            }
+        }
+
+        if self.strict_fallbacks {
+            return Err(AppError::Unavailable(
+                "strict_fallbacks: no LLM response available".into(),
+            ));
+        }
+        Ok(once_text_stream(echo_text))
+    }
 }
 
 impl Default for Execute {
@@ -1041,6 +1389,7 @@ pub trait RunTracker: Send + Sync + 'static {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     /// RED contract: the `agent.started` event must be fanned out to every
@@ -1496,5 +1845,38 @@ mod tests {
                 .as_deref(),
             Some("user:user-1")
         );
+    }
+
+    #[tokio::test]
+    async fn run_stream_echoes_without_llm() {
+        let svc = Execute::new();
+        let ctx = Context::new_root();
+        let req = AgentRequest {
+            agent_name: "echo".into(),
+            message: "hello stream".into(),
+            ..Default::default()
+        };
+        let mut stream = svc.run_stream(&req, &ctx).await.expect("stream");
+        let first = stream.next().await.expect("chunk").expect("ok");
+        assert_eq!(first, "hello stream");
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn run_stream_echoes_with_parts() {
+        let svc = Execute::new();
+        let ctx = Context::new_root();
+        let req = AgentRequest {
+            agent_name: "echo".into(),
+            message: "caption".into(),
+            parts: vec![ContentPart::Text {
+                text: "img".into(),
+            }],
+            ..Default::default()
+        };
+        let mut stream = svc.run_stream(&req, &ctx).await.expect("stream");
+        let first = stream.next().await.expect("chunk").expect("ok");
+        assert_eq!(first, "caption");
+        assert!(stream.next().await.is_none());
     }
 }

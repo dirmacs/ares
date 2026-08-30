@@ -2,7 +2,7 @@ use crate::query_builders::{
     message_role_from_db, message_role_to_db, DELETE_SESSION_BY_ID_SQL,
     DELETE_SESSION_BY_TOKEN_SQL, INSERT_MESSAGE_SQL, SELECT_MESSAGES_SQL, VALIDATE_SESSION_SQL,
 };
-use ares_types::types::{AppError, MemoryFact, Message, MessageRole, Preference, Result};
+use ares_types::types::{AppError, ContentPart, MemoryFact, Message, MessageRole, Preference, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{postgres::PgPoolOptions, PgPool};
@@ -313,14 +313,28 @@ impl PostgresClient {
         role: MessageRole,
         content: &str,
     ) -> Result<()> {
+        self.add_message_with_parts(id, conversation_id, role, content, &[])
+            .await
+    }
+
+    pub async fn add_message_with_parts(
+        &self,
+        id: &str,
+        conversation_id: &str,
+        role: MessageRole,
+        content: &str,
+        parts: &[ContentPart],
+    ) -> Result<()> {
         let now = Utc::now().timestamp();
         let role_str = message_role_to_db(&role);
+        let parts_json = serde_json::to_string(parts).unwrap_or_else(|_| "[]".to_string());
         sqlx::query(INSERT_MESSAGE_SQL)
             .bind(id)
             .bind(conversation_id)
             .bind(role_str)
             .bind(content)
             .bind(now)
+            .bind(parts_json)
             .execute(&self.pool)
             .await
             .map_err(|e| AppError::Database(format!("Failed to add message: {}", e)))?;
@@ -333,6 +347,7 @@ impl PostgresClient {
             role: String,
             content: String,
             timestamp: i64,
+            parts: String,
         }
         let rows = sqlx::query_as::<_, MessageRow>(SELECT_MESSAGES_SQL)
             .bind(conversation_id)
@@ -345,6 +360,7 @@ impl PostgresClient {
                 role: message_role_from_db(&row.role),
                 content: row.content,
                 timestamp: DateTime::from_timestamp(row.timestamp, 0).unwrap_or_default(),
+                parts: serde_json::from_str(&row.parts).unwrap_or_default(),
             })
             .collect())
     }

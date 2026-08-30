@@ -93,6 +93,7 @@ pub mod pool;
 /// Registry for managing multiple LLM provider instances.
 pub mod provider_registry;
 
+#[cfg(feature = "genai")]
 pub mod genai_client;
 #[cfg(feature = "llamacpp")]
 pub mod llamacpp;
@@ -100,7 +101,13 @@ pub mod llamacpp;
 pub use capabilities::{
     CapabilityRequirements, CapabilityRequirementsBuilder, ModelCapabilities, ModelWithCapabilities,
 };
-pub use client::{CacheControl, GenerationHints, GenaiProvider, LLMClient, LLMClientFactory, LLMResponse, Provider, TokenUsage};
+pub use client::{
+    CacheControl, GenerationHints, LLMClient, LLMClientFactory, LLMResponse, LlmStreamEvent,
+    Provider, TokenUsage,
+};
+#[cfg(feature = "genai")]
+pub use client::GenaiProvider;
+#[cfg(feature = "genai")]
 pub use genai::adapter::AdapterKind;
 pub use compact::{
     CompactConfig, CompactEvent, CompactionSnapshot, CompactionState, Compactor, TurnEntry,

@@ -53,19 +53,6 @@ fn ensure_not_direct_router(agent_type: &AgentType) -> Result<()> {
     Ok(())
 }
 
-/// Builds the LLM prompt used for streaming chat.
-fn build_stream_prompt(system_prompt: &str, message: &str) -> String {
-    format!(
-        "{system_prompt}\n\nUser: {message}\nAssistant:",
-        system_prompt = system_prompt,
-        message = message,
-    )
-}
-
-fn default_stream_system_prompt() -> &'static str {
-    "You are a helpful assistant."
-}
-
 pub(crate) fn emergency_stop_message() -> &'static str {
     "All agents are currently under human review. Please try again later."
 }
@@ -136,14 +123,6 @@ pub(crate) fn build_user_memory_if_present(
             facts,
         })
     }
-}
-
-/// Picks the streaming system prompt from agent config or the default.
-pub(crate) fn resolve_stream_system_prompt(user_agent: &UserAgent) -> String {
-    user_agent
-        .system_prompt
-        .clone()
-        .unwrap_or_else(|| default_stream_system_prompt().to_string())
 }
 
 /// Resolves token counts from LLM usage or heuristic estimates.
@@ -325,7 +304,13 @@ pub async fn chat(
     let msg_id = Uuid::new_v4().to_string();
     ctx.get::<ares_store::PostgresClient>()
         .expect("not provided")
-        .add_message(&msg_id, &context_id, MessageRole::User, &payload.message)
+        .add_message_with_parts(
+            &msg_id,
+            &context_id,
+            MessageRole::User,
+            &payload.message,
+            payload.parts.as_deref().unwrap_or(&[]),
+        )
         .await?;
 
     let resp_id = Uuid::new_v4().to_string();
@@ -406,6 +391,22 @@ pub async fn chat(
     Ok(response)
 }
 
+fn agent_request_from_payload(
+    agent_name: String,
+    payload: &ChatRequest,
+    history: Vec<ares_types::types::Message>,
+) -> ares_agent::execution::AgentRequest {
+    ares_agent::execution::AgentRequest {
+        agent_name,
+        message: payload.message.clone(),
+        history,
+        ctx_provider: None,
+        parts: payload.parts.clone().unwrap_or_default(),
+        previous_response_id: payload.previous_response_id.clone(),
+        web_search: payload.web_search == Some(true),
+    }
+}
+
 async fn execute_agent(
     agent_type: AgentType,
     payload: &ChatRequest,
@@ -422,15 +423,11 @@ async fn execute_agent(
             "Execute is not provided on the request context".into(),
         )));
     };
-    let req = ares_agent::execution::AgentRequest {
-        agent_name: agent_name.to_string(),
-        message: payload.message.clone(),
-        history: context.conversation_history.clone(),
-        ctx_provider: None,
-        parts: payload.parts.clone().unwrap_or_default(),
-        previous_response_id: payload.previous_response_id.clone(),
-        web_search: payload.web_search == Some(true),
-    };
+    let req = agent_request_from_payload(
+        agent_name.to_string(),
+        payload,
+        context.conversation_history.clone(),
+    );
     let exec_ctx = if let Some(tc) = ctx.get::<ares_types::models::TenantContext>() {
         ares_agent::tenant_scope(ctx, &tc.tenant_id)
     } else {
@@ -582,8 +579,9 @@ fn chat_stream_response(
     let message = payload.message.clone();
     let agent_type_req = payload.agent_type;
     let runtime_workspace_id = payload.workspace_id.clone();
-    let stream_web_search = payload.web_search == Some(true);
+    let stream_parts = payload.parts.clone();
     let stream_previous_response_id = payload.previous_response_id.clone();
+    let stream_web_search = payload.web_search;
     let context_id_clone = context_id.clone();
     let active_runs = Arc::clone(
         &ctx.get::<crate::active_runs::ActiveRuns>()
@@ -607,18 +605,6 @@ fn chat_stream_response(
             yield Ok(Event::default().data(serde_json::to_string(&event).unwrap_or_default()));
             return;
         }
-        let llm = match state_clone.get::<ares_llm::Llm>() {
-            Some(llm) => llm,
-            None => {
-                let event = stream_error_event(
-                    "Llm service is not provided on the request context",
-                    Some(&context_id_clone),
-                );
-                yield Ok(Event::default().data(serde_json::to_string(&event).unwrap_or_default()));
-                return;
-            }
-        };
-
         // Setup conversation
         if !db.conversation_exists(&context_id_clone).await.unwrap_or(false) {
             if let Err(e) = db
@@ -660,6 +646,17 @@ fn chat_stream_response(
         let agent_type = if let Some(at) = agent_type_req {
             at
         } else {
+            let llm = match state_clone.get::<ares_llm::Llm>() {
+                Some(llm) => llm,
+                None => {
+                    let event = stream_error_event(
+                        "Llm service is not provided on the request context",
+                        Some(&context_id_clone),
+                    );
+                    yield Ok(Event::default().data(serde_json::to_string(&event).unwrap_or_default()));
+                    return;
+                }
+            };
             let config = config_manager.config();
             let router_model = config
                 .get_agent("router")
@@ -738,40 +735,44 @@ fn chat_stream_response(
             }
         };
 
-        // Get the configured agent model through the request-scoped Llm service.
-        let model_ctx = state_clone.with_intercept(ares_llm::ModelOverride {
-            model: user_agent.model.clone(),
-        });
-        let llm_client = match llm.get_client_boxed(
-            &model_ctx,
-            ares_llm::CapabilityRequirements::default(),
-        ).await {
-            Ok(client) => client,
-            Err(e) => {
+        active_runs.update_model(&stream_run_id, Some(&user_agent.model));
+        active_runs.update(&stream_run_id, "llm_call", 1);
+
+        let req = agent_request_from_payload(
+            agent_name.to_string(),
+            &ChatRequest {
+                message: message.clone(),
+                agent_type: Some(agent_type.clone()),
+                context_id: Some(context_id_clone.clone()),
+                workspace_id: runtime_workspace_id.clone(),
+                model: None,
+                parts: stream_parts.clone(),
+                previous_response_id: stream_previous_response_id.clone(),
+                web_search: stream_web_search,
+            },
+            agent_context.conversation_history.clone(),
+        );
+        let exec_ctx = if let Some(tc) = state_clone.get::<ares_types::models::TenantContext>() {
+            ares_agent::tenant_scope(&state_clone, &tc.tenant_id)
+        } else {
+            ares_agent::request_user_scope(&state_clone, &agent_context.user_id)
+        };
+        let exec_svc = match state_clone.get::<ares_agent::execution::Execute>() {
+            Some(exec_svc) => exec_svc,
+            None => {
                 let event = stream_error_event(
-                    &format!("Failed to create LLM: {}", e),
+                    "Execute is not provided on the request context",
                     Some(&context_id_clone),
                 );
                 yield Ok(Event::default().data(serde_json::to_string(&event).unwrap_or_default()));
                 return;
             }
         };
-        ares_agent::execution::apply_generation_hints(
-            llm_client.as_ref(),
-            stream_web_search,
-            stream_previous_response_id.clone(),
-        );
-
-        // Build the prompt with system message and history
-        let system_prompt = resolve_stream_system_prompt(&user_agent);
-        let full_prompt = build_stream_prompt(&system_prompt, &message);
-        active_runs.update_model(&stream_run_id, Some(&user_agent.model));
-        active_runs.update(&stream_run_id, "llm_call", 1);
 
         // Stream tokens
         use futures::StreamExt;
         let mut full_response = String::new();
-        match llm_client.stream(&full_prompt).await {
+        match exec_svc.run_stream(&req, &exec_ctx).await {
             Ok(mut token_stream) => {
                 while let Some(token_result) = token_stream.next().await {
                     match token_result {
@@ -806,7 +807,13 @@ fn chat_stream_response(
         // Store messages in conversation
         let msg_id = Uuid::new_v4().to_string();
         if let Err(e) = db
-            .add_message(&msg_id, &context_id_clone, MessageRole::User, &message)
+            .add_message_with_parts(
+                &msg_id,
+                &context_id_clone,
+                MessageRole::User,
+                &message,
+                stream_parts.as_deref().unwrap_or(&[]),
+            )
             .await {
             tracing::error!("Failed to store user message in conversation {}: {}", context_id_clone, e);
         }
@@ -1067,34 +1074,6 @@ mod tests {
     }
 
     #[test]
-    fn default_stream_system_prompt_returns_documented_default() {
-        assert_eq!(
-            default_stream_system_prompt(),
-            "You are a helpful assistant."
-        );
-    }
-
-    #[test]
-    fn build_stream_prompt_formats_system_and_user_turns() {
-        let prompt = build_stream_prompt("You are helpful.", "What is VAT?");
-        assert!(prompt.contains("You are helpful."));
-        assert!(prompt.contains("User: What is VAT?"));
-        assert!(prompt.ends_with("Assistant:"));
-    }
-
-    #[test]
-    fn build_stream_prompt_supports_multiline_messages() {
-        let prompt = build_stream_prompt("System", "line1\nline2");
-        assert!(prompt.contains("User: line1\nline2"));
-    }
-
-    #[test]
-    fn build_stream_prompt_allows_empty_system_prompt() {
-        let prompt = build_stream_prompt("", "hello");
-        assert!(prompt.contains("User: hello"));
-    }
-
-    #[test]
     fn agent_config_from_user_agent_extracts_tools_and_model() {
         let config = agent_config_from_user_agent(&sample_user_agent(r#"["search","calculator"]"#));
         assert_eq!(config.tools, vec!["search", "calculator"]);
@@ -1125,25 +1104,6 @@ mod tests {
         agent.system_prompt = None;
         let config = agent_config_from_user_agent(&agent);
         assert!(config.system_prompt.is_none());
-    }
-
-    #[test]
-    fn resolve_stream_system_prompt_uses_agent_prompt_when_present() {
-        let agent = sample_user_agent("[]");
-        assert_eq!(
-            resolve_stream_system_prompt(&agent),
-            "You are finance.".to_string()
-        );
-    }
-
-    #[test]
-    fn resolve_stream_system_prompt_falls_back_to_default() {
-        let mut agent = sample_user_agent("[]");
-        agent.system_prompt = None;
-        assert_eq!(
-            resolve_stream_system_prompt(&agent),
-            default_stream_system_prompt().to_string()
-        );
     }
 
     #[test]
@@ -1248,6 +1208,36 @@ mod tests {
         assert_eq!(req.agent_type, Some(AgentType::Product));
         assert_eq!(req.context_id.as_deref(), Some("ctx-1"));
         assert_eq!(req.workspace_id.as_deref(), Some("ws-1"));
+        assert!(req.parts.is_none());
+        assert!(req.previous_response_id.is_none());
+        assert!(req.web_search.is_none());
+    }
+
+    #[test]
+    fn agent_request_from_payload_copies_parts() {
+        let payload = ChatRequest {
+            message: "caption".into(),
+            agent_type: None,
+            context_id: None,
+            workspace_id: None,
+            model: None,
+            parts: Some(vec![ares_types::types::ContentPart::Text {
+                text: "img".into(),
+            }]),
+            previous_response_id: Some("resp_1".into()),
+            web_search: Some(true),
+        };
+        let req = agent_request_from_payload("finance".into(), &payload, vec![]);
+        assert_eq!(req.agent_name, "finance");
+        assert_eq!(req.message, "caption");
+        assert_eq!(req.history.len(), 0);
+        assert_eq!(req.parts.len(), 1);
+        assert_eq!(req.previous_response_id.as_deref(), Some("resp_1"));
+        assert!(req.web_search);
+        match &req.parts[0] {
+            ares_types::types::ContentPart::Text { text } => assert_eq!(text, "img"),
+            other => panic!("expected text part, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1302,6 +1292,7 @@ mod tests {
             role: MessageRole::User,
             content: "hello".into(),
             timestamp: Utc::now(),
+            parts: vec![],
         };
         let json = serde_json::to_string(&message).unwrap();
         let back: Message = serde_json::from_str(&json).unwrap();

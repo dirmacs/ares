@@ -4,14 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-# Published so downstream dev-dependency resolution succeeds during the 0.10.1 train.
+# Published so downstream dev-dependency resolution succeeds during the 0.11.0 train.
 publish = true
 description = "Shared live-test database harness for ARES integration tests (dev-only)"
 
 [dependencies]
-# `^0.10` instead of the workspace `^0.10.1`: publish-time resolution needs a
-# registry-visible version, and 0.10.0 is what exists until the train lands.
-ares-store = { version = "0.10", path = "../ares-store", features = ["postgres"] }
+ares-store = { workspace = true, features = ["postgres"] }
 sqlx = { workspace = true }
 tokio = { workspace = true }
 dotenvy = "0.15.7"

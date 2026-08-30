@@ -439,6 +439,7 @@ impl TriggerService {
             message: event_message.to_string(),
             history: Vec::new(),
             ctx_provider: None,
+            ..Default::default()
         };
         let scoped = tenant_scoped_ctx(ctx, &trigger.tenant_id);
         let resp = exec
@@ -814,6 +815,7 @@ async fn execute_triggered_agent_legacy(
                 message: effective_message.clone(),
                 history: Vec::new(),
                 ctx_provider: None,
+                ..Default::default()
             },
             &scoped,
         )
@@ -1013,11 +1015,12 @@ mod tests {
         use std::any::TypeId;
         let root = Context::new_root();
         let scoped = tenant_scoped_ctx(&root, "acme");
+        // Execute is the shared engine: no realm label, always resolvable.
         assert_eq!(
             scoped
                 .isolate_label(TypeId::of::<crate::Execute>())
                 .as_deref(),
-            Some("acme"),
+            None,
         );
         assert_eq!(
             scoped

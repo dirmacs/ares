@@ -21,7 +21,6 @@ postgres = [
     "ares-tools/postgres",
 ]
 mcp = ["dep:ares-mcp", "ares-mcp/mcp", "ares-mcp/postgres", "ares-tools/mcp"]
-openai = ["ares-llm/openai"]
 swagger-ui = ["dep:utoipa-swagger-ui"]
 inventory = ["dep:inventory", "cordis/inventory"]
 eruka-context = ["ares-agent/eruka-context"]
@@ -61,6 +60,7 @@ rand = { workspace = true }
 hex = { workspace = true }
 rust_decimal = { workspace = true }
 reqwest = { workspace = true }
+urlencoding = "2.1"
 
 axum = { version = "0.8.7", features = ["macros", "multipart"] }
 tower = { version = "0.5.2", features = ["util", "timeout"] }

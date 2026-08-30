@@ -12,8 +12,7 @@ description = "Agent orchestration for ARES"
 default = []
 # Compile-time factory collection (mirrors the server root feature)
 inventory = ["dep:inventory", "cordis/inventory"]
-postgres = ["dep:sqlx", "dep:ares-store", "ares-store/postgres", "ares-llm/postgres", "ares-llm/ollama", "ares-tools/postgres"]
-ollama = ["ares-llm/ollama"]
+postgres = ["dep:sqlx", "dep:ares-store", "ares-store/postgres", "ares-llm/postgres", "ares-tools/postgres"]
 eruka-context = []
 scheduler = ["postgres", "dep:cron"]
 pipeline = ["postgres"]

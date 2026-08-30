@@ -213,6 +213,8 @@ mod tests {
                 tool_calls: vec![],
                 finish_reason: "stop".to_string(),
                 usage: None,
+                reasoning_content: None,
+                response_id: None,
             })
         }
         async fn generate_with_tools(&self, _: &str, _: &[ToolDefinition]) -> Result<LLMResponse> {
@@ -221,6 +223,8 @@ mod tests {
                 tool_calls: vec![],
                 finish_reason: "stop".to_string(),
                 usage: None,
+                reasoning_content: None,
+                response_id: None,
             })
         }
         async fn generate_with_tools_and_history(
@@ -233,6 +237,8 @@ mod tests {
                 tool_calls: vec![],
                 finish_reason: "stop".to_string(),
                 usage: None,
+                reasoning_content: None,
+                response_id: None,
             })
         }
         async fn stream(&self, _: &str) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
@@ -329,14 +335,13 @@ mod tests {
         Arc::new(registry)
     }
 
-    fn chat_done_json(content: &str) -> String {
+    fn chat_done_json(content: &str) -> serde_json::Value {
         serde_json::json!({
             "model": "test-model",
             "created_at": "2024-01-01T00:00:00Z",
             "message": { "role": "assistant", "content": content },
             "done": true
         })
-        .to_string()
     }
 
     fn build_registry(agent_names: &[&str]) -> Arc<AgentRegistry> {
@@ -480,7 +485,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/api/chat"))
             .respond_with(
-                ResponseTemplate::new(200).set_body_string(chat_done_json("sales-agent-output")),
+                ResponseTemplate::new(200).set_body_json(chat_done_json("sales-agent-output")),
             )
             .mount(&server)
             .await;
@@ -560,7 +565,9 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(chat_done_json("subtask-body")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(chat_done_json("subtask-body")),
+            )
             .mount(&server)
             .await;
 
@@ -598,7 +605,9 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(chat_done_json("agent-output")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(chat_done_json("agent-output")),
+            )
             .mount(&server)
             .await;
 

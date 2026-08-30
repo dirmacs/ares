@@ -163,6 +163,8 @@ fn test_llm_response_struct() {
         tool_calls: vec![],
         finish_reason: "stop".to_string(),
         usage: None,
+        reasoning_content: None,
+        response_id: None,
     };
 
     assert_eq!(response.content, "Test content");
@@ -190,6 +192,8 @@ fn test_llm_response_with_tool_calls() {
         tool_calls: tool_calls.clone(),
         finish_reason: "tool_calls".to_string(),
         usage: None,
+        reasoning_content: None,
+        response_id: None,
     };
 
     assert_eq!(response.tool_calls.len(), 2);
@@ -199,30 +203,40 @@ fn test_llm_response_with_tool_calls() {
 
 // ============= Provider Tests =============
 
+fn ollama_provider(base_url: &str, model: &str) -> Provider {
+    Provider::Genai(GenaiProvider {
+        kind: AdapterKind::Ollama,
+        api_key: None,
+        endpoint: Some(base_url.to_string()),
+        model: model.to_string(),
+        params: Default::default(),
+        headers: Default::default(),
+        region: None,
+        vertex_project: None,
+        vertex_location: None,
+        custom_index: None,
+    })
+}
+
 #[test]
 fn test_provider_from_env_no_config() {
-    // Clear environment variables for this test
     unsafe {
         std::env::remove_var("LLAMACPP_MODEL_PATH");
         std::env::remove_var("OPENAI_API_KEY");
+        std::env::remove_var("NVIDIA_API_KEY");
+        std::env::remove_var("AZURE_FOUNDRY_API_KEY");
+        std::env::remove_var("AWS_BEARER_TOKEN_BEDROCK");
+        std::env::remove_var("ANTHROPIC_API_KEY");
+        std::env::remove_var("GEMINI_API_KEY");
         std::env::remove_var("OLLAMA_URL");
+        std::env::remove_var("OLLAMA_BASE_URL");
         std::env::remove_var("OLLAMA_MODEL");
     }
 
-    // With ollama feature enabled by default, this should succeed
-    let result = Provider::from_env();
-    // Result depends on which features are enabled at compile time
-    // If ollama is enabled, it should return Ollama provider
-    // Otherwise it should error
-    #[cfg(feature = "ollama")]
-    assert!(result.is_ok());
-
-    #[cfg(not(any(feature = "ollama", feature = "openai")))]
-    assert!(result.is_err());
-
-    // openai-only builds resolve the provider from runtime env; nothing to assert.
-    #[cfg(all(feature = "openai", not(feature = "ollama")))]
-    let _ = &result;
+    let result = Provider::from_env().expect("ollama localhost fallback");
+    assert_eq!(result.name(), "ollama");
+    assert!(!result.requires_api_key());
+    assert!(result.is_local());
 }
 
 // ============= Tool Definition Tests =============
@@ -265,27 +279,27 @@ fn test_tool_call_structure() {
 
 // ============= LLMClientFactory Tests =============
 
-#[cfg(feature = "ollama")]
 #[test]
 fn test_llm_client_factory_creation() {
-    // Create a factory with an Ollama provider (which won't be called)
-    let factory = LLMClientFactory::new(Provider::Ollama {
-        base_url: "http://localhost:11434".to_string(),
-        model: "ministral-3:3b".to_string(),
-        params: Default::default(),
-    });
-
-    // Factory should be created successfully
+    let factory = LLMClientFactory::new(ollama_provider(
+        "http://localhost:11434",
+        "ministral-3:3b",
+    ));
+    assert_eq!(factory.default_provider().name(), "ollama");
     assert!(std::mem::size_of_val(&factory) > 0);
 }
 
-#[cfg(not(feature = "ollama"))]
 #[test]
-fn test_llm_client_factory_creation() {
-    // When ollama feature is not enabled, we just verify types exist
-    // This is a placeholder test that always passes
-    let factory_size = std::mem::size_of::<LLMClientFactory>();
-    assert!(factory_size > 0);
+fn test_provider_from_config_openai_mapping() {
+    std::env::set_var("TEST_ARES_LLM_OPENAI_KEY", "sk-test");
+    let config = ProviderConfig::OpenAI {
+        api_key_env: "TEST_ARES_LLM_OPENAI_KEY".to_string(),
+        api_base: "https://api.openai.com/v1".to_string(),
+        default_model: "gpt-4".to_string(),
+    };
+    let provider = Provider::from_config(&config, None).expect("from_config openai");
+    assert_eq!(provider.name(), "openai");
+    std::env::remove_var("TEST_ARES_LLM_OPENAI_KEY");
 }
 
 // ============= Multi-Message Conversation Tests =============

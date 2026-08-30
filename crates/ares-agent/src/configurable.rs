@@ -18,7 +18,7 @@ use ares_llm::compact::{CompactConfig, CompactionState, TurnEntry};
 use ares_llm::compact::Compactor;
 use ares_llm::{LLMClient, LLMResponse};
 use ares_tools::Tools;
-use ares_types::types::{AgentContext, AgentType, AppError, Result, ToolDefinition};
+use ares_types::types::{AgentContext, AgentType, AppError, ContentPart, Result, ToolDefinition};
 use async_trait::async_trait;
 use cordis::{Context, CordisError, EventsService};
 use std::future::Future;
@@ -306,6 +306,12 @@ pub struct ConfigurableAgent {
     run_id: Option<String>,
     /// Per-session history compaction (off unless `compaction_enabled`).
     compaction: bool,
+    /// Multimodal parts for the current user turn (in-flight only).
+    user_parts: Vec<ContentPart>,
+    /// OpenAI Responses continuation id for this turn.
+    previous_response_id: Option<String>,
+    /// Enable provider built-in web search for this turn.
+    web_search: bool,
 }
 
 fn is_prebuilt_connector_tool(name: &str) -> bool {
@@ -506,6 +512,9 @@ impl ConfigurableAgent {
             fallback_llms: Vec::new(),
             run_id: None,
             compaction: config.compaction_enabled.unwrap_or(false),
+            user_parts: Vec::new(),
+            previous_response_id: None,
+            web_search: false,
         }
     }
 
@@ -539,6 +548,9 @@ impl ConfigurableAgent {
             fallback_llms: Vec::new(),
             run_id: None,
             compaction: false,
+            user_parts: Vec::new(),
+            previous_response_id: None,
+            web_search: false,
         }
     }
 
@@ -588,6 +600,9 @@ impl ConfigurableAgent {
             fallback_llms: Vec::new(),
             run_id: None,
             compaction: config.compaction_enabled.unwrap_or(false),
+            user_parts: Vec::new(),
+            previous_response_id: None,
+            web_search: false,
         }
     }
 
@@ -623,6 +638,9 @@ impl ConfigurableAgent {
             fallback_llms: Vec::new(),
             run_id: None,
             compaction: false,
+            user_parts: Vec::new(),
+            previous_response_id: None,
+            web_search: false,
         }
     }
 
@@ -784,6 +802,33 @@ Handle employee info, policies, and benefits."#
         self.run_id = Some(run_id);
     }
 
+    /// Attach multimodal parts and generation hints for the next `execute` call.
+    pub fn set_user_turn(
+        &mut self,
+        parts: Vec<ContentPart>,
+        previous_response_id: Option<String>,
+        web_search: bool,
+    ) {
+        self.user_parts = parts;
+        self.previous_response_id = previous_response_id;
+        self.web_search = web_search;
+    }
+
+    fn apply_turn_hints(&self) {
+        crate::execution::apply_generation_hints(
+            self.llm.as_ref(),
+            self.web_search,
+            self.previous_response_id.clone(),
+        );
+        for fb in &self.fallback_llms {
+            crate::execution::apply_generation_hints(
+                fb.llm.as_ref(),
+                self.web_search,
+                self.previous_response_id.clone(),
+            );
+        }
+    }
+
     /// Resolves the per-session compactor for this execution, or `None`
     /// when compaction is off / no Llm service is available. Silent
     /// degradation: every failure path just disables compaction for the
@@ -874,6 +919,7 @@ Handle employee info, policies, and benefits."#
                 .map(|(role, content)| cordis::LlmMessage {
                     role: role.clone(),
                     content: serde_json::Value::String(content.clone()),
+                    ..Default::default()
                 })
                 .collect(),
         })
@@ -1112,6 +1158,8 @@ Handle employee info, policies, and benefits."#
                 tool_calls,
                 finish_reason,
                 usage,
+                reasoning_content: None,
+                response_id: None,
             },
             provider_name,
             model_name,
@@ -1312,7 +1360,11 @@ When referencing facts above, cite [E1], [E2] etc.",
             }
         }
 
-        messages.push(ConversationMessage::user(input));
+        messages.push(crate::execution::user_message_with_parts(
+            input,
+            self.user_parts.clone(),
+            self.previous_response_id.clone(),
+        ));
 
         let mut total_usage = TokenUsage::default();
         let mut last_provider_name = self.provider_name.clone();
@@ -1611,7 +1663,12 @@ When referencing facts above, cite [E1], [E2] etc.",
 #[async_trait]
 impl Agent for ConfigurableAgent {
     async fn execute(&self, input: &str, context: &AgentContext) -> Result<AgentResponse> {
-        if self.has_tools() {
+        self.apply_turn_hints();
+        if self.has_tools()
+            || !self.user_parts.is_empty()
+            || self.previous_response_id.is_some()
+            || self.web_search
+        {
             tracing::debug!(agent = %self.name, "execute: using tool-calling path");
             return self.execute_with_tools(input, context).await;
         }
@@ -1884,6 +1941,8 @@ mod tests {
                 tool_calls: vec![],
                 finish_reason: "stop".to_string(),
                 usage: None,
+                reasoning_content: None,
+                response_id: None,
             })
         }
         async fn generate_with_tools(&self, _: &str, _: &[ToolDefinition]) -> Result<LLMResponse> {
@@ -1892,6 +1951,8 @@ mod tests {
                 tool_calls: vec![],
                 finish_reason: "stop".to_string(),
                 usage: None,
+                reasoning_content: None,
+                response_id: None,
             })
         }
         async fn generate_with_tools_and_history(
@@ -1905,6 +1966,8 @@ mod tests {
                 tool_calls: vec![],
                 finish_reason: "stop".to_string(),
                 usage: None,
+                reasoning_content: None,
+                response_id: None,
             }))
         }
         async fn stream(
@@ -2034,6 +2097,8 @@ mod tests {
             tool_calls: calls,
             finish_reason: finish_reason.to_string(),
             usage: Some(TokenUsage::new(10, 5)),
+            reasoning_content: None,
+            response_id: None,
         }
     }
 

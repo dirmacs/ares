@@ -54,6 +54,7 @@ impl ares_mcp::AgentRunner for ExecutionAgentRunner {
             message: input.message.clone(),
             history: vec![],
             ctx_provider: None,
+            ..Default::default()
         };
         let exec_result = exec.run(&req, &self.ctx).await.map_err(|e| e.to_string())?;
         Ok(ares_mcp::tools::RunAgentOutput {

@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::config::ToolConfig;
 use crate::registry::ToolRegistry;
-use crate::{Calculator, CalculatorConfig, CalculatorService, Tools};
+use crate::{Calculator, CalculatorConfig, CalculatorService, ProviderWebSearch, Tools};
 
 fn block_on_plugin<S: cordis::Service + 'static>(
     ctx: &Arc<cordis::Context>,
@@ -91,7 +91,7 @@ fn factory_tools(
     let map = parse_tool_configs(config)?;
     let mut tool_registry = ToolRegistry::with_config(&map);
 
-    tool_registry.register(Arc::new(Calculator));
+    register_always_on_tools(&mut tool_registry);
 
     #[cfg(feature = "search-tools")]
     {
@@ -118,6 +118,11 @@ fn factory_tools(
     let tools = Tools::new(static_reg);
 
     block_on_plugin(ctx, tools)
+}
+
+fn register_always_on_tools(tool_registry: &mut ToolRegistry) {
+    tool_registry.register(Arc::new(Calculator));
+    tool_registry.register(Arc::new(ProviderWebSearch));
 }
 
 #[cfg(feature = "postgres")]
@@ -225,5 +230,33 @@ mod tests {
         .unwrap();
         assert_eq!(map.len(), 1);
         assert!(!map.get("calculator").unwrap().enabled);
+    }
+
+    #[test]
+    fn always_on_static_tools_include_provider_web_search() {
+        let mut registry = ToolRegistry::new();
+        register_always_on_tools(&mut registry);
+        assert!(registry.has_tool("calculator"));
+        assert!(registry.has_tool("provider_web_search"));
+        assert!(!registry.has_tool("web_search"));
+        let names: Vec<_> = registry
+            .get_tool_definitions()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert!(names.contains(&"provider_web_search".to_string()));
+    }
+
+    #[cfg(feature = "search-tools")]
+    #[test]
+    fn search_tools_still_registers_daedra_web_search() {
+        let mut registry = ToolRegistry::new();
+        register_always_on_tools(&mut registry);
+        registry.register(Arc::new(crate::search::WebSearch::new()));
+        assert_eq!(
+            registry.get("provider_web_search").unwrap().name(),
+            "provider_web_search"
+        );
+        assert_eq!(registry.get("web_search").unwrap().name(), "web_search");
     }
 }

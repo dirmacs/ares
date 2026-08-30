@@ -22,8 +22,13 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 /// Validates chat request payload before routing.
-fn validate_chat_request(payload: &ChatRequest) -> Result<()> {
-    if payload.message.trim().is_empty() {
+pub(crate) fn validate_chat_request(payload: &ChatRequest) -> Result<()> {
+    let has_parts = payload
+        .parts
+        .as_ref()
+        .map(|parts| !parts.is_empty())
+        .unwrap_or(false);
+    if payload.message.trim().is_empty() && !has_parts {
         return Err(HttpError::from(AppError::InvalidInput(
             "message must not be empty".to_string(),
         )));
@@ -282,7 +287,7 @@ pub async fn chat(
     };
 
     // Route to appropriate agent
-    let agent_type = if let Some(at) = payload.agent_type {
+    let agent_type = if let Some(at) = payload.agent_type.clone() {
         at
     } else {
         // Select the configured router model through the request-scoped Llm service.
@@ -313,8 +318,7 @@ pub async fn chat(
     // Execute agent with timing
     let agent_name_for_run = AgentRegistry::type_to_name(&agent_type).to_string();
     let start = std::time::Instant::now();
-    let (response, usage) =
-        execute_agent(agent_type, &payload.message, &agent_context, &ctx).await?;
+    let (response, usage) = execute_agent(agent_type, &payload, &agent_context, &ctx).await?;
     let duration_ms = start.elapsed().as_millis() as i64;
 
     // Store messages in conversation
@@ -404,7 +408,7 @@ pub async fn chat(
 
 async fn execute_agent(
     agent_type: AgentType,
-    message: &str,
+    payload: &ChatRequest,
     context: &AgentContext,
     ctx: &Arc<Context>,
 ) -> Result<(ChatResponse, Option<ares_llm::client::TokenUsage>)> {
@@ -420,9 +424,12 @@ async fn execute_agent(
     };
     let req = ares_agent::execution::AgentRequest {
         agent_name: agent_name.to_string(),
-        message: message.to_string(),
+        message: payload.message.clone(),
         history: context.conversation_history.clone(),
         ctx_provider: None,
+        parts: payload.parts.clone().unwrap_or_default(),
+        previous_response_id: payload.previous_response_id.clone(),
+        web_search: payload.web_search == Some(true),
     };
     let exec_ctx = if let Some(tc) = ctx.get::<ares_types::models::TenantContext>() {
         ares_agent::tenant_scope(ctx, &tc.tenant_id)
@@ -510,6 +517,9 @@ impl From<ChatStreamQuery> for ChatRequest {
             context_id: query.context_id,
             workspace_id: query.workspace_id,
             model: None,
+            parts: None,
+            previous_response_id: None,
+            web_search: None,
         }
     }
 }
@@ -572,6 +582,8 @@ fn chat_stream_response(
     let message = payload.message.clone();
     let agent_type_req = payload.agent_type;
     let runtime_workspace_id = payload.workspace_id.clone();
+    let stream_web_search = payload.web_search == Some(true);
+    let stream_previous_response_id = payload.previous_response_id.clone();
     let context_id_clone = context_id.clone();
     let active_runs = Arc::clone(
         &ctx.get::<crate::active_runs::ActiveRuns>()
@@ -744,6 +756,11 @@ fn chat_stream_response(
                 return;
             }
         };
+        ares_agent::execution::apply_generation_hints(
+            llm_client.as_ref(),
+            stream_web_search,
+            stream_previous_response_id.clone(),
+        );
 
         // Build the prompt with system message and history
         let system_prompt = resolve_stream_system_prompt(&user_agent);
@@ -902,6 +919,9 @@ mod tests {
             context_id: None,
             workspace_id: None,
             model: None,
+            parts: None,
+            previous_response_id: None,
+            web_search: None,
         };
         let err = validate_chat_request(&payload).unwrap_err();
         match err.0 {
@@ -918,8 +938,28 @@ mod tests {
             context_id: None,
             workspace_id: None,
             model: None,
+            parts: None,
+            previous_response_id: None,
+            web_search: None,
         };
         assert!(validate_chat_request(&payload).is_err());
+    }
+
+    #[test]
+    fn validate_chat_request_accepts_empty_message_with_parts() {
+        let payload = ChatRequest {
+            message: String::new(),
+            agent_type: None,
+            context_id: None,
+            workspace_id: None,
+            model: None,
+            parts: Some(vec![ares_types::types::ContentPart::Text {
+                text: "see image".into(),
+            }]),
+            previous_response_id: None,
+            web_search: None,
+        };
+        assert!(validate_chat_request(&payload).is_ok());
     }
 
     #[test]
@@ -930,6 +970,9 @@ mod tests {
             context_id: None,
             workspace_id: None,
             model: None,
+            parts: None,
+            previous_response_id: None,
+            web_search: None,
         };
         assert!(validate_chat_request(&payload).is_ok());
     }
@@ -942,6 +985,9 @@ mod tests {
             context_id: None,
             workspace_id: None,
             model: None,
+            parts: None,
+            previous_response_id: None,
+            web_search: None,
         };
         assert!(validate_chat_request(&payload).is_ok());
     }
@@ -1156,6 +1202,9 @@ mod tests {
             context_id: None,
             workspace_id: None,
             model: None,
+            parts: None,
+            previous_response_id: None,
+            web_search: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: ChatRequest = serde_json::from_str(&json).unwrap();
@@ -1173,6 +1222,9 @@ mod tests {
             context_id: Some("ctx-1".into()),
             workspace_id: Some("ws-9".into()),
             model: None,
+            parts: None,
+            previous_response_id: None,
+            web_search: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: ChatRequest = serde_json::from_str(&json).unwrap();

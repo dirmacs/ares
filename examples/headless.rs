@@ -5,7 +5,7 @@
 //! Run with:
 //!
 //! ```text
-//! cargo run -p ares-server --no-default-features --features openai --example headless
+//! cargo run -p ares-server --no-default-features --example headless
 //! ```
 
 use std::sync::Arc;

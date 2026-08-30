@@ -202,6 +202,7 @@ impl PipelineService {
             message: input_str,
             history: Vec::new(),
             ctx_provider: None,
+            ..Default::default()
         };
 
         let resp = exec
@@ -608,6 +609,7 @@ async fn execute_target_agent(
         message: effective_message.clone(),
         history: Vec::new(),
         ctx_provider: None,
+        ..Default::default()
     };
     track_start(
         app_state,

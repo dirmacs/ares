@@ -49,10 +49,8 @@ Features select LLM providers, database backends, and vector stores. The table l
 
 | Feature | What it enables |
 |---|---|
-| `default` | `postgres`, `openai`, `ares-vector`, `mcp`, `inventory`, `rhai-policy` |
-| `openai` | OpenAI API and compatible endpoints such as NVIDIA NIM |
-| `azure` | Azure AI Foundry chat completions |
-| `bedrock` | Claude on AWS Bedrock |
+| `default` | `postgres`, `ares-vector`, `mcp`, `inventory`, `rhai-policy`, `http`, `cli`, `script-tools` |
+| `llamacpp` | In-process GGUF inference via llama.cpp (optional; HTTP providers come from `ares-llm` `genai`) |
 | `postgres` | PostgreSQL tenant database through `sqlx` (default) |
 | `turso` | Turso/libSQL, an edge-native SQLite-compatible store |
 | `ares-vector` | Embedded pure-Rust vector store with HNSW (default) |
@@ -77,7 +75,6 @@ Feature bundles combine several flags:
 
 | Bundle | Contents |
 |---|---|
-| `all-llm` | `openai`, `azure`, `bedrock` |
 | `all-db` | `postgres` |
 | `all-vectorstores` | `ares-vector`, `qdrant`, `pgvector`, `chromadb`, `pinecone` |
 | `local-vectorstores` | `ares-vector` only |
@@ -89,7 +86,7 @@ Feature bundles combine several flags:
 
 Features compose along three independent axes. Pick one option per axis:
 
-1. **LLM providers** (`openai`, `azure`, `bedrock`, or none for Ollama). These add provider clients to `ares-llm`. They do not interact with each other, so `all-llm` is safe when you want runtime choice.
+1. **LLM providers**. HTTP adapters ship through `ares-llm`'s default `genai` feature. Select OpenAI, Azure, Anthropic, Gemini, Bedrock, Ollama, and the rest of the genai adapter set in `ares.toml`. Optional `llamacpp` adds in-process GGUF.
 2. **Database backend** (`postgres` or `turso`). The server binary requires the `postgres` feature. A binary built without it prints a rebuild hint and exits with code 1 at startup (`src/main.rs` compiles a stub `main` without it). Keep `postgres` unless you embed the library and run no HTTP server.
 3. **Vector store** (`ares-vector`, `qdrant`, `pgvector`, `chromadb`, `pinecone`, `lancedb`). Clients are additive. `local-vectorstores` keeps the build small because only the embedded store compiles.
 
@@ -108,7 +105,7 @@ Some features cost real compile time or native dependencies:
 | `ui` | Builds the embedded Leptos UI as part of the crate; longest cold build of any single feature |
 | `full-ui` | Everything above together; budget several minutes on a modest machine |
 
-For a first install, stay on defaults plus what you actually call. Defaults already give you `postgres`, `openai`, `ares-vector`, `mcp`, `inventory`, and `rhai-policy`.
+For a first install, stay on defaults plus what you actually call. Defaults already give you `postgres`, `ares-vector`, `mcp`, `inventory`, `rhai-policy`, and HTTP genai providers.
 
 ### Build offline or air-gapped
 
@@ -145,7 +142,7 @@ Build with `cargo build --release --offline`. Two notes apply:
 | `ares-server: command not found` after install | `$HOME/.cargo/bin` missing from `PATH` | Add `export PATH="$HOME/.cargo/bin:$PATH"` to your shell profile |
 | Build succeeds but `/ui` returns 404 | `ui` feature absent from this binary | Rebuild with `--features ui` |
 
-Compile-time versus run time matters here. Features such as `openai`, `azure`, or `bedrock` decide which provider code exists inside the binary. A provider that is absent at compile time cannot appear at run time by editing `ares.toml`. Configuration selects among compiled-in options; it never adds new ones.
+Compile-time versus run time still matters for `llamacpp` and for database or vector-store features. HTTP LLM providers are compiled in by default; `ares.toml` selects among them at run time.
 
 ## Verify the install
 

@@ -24,7 +24,7 @@
 
 use crate::client::{GenerationHints, LLMClient, LLMResponse, ModelParams};
 use crate::coordinator::{ConversationMessage, MessageRole};
-use ares_types::types::{AppError, Result, ToolDefinition};
+use ares_types::types::{AppError, ContentPart, Result, ToolDefinition};
 use async_stream::stream;
 use async_trait::async_trait;
 use futures::Stream;
@@ -592,6 +592,18 @@ fn conversation_messages_to_history(
             MessageRole::Tool => "user",
         };
 
+        let text = if msg.parts.is_empty() {
+            msg.content.clone()
+        } else {
+            msg.parts
+                .iter()
+                .filter_map(|part| match part {
+                    ContentPart::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("")
+        };
         let content = if msg.role == MessageRole::Tool {
             format!(
                 "[Tool Result{}]: {}",
@@ -599,10 +611,10 @@ fn conversation_messages_to_history(
                     .as_ref()
                     .map(|id| format!(" for {}", id))
                     .unwrap_or_default(),
-                msg.content
+                text
             )
         } else {
-            msg.content.clone()
+            text
         };
 
         history.push((role.to_string(), content));
@@ -645,6 +657,8 @@ impl LLMClient for LlamaCppClient {
             finish_reason: "stop".to_string(),
             // Note: llama-cpp-2 crate doesn't expose token counts in its API
             usage: None,
+            reasoning_content: None,
+            response_id: None,
         })
     }
 
@@ -671,6 +685,8 @@ impl LLMClient for LlamaCppClient {
             tool_calls,
             finish_reason: finish_reason.to_string(),
             usage: None,
+            reasoning_content: None,
+            response_id: None,
         })
     }
 
@@ -697,6 +713,8 @@ impl LLMClient for LlamaCppClient {
             tool_calls,
             finish_reason: finish_reason.to_string(),
             usage: None,
+            reasoning_content: None,
+            response_id: None,
         })
     }
 
@@ -740,6 +758,20 @@ impl LLMClient for LlamaCppClient {
         if let Ok(mut slot) = self.hints.write() {
             *slot = hints;
         }
+    }
+
+    async fn embed(&self, _inputs: &[String]) -> Result<Vec<Vec<f32>>> {
+        Err(AppError::FeatureDisabled(
+            "embeddings not supported by this client".into(),
+        ))
+    }
+
+    fn supports_vision(&self) -> bool {
+        false
+    }
+
+    fn supports_provider_web_search(&self) -> bool {
+        false
     }
 }
 

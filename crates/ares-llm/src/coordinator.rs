@@ -37,7 +37,8 @@ use crate::client::{LLMClient, TokenUsage};
 #[cfg(test)]
 use ares_tools::Tool;
 use ares_tools::Tools;
-use ares_types::types::{Result, ToolCall};
+use ares_types::types::{ContentPart, Result, ToolCall};
+use crate::client::CacheControl;
 use cordis::Context;
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
@@ -488,6 +489,21 @@ pub struct ConversationMessage {
     /// Tool result content (only for Tool role).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Multimodal parts. Empty means use `content` as text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<ContentPart>,
+    /// Per-message cache control.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
+    /// Reasoning content to round-trip to the provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    /// Previous Responses API id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_response_id: Option<String>,
+    /// Whether the provider should store the response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store: Option<bool>,
 }
 
 /// Role of a message sender in a tool-calling conversation.
@@ -512,6 +528,11 @@ impl ConversationMessage {
             content: content.into(),
             tool_calls: Vec::new(),
             tool_call_id: None,
+            parts: Vec::new(),
+            cache_control: None,
+            reasoning_content: None,
+            previous_response_id: None,
+            store: None,
         }
     }
 
@@ -522,6 +543,11 @@ impl ConversationMessage {
             content: content.into(),
             tool_calls: Vec::new(),
             tool_call_id: None,
+            parts: Vec::new(),
+            cache_control: None,
+            reasoning_content: None,
+            previous_response_id: None,
+            store: None,
         }
     }
 
@@ -532,6 +558,11 @@ impl ConversationMessage {
             content: content.into(),
             tool_calls,
             tool_call_id: None,
+            parts: Vec::new(),
+            cache_control: None,
+            reasoning_content: None,
+            previous_response_id: None,
+            store: None,
         }
     }
 
@@ -542,6 +573,11 @@ impl ConversationMessage {
             content: serde_json::to_string(result).unwrap_or_else(|_| "{}".to_string()),
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
+            parts: Vec::new(),
+            cache_control: None,
+            reasoning_content: None,
+            previous_response_id: None,
+            store: None,
         }
     }
 
@@ -1196,6 +1232,8 @@ mod tests {
                 tool_calls: vec![],
                 finish_reason: "stop".into(),
                 usage: None,
+                reasoning_content: None,
+                response_id: None,
             })
         }
 
@@ -1209,6 +1247,8 @@ mod tests {
                 tool_calls: vec![],
                 finish_reason: "stop".into(),
                 usage: None,
+                reasoning_content: None,
+                response_id: None,
             })
         }
 
@@ -1228,6 +1268,8 @@ mod tests {
                     }],
                     finish_reason: "tool_calls".to_string(),
                     usage: Some(TokenUsage::new(10, 5)),
+                    reasoning_content: None,
+                    response_id: None,
                 })
             } else {
                 Ok(LLMResponse {
@@ -1235,6 +1277,8 @@ mod tests {
                     tool_calls: vec![],
                     finish_reason: "stop".to_string(),
                     usage: Some(TokenUsage::new(5, 3)),
+                    reasoning_content: None,
+                    response_id: None,
                 })
             }
         }
@@ -1314,6 +1358,8 @@ mod tests {
                     tool_calls: vec![],
                     finish_reason: "stop".into(),
                     usage: None,
+                    reasoning_content: None,
+                    response_id: None,
                 })
             }
             async fn generate_with_tools(
@@ -1326,6 +1372,8 @@ mod tests {
                     tool_calls: vec![],
                     finish_reason: "stop".into(),
                     usage: None,
+                    reasoning_content: None,
+                    response_id: None,
                 })
             }
             async fn generate_with_tools_and_history(
@@ -1342,6 +1390,8 @@ mod tests {
                     }],
                     finish_reason: "tool_calls".into(),
                     usage: None,
+                    reasoning_content: None,
+                    response_id: None,
                 })
             }
             async fn stream(

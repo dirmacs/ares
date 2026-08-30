@@ -37,6 +37,7 @@ pub mod mcp_bridge;
 pub mod connectors;
 
 pub use calculator::{Calculator, CalculatorConfig, CalculatorService};
+pub use tools::provider_web_search::ProviderWebSearch;
 pub use plugins::register_plugins;
 pub use registry::Tool;
 #[cfg(feature = "script-tools")]
@@ -45,7 +46,7 @@ pub use tool_service::Tools;
 
 #[cfg(test)]
 mod tests {
-    use super::{calculator::Calculator, Tool, Tools};
+    use super::{calculator::Calculator, ProviderWebSearch, Tool, Tools};
     use std::sync::Arc;
 
     #[test]
@@ -57,6 +58,21 @@ mod tests {
             .list(&ctx)
             .iter()
             .any(|definition| definition.name == "calculator"));
+    }
+
+    #[test]
+    fn provider_web_search_is_always_on_and_distinct_from_daedra() {
+        let tools = Tools::from_static([
+            Arc::new(Calculator) as Arc<dyn Tool>,
+            Arc::new(ProviderWebSearch) as Arc<dyn Tool>,
+        ]);
+        let ctx = cordis::Context::new_root();
+        let tool = tools
+            .resolve(&ctx, "provider_web_search")
+            .expect("provider_web_search should resolve");
+        assert_eq!(tool.name(), "provider_web_search");
+        assert_eq!(crate::search::WebSearch::new().name(), "web_search");
+        assert_ne!(tool.name(), crate::search::WebSearch::new().name());
     }
 
     #[test]

@@ -539,6 +539,58 @@ impl Llm {
             .to_string())
     }
 
+    /// Embed `inputs` using the same client resolution as [`Llm::complete`].
+    ///
+    /// Without `EventsService`, this is `get_client` then `LLMClient::embed`.
+    /// With events, handlers wrap payload `{"inputs"}`; core embeds using
+    /// `payload["inputs"]` and returns `{"inputs", "embeddings"}`.
+    pub async fn embed(
+        &self,
+        ctx: &Arc<Context>,
+        inputs: &[String],
+    ) -> Result<Vec<Vec<f32>>, AppError> {
+        let client = self
+            .get_client(ctx, CapabilityRequirements::default())
+            .await?;
+        let Some(events) = ctx.get::<EventsService>() else {
+            return client.embed(inputs).await;
+        };
+        let payload = serde_json::to_value(cordis::LlmEmbedRequest {
+            inputs: inputs.to_vec(),
+        })
+        .unwrap_or(serde_json::Value::Null);
+        let out = events
+            .waterfall_around(
+                cordis::events_catalog::ev::LLM_EMBED.to_string(),
+                payload,
+                move |payload| {
+                    let client = Arc::clone(&client);
+                    async move {
+                        let inputs: Vec<String> = payload
+                            .get("inputs")
+                            .cloned()
+                            .map(serde_json::from_value::<Vec<String>>)
+                            .transpose()
+                            .map_err(|e| CordisError::Fiber(e.to_string()))?
+                            .unwrap_or_default();
+                        let embeddings = client
+                            .embed(&inputs)
+                            .await
+                            .map_err(|e| CordisError::Fiber(e.to_string()))?;
+                        serde_json::to_value(cordis::LlmEmbedResponse { inputs, embeddings })
+                            .map_err(|e| CordisError::Fiber(e.to_string()))
+                    }
+                },
+            )
+            .await
+            .map_err(map_cordis)?;
+        Ok(match out.get("embeddings") {
+            Some(value) => serde_json::from_value::<Vec<Vec<f32>>>(value.clone())
+                .map_err(|e| AppError::Internal(e.to_string()))?,
+            None => Vec::new(),
+        })
+    }
+
     /// Stub for capability-based model selection (delegates to registry).
     pub fn find_model_stub(&self, _capability: &str) -> Option<String> {
         None
@@ -653,6 +705,18 @@ impl LLMClient for BoxedArcClient {
     }
     fn set_hints(&self, hints: GenerationHints) {
         self.0.set_hints(hints)
+    }
+
+    async fn embed(&self, inputs: &[String]) -> ares_types::types::Result<Vec<Vec<f32>>> {
+        self.0.embed(inputs).await
+    }
+
+    fn supports_vision(&self) -> bool {
+        self.0.supports_vision()
+    }
+
+    fn supports_provider_web_search(&self) -> bool {
+        self.0.supports_provider_web_search()
     }
 }
 
@@ -964,6 +1028,8 @@ mod tests {
                 tool_calls: vec![],
                 finish_reason: "stop".into(),
                 usage: None,
+                reasoning_content: None,
+                response_id: None,
             })
         }
         async fn generate_with_tools(
@@ -976,6 +1042,8 @@ mod tests {
                 tool_calls: vec![],
                 finish_reason: "stop".into(),
                 usage: None,
+                reasoning_content: None,
+                response_id: None,
             })
         }
         async fn generate_with_tools_and_history(
@@ -988,6 +1056,8 @@ mod tests {
                 tool_calls: vec![],
                 finish_reason: "stop".into(),
                 usage: None,
+                reasoning_content: None,
+                response_id: None,
             })
         }
         async fn stream(
@@ -1017,6 +1087,92 @@ mod tests {
         }
         fn model_name(&self) -> &str {
             "echo"
+        }
+    }
+
+    struct EmbedClient {
+        called: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl EmbedClient {
+        fn new() -> (Self, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+            let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            (
+                Self {
+                    called: std::sync::Arc::clone(&called),
+                },
+                called,
+            )
+        }
+    }
+
+    #[async_trait]
+    impl LLMClient for EmbedClient {
+        async fn generate(&self, _prompt: &str) -> ares_types::types::Result<String> {
+            Err(AppError::Internal("embed-only mock".into()))
+        }
+        async fn generate_with_system(
+            &self,
+            _system: &str,
+            _prompt: &str,
+        ) -> ares_types::types::Result<String> {
+            Err(AppError::Internal("embed-only mock".into()))
+        }
+        async fn generate_with_history(
+            &self,
+            _messages: &[(String, String)],
+        ) -> ares_types::types::Result<LLMResponse> {
+            Err(AppError::Internal("embed-only mock".into()))
+        }
+        async fn generate_with_tools(
+            &self,
+            _prompt: &str,
+            _tools: &[ToolDefinition],
+        ) -> ares_types::types::Result<LLMResponse> {
+            Err(AppError::Internal("embed-only mock".into()))
+        }
+        async fn generate_with_tools_and_history(
+            &self,
+            _messages: &[crate::coordinator::ConversationMessage],
+            _tools: &[ToolDefinition],
+        ) -> ares_types::types::Result<LLMResponse> {
+            Err(AppError::Internal("embed-only mock".into()))
+        }
+        async fn stream(
+            &self,
+            _prompt: &str,
+        ) -> ares_types::types::Result<
+            Box<dyn futures::Stream<Item = ares_types::types::Result<String>> + Send + Unpin>,
+        > {
+            Err(AppError::Internal("embed-only mock".into()))
+        }
+        async fn stream_with_system(
+            &self,
+            _system: &str,
+            _prompt: &str,
+        ) -> ares_types::types::Result<
+            Box<dyn futures::Stream<Item = ares_types::types::Result<String>> + Send + Unpin>,
+        > {
+            Err(AppError::Internal("embed-only mock".into()))
+        }
+        async fn stream_with_history(
+            &self,
+            _messages: &[(String, String)],
+        ) -> ares_types::types::Result<
+            Box<dyn futures::Stream<Item = ares_types::types::Result<String>> + Send + Unpin>,
+        > {
+            Err(AppError::Internal("embed-only mock".into()))
+        }
+        fn model_name(&self) -> &str {
+            "embed-mock"
+        }
+        async fn embed(&self, inputs: &[String]) -> ares_types::types::Result<Vec<Vec<f32>>> {
+            self.called
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(inputs
+                .iter()
+                .map(|s| vec![s.len() as f32])
+                .collect())
         }
     }
 
@@ -1085,6 +1241,69 @@ mod tests {
             Err(err) => err,
         };
         assert!(matches!(err, AppError::InvalidInput(msg) if msg == "llm.get_client denied"));
+    }
+
+    #[tokio::test]
+    async fn llm_embed_runs_without_events() {
+        let (client, called) = EmbedClient::new();
+        let llm = Llm::for_test(std::sync::Arc::new(client));
+        let ctx = std::sync::Arc::new(Context::new_root());
+        let out = llm
+            .embed(&ctx, &["ab".into(), "c".into()])
+            .await
+            .expect("embed");
+        assert_eq!(out, vec![vec![2.0], vec![1.0]]);
+        assert!(called.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn llm_embed_waterfall_rewrites_inputs() {
+        let (client, _) = EmbedClient::new();
+        let llm = Llm::for_test(std::sync::Arc::new(client));
+        let ctx = Context::new_root();
+        let events = ctx.provide(EventsService::new());
+        events.on_waterfall(
+            cordis::events_catalog::ev::LLM_EMBED.to_string(),
+            |mut payload, next| async move {
+                if let Some(inputs) = payload.get("inputs").and_then(|v| v.as_array()) {
+                    let rewritten: Vec<String> = inputs
+                        .iter()
+                        .filter_map(|v| v.as_str().map(|s| format!("WRAP:{s}")))
+                        .collect();
+                    payload["inputs"] = serde_json::json!(rewritten);
+                }
+                next(payload).await
+            },
+        );
+        let out = llm
+            .embed(&ctx, &["hi".into()])
+            .await
+            .expect("embed");
+        assert_eq!(out, vec![vec![7.0]]);
+    }
+
+    #[tokio::test]
+    async fn llm_embed_short_circuit_skips_client() {
+        let (client, called) = EmbedClient::new();
+        let llm = Llm::for_test(std::sync::Arc::new(client));
+        let ctx = std::sync::Arc::new(Context::new_root());
+        let events = ctx.provide(EventsService::new());
+        events.on_waterfall(
+            cordis::events_catalog::ev::LLM_EMBED.to_string(),
+            |_payload, _next| async move {
+                Ok(serde_json::json!({ "embeddings": [[9.0, 8.0]] }))
+            },
+        );
+        let out = llm
+            .embed(&ctx, &["hi".into()])
+            .await
+            .expect("embed");
+        assert_eq!(out, vec![vec![9.0, 8.0]]);
+        assert_eq!(
+            called.load(std::sync::atomic::Ordering::SeqCst),
+            false,
+            "client embed must stay false when handler skips next"
+        );
     }
 
     #[test]
@@ -1214,6 +1433,7 @@ mod tests {
             suppress_reasoning: false,
             max_tokens: Some(256),
             guided_grammar: None,
+            ..Default::default()
         });
         boxed.set_hints(GenerationHints::default());
 

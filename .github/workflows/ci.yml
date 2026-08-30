@@ -29,12 +29,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Check headless library build
-        run: cargo check -p ares-server --lib --no-default-features --features openai
+        run: cargo check -p ares-server --lib --no-default-features
       - name: Check headless example (facade completeness)
-        run: cargo check -p ares-server --example headless --no-default-features --features openai
+        run: cargo check -p ares-server --example headless --no-default-features
       - name: Assert headless dependency tree
         run: |
-          if cargo tree -p ares-server -e normal --no-default-features --features openai --prefix none \
+          if cargo tree -p ares-server -e normal --no-default-features --prefix none \
             | grep -E '^(axum|ares-http|clap|tower-sessions|tower_governor|boa_engine|rhai|ollama-rs|sqlx|ares-mcp|rmcp|argon2|jsonwebtoken)( |$)'; then
             echo "::error::headless build pulled a web/CLI/script dependency into the tree"
             exit 1

@@ -25,7 +25,7 @@ swagger-ui = ["dep:utoipa-swagger-ui"]
 inventory = ["dep:inventory", "cordis/inventory"]
 eruka-context = ["ares-agent/eruka-context"]
 skills = ["dep:thulp-skill-files", "ares-agent/skills"]
-local-embeddings = ["ares-rag/local-embeddings"]
+local-embeddings = ["ares-rag/local-embeddings", "dep:lancor"]
 ares-vector = ["dep:ares-vector", "ares-store/ares-vector"]
 
 [dependencies]
@@ -38,6 +38,7 @@ ares-store = { workspace = true }
 ares-rag = { workspace = true }
 ares-mcp = { workspace = true, optional = true }
 ares-vector = { workspace = true, optional = true }
+lancor = { workspace = true, optional = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }

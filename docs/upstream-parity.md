@@ -297,7 +297,7 @@ Each row expands below with the claim, the rationale, and the evidence.
 - Detail: `Accessor::{read_only, read_write, setter_only}` installs a getter/setter pair beside the TypeId service store; registration returns an `EffectHandle` whose disposal removes the declaration and every alias.
 - Detail: `Context::alias` binds an alternate name through the SAME registration; duplicate declarations (including alias collisions) are rejected with `DuplicateProvider`.
 - Detail: typed reads surface `CordisError::PropertyTypeMismatch` instead of a silent `None`; writes to a read-only property are refused with `CordisError::ReadOnlyProperty`.
-- Rationale: computed properties are policy plumbing, not provider state — vetoing them would let an interceptor break accessor invariants it cannot see.
+- Rationale: computed properties are policy plumbing, not provider state — a veto lets an interceptor break accessor invariants it cannot see.
 - Source: `Context::register_accessor`, `Accessor`, `Context::alias`, `EffectHandle` in `crates/cordis/src/context.rs`
 - Tests: `accessor_read_write_roundtrip`, `duplicate_accessor_declaration_rejected`, `readonly_property_rejects_set`, `dispose_accessor_resolves_none`, `alias_resolves_same_value`, `accessor_bypasses_intercept_waterfalls`
 
@@ -327,7 +327,7 @@ Each row expands below with the claim, the rationale, and the evidence.
 - Upstream expectation: config rewriting applies only on later re-applies; first activation runs the raw config.
 - Claim: the `internal/config` waterfall is consulted on the ACTIVATION path too, so rewrites apply on first activation identically to re-applies.
 - Detail: the same non-null-terminal-becomes-effective-config semantics hold on both paths (row 14).
-- Rationale: activation-time-only rewrites would make a policy's effect depend on whether the fiber happened to start fresh.
+- Rationale: activation-time-only rewrites make a policy's effect depend on whether the fiber starts fresh.
 - Source: config-waterfall consult in the register/activation path in `crates/cordis/src/registry.rs`
 - Test: `config_waterfall_covers_activation_path`
 
@@ -366,7 +366,7 @@ Each row expands below with the claim, the rationale, and the evidence.
 - Claim: deterministic-class micro outcomes serve from a bounded LRU map keyed by a content hash over `(model, system template, input)`; answers reached through retries or salvage fallback are NEVER cached.
 - Detail: default 256 entries, 15-minute TTL, master switch via `MicroCacheConfig`.
 - Detail: hits skip the network entirely, report `latency_ms: 0`, and carry the `cache_hit` telemetry flag.
-- Rationale: classify/tag-style enrichment calls dominate micro traffic and their answers are stable; a repeated or repaired request proves the call was NOT deterministic-class, so caching it would pin a bad answer.
+- Rationale: classify/tag-style enrichment calls dominate micro traffic and their answers are stable; a repeated or repaired request proves the call was NOT deterministic-class, so a cache of it pins a bad answer.
 - Source: `MicroCacheConfig`, `MicroOutcome::cache_hit`, `cache_key`, `LruOutcomeCache` in `crates/ares-llm/src/micro.rs`
 - Tests: `identical_inputs_serve_cached_outcome`, `retries_exhausted_falls_back_to_salvage` (salvage path stays uncached by construction)
 
@@ -376,7 +376,7 @@ Each row expands below with the claim, the rationale, and the evidence.
 - Claim: `GenerationHints::guided_grammar` carries a schema-shaped JSON value as `response_format` `json_schema` on every OpenAI-compatible path; raw GBNF/EBNF text rides the provider-specific `guided_grammar` extension field on NON-streaming OpenAI-compatible requests; providers without a channel silently ignore the hint; an ABSENT hint leaves the wire byte-identical.
 - Detail: classification is structural — a JSON object with an object root is a schema; anything else is raw grammar text.
 - Rationale: one opt-in hint field covers structured outputs where supported and vendor grammar extensions where they are not, without changing default requests.
-- Source: `GenerationHints::guided_grammar` in `crates/ares-llm/src/client.rs`; classification and `GUIDED_GRAMMAR_EXTENSION` in `crates/ares-llm/src/openai.rs`
+- Source: `GenerationHints::guided_grammar` in `crates/ares-llm/src/client.rs`; classification and `GUIDED_GRAMMAR_EXTENSION` in `crates/ares-llm/src/genai_client.rs`
 - Test: `grammar_hint_present_reaches_request_builder`
 
 ### 29. Duplicate embeddings cost exactly one backend call (we exceed upstream)

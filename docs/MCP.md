@@ -14,10 +14,10 @@ MCP support is feature-gated. Enable the feature at compile time:
 cargo build --features mcp
 ```
 
-Combine it with other features as needed:
+HTTP LLM providers come from the default `genai` feature of `ares-llm`. Combine MCP with other root features as needed:
 
 ```bash
-cargo build --features "mcp,openai"
+cargo build --features mcp
 ```
 
 ## Starting the MCP server

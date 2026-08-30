@@ -70,7 +70,7 @@ The dry-run prints one `path<TAB>title<TAB>size` line per candidate file and a s
 
 ### HTTP
 
-`POST /api/rag/ingest` accepts a JSON body with `collection`, `content`, `title`, `source`, `tags`, and `chunking_strategy`; it returns `chunks_created` plus `document_ids` and echoes the unscoped collection name (`crates/ares-http/src/api/handlers/rag.rs`, `src/cli/rag.rs`). The endpoint requires authentication and checks tenant-level RAG source allowlists before ingesting. Routes register only when both the `local-embeddings` and `ares-vector` features compile in (`crates/ares-http/src/api/routes.rs`).
+`POST /api/rag/ingest` accepts a JSON body with `collection`, `content`, `title`, `source`, `tags`, and `chunking_strategy`; it returns `chunks_created` plus `document_ids` and echoes the unscoped collection name (`crates/ares-http/src/api/handlers/rag.rs`, `src/cli/rag.rs`). The endpoint requires authentication and checks tenant-level RAG source allowlists before ingesting. Routes register when the `ares-vector` feature compiles in (`crates/ares-http/src/api/routes.rs`). Local ONNX embeddings still need `local-embeddings`.
 
 Related endpoints: `POST /api/rag/search`, collection listing under `/api/rag/collections`, and `DELETE /api/rag/collection`.
 
@@ -81,11 +81,11 @@ The handler (`crates/ares-http/src/api/handlers/rag.rs`, `ingest`) runs these st
 1. **Validate input.** An empty `collection` or empty `content` returns an error before any work starts.
 2. **Check the tenant allowlist.** `TenantAllowlistStore::is_rag_source_allowed` consults PostgreSQL. A denied collection fails with an auth error naming the collection.
 3. **Scope the collection name.** `user_scoped_collection` combines the user id and requested name, giving each user an isolated namespace.
-4. **Resolve services.** The embedding service comes from the context, or gets constructed on first use. Construction pre-downloads ONNX model files through lancor, because fastembed's own client fails on HuggingFace CDN redirects. The vector store opens at `[rag.vector] vector_path`.
+4. **Resolve services.** With `local-embeddings`, the embedding service comes from the context, or is built on first use. That path pre-downloads ONNX model files through lancor. Without `local-embeddings`, ingest calls `ares_rag::embed_with_llm`. The vector store opens at `[rag.vector] vector_path`.
 5. **Parse the chunking strategy.** Absent keys fall back to `Word`. The handler then fixes chunker parameters per strategy: word uses size 200 with overlap 50, semantic uses size 500 with no overlap, character uses size 500 with overlap 100.
 6. **Chunk the content.** Zero chunks fail with `Content too small to chunk`. Short trailing remainders below `min_chunk_size` drop out silently instead.
-7. **Create the collection on demand.** If the scoped collection does not exist, the handler creates it with the model's dimension count.
-8. **Embed all chunk texts.** The batch passes through the dedup planner described below.
+7. **Create the collection on demand.** If the scoped collection does not exist, the handler creates it. Local ONNX uses the model dimension. The remote path uses the length of the first vector.
+8. **Embed all chunk texts.** The batch passes through the dedup planner described below. Local ONNX uses fastembed. Remote uses `embed_with_llm`.
 9. **Build documents.** Each chunk becomes a `Document` with id `{base_uuid}_{index}` and metadata carrying `title`, `source`, `created_at`, and `tags`.
 10. **Upsert into the vector store** and return `chunks_created` with the document id list. A structured log records user, collections, chunk count, and duration.
 
@@ -152,7 +152,7 @@ Cosine distance stored by pgvector-style comparisons is `1 - cos(a,b)` (`cosine_
 
 $$\text{sim}_{\text{cosine}} = 1 - d \qquad \text{sim}_{L2} = \frac{1}{1+d} \qquad \text{sim}_{\text{inner}} = -d$$
 
-The `local-embeddings` feature enables the `fastembed` backend (`crates/ares-rag/Cargo.toml`). Without it, embedding calls go over HTTP.
+The `local-embeddings` feature enables the `fastembed` ONNX backend (`crates/ares-rag/Cargo.toml`). Without it, ingest and search call `ares_rag::embed_with_llm(&ctx, texts)`. That helper does `ctx.get::<Llm>()` and then `llm.embed`.
 
 ## Search flow
 
@@ -191,7 +191,7 @@ Hybrid search fuses three ranked lists through reciprocal rank fusion (`RrfFusio
 
 $$\mathrm{score}(d) \;=\; \sum_{\ell} \frac{w_\ell}{k + \mathrm{rank}_\ell(d)} \qquad k = 60 \text{ by default}$$
 
-Ranks start at 1 in this implementation (`search.rs`, `RrfFusion::fuse`). Default weights are `semantic = 0.6`, `bm25 = 0.3`, `fuzzy = 0.1` (`HybridWeights::default`); the sum should be 1.0. Hybrid fetches `top_k * 2` candidates from BM25 and fuzzy before fusion, then truncates the fused list to `top_k`. A typo-corrected variant corrects the query first, then reruns the whole fusion.
+Ranks start at 1 in this implementation (`search.rs`, `RrfFusion::fuse`). Default weights are `semantic = 0.6`, `bm25 = 0.3`, `fuzzy = 0.1` (`HybridWeights::default`). The sum must be 1.0. Hybrid fetches `top_k * 2` candidates from BM25 and fuzzy before fusion, then truncates the fused list to `top_k`. A typo-corrected variant corrects the query first, then reruns the whole fusion.
 
 Worked fusion, with unit weights and \\(k = 60\\) (adapted from the passing test `test_rrf_fusion_ranking_prefers_shared_top_ranks`). The semantic list ranks `doc_a` first and `doc_b` second. The BM25 list ranks `doc_b` first and `doc_c` second:
 

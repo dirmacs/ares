@@ -280,7 +280,7 @@ A fifth state completes the machine: an `Active` runner whose dependency is genu
 - `ReadinessBarrier::new(pred)` wraps one `Fn(&Arc<Context>) -> bool`; `.and(other)` AND-composes; `with_readiness([a, b, c])` folds any number of barriers (an empty list is vacuously ready).
 - `.watching([TypeId])` unions the provider keys whose settlements re-kick the gated fiber through the `ReflectService` fan-out: an external provide or withdrawal re-evaluates the gate without anyone touching the fiber.
 
-This complements rather than replaces availability predicates (`Service::check`): a rejected availability predicate rests `Failed{error: "availability predicate rejected service"}` — loud and terminal per the rules above — while a closed readiness gate is quiet, reversible waiting. Use the predicate when the factory cannot produce a valid service; use the barrier when production succeeds but serving should hold.
+This complements rather than replaces availability predicates (`Service::check`): a rejected availability predicate rests `Failed{error: "availability predicate rejected service"}` — loud and terminal per the rules above — while a closed readiness gate is quiet, reversible waiting. Use the predicate when the factory cannot produce a valid service; use the barrier when production succeeds but serving must wait.
 
 ---
 

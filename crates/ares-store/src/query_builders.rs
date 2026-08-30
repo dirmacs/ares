@@ -110,11 +110,11 @@ pub const DELETE_SESSION_BY_ID_SQL: &str = "DELETE FROM sessions WHERE id = $1";
 pub const DELETE_SESSION_BY_TOKEN_SQL: &str = "DELETE FROM sessions WHERE token_hash = $1";
 
 pub const INSERT_MESSAGE_SQL: &str = "\
-INSERT INTO messages (id, conversation_id, role, content, timestamp) \
-VALUES ($1, $2, $3, $4, $5)";
+INSERT INTO messages (id, conversation_id, role, content, timestamp, parts) \
+VALUES ($1, $2, $3, $4, $5, $6)";
 
 pub const SELECT_MESSAGES_SQL: &str = "\
-SELECT role, content, timestamp FROM messages \
+SELECT role, content, timestamp, parts FROM messages \
 WHERE conversation_id = $1 ORDER BY timestamp ASC";
 
 pub fn message_role_to_db(role: &MessageRole) -> &'static str {
@@ -315,8 +315,8 @@ mod tests {
     #[test]
     fn message_sql_constants_bind_conversation_and_fields() {
         assert!(INSERT_MESSAGE_SQL.contains("INSERT INTO messages"));
-        assert!(INSERT_MESSAGE_SQL.contains("VALUES ($1, $2, $3, $4, $5)"));
-        assert_eq!(count_bind_placeholders(INSERT_MESSAGE_SQL), 5);
+        assert!(INSERT_MESSAGE_SQL.contains("VALUES ($1, $2, $3, $4, $5, $6)"));
+        assert_eq!(count_bind_placeholders(INSERT_MESSAGE_SQL), 6);
 
         assert!(SELECT_MESSAGES_SQL.contains("conversation_id = $1"));
         assert!(SELECT_MESSAGES_SQL.contains("ORDER BY timestamp ASC"));

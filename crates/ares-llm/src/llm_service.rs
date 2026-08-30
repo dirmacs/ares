@@ -23,7 +23,7 @@ use cordis::{Context, CordisError, EventsService, Service};
 use parking_lot::RwLock;
 
 use crate::capabilities::CapabilityRequirements;
-use crate::client::{GenerationHints, LLMClient, LLMResponse};
+use crate::client::{GenerationHints, LLMClient, LLMResponse, LlmStreamEvent};
 use crate::config::ProviderConfig;
 use crate::pool::ClientPool;
 use crate::provider_registry::{
@@ -697,6 +697,18 @@ impl LLMClient for BoxedArcClient {
         self.0.stream_with_history(messages).await
     }
 
+    async fn stream_with_tools_and_history(
+        &self,
+        messages: &[crate::coordinator::ConversationMessage],
+        tools: &[ToolDefinition],
+    ) -> ares_types::types::Result<
+        Box<dyn futures::Stream<Item = ares_types::types::Result<LlmStreamEvent>> + Send + Unpin>,
+    > {
+        self.0
+            .stream_with_tools_and_history(messages, tools)
+            .await
+    }
+
     fn model_name(&self) -> &str {
         self.0.model_name()
     }
@@ -749,7 +761,9 @@ impl Service for Llm {
 mod tests {
     use super::*;
     use crate::capabilities::CapabilityRequirements;
+    #[cfg(feature = "genai")]
     use crate::provider_registry::RuntimeProviderEntry;
+    #[cfg(feature = "genai")]
     use ares_types::models::{TenantContext, TenantTier};
     use chrono::Duration;
     use cordis::Context;
@@ -921,6 +935,7 @@ mod tests {
         assert!(res.is_err());
     }
 
+    #[cfg(feature = "genai")]
     #[tokio::test]
     async fn get_client_override_uses_tenant_context_intercept() {
         let mut registry = ProviderRegistry::new();

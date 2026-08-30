@@ -4,6 +4,21 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ---
 
+## Unreleased
+
+### Added
+
+- `POST /chat/stream` runs `Execute::run_stream` so the body can carry multimodal `parts`.
+- Store persists message `parts` (migration `027_message_parts.sql`).
+- Remote RAG rerank through `Llm` when `local-embeddings` is off.
+- `LLMClient::stream_with_tools_and_history` and `LlmStreamEvent`.
+
+### Changed
+
+- `ares-llm` genai adapters compile only with the `genai` feature. Default remains `["genai"]`.
+
+---
+
 ## 0.11.0 - 2026-08-30
 
 **genai is the HTTP LLM adapter. reqwest is 0.13. LLMClient gains embed, vision, and Responses.**

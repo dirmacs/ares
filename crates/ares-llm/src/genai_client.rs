@@ -4,7 +4,8 @@
 //! (never a bare `&str` model name, which genai would silently treat as Ollama).
 
 use crate::client::{
-    CacheControl, GenaiProvider, GenerationHints, LLMClient, LLMResponse, TokenUsage,
+    CacheControl, GenaiProvider, GenerationHints, LLMClient, LLMResponse, LlmStreamEvent,
+    TokenUsage,
 };
 use crate::coordinator::{ConversationMessage, MessageRole};
 use ares_types::types::{AppError, ContentPart as AresPart, Result, ToolCall, ToolDefinition};
@@ -205,6 +206,59 @@ impl GenaiClient {
         };
         Ok(Box::new(Box::pin(s)))
     }
+
+    async fn exec_stream_with_tools(
+        &self,
+        request: ChatRequest,
+        hints: &GenerationHints,
+    ) -> Result<Box<dyn futures::Stream<Item = Result<LlmStreamEvent>> + Send + Unpin>> {
+        let target = self.service_target();
+        let options = self.chat_options(hints, true);
+        let response = self
+            .inner
+            .exec_chat_stream(target, request, Some(&options))
+            .await
+            .map_err(map_error)?;
+        let mut inner = response.stream;
+        let s = async_stream::stream! {
+            let mut tool_calls: Vec<ToolCall> = Vec::new();
+            while let Some(ev) = inner.next().await {
+                match ev {
+                    Ok(ChatStreamEvent::Chunk(chunk)) => {
+                        yield Ok(LlmStreamEvent::Text(chunk.content));
+                    }
+                    Ok(ChatStreamEvent::ToolCallChunk(chunk)) => {
+                        let tc = chunk.tool_call;
+                        tool_calls.push(ToolCall {
+                            id: tc.call_id,
+                            name: tc.fn_name,
+                            arguments: tc.fn_arguments,
+                        });
+                    }
+                    Ok(ChatStreamEvent::End(end)) => {
+                        if let Some(captured) = end.captured_into_tool_calls() {
+                            if !captured.is_empty() {
+                                tool_calls = captured
+                                    .into_iter()
+                                    .map(|tc| ToolCall {
+                                        id: tc.call_id,
+                                        name: tc.fn_name,
+                                        arguments: tc.fn_arguments,
+                                    })
+                                    .collect();
+                            }
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(err) => yield Err(map_error(err)),
+                }
+            }
+            if !tool_calls.is_empty() {
+                yield Ok(LlmStreamEvent::ToolCalls(tool_calls));
+            }
+        };
+        Ok(Box::new(Box::pin(s)))
+    }
 }
 
 #[async_trait]
@@ -287,6 +341,16 @@ impl LLMClient for GenaiClient {
         let hints = self.snapshot_hints();
         let request = request_from_role_content(messages, None, &hints);
         self.exec_stream(request, &hints).await
+    }
+
+    async fn stream_with_tools_and_history(
+        &self,
+        messages: &[ConversationMessage],
+        tools: &[ToolDefinition],
+    ) -> Result<Box<dyn futures::Stream<Item = Result<LlmStreamEvent>> + Send + Unpin>> {
+        let hints = self.snapshot_hints();
+        let request = request_from_conversation(messages, tools, &hints);
+        self.exec_stream_with_tools(request, &hints).await
     }
 
     fn model_name(&self) -> &str {
@@ -775,5 +839,34 @@ mod tests {
 
         let none = map_tools(&[], false);
         assert!(none.is_empty());
+    }
+
+    #[test]
+    fn request_from_conversation_maps_parts() {
+        let mut msg = ConversationMessage::user("fallback-text");
+        msg.parts = vec![
+            AresPart::Text {
+                text: "hello ".into(),
+            },
+            AresPart::ImageUrl {
+                url: "https://example.com/x.png".into(),
+            },
+            AresPart::Text {
+                text: "world".into(),
+            },
+        ];
+        let req = request_from_conversation(&[msg], &[], &GenerationHints::default());
+        assert_eq!(req.messages.len(), 1);
+        assert_eq!(req.messages[0].content.texts(), vec!["hello ", "world"]);
+        assert!(matches!(
+            req.messages[0].content.parts()[1],
+            ContentPart::Binary(_)
+        ));
+    }
+
+    #[test]
+    fn llm_stream_event_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<LlmStreamEvent>();
     }
 }

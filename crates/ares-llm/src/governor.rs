@@ -28,7 +28,7 @@
 //! max_in_flight = 4
 //! ```
 
-use crate::client::{LLMClient, LLMResponse};
+use crate::client::{LLMClient, LLMResponse, LlmStreamEvent};
 use ares_types::types::{AppError, Result, ToolDefinition};
 use async_trait::async_trait;
 use futures::Stream;
@@ -259,6 +259,25 @@ impl LLMClient for GovernedClient {
         }
     }
 
+    async fn stream_with_tools_and_history(
+        &self,
+        messages: &[crate::coordinator::ConversationMessage],
+        tools: &[ToolDefinition],
+    ) -> Result<Box<dyn Stream<Item = Result<LlmStreamEvent>> + Send + Unpin>> {
+        let slot = self.governor.admit().await?;
+        match self
+            .inner
+            .stream_with_tools_and_history(messages, tools)
+            .await
+        {
+            Ok(stream) => Ok(Box::new(GovernedStream {
+                inner: Some(stream),
+                _slot: Some(slot),
+            })),
+            Err(err) => Err(err),
+        }
+    }
+
     fn model_name(&self) -> &str {
         self.inner.model_name()
     }
@@ -289,13 +308,13 @@ impl LLMClient for GovernedClient {
 ///
 /// On the terminal item — success or error — the slot is dropped eagerly so
 /// capacity returns before the consumer necessarily drops the stream value.
-struct GovernedStream {
-    inner: Option<Box<dyn Stream<Item = Result<String>> + Send + Unpin>>,
+struct GovernedStream<T> {
+    inner: Option<Box<dyn Stream<Item = Result<T>> + Send + Unpin>>,
     _slot: Option<Admission>,
 }
 
-impl Stream for GovernedStream {
-    type Item = Result<String>;
+impl<T> Stream for GovernedStream<T> {
+    type Item = Result<T>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = &mut *self;

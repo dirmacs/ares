@@ -8,9 +8,11 @@
 //! - `rag::embeddings` - Dense embedding models (fastembed, 38+ models) **[requires `local-embeddings` feature]**
 //! - [`rag::search`](crate::search) - Search strategies (semantic, BM25, fuzzy, hybrid)
 //! - `rag::reranker` - Cross-encoder reranking for improved relevance **[requires `local-embeddings` feature]**
+//! - [`rag::rerank_types`](crate::rerank_types) - Shared rerank result type **[always compiled]**
 //! - [`rag::chunker`](crate::chunker) - Text chunking for document processing
 //! - [`rag::cache`](crate::cache) - Embedding cache for avoiding recomputation
 //! - [`rag::llm_embed`](crate::llm_embed) - Remote embeddings via `Llm` **[always compiled]**
+//! - [`rag::llm_rerank`](crate::llm_rerank) - Remote rerank via `Llm` **[always compiled]**
 //!
 //! # Feature Flags
 //!
@@ -24,6 +26,8 @@
 //! Without `local-embeddings`, you can still use:
 //! - [`embed_with_llm`] when an [`ares_llm::Llm`] service is on the context
 //!   (`ctx.get::<Llm>()` then `llm.embed`; never import genai)
+//! - [`rerank_with_llm`] when an [`ares_llm::Llm`] service is on the context
+//!   (`ctx.get::<Llm>()` then `llm.complete`; never import genai)
 //! - Remote embedding APIs (OpenAI embeddings, Ollama embeddings, etc.)
 //! - The chunker and search modules
 //! - The cache module (if you have embeddings from elsewhere)
@@ -89,6 +93,10 @@ pub mod chunker;
 pub mod embeddings;
 pub mod llm_embed;
 pub use llm_embed::embed_with_llm;
+pub mod llm_rerank;
+pub use llm_rerank::rerank_with_llm;
+pub mod rerank_types;
+pub use rerank_types::RerankedResult;
 #[cfg(feature = "local-embeddings")]
 pub mod reranker;
 pub mod search;
@@ -112,5 +120,11 @@ mod lib_tests {
     #[test]
     fn llm_embed_is_linked() {
         let _ = crate::embed_with_llm;
+    }
+
+    #[test]
+    fn llm_rerank_is_linked() {
+        let _ = crate::rerank_with_llm;
+        let _ = std::any::type_name::<crate::RerankedResult>();
     }
 }

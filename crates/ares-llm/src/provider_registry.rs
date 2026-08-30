@@ -21,7 +21,10 @@
 //! ```
 
 use crate::capabilities::{CapabilityRequirements, ModelCapabilities, ModelWithCapabilities};
-use crate::client::{GenaiProvider, LLMClient, ModelParams, Provider};
+use crate::client::{LLMClient, ModelParams, Provider};
+#[cfg(feature = "genai")]
+use crate::client::GenaiProvider;
+#[cfg(feature = "genai")]
 use genai::adapter::AdapterKind;
 use crate::config::{ModelConfig, ProviderConfig};
 use crate::nvidia_catalog::{NvidiaCatalogCache, NvidiaConfig};
@@ -389,6 +392,21 @@ impl ProviderRegistry {
             })
     }
 
+    #[cfg(not(feature = "genai"))]
+    fn provider_from_runtime_entry_with_params(
+        provider_name: &str,
+        entry: &RuntimeProviderEntry,
+        model_override: Option<&str>,
+        params: ModelParams,
+    ) -> Result<Provider> {
+        let _ = (model_override, params);
+        Err(AppError::Configuration(format!(
+            "runtime provider '{}' requires the `genai` feature (provider_type '{}')",
+            provider_name, entry.provider_type
+        )))
+    }
+
+    #[cfg(feature = "genai")]
     #[allow(unused_variables)]
     fn provider_from_runtime_entry_with_params(
         provider_name: &str,
@@ -1599,6 +1617,7 @@ mod tests {
         assert!(registry.get_provider("missing").is_none());
     }
 
+    #[cfg(feature = "genai")]
     #[test]
     fn test_runtime_openai_provider_preserves_key_and_headers() {
         let mut headers = HashMap::new();
@@ -1631,6 +1650,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "genai")]
     #[test]
     fn test_runtime_provider_requires_resolved_api_key() {
         let entry = RuntimeProviderEntry {

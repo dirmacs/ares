@@ -12,6 +12,9 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 - Store persists message `parts` (migration `027_message_parts.sql`).
 - Remote RAG rerank through `Llm` when `local-embeddings` is off.
 - `LLMClient::stream_with_tools_and_history` and `LlmStreamEvent`.
+- `GET /conversations/{id}` returns message `parts`. Empty `parts` stay off the JSON.
+- `GET /chat/stream` accepts `parts` as a JSON query parameter. Invalid JSON yields an SSE error event.
+- Chat UI attaches images and PDFs on `POST /api/chat/stream` (`ChatRequest.parts`).
 
 ### Changed
 

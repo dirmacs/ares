@@ -2,16 +2,16 @@
 //!
 //! This module provides CRUD operations for user conversations.
 
-use std::sync::Arc;
 use cordis::Context;
+use std::sync::Arc;
 
-use crate::Result;
 use crate::HttpError;
+use crate::Result;
 use crate::{
     auth::middleware::AuthUser,
     db::postgres::Conversation,
     db::traits::{ConversationSummary as DbConversationSummary, DatabaseClient},
-    types::{AppError, Message, MessageRole},
+    types::{AppError, ContentPart, Message, MessageRole},
 };
 use axum::{
     extract::{Path, State},
@@ -65,6 +65,7 @@ fn message_to_api(conversation_id: &str, idx: usize, msg: Message) -> Conversati
         role: message_role_to_api(&msg.role),
         content: msg.content,
         created_at: msg.timestamp.to_rfc3339(),
+        parts: msg.parts,
     }
 }
 
@@ -74,11 +75,15 @@ fn message_role_to_api(role: &MessageRole) -> String {
 }
 
 /// Verifies the authenticated user owns the conversation.
-fn ensure_conversation_owner(conversation_user_id: &str, claims_sub: &str, action: &str) -> Result<()> {
+fn ensure_conversation_owner(
+    conversation_user_id: &str,
+    claims_sub: &str,
+    action: &str,
+) -> Result<()> {
     if conversation_user_id != claims_sub {
-        return Err(HttpError::from(AppError::Auth(format!(
-            "Not authorized to {action} this conversation"
-        ).into())));
+        return Err(HttpError::from(AppError::Auth(
+            format!("Not authorized to {action} this conversation").into(),
+        )));
     }
     Ok(())
 }
@@ -109,6 +114,10 @@ pub struct ConversationMessage {
     pub content: String,
     /// RFC3339 formatted timestamp
     pub created_at: String,
+    /// Multimodal content parts. Omitted from JSON when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schema(value_type = Vec<Object>)]
+    pub parts: Vec<ContentPart>,
 }
 
 /// Request to update a conversation.
@@ -123,7 +132,11 @@ pub async fn list_conversations(
     State(ctx): State<Arc<Context>>,
     AuthUser(claims): AuthUser,
 ) -> Result<Json<Vec<ConversationSummary>>> {
-    let conversations = ctx.get::<ares_store::PostgresClient>().expect("not provided").get_user_conversations(&claims.sub).await?;
+    let conversations = ctx
+        .get::<ares_store::PostgresClient>()
+        .expect("not provided")
+        .get_user_conversations(&claims.sub)
+        .await?;
 
     let summaries: Vec<ConversationSummary> = conversations
         .into_iter()
@@ -140,11 +153,19 @@ pub async fn get_conversation(
     Path(id): Path<String>,
 ) -> Result<Json<ConversationDetails>> {
     // Verify conversation belongs to user
-    let conversation = ctx.get::<ares_store::PostgresClient>().expect("not provided").get_conversation(&id).await?;
+    let conversation = ctx
+        .get::<ares_store::PostgresClient>()
+        .expect("not provided")
+        .get_conversation(&id)
+        .await?;
 
     ensure_conversation_owner(&conversation.user_id, &claims.sub, "access")?;
 
-    let messages = ctx.get::<ares_store::PostgresClient>().expect("not provided").get_conversation_history(&id).await?;
+    let messages = ctx
+        .get::<ares_store::PostgresClient>()
+        .expect("not provided")
+        .get_conversation_history(&id)
+        .await?;
 
     let message_details: Vec<ConversationMessage> = messages
         .into_iter()
@@ -169,11 +190,16 @@ pub async fn update_conversation(
     Json(payload): Json<UpdateConversationRequest>,
 ) -> Result<Json<serde_json::Value>> {
     // Verify conversation belongs to user
-    let conversation = ctx.get::<ares_store::PostgresClient>().expect("not provided").get_conversation(&id).await?;
+    let conversation = ctx
+        .get::<ares_store::PostgresClient>()
+        .expect("not provided")
+        .get_conversation(&id)
+        .await?;
 
     ensure_conversation_owner(&conversation.user_id, &claims.sub, "modify")?;
 
-    ctx.get::<ares_store::PostgresClient>().expect("not provided")
+    ctx.get::<ares_store::PostgresClient>()
+        .expect("not provided")
         .update_conversation_title(&id, payload.title.as_deref())
         .await?;
 
@@ -187,11 +213,18 @@ pub async fn delete_conversation(
     Path(id): Path<String>,
 ) -> Result<axum::http::StatusCode> {
     // Verify conversation belongs to user
-    let conversation = ctx.get::<ares_store::PostgresClient>().expect("not provided").get_conversation(&id).await?;
+    let conversation = ctx
+        .get::<ares_store::PostgresClient>()
+        .expect("not provided")
+        .get_conversation(&id)
+        .await?;
 
     ensure_conversation_owner(&conversation.user_id, &claims.sub, "delete")?;
 
-    ctx.get::<ares_store::PostgresClient>().expect("not provided").delete_conversation(&id).await?;
+    ctx.get::<ares_store::PostgresClient>()
+        .expect("not provided")
+        .delete_conversation(&id)
+        .await?;
 
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
@@ -275,8 +308,7 @@ mod tests {
 
     #[test]
     fn update_conversation_request_clear_title_deserializes_null() {
-        let parsed: UpdateConversationRequest =
-            serde_json::from_str(r#"{"title":null}"#).unwrap();
+        let parsed: UpdateConversationRequest = serde_json::from_str(r#"{"title":null}"#).unwrap();
         assert!(parsed.title.is_none());
     }
 
@@ -290,6 +322,7 @@ mod tests {
                 role: "user".to_string(),
                 content: "hi".to_string(),
                 created_at: "2024-01-01T00:00:00Z".to_string(),
+                parts: vec![],
             }],
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
@@ -377,6 +410,7 @@ mod tests {
             role: "assistant".to_string(),
             content: "reply".to_string(),
             created_at: "2024-05-01T12:00:00Z".to_string(),
+            parts: vec![],
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"role\":\"assistant\""));
@@ -439,5 +473,52 @@ mod tests {
         assert!(json.contains("\"title\":\"Untitled\""));
         assert!(json.contains("\"created_at\""));
         assert!(json.contains("\"updated_at\""));
+    }
+
+    #[test]
+    fn message_to_api_copies_parts() {
+        let msg = Message {
+            role: MessageRole::User,
+            content: "see image".to_string(),
+            timestamp: Utc.with_ymd_and_hms(2024, 6, 1, 12, 0, 0).unwrap(),
+            parts: vec![ContentPart::ImageUrl {
+                url: "https://example.com/a.png".to_string(),
+            }],
+        };
+        let api = message_to_api("conv-p", 0, msg);
+        assert_eq!(
+            api.parts,
+            vec![ContentPart::ImageUrl {
+                url: "https://example.com/a.png".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn conversation_message_omits_empty_parts() {
+        let msg = ConversationMessage {
+            id: "c1-0".to_string(),
+            role: "user".to_string(),
+            content: "hi".to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            parts: vec![],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("\"parts\""));
+    }
+
+    #[test]
+    fn conversation_message_serializes_parts() {
+        let msg = ConversationMessage {
+            id: "c1-0".to_string(),
+            role: "user".to_string(),
+            content: "hi".to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            parts: vec![ContentPart::ImageUrl {
+                url: "https://example.com/a.png".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"image_url\""));
     }
 }

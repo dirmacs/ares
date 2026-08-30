@@ -14,7 +14,7 @@ use crate::{
 use ares_store::postgres::UserAgent;
 use axum::{
     extract::{Query, State},
-    response::Response,
+    response::{IntoResponse, Response},
     Extension, Json,
 };
 use cordis::Context;
@@ -504,21 +504,31 @@ pub struct ChatStreamQuery {
     pub context_id: Option<String>,
     #[serde(default)]
     pub workspace_id: Option<String>,
+    /// JSON array of `ContentPart`. EventSource cannot send a body, so parts ride on the query string.
+    #[serde(default)]
+    pub parts: Option<String>,
 }
 
-impl From<ChatStreamQuery> for ChatRequest {
-    fn from(query: ChatStreamQuery) -> Self {
-        Self {
-            message: query.message,
-            agent_type: query.agent_type,
-            context_id: query.context_id,
-            workspace_id: query.workspace_id,
-            model: None,
-            parts: None,
-            previous_response_id: None,
-            web_search: None,
-        }
-    }
+fn chat_request_from_stream_query(
+    query: ChatStreamQuery,
+) -> std::result::Result<ChatRequest, String> {
+    let parts = match query.parts.as_deref() {
+        None | Some("") => None,
+        Some(raw) => Some(
+            serde_json::from_str::<Vec<ares_types::types::ContentPart>>(raw)
+                .map_err(|e| format!("invalid parts query parameter: {e}"))?,
+        ),
+    };
+    Ok(ChatRequest {
+        message: query.message,
+        agent_type: query.agent_type,
+        context_id: query.context_id,
+        workspace_id: query.workspace_id,
+        model: None,
+        parts,
+        previous_response_id: None,
+        web_search: None,
+    })
 }
 
 /// Stream a chat response using Server-Sent Events
@@ -541,12 +551,19 @@ pub async fn chat_stream_get(
     AuthUser(claims): AuthUser,
     tenant_ctx: Option<Extension<ares_types::models::TenantContext>>,
     Query(query): Query<ChatStreamQuery>,
-) -> axum::response::Sse<
-    impl futures::Stream<
-        Item = std::result::Result<axum::response::sse::Event, std::convert::Infallible>,
-    >,
-> {
-    chat_stream_response(ctx, claims, query.into(), tenant_ctx)
+) -> Response {
+    match chat_request_from_stream_query(query) {
+        Ok(payload) => chat_stream_response(ctx, claims, payload, tenant_ctx).into_response(),
+        Err(error) => {
+            use axum::response::sse::{Event, Sse};
+            let event = stream_error_event(&error, None);
+            let data = serde_json::to_string(&event).unwrap_or_default();
+            Sse::new(async_stream::stream! {
+                yield Ok::<_, std::convert::Infallible>(Event::default().data(data));
+            })
+            .into_response()
+        }
+    }
 }
 
 fn chat_stream_response(
@@ -865,7 +882,6 @@ fn chat_stream_response(
             .text("keep-alive"),
     )
 }
-use axum::response::IntoResponse;
 
 #[cfg(test)]
 mod tests {
@@ -1196,13 +1212,14 @@ mod tests {
 
     #[test]
     fn chat_stream_query_maps_to_chat_request() {
-        let req: ChatRequest = ChatStreamQuery {
+        let req = chat_request_from_stream_query(ChatStreamQuery {
             message: "hello".into(),
             agent_type: Some(AgentType::Product),
             context_id: Some("ctx-1".into()),
             workspace_id: Some("ws-1".into()),
-        }
-        .into();
+            parts: None,
+        })
+        .expect("query maps");
 
         assert_eq!(req.message, "hello");
         assert_eq!(req.agent_type, Some(AgentType::Product));
@@ -1211,6 +1228,53 @@ mod tests {
         assert!(req.parts.is_none());
         assert!(req.previous_response_id.is_none());
         assert!(req.web_search.is_none());
+    }
+
+    #[test]
+    fn chat_stream_query_maps_valid_parts_json() {
+        let req = chat_request_from_stream_query(ChatStreamQuery {
+            message: "hello".into(),
+            agent_type: None,
+            context_id: None,
+            workspace_id: None,
+            parts: Some(r#"[{"type":"text","text":"img"}]"#.into()),
+        })
+        .expect("valid parts json");
+        let parts = req.parts.expect("parts present");
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            ares_types::types::ContentPart::Text { text } => assert_eq!(text, "img"),
+            other => panic!("expected text part, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chat_stream_query_rejects_invalid_parts_json() {
+        let err = chat_request_from_stream_query(ChatStreamQuery {
+            message: "hello".into(),
+            agent_type: None,
+            context_id: None,
+            workspace_id: None,
+            parts: Some("not-json".into()),
+        })
+        .expect_err("invalid parts json");
+        assert!(
+            err.contains("parts"),
+            "error should mention parts, got {err}"
+        );
+    }
+
+    #[test]
+    fn chat_stream_query_empty_parts_string_is_none() {
+        let req = chat_request_from_stream_query(ChatStreamQuery {
+            message: "hello".into(),
+            agent_type: None,
+            context_id: None,
+            workspace_id: None,
+            parts: Some(String::new()),
+        })
+        .expect("empty parts string");
+        assert!(req.parts.is_none());
     }
 
     #[test]

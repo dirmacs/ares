@@ -1167,12 +1167,8 @@ mod tests {
             "embed-mock"
         }
         async fn embed(&self, inputs: &[String]) -> ares_types::types::Result<Vec<Vec<f32>>> {
-            self.called
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            Ok(inputs
-                .iter()
-                .map(|s| vec![s.len() as f32])
-                .collect())
+            self.called.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(inputs.iter().map(|s| vec![s.len() as f32]).collect())
         }
     }
 
@@ -1275,10 +1271,7 @@ mod tests {
                 next(payload).await
             },
         );
-        let out = llm
-            .embed(&ctx, &["hi".into()])
-            .await
-            .expect("embed");
+        let out = llm.embed(&ctx, &["hi".into()]).await.expect("embed");
         assert_eq!(out, vec![vec![7.0]]);
     }
 
@@ -1290,18 +1283,12 @@ mod tests {
         let events = ctx.provide(EventsService::new());
         events.on_waterfall(
             cordis::events_catalog::ev::LLM_EMBED.to_string(),
-            |_payload, _next| async move {
-                Ok(serde_json::json!({ "embeddings": [[9.0, 8.0]] }))
-            },
+            |_payload, _next| async move { Ok(serde_json::json!({ "embeddings": [[9.0, 8.0]] })) },
         );
-        let out = llm
-            .embed(&ctx, &["hi".into()])
-            .await
-            .expect("embed");
+        let out = llm.embed(&ctx, &["hi".into()]).await.expect("embed");
         assert_eq!(out, vec![vec![9.0, 8.0]]);
-        assert_eq!(
-            called.load(std::sync::atomic::Ordering::SeqCst),
-            false,
+        assert!(
+            !called.load(std::sync::atomic::Ordering::SeqCst),
             "client embed must stay false when handler skips next"
         );
     }

@@ -65,7 +65,7 @@ mod pool_config_tests {
 
 #[cfg(test)]
 mod pool_basic_tests {
-    use ares_llm::pool::{ClientPool, ClientPoolBuilder};
+    use ares_llm::pool::{ClientPool, ClientPoolBuilder, PoolConfig};
 
     #[test]
     fn test_pool_creation_with_defaults() {

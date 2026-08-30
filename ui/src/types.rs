@@ -29,9 +29,16 @@ pub struct AuthResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentPart {
-    Text { text: String },
-    ImageUrl { url: String },
-    ImageBase64 { mime: String, data: String },
+    Text {
+        text: String,
+    },
+    ImageUrl {
+        url: String,
+    },
+    ImageBase64 {
+        mime: String,
+        data: String,
+    },
     FileUrl {
         url: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -43,6 +50,60 @@ pub enum ContentPart {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
+}
+
+impl ContentPart {
+    /// Parse a `data:<mime>;base64,<data>` URL into an image or file part.
+    pub fn from_data_url(data_url: &str, filename: impl Into<String>) -> Result<Self, String> {
+        let rest = data_url
+            .strip_prefix("data:")
+            .ok_or_else(|| "FileReader result is not a data URL".to_string())?;
+        let (meta, data) = rest
+            .split_once(',')
+            .ok_or_else(|| "data URL missing payload".to_string())?;
+        let mime = meta
+            .split(';')
+            .next()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        let data = data.to_string();
+        if mime.starts_with("image/") {
+            Ok(ContentPart::ImageBase64 { mime, data })
+        } else {
+            Ok(ContentPart::FileBase64 {
+                mime,
+                data,
+                name: Some(filename.into()),
+            })
+        }
+    }
+
+    pub fn chip_label(&self) -> String {
+        match self {
+            ContentPart::Text { text } => text.clone(),
+            ContentPart::ImageUrl { url } => url.clone(),
+            ContentPart::ImageBase64 { mime, .. } => format!("image ({mime})"),
+            ContentPart::FileUrl { url, .. } => url
+                .rsplit('/')
+                .next()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(url)
+                .to_string(),
+            ContentPart::FileBase64 { name, mime, .. } => {
+                name.clone().unwrap_or_else(|| mime.clone())
+            }
+        }
+    }
+
+    pub fn image_src(&self) -> Option<String> {
+        match self {
+            ContentPart::ImageUrl { url } => Some(url.clone()),
+            ContentPart::ImageBase64 { mime, data } => Some(format!("data:{mime};base64,{data}")),
+            _ => None,
+        }
+    }
 }
 
 /// Chat request

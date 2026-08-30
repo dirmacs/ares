@@ -270,6 +270,19 @@ impl LLMClient for GovernedClient {
     fn set_hints(&self, hints: crate::client::GenerationHints) {
         self.inner.set_hints(hints);
     }
+
+    async fn embed(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>> {
+        let _slot = self.governor.admit().await?;
+        self.inner.embed(inputs).await
+    }
+
+    fn supports_vision(&self) -> bool {
+        self.inner.supports_vision()
+    }
+
+    fn supports_provider_web_search(&self) -> bool {
+        self.inner.supports_provider_web_search()
+    }
 }
 
 /// Stream wrapper carrying the dispatch slot until termination.
@@ -357,6 +370,8 @@ mod tests {
                 tool_calls: vec![],
                 finish_reason: "stop".into(),
                 usage: None,
+                reasoning_content: None,
+                response_id: None,
             })
         }
 
@@ -370,6 +385,8 @@ mod tests {
                 tool_calls: vec![],
                 finish_reason: "stop".into(),
                 usage: None,
+                reasoning_content: None,
+                response_id: None,
             })
         }
 
@@ -383,6 +400,8 @@ mod tests {
                 tool_calls: vec![],
                 finish_reason: "stop".into(),
                 usage: None,
+                reasoning_content: None,
+                response_id: None,
             })
         }
 

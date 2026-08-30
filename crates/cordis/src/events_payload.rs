@@ -285,11 +285,15 @@ impl TypedEvent for LlmGetClientEvent {
 /// One conversation message in [`LlmGeneratePayload`]. Free-form shape: the
 /// waterfall core re-parses messages into provider-native types, so `content`
 /// stays a raw JSON value.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct LlmMessage {
     pub role: String,
     #[serde(default)]
     pub content: Value,
+    /// Multimodal parts as raw JSON so this leaf crate stays independent of
+    /// `ares-types::ContentPart`. Empty means use `content` only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<Value>,
 }
 
 /// Initial payload for [`LlmGenerateEvent`].
@@ -328,6 +332,38 @@ pub struct LlmGenerateToolsEvent;
 impl TypedEvent for LlmGenerateToolsEvent {
     type Payload = LlmGenerateToolsPayload;
     const NAME: &'static str = crate::events_catalog::ev::LLM_GENERATE_TOOLS;
+    const MODE: Dispatch = Dispatch::Waterfall;
+    const AROUND: bool = true;
+}
+
+// ---------------------------------------------------------------------------
+// llm.embed — Dispatch::Waterfall (around)
+// ---------------------------------------------------------------------------
+
+/// Initial payload for [`LlmEmbedEvent`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LlmEmbedRequest {
+    #[serde(default)]
+    pub inputs: Vec<String>,
+}
+
+/// Result payload of the [`LlmEmbedEvent`] waterfall core.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LlmEmbedResponse {
+    #[serde(default)]
+    pub inputs: Vec<String>,
+    #[serde(default)]
+    pub embeddings: Vec<Vec<f32>>,
+}
+
+/// `llm.embed` — around-middleware waterfall wrapping embedding batches
+/// (`Dispatch::Waterfall`). Handlers may rewrite `inputs` or short-circuit by
+/// returning their own `embeddings`. Core calls `LLMClient::embed`.
+#[derive(Debug, Clone, Copy)]
+pub struct LlmEmbedEvent;
+impl TypedEvent for LlmEmbedEvent {
+    type Payload = LlmEmbedRequest;
+    const NAME: &'static str = crate::events_catalog::ev::LLM_EMBED;
     const MODE: Dispatch = Dispatch::Waterfall;
     const AROUND: bool = true;
 }
@@ -681,6 +717,11 @@ mod tests {
                 LlmGenerateToolsEvent::NAME,
                 LlmGenerateToolsEvent::MODE,
                 LlmGenerateToolsEvent::AROUND,
+            ),
+            (
+                LlmEmbedEvent::NAME,
+                LlmEmbedEvent::MODE,
+                LlmEmbedEvent::AROUND,
             ),
             (
                 SchedulerAdmitEvent::NAME,

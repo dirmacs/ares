@@ -12,17 +12,17 @@ repository. Each section names the source it adapts.
 
 ```toml
 [dependencies]
-ares-server = "0.10.1"
+ares-server = "0.11.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 serde_json = "1"
 ```
 
-The default features are the server defaults: `postgres`, `openai`,
+The default features are the server defaults: `postgres`,
 `ares-vector`, `mcp`, `inventory`, `rhai-policy`, `http`, `cli`, and
 `script-tools`. For a lean embed build, turn them off:
 
 ```toml
-ares-server = { version = "0.10.1", default-features = false, features = ["openai"] }
+ares-server = { version = "0.11.0", default-features = false }
 ```
 
 The headless build compiles no Axum, CLI, sqlx, Ollama, Boa, or Rhai code. It
@@ -72,7 +72,7 @@ compiles and passes in this repository:
 
 ```toml
 [dependencies]
-ares-server = "0.10.1"
+ares-server = "0.11.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 serde_json = "1"
 ```
@@ -322,7 +322,7 @@ fiber for lifecycle and hot reload. The trait lives in
 (`crates/ares-agent/src/pipeline.rs`) and the kernel's own registry tests:
 
 `RegistryService` is an advanced kernel type beyond the facade. Add
-`ares-cordis = "0.10.1"` as a direct dependency to name it.
+`ares-cordis = "0.11.0"` as a direct dependency to name it.
 
 ```rust
 use std::sync::Arc;
@@ -480,7 +480,7 @@ The enum has ten variants. Match the ones you can act on and let the rest
 bubble:
 
 `ValidationIssue` is an advanced kernel type beyond the facade. Add
-`ares-cordis = "0.10.1"` as a direct dependency to name it.
+`ares-cordis = "0.11.0"` as a direct dependency to name it.
 
 ```rust
 use ares_server::CordisError;

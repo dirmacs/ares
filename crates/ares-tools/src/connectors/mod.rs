@@ -248,14 +248,16 @@ pub async fn refresh_oauth2_token(
         .map_err(|e| AppError::Auth(format!("Failed to decrypt client secret: {e}")))?;
 
     let client = reqwest::Client::new();
+    let form_body = format!(
+        "grant_type=refresh_token&refresh_token={}&client_id={}&client_secret={}",
+        urlencoding::encode(&refresh_token_plain),
+        urlencoding::encode(&cred.client_id),
+        urlencoding::encode(&client_secret_plain),
+    );
     let response = client
         .post(token_url)
-        .form(&[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", &refresh_token_plain),
-            ("client_id", &cred.client_id),
-            ("client_secret", &client_secret_plain),
-        ])
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(form_body)
         .send()
         .await
         .map_err(|e| AppError::External(format!("{provider} refresh token request failed: {e}")))?;

@@ -137,14 +137,19 @@ impl GmailListMessages {
         query: Option<&str>,
         max_results: i64,
     ) -> Result<Vec<GmailMessage>> {
-        let mut req = self
-            .client
-            .request(tenant_id, reqwest::Method::GET, "/users/me/messages")
-            .await?;
+        let mut path = "/users/me/messages".to_string();
+        let mut params = Vec::new();
         if let Some(q) = query {
-            req = req.query(&[("q", q)]);
+            params.push(format!("q={}", urlencoding::encode(q)));
         }
-        req = req.query(&[("maxResults", &max_results.to_string())]);
+        params.push(format!("maxResults={max_results}"));
+        path.push('?');
+        path.push_str(&params.join("&"));
+
+        let req = self
+            .client
+            .request(tenant_id, reqwest::Method::GET, &path)
+            .await?;
 
         let resp = self.client.execute(req).await.map_err(AppError::from)?;
         let resp_body = resp.text().await.map_err(|e| {

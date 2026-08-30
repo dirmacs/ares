@@ -4,7 +4,8 @@
 //! across different test files without duplication.
 
 use ares_llm::client::{LLMClientFactoryTrait, Provider};
-use ares_llm::{LLMClient, LLMResponse};
+use ares_llm::{AdapterKind, GenaiProvider, LLMClient, LLMResponse};
+use std::collections::HashMap;
 use ares_types::types::{AppError, Result, ToolCall, ToolDefinition};
 use async_trait::async_trait;
 use futures::stream::{self, StreamExt};
@@ -92,6 +93,8 @@ impl LLMClient for MockLLMClient {
             tool_calls: self.tool_calls.clone(),
             finish_reason: "stop".to_string(),
             usage: None,
+            reasoning_content: None,
+            response_id: None,
         })
     }
 
@@ -115,6 +118,8 @@ impl LLMClient for MockLLMClient {
             tool_calls: self.tool_calls.clone(),
             finish_reason: finish_reason.to_string(),
             usage: None,
+            reasoning_content: None,
+            response_id: None,
         })
     }
 
@@ -204,6 +209,8 @@ impl LLMClient for MockLLMClient {
             tool_calls: self.tool_calls.clone(),
             finish_reason: finish_reason.to_string(),
             usage: None,
+            reasoning_content: None,
+            response_id: None,
         })
     }
 }
@@ -221,11 +228,18 @@ impl MockLLMFactory {
     /// Create a new mock factory that returns the given mock client.
     pub fn new(client: MockLLMClient) -> Self {
         Self {
-            provider: Provider::Ollama {
-                base_url: "http://localhost:11434".to_string(),
+            provider: Provider::Genai(GenaiProvider {
+                kind: AdapterKind::Ollama,
+                api_key: None,
+                endpoint: Some("http://localhost:11434".to_string()),
                 model: "mock".to_string(),
                 params: Default::default(),
-            },
+                headers: HashMap::new(),
+                region: None,
+                vertex_project: None,
+                vertex_location: None,
+                custom_index: None,
+            }),
             client: Arc::new(client),
         }
     }

@@ -15,7 +15,7 @@
 //!
 //! Proof: the existing `AresConfigManager::start_watching()` logs
 //! `Configuration hot-reloaded successfully` on `ares.toml` mutation (E2E on
-//! random port `39476`/`39120` via `cargo run --release … --features openai,postgres,mcp`
+//! random port `39476`/`39120` via `cargo run --release … --features postgres,mcp`
 //! with `cp /opt/ares-dirmacs/ares.toml /tmp/ares-random.toml` + `shuf` port;
 //! see `docs/cordis-redesign.md` §9/9b). The watcher below generalizes that
 //! pattern to Cordis entries and TOON agents, so mutating `config/agents/test.toon`

@@ -63,7 +63,7 @@ Add this dependency to your project:
 
 ```toml
 [dependencies]
-ares-server = "0.10.1"
+ares-server = "0.11.0"
 ```
 
 Basic usage:
@@ -72,13 +72,13 @@ Basic usage:
 use ares_server::{Context, Execute, Tools, Llm};
 ```
 
-The default features of `ares-server` are postgres, openai, ares-vector, mcp, inventory, rhai-policy, http, cli, and script-tools. That is the full server library: the Axum router and the CLI compile, and sqlx, Ollama, Boa, and Rhai come with them. `ProviderRegistry` remains on the constructor path for `AgentRegistry` / `Llm` until those take `Llm` only.
+The default features of `ares-server` are postgres, ares-vector, mcp, inventory, rhai-policy, http, cli, and script-tools. That is the full server library: the Axum router and the CLI compile, and sqlx, Boa, and Rhai come with them. `ProviderRegistry` remains on the constructor path for `AgentRegistry` / `Llm` until those take `Llm` only.
 
 For a headless embed, turn the defaults off and name only what you need:
 
 ```toml
 [dependencies]
-ares-server = { version = "0.10.1", default-features = false, features = ["openai"] }
+ares-server = { version = "0.11.0", default-features = false }
 ```
 
 The headless build compiles no axum, clap, sqlx, Ollama, Boa, or Rhai code. Every type the library guide uses is reachable through the `ares_server` facade. See `docs/src/library.md`.
@@ -182,7 +182,7 @@ ollama serve
 ### 3. Build and run
 
 ```bash
-# Build with default features (postgres + openai + http + cli)
+# Build with default features (postgres + http + cli)
 cargo build
 # Or: just build
 
@@ -199,15 +199,9 @@ ARES uses Cargo features for conditional compilation:
 
 ### LLM providers
 
-| Feature | Description | Default |
-|---------|-------------|---------|
-| `ollama` | Ollama local inference | No (opt-in; on with `postgres`) |
-| `openai` | OpenAI API (and compatible) | Yes |
-| `anthropic` | Anthropic Claude API | No |
-| `llamacpp` | Direct GGUF model loading | No |
-| `llamacpp-cuda` | LlamaCpp with CUDA | No |
-| `llamacpp-metal` | LlamaCpp with Metal (macOS) | No |
-| `llamacpp-vulkan` | LlamaCpp with Vulkan | No |
+HTTP LLM providers (OpenAI, Azure Foundry, Anthropic, Gemini, Bedrock bearer, Ollama, and the rest of the genai adapter set) ship through `ares-llm`'s default `genai` feature. The root package has no `openai`, `azure`, `bedrock`, `ollama`, `anthropic`, or `all-llm` feature.
+
+LlamaCpp remains an `ares-llm` feature (`llamacpp`, `llamacpp-cuda`, `llamacpp-metal`, `llamacpp-vulkan`), not a root feature.
 
 ### Database & vector stores
 
@@ -246,15 +240,14 @@ ARES uses Cargo features for conditional compilation:
 | `cli` | Command-line build: `clap`, `owo-colors`, `reqwest`, `dotenvy`, `tracing-subscriber` | Yes |
 | `script-tools` | Boa JavaScript and Rhai tool engines in `ares-tools` | Yes |
 
-The `ares-server` binary needs both `http` and `cli`. A build without them skips the binary. Turn all three off for an embed, then name the provider you need.
+The `ares-server` binary needs both `http` and `cli`. A build without them skips the binary. Turn all three off for a headless embed. genai stays on through the `ares-llm` default.
 
 ### Feature bundles
 
 | Feature | Includes |
 |---------|----------|
-| `all-llm` | ollama + openai + llamacpp + anthropic |
-| `all-db` | postgres + all vector stores |
-| `full` | All optional features (except UI and local-embeddings): ollama, openai, llamacpp, anthropic, postgres, qdrant, ares-vector, mcp, swagger-ui |
+| `all-db` | postgres |
+| `full` | postgres, qdrant, ares-vector, mcp, swagger-ui |
 | `full-ui` | All optional features + UI (except local-embeddings) |
 | `full-local-embeddings` | Full + local-embeddings (Linux/macOS only) |
 | `full-ui-local-embeddings` | Full + UI + local-embeddings (Linux/macOS only) |
@@ -265,19 +258,15 @@ The `ares-server` binary needs both `http` and `cli`. A build without them skips
 ### Building with features
 
 ```bash
-# Default (postgres + openai + http + cli)
+# Default (postgres + http + cli; genai via ares-llm)
 cargo build
 # Or: just build
 
-# With OpenAI support
-cargo build --features "openai"
-# Or: just build-features "openai"
+# With direct GGUF loading (ares-llm)
+cargo build -p ares-llm --features "llamacpp"
 
-# With direct GGUF loading
-cargo build --features "llamacpp"
-
-# With CUDA GPU acceleration
-cargo build --features "llamacpp-cuda"
+# With CUDA GPU acceleration (ares-llm)
+cargo build -p ares-llm --features "llamacpp-cuda"
 
 # Full feature set
 cargo build --features "full"

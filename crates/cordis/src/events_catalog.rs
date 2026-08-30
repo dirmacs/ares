@@ -38,6 +38,7 @@ pub mod ev {
     pub const LLM_GET_CLIENT: &str = "llm.get_client";
     pub const LLM_GENERATE: &str = "llm.generate";
     pub const LLM_GENERATE_TOOLS: &str = "llm.generate_tools";
+    pub const LLM_EMBED: &str = "llm.embed";
     pub const TOOLS_EXECUTE: &str = "tools.execute";
     pub const TOOLS_LIST: &str = "tools.list";
     pub const TOOLS_RESOLVE: &str = "tools.resolve";
@@ -101,6 +102,11 @@ pub const CONTRACTS: &[EventContract] = &[
     },
     EventContract {
         name: ev::LLM_GENERATE_TOOLS,
+        mode: Dispatch::Waterfall,
+        around: true,
+    },
+    EventContract {
+        name: ev::LLM_EMBED,
         mode: Dispatch::Waterfall,
         around: true,
     },
@@ -230,7 +236,7 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), total, "duplicate contract names");
-        assert_eq!(total, 22);
+        assert_eq!(total, 23);
     }
 
     #[test]

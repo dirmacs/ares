@@ -7,8 +7,6 @@
 //! - Error handling
 //! - Concurrent requests
 
-#![cfg(feature = "ollama")]
-
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};

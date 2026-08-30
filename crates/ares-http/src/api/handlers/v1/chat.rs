@@ -43,6 +43,7 @@ pub async fn v1_chat(
             "All agents are currently under human review. Please try again later.".to_string(),
         )));
     }
+    crate::api::handlers::chat::validate_chat_request(&payload)?;
 
     // Build a minimal agent context (no user-level conversation/memory)
     let agent_context = AgentContext {
@@ -53,7 +54,7 @@ pub async fn v1_chat(
     };
 
     // Determine agent type
-    let agent_type = if let Some(at) = payload.agent_type {
+    let agent_type = if let Some(at) = payload.agent_type.clone() {
         at
     } else {
         AgentType::Orchestrator
@@ -97,6 +98,9 @@ pub async fn v1_chat(
             message: effective_message.clone(),
             history: agent_context.conversation_history.clone(),
             ctx_provider: None,
+            parts: payload.parts.clone().unwrap_or_default(),
+            previous_response_id: payload.previous_response_id.clone(),
+            web_search: payload.web_search == Some(true),
         };
         // Cordis intercepts are request-local and composable: pin the model,
         // then attach the tenant's current allowlist without mutating root state.
@@ -330,6 +334,8 @@ mod tests {
             tool_calls: Vec::new(),
             finish_reason: "stop".to_string(),
             usage: None,
+            reasoning_content: None,
+            response_id: None,
         }
     }
 

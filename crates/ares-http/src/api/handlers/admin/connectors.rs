@@ -403,9 +403,15 @@ pub async fn oauth_callback(
         &callback_url,
     );
 
+    let form_body = form
+        .iter()
+        .map(|(key, value)| format!("{}={}", urlencoding::encode(key), urlencoding::encode(value)))
+        .collect::<Vec<_>>()
+        .join("&");
     let response = reqwest::Client::new()
         .post(provider.token_url)
-        .form(&form)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(form_body)
         .send()
         .await
         .map_err(|e| AppError::External(format!("OAuth token request failed: {e}")))?;

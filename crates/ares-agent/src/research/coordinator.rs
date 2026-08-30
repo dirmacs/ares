@@ -572,6 +572,8 @@ mod tests {
                 tool_calls: vec![],
                 finish_reason: "stop".to_string(),
                 usage: Some(usage),
+                reasoning_content: None,
+                response_id: None,
             })
         }
 
@@ -585,6 +587,8 @@ mod tests {
                 tool_calls: vec![],
                 finish_reason: "stop".to_string(),
                 usage: None,
+                reasoning_content: None,
+                response_id: None,
             })
         }
 
@@ -598,6 +602,8 @@ mod tests {
                 tool_calls: vec![],
                 finish_reason: "stop".to_string(),
                 usage: None,
+                reasoning_content: None,
+                response_id: None,
             })
         }
 

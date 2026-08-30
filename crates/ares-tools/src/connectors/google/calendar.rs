@@ -62,22 +62,27 @@ impl GoogleCalendarListEvents {
         time_min: Option<&str>,
         time_max: Option<&str>,
     ) -> Result<Vec<CalendarEvent>> {
-        let path = if calendar_id == "primary" {
+        let mut path = if calendar_id == "primary" {
             "/calendars/primary/events".to_string()
         } else {
             format!("/calendars/{}/events", urlencoding::encode(calendar_id))
         };
+        let mut query = Vec::new();
+        if let Some(tmin) = time_min {
+            query.push(format!("timeMin={}", urlencoding::encode(tmin)));
+        }
+        if let Some(tmax) = time_max {
+            query.push(format!("timeMax={}", urlencoding::encode(tmax)));
+        }
+        if !query.is_empty() {
+            path.push('?');
+            path.push_str(&query.join("&"));
+        }
 
-        let mut req = self
+        let req = self
             .client
             .request(tenant_id, reqwest::Method::GET, &path)
             .await?;
-        if let Some(tmin) = time_min {
-            req = req.query(&[("timeMin", tmin)]);
-        }
-        if let Some(tmax) = time_max {
-            req = req.query(&[("timeMax", tmax)]);
-        }
 
         let resp = self.client.execute(req).await.map_err(AppError::from)?;
         let body = resp.text().await.map_err(|e| {

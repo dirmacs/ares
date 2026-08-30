@@ -2,6 +2,23 @@
 //!
 //! These tests verify the connection pooling functionality for LLM clients.
 
+
+fn ollama_provider(base_url: &str, model: &str) -> ares_llm::Provider {
+    use ares_llm::{AdapterKind, GenaiProvider, Provider};
+    Provider::Genai(GenaiProvider {
+        kind: AdapterKind::Ollama,
+        api_key: None,
+        endpoint: Some(base_url.to_string()),
+        model: model.to_string(),
+        params: Default::default(),
+        headers: Default::default(),
+        region: None,
+        vertex_project: None,
+        vertex_location: None,
+        custom_index: None,
+    })
+}
+
 #[cfg(test)]
 mod pool_config_tests {
     use ares_llm::pool::PoolConfig;
@@ -48,7 +65,7 @@ mod pool_config_tests {
 
 #[cfg(test)]
 mod pool_basic_tests {
-    use ares_llm::pool::{ClientPool, ClientPoolBuilder, PoolConfig};
+    use ares_llm::pool::{ClientPool, ClientPoolBuilder};
 
     #[test]
     fn test_pool_creation_with_defaults() {
@@ -94,17 +111,12 @@ mod pool_basic_tests {
 }
 
 #[cfg(test)]
-#[cfg(feature = "ollama")]
 mod pool_provider_tests {
-    use ares_llm::client::{ModelParams, Provider};
-    use ares_llm::pool::{ClientPool, ClientPoolBuilder, PoolConfig};
+    use ares_llm::client::Provider;
+    use ares_llm::pool::{ClientPool, ClientPoolBuilder};
 
     fn create_test_provider() -> Provider {
-        Provider::Ollama {
-            base_url: "http://localhost:11434".to_string(),
-            model: "test-model".to_string(),
-            params: ModelParams::default(),
-        }
+        crate::ollama_provider("http://localhost:11434", "test-model")
     }
 
     #[test]
@@ -234,19 +246,14 @@ mod pool_concurrency_tests {
 }
 
 #[cfg(test)]
-#[cfg(feature = "ollama")]
 mod pool_lifecycle_tests {
-    use ares_llm::client::{ModelParams, Provider};
+    use ares_llm::client::Provider;
     use ares_llm::pool::{ClientPool, PoolConfig};
     use std::sync::Arc;
     use std::time::Duration;
 
     fn create_test_provider() -> Provider {
-        Provider::Ollama {
-            base_url: "http://localhost:11434".to_string(),
-            model: "test-model".to_string(),
-            params: ModelParams::default(),
-        }
+        crate::ollama_provider("http://localhost:11434", "test-model")
     }
 
     #[tokio::test]
@@ -364,27 +371,16 @@ mod pool_builder_tests {
         assert!(!pool.is_shutdown());
     }
 
-    #[cfg(feature = "ollama")]
     #[test]
     fn test_builder_with_multiple_providers() {
-        use ares_llm::client::{ModelParams, Provider};
-
         let pool = ClientPoolBuilder::new()
             .provider(
                 "ollama1",
-                Provider::Ollama {
-                    base_url: "http://localhost:11434".to_string(),
-                    model: "model1".to_string(),
-                    params: ModelParams::default(),
-                },
+                crate::ollama_provider("http://localhost:11434", "model1"),
             )
             .provider(
                 "ollama2",
-                Provider::Ollama {
-                    base_url: "http://localhost:11435".to_string(),
-                    model: "model2".to_string(),
-                    params: ModelParams::default(),
-                },
+                crate::ollama_provider("http://localhost:11435", "model2"),
             )
             .build();
 

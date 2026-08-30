@@ -1,6 +1,48 @@
 use crate::config::{ModelConfig, ProviderConfig};
 use ares_types::types::{AppError, Result, ToolCall, ToolDefinition};
 use async_trait::async_trait;
+use genai::adapter::AdapterKind;
+use std::collections::HashMap;
+
+/// Azure AI Foundry env/header helpers (no LLMClient). Inlined after
+/// `azure.rs` was removed from this crate.
+pub(crate) const AZURE_API_KEY_ENV: &str = "AZURE_FOUNDRY_API_KEY";
+pub(crate) const AZURE_BASE_URL_ENV: &str = "AZURE_FOUNDRY_BASE_URL";
+pub(crate) const AZURE_MODEL_ENV: &str = "AZURE_FOUNDRY_MODEL";
+pub(crate) const AZURE_DEFAULT_MODEL: &str = "DeepSeek-V4-Flash";
+const AZURE_MODEL_PREFIX: &str = "azure/";
+
+pub(crate) fn azure_strip_model_prefix(model: &str) -> &str {
+    let trimmed = model.trim();
+    trimmed
+        .strip_prefix(AZURE_MODEL_PREFIX)
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .unwrap_or(trimmed)
+}
+
+pub(crate) fn azure_normalize_base_url(api_base: &str) -> String {
+    api_base.trim().trim_end_matches('/').to_string()
+}
+
+pub(crate) fn azure_foundry_headers(api_key: &str) -> HashMap<String, String> {
+    let mut headers = HashMap::with_capacity(2);
+    headers.insert("api-key".to_string(), api_key.to_string());
+    headers.insert("Authorization".to_string(), format!("Bearer {api_key}"));
+    headers
+}
+
+/// Provider-neutral prompt cache policy mapped onto genai cache control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheControl {
+    /// Default ephemeral cache.
+    Ephemeral,
+    /// Explicit 5-minute TTL.
+    Ephemeral5m,
+    /// Extended 24-hour TTL.
+    Ephemeral24h,
+}
 
 /// Optional generation hints set on a client between calls.
 ///
@@ -22,19 +64,6 @@ use async_trait::async_trait;
 /// Implementations that adopt hints MUST use interior mutability (for
 /// example `std::sync::RwLock<GenerationHints>`) because the trait methods
 /// take `&self`. Readers snapshot the hints at the start of each call.
-///
-/// # Provider mapping guidance
-///
-/// OpenAI-compatible implementations SHOULD map:
-/// - `json_mode` → `response_format: { "type": "json_object" }`
-/// - `suppress_reasoning` → `chat_template_kwargs: { "enable_thinking": false }`
-///   (reasoning-capable OpenAI-compatible servers; ignore where unsupported)
-/// - `max_tokens` → the request's max-output-tokens field
-/// - `guided_grammar` → a JSON-Schema-shaped value (JSON object with a
-///   `"type"` member) maps to structured-output response formats on
-///   OpenAI-compatible paths; raw GBNF/EBNF-style text is carried in a
-///   provider-specific extension field where the server supports grammar-
-///   constrained decoding, and silently ignored elsewhere
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GenerationHints {
     /// Ask the provider for a JSON object response.
@@ -48,6 +77,18 @@ pub struct GenerationHints {
     /// mechanism exists; unsupported backends silently ignore it without
     /// erroring.
     pub guided_grammar: Option<String>,
+    /// Reasoning effort keyword (`low|medium|high|zero`).
+    pub reasoning_effort: Option<String>,
+    /// OpenAI prompt cache key.
+    pub prompt_cache_key: Option<String>,
+    /// Request-level cache control.
+    pub cache_control: Option<CacheControl>,
+    /// Previous Responses API id for stateful continuation.
+    pub previous_response_id: Option<String>,
+    /// Whether the provider should store the response.
+    pub store: Option<bool>,
+    /// Attach the provider built-in web search tool (`provider_web_search`).
+    pub web_search: bool,
 }
 
 /// Generic LLM client trait for provider abstraction
@@ -73,19 +114,6 @@ pub trait LLMClient: Send + Sync {
     ) -> Result<LLMResponse>;
 
     /// Generate with conversation history AND tool definitions.
-    ///
-    /// This is the core method for multi-turn tool calling, combining:
-    /// - `generate_with_history()` - conversation context
-    /// - `generate_with_tools()` - tool calling capability
-    ///
-    /// # Arguments
-    ///
-    /// * `messages` - Conversation history as ConversationMessage structs
-    /// * `tools` - Available tool definitions
-    ///
-    /// # Returns
-    ///
-    /// An LLMResponse containing the model's reply and any tool calls requested.
     async fn generate_with_tools_and_history(
         &self,
         messages: &[crate::coordinator::ConversationMessage],
@@ -123,10 +151,25 @@ pub trait LLMClient: Send + Sync {
 
     /// Store generation hints applying to SUBSEQUENT generate calls, until
     /// replaced (clear with `GenerationHints::default()`). Default impl is a
-    /// no-op so unmodified providers keep compiling unchanged. Implementers
-    /// MUST use interior mutability; see [`GenerationHints`] for thread-safety
-    /// expectations and provider mapping guidance.
+    /// no-op so unmodified providers keep compiling unchanged.
     fn set_hints(&self, _hints: GenerationHints) {}
+
+    /// Embed one or more input strings. Default: not supported.
+    async fn embed(&self, _inputs: &[String]) -> Result<Vec<Vec<f32>>> {
+        Err(AppError::FeatureDisabled(
+            "embeddings not supported by this client".into(),
+        ))
+    }
+
+    /// Whether this client can send image/file parts.
+    fn supports_vision(&self) -> bool {
+        false
+    }
+
+    /// Whether this client can attach the provider built-in web search tool.
+    fn supports_provider_web_search(&self) -> bool {
+        false
+    }
 }
 
 /// Token usage statistics from an LLM generation call
@@ -168,6 +211,10 @@ pub struct LLMResponse {
     pub finish_reason: String,
     /// Token usage statistics (if provided by the model)
     pub usage: Option<TokenUsage>,
+    /// Reasoning/thinking content when the model reports it.
+    pub reasoning_content: Option<String>,
+    /// Provider response id for stateful continuation (Responses API).
+    pub response_id: Option<String>,
 }
 
 /// Model inference parameters
@@ -198,89 +245,68 @@ impl ModelParams {
     }
 }
 
+/// Resolved genai HTTP provider (kind + credentials + endpoint).
+#[derive(Debug, Clone)]
+pub struct GenaiProvider {
+    /// genai adapter kind used for every call.
+    pub kind: AdapterKind,
+    /// API key (None for unauthenticated local adapters).
+    pub api_key: Option<String>,
+    /// Override endpoint; None uses the adapter default.
+    pub endpoint: Option<String>,
+    /// Model identifier.
+    pub model: String,
+    /// Sampling parameters.
+    pub params: ModelParams,
+    /// Extra HTTP headers (Azure Foundry, runtime providers).
+    pub headers: HashMap<String, String>,
+    /// AWS region (Bedrock API).
+    pub region: Option<String>,
+    /// GCP project (Vertex).
+    pub vertex_project: Option<String>,
+    /// Vertex location.
+    pub vertex_location: Option<String>,
+    /// Custom adapter index (`GENAI_{n}_*`).
+    pub custom_index: Option<u8>,
+}
+
+impl GenaiProvider {
+    fn openai(
+        api_key: String,
+        endpoint: String,
+        model: String,
+        params: ModelParams,
+        headers: HashMap<String, String>,
+    ) -> Self {
+        Self {
+            kind: AdapterKind::OpenAI,
+            api_key: Some(api_key),
+            endpoint: Some(endpoint),
+            model,
+            params,
+            headers,
+            region: None,
+            vertex_project: None,
+            vertex_location: None,
+            custom_index: None,
+        }
+    }
+}
+
 /// LLM Provider configuration
-///
-/// Each variant is feature-gated to ensure only enabled providers are available.
-/// Use `Provider::from_env()` to automatically select based on environment variables.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum Provider {
-    /// OpenAI API and compatible endpoints (e.g., NVIDIA NIM, Azure OpenAI, local vLLM)
-    #[cfg(feature = "openai")]
-    OpenAI {
-        /// API key for authentication
-        api_key: String,
-        /// Base URL for the API (default: <https://api.openai.com/v1>)
-        api_base: String,
-        /// Model identifier (e.g., "gpt-4", "nvidia/nemotron-3-ultra-550b-a55b")
-        model: String,
-        /// Model inference parameters
+    /// Any HTTP provider routed through genai.
+    Genai(GenaiProvider),
+    /// Local GGUF inference via llama.cpp.
+    #[cfg(feature = "llamacpp")]
+    LlamaCpp {
+        /// Path to a GGUF model file.
+        model_path: String,
+        /// Model inference parameters.
         params: ModelParams,
     },
-
-    /// Azure AI Foundry OpenAI-compatible chat completions
-    #[cfg(feature = "azure")]
-    Azure {
-        /// Foundry API key for authentication
-        api_key: String,
-        /// Foundry base URL (e.g., <https://resource.services.ai.azure.com/openai/v1>)
-        api_base: String,
-        /// Model identifier (e.g., "DeepSeek-V4-Flash")
-        model: String,
-        /// Model inference parameters
-        params: ModelParams,
-    },
-
-    /// Anthropic Claude API
-    #[cfg(feature = "anthropic")]
-    Anthropic {
-        /// API key for authentication
-        api_key: String,
-        /// Model identifier (e.g., "claude-3-5-sonnet-20241022")
-        model: String,
-        /// Model inference parameters
-        params: ModelParams,
-    },
-
-    /// AWS Bedrock Claude API via Anthropic Messages request bodies
-    #[cfg(feature = "bedrock")]
-    Bedrock {
-        /// Bedrock bearer token for authentication
-        api_key: String,
-        /// AWS region for Bedrock Runtime (e.g., "us-east-1")
-        region: String,
-        /// Bedrock model identifier (e.g., "us.anthropic.claude-haiku-4-5-20251001-v1:0")
-        model: String,
-        /// Model inference parameters
-        params: ModelParams,
-    },
-
-    /// Runtime OpenAI-compatible provider with custom headers.
-    #[cfg(feature = "openai")]
-    RuntimeOpenAI {
-        /// API key for authentication
-        api_key: String,
-        /// Base URL for the API
-        api_base: String,
-        /// Model identifier
-        model: String,
-        /// Model inference parameters
-        params: ModelParams,
-        /// Extra headers to send with every request
-        headers: std::collections::HashMap<String, String>,
-    },
-
-    /// Local Ollama server
-    #[cfg(feature = "ollama")]
-    Ollama {
-        /// Base URL of the Ollama server (e.g., "http://localhost:11434")
-        base_url: String,
-        /// Model identifier (e.g., "ministral-3:3b")
-        model: String,
-        /// Model inference parameters
-        params: ModelParams,
-    },
-
     /// In-memory stub for unit tests (no network I/O).
     #[cfg(test)]
     TestStub {
@@ -291,353 +317,198 @@ pub enum Provider {
 
 impl Provider {
     /// Create an LLM client from this provider configuration
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - The provider cannot be initialized
-    /// - Required configuration is missing
-    /// - Network connectivity issues (for remote providers)
     pub async fn create_client(&self) -> Result<Box<dyn LLMClient>> {
         match self {
-            #[cfg(feature = "openai")]
-            Provider::OpenAI {
-                api_key,
-                api_base,
-                model,
-                params,
-            } => Ok(Box::new(super::openai::OpenAIClient::with_params(
-                api_key.clone(),
-                api_base.clone(),
-                model.clone(),
-                params.clone(),
-            ))),
-
-            #[cfg(feature = "azure")]
-            Provider::Azure {
-                api_key,
-                api_base,
-                model,
-                params,
-            } => Ok(Box::new(
-                super::openai::OpenAIClient::with_params_and_headers(
-                    api_key.clone(),
-                    super::azure::normalize_base_url(api_base),
-                    super::azure::strip_model_prefix(model).to_string(),
-                    params.clone(),
-                    super::azure::foundry_headers(api_key),
-                ),
+            Provider::Genai(provider) => Ok(Box::new(crate::genai_client::GenaiClient::new(
+                provider.clone(),
+            )?)),
+            #[cfg(feature = "llamacpp")]
+            Provider::LlamaCpp { model_path, params } => Ok(Box::new(
+                crate::llamacpp::LlamaCppClient::with_params(model_path.clone(), params.clone())?,
             )),
-
-            #[cfg(feature = "openai")]
-            Provider::RuntimeOpenAI {
-                api_key,
-                api_base,
-                model,
-                params,
-                headers,
-            } => Ok(Box::new(
-                super::openai::OpenAIClient::with_params_and_headers(
-                    api_key.clone(),
-                    api_base.clone(),
-                    model.clone(),
-                    params.clone(),
-                    headers.clone(),
-                ),
-            )),
-
-            #[cfg(feature = "anthropic")]
-            Provider::Anthropic {
-                api_key,
-                model,
-                params,
-            } => Ok(Box::new(super::anthropic::AnthropicClient::with_params(
-                api_key.clone(),
-                model.clone(),
-                params.clone(),
-            ))),
-
-            #[cfg(feature = "bedrock")]
-            Provider::Bedrock {
-                api_key,
-                region,
-                model,
-                params,
-            } => Ok(Box::new(super::bedrock::BedrockClient::with_params(
-                api_key.clone(),
-                region.clone(),
-                model.clone(),
-                params.clone(),
-            ))),
-
-            #[cfg(feature = "ollama")]
-            Provider::Ollama {
-                base_url,
-                model,
-                params,
-            } => super::ollama::OllamaClient::with_params(
-                base_url.clone(),
-                model.clone(),
-                params.clone(),
-            )
-            .await
-            .map(|c| Box::new(c) as Box<dyn LLMClient>),
-
             #[cfg(test)]
             Provider::TestStub { model } => {
                 Ok(Box::new(test_support::MockLLMClient::new(model.clone())))
             }
-
-            #[allow(unreachable_patterns)]
-            _ => Err(AppError::Configuration(
-                "No matching LLM provider feature is enabled for this provider".into(),
-            )),
         }
     }
 
-    /// Create a provider from environment variables
+    /// Create a provider from environment variables.
     ///
-    /// Provider priority (first match wins):
-    /// 1. **LlamaCpp** - if `LLAMACPP_MODEL_PATH` is set
-    /// 2. **OpenAI** - if `OPENAI_API_KEY` is set
-    /// 3. **NVIDIA NIM** - if `NVIDIA_API_KEY` is set
-    /// 4. **Azure AI Foundry** - if `AZURE_FOUNDRY_API_KEY` is set
-    /// 5. **AWS Bedrock** - if `AWS_BEARER_TOKEN_BEDROCK` is set
-    /// 6. **Ollama** - default fallback for local inference
-    ///
-    /// # Environment Variables
-    ///
-    /// ## LlamaCpp
-    /// - `LLAMACPP_MODEL_PATH` - Path to GGUF model file (required)
-    ///
-    /// ## OpenAI
-    /// - `OPENAI_API_KEY` - API key (required)
-    /// - `OPENAI_API_BASE` - Base URL (default: <https://api.openai.com/v1>)
-    /// - `OPENAI_MODEL` - Model name (default: gpt-4)
-    ///
-    /// ## Azure AI Foundry
-    /// - `AZURE_FOUNDRY_API_KEY` - Foundry API key (required)
-    /// - `AZURE_FOUNDRY_BASE_URL` - Foundry `/openai/v1` base URL (required)
-    /// - `AZURE_FOUNDRY_MODEL` - Model name (default: DeepSeek-V4-Flash)
-    ///
-    /// ## AWS Bedrock
-    /// - `AWS_BEARER_TOKEN_BEDROCK` - Bedrock API bearer token (required)
-    /// - `AWS_REGION` - Bedrock Runtime region (required)
-    /// - `BEDROCK_MODEL` - Model name (default: us.anthropic.claude-haiku-4-5-20251001-v1:0)
-    ///
-    /// ## Ollama
-    /// - `OLLAMA_BASE_URL` - Server URL (default: http://localhost:11434)
-    /// - `OLLAMA_MODEL` - Model name (default: ministral-3:3b)
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if no LLM provider features are enabled or configured.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// // Set environment variables
-    /// std::env::set_var("OLLAMA_MODEL", "ministral-3:3b");
-    ///
-    /// let provider = Provider::from_env()?;
-    /// let client = provider.create_client().await?;
-    /// ```
+    /// Priority: OPENAI_API_KEY, NVIDIA_API_KEY, AZURE_FOUNDRY_API_KEY,
+    /// AWS_BEARER_TOKEN_BEDROCK, ANTHROPIC_API_KEY, GEMINI_API_KEY, else
+    /// Ollama localhost.
     pub fn from_env() -> Result<Self> {
-        #[cfg(feature = "openai")]
-        {
-            if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
-                if !api_key.is_empty() {
-                    let api_base = std::env::var("OPENAI_API_BASE")
-                        .unwrap_or_else(|_| "https://api.openai.com/v1".into());
-                    let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4".into());
-                    return Ok(Provider::OpenAI {
-                        api_key,
-                        api_base,
-                        model,
-                        params: ModelParams::default(),
-                    });
-                }
-            }
-
-            // Fallback to NVIDIA API key
-            if let Ok(api_key) = std::env::var("NVIDIA_API_KEY") {
-                if !api_key.is_empty() {
-                    return Ok(Provider::OpenAI {
-                        api_key,
-                        api_base: "https://integrate.api.nvidia.com/v1".into(),
-                        model: "nvidia/nemotron-3-ultra-550b-a55b".into(),
-                        params: ModelParams::default(),
-                    });
-                }
+        if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
+            if !api_key.is_empty() {
+                let api_base = std::env::var("OPENAI_API_BASE")
+                    .unwrap_or_else(|_| "https://api.openai.com/v1".into());
+                let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4".into());
+                return Ok(Provider::Genai(GenaiProvider::openai(
+                    api_key,
+                    api_base,
+                    model,
+                    ModelParams::default(),
+                    HashMap::new(),
+                )));
             }
         }
 
-        #[cfg(feature = "azure")]
-        {
-            if let Ok(api_key) = std::env::var(super::azure::DEFAULT_API_KEY_ENV) {
-                if !api_key.is_empty() {
-                    let api_base =
-                        std::env::var(super::azure::DEFAULT_BASE_URL_ENV).map_err(|_| {
-                            AppError::Configuration(format!(
-                                "{} must be set when {} is configured",
-                                super::azure::DEFAULT_BASE_URL_ENV,
-                                super::azure::DEFAULT_API_KEY_ENV
-                            ))
-                        })?;
-                    let model = std::env::var(super::azure::DEFAULT_MODEL_ENV)
-                        .unwrap_or_else(|_| super::azure::DEFAULT_MODEL.to_string());
-                    return Ok(Provider::Azure {
-                        api_key,
-                        api_base,
-                        model,
-                        params: ModelParams::default(),
-                    });
-                }
+        if let Ok(api_key) = std::env::var("NVIDIA_API_KEY") {
+            if !api_key.is_empty() {
+                return Ok(Provider::Genai(GenaiProvider::openai(
+                    api_key,
+                    "https://integrate.api.nvidia.com/v1".into(),
+                    "nvidia/nemotron-3-ultra-550b-a55b".into(),
+                    ModelParams::default(),
+                    HashMap::new(),
+                )));
             }
         }
 
-        #[cfg(feature = "bedrock")]
-        {
-            if let Ok(api_key) = std::env::var("AWS_BEARER_TOKEN_BEDROCK") {
-                if !api_key.is_empty() {
-                    let region = std::env::var("AWS_REGION").map_err(|_| {
-                        AppError::Configuration(
-                            "AWS_REGION must be set when AWS_BEARER_TOKEN_BEDROCK is configured"
-                                .into(),
-                        )
-                    })?;
-                    let model = std::env::var("BEDROCK_MODEL")
-                        .unwrap_or_else(|_| "us.anthropic.claude-haiku-4-5-20251001-v1:0".into());
-                    return Ok(Provider::Bedrock {
-                        api_key,
-                        region,
-                        model,
-                        params: ModelParams::default(),
-                    });
-                }
+        if let Ok(api_key) = std::env::var(AZURE_API_KEY_ENV) {
+            if !api_key.is_empty() {
+                let api_base = std::env::var(AZURE_BASE_URL_ENV).map_err(|_| {
+                    AppError::Configuration(format!(
+                        "{} must be set when {} is configured",
+                        AZURE_BASE_URL_ENV,
+                        AZURE_API_KEY_ENV
+                    ))
+                })?;
+                let model = std::env::var(AZURE_MODEL_ENV)
+                    .unwrap_or_else(|_| AZURE_DEFAULT_MODEL.to_string());
+                return Ok(Provider::Genai(GenaiProvider::openai(
+                    api_key.clone(),
+                    azure_normalize_base_url(&api_base),
+                    azure_strip_model_prefix(&model).to_string(),
+                    ModelParams::default(),
+                    azure_foundry_headers(&api_key),
+                )));
             }
         }
 
-        #[cfg(all(
-            not(feature = "openai"),
-            not(feature = "azure"),
-            not(feature = "bedrock")
-        ))]
-        return Err(AppError::Configuration(
-            "No LLM provider feature is enabled. Enable openai, azure, or bedrock.".into(),
-        ));
+        if let Ok(api_key) = std::env::var("AWS_BEARER_TOKEN_BEDROCK") {
+            if !api_key.is_empty() {
+                let region = std::env::var("AWS_REGION").map_err(|_| {
+                    AppError::Configuration(
+                        "AWS_REGION must be set when AWS_BEARER_TOKEN_BEDROCK is configured".into(),
+                    )
+                })?;
+                let model = std::env::var("BEDROCK_MODEL")
+                    .unwrap_or_else(|_| "us.anthropic.claude-haiku-4-5-20251001-v1:0".into());
+                return Ok(Provider::Genai(GenaiProvider {
+                    kind: AdapterKind::BedrockApi,
+                    api_key: Some(api_key),
+                    endpoint: None,
+                    model,
+                    params: ModelParams::default(),
+                    headers: HashMap::new(),
+                    region: Some(region),
+                    vertex_project: None,
+                    vertex_location: None,
+                    custom_index: None,
+                }));
+            }
+        }
 
-        #[cfg(any(feature = "openai", feature = "azure", feature = "bedrock"))]
-        Err(AppError::Configuration(
-            "No LLM provider configured. Set OPENAI_API_KEY, NVIDIA_API_KEY, AZURE_FOUNDRY_API_KEY, or AWS_BEARER_TOKEN_BEDROCK.".into(),
-        ))
+        if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
+            if !api_key.is_empty() {
+                let model = std::env::var("ANTHROPIC_MODEL")
+                    .unwrap_or_else(|_| "claude-3-5-sonnet-20241022".into());
+                return Ok(Provider::Genai(GenaiProvider {
+                    kind: AdapterKind::Anthropic,
+                    api_key: Some(api_key),
+                    endpoint: None,
+                    model,
+                    params: ModelParams::default(),
+                    headers: HashMap::new(),
+                    region: None,
+                    vertex_project: None,
+                    vertex_location: None,
+                    custom_index: None,
+                }));
+            }
+        }
+
+        if let Ok(api_key) = std::env::var("GEMINI_API_KEY") {
+            if !api_key.is_empty() {
+                let model =
+                    std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.0-flash".into());
+                return Ok(Provider::Genai(GenaiProvider {
+                    kind: AdapterKind::Gemini,
+                    api_key: Some(api_key),
+                    endpoint: None,
+                    model,
+                    params: ModelParams::default(),
+                    headers: HashMap::new(),
+                    region: None,
+                    vertex_project: None,
+                    vertex_location: None,
+                    custom_index: None,
+                }));
+            }
+        }
+
+        let base_url = std::env::var("OLLAMA_BASE_URL")
+            .or_else(|_| std::env::var("OLLAMA_URL"))
+            .unwrap_or_else(|_| "http://localhost:11434".into());
+        let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "ministral-3:3b".into());
+        Ok(Provider::Genai(GenaiProvider {
+            kind: AdapterKind::Ollama,
+            api_key: None,
+            endpoint: Some(base_url),
+            model,
+            params: ModelParams::default(),
+            headers: HashMap::new(),
+            region: None,
+            vertex_project: None,
+            vertex_location: None,
+            custom_index: None,
+        }))
     }
 
     /// Get the provider name as a string
     pub fn name(&self) -> &'static str {
         match self {
-            #[cfg(feature = "openai")]
-            Provider::OpenAI { .. } => "openai",
-
-            #[cfg(feature = "azure")]
-            Provider::Azure { .. } => "azure",
-
-            #[cfg(feature = "openai")]
-            Provider::RuntimeOpenAI { .. } => "openai",
-
-            #[cfg(feature = "anthropic")]
-            Provider::Anthropic { .. } => "anthropic",
-
-            #[cfg(feature = "bedrock")]
-            Provider::Bedrock { .. } => "bedrock",
-
-            #[cfg(feature = "ollama")]
-            Provider::Ollama { .. } => "ollama",
-
+            Provider::Genai(p) => p.kind.as_lower_str(),
+            #[cfg(feature = "llamacpp")]
+            Provider::LlamaCpp { .. } => "llamacpp",
             #[cfg(test)]
             Provider::TestStub { .. } => "test-stub",
-
-            #[allow(unreachable_patterns)]
-            _ => "unknown",
         }
     }
 
     /// Check if this provider requires an API key
     pub fn requires_api_key(&self) -> bool {
         match self {
-            #[cfg(feature = "openai")]
-            Provider::OpenAI { .. } => true,
-
-            #[cfg(feature = "azure")]
-            Provider::Azure { .. } => true,
-
-            #[cfg(feature = "openai")]
-            Provider::RuntimeOpenAI { .. } => true,
-
-            #[cfg(feature = "anthropic")]
-            Provider::Anthropic { .. } => true,
-
-            #[cfg(feature = "bedrock")]
-            Provider::Bedrock { .. } => true,
-
-            #[cfg(feature = "ollama")]
-            Provider::Ollama { .. } => false,
-
+            Provider::Genai(p) => !matches!(p.kind, AdapterKind::Ollama),
+            #[cfg(feature = "llamacpp")]
+            Provider::LlamaCpp { .. } => false,
             #[cfg(test)]
             Provider::TestStub { .. } => false,
-
-            #[allow(unreachable_patterns)]
-            _ => false,
         }
     }
 
     /// Check if this provider is local (no network required)
     pub fn is_local(&self) -> bool {
         match self {
-            #[cfg(feature = "openai")]
-            Provider::OpenAI { api_base, .. } => {
-                api_base.contains("localhost") || api_base.contains("127.0.0.1")
+            Provider::Genai(p) => {
+                if matches!(p.kind, AdapterKind::Ollama | AdapterKind::Omlx) {
+                    return true;
+                }
+                p.endpoint
+                    .as_deref()
+                    .map(|u| u.contains("localhost") || u.contains("127.0.0.1"))
+                    .unwrap_or(false)
             }
-
-            #[cfg(feature = "azure")]
-            Provider::Azure { .. } => false,
-
-            #[cfg(feature = "openai")]
-            Provider::RuntimeOpenAI { api_base, .. } => {
-                api_base.contains("localhost") || api_base.contains("127.0.0.1")
-            }
-
-            #[cfg(feature = "ollama")]
-            Provider::Ollama { base_url, .. } => {
-                base_url.contains("localhost") || base_url.contains("127.0.0.1")
-            }
-
-            #[cfg(feature = "anthropic")]
-            Provider::Anthropic { .. } => false,
-
-            #[cfg(feature = "bedrock")]
-            Provider::Bedrock { .. } => false,
-
+            #[cfg(feature = "llamacpp")]
+            Provider::LlamaCpp { .. } => true,
             #[cfg(test)]
             Provider::TestStub { .. } => true,
-
-            #[allow(unreachable_patterns)]
-            _ => false,
         }
     }
 
     /// Create a provider from TOML configuration
-    ///
-    /// # Arguments
-    ///
-    /// * `provider_config` - The provider configuration from ares.toml
-    /// * `model_override` - Optional model name to override the provider default
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the provider type doesn't match an enabled feature
-    /// or if required environment variables are not set.
-    #[allow(unused_variables)]
     pub fn from_config(
         provider_config: &ProviderConfig,
         model_override: Option<&str>,
@@ -646,138 +517,19 @@ impl Provider {
     }
 
     /// Create a provider from TOML configuration with model parameters
-    #[allow(unused_variables)]
     pub fn from_config_with_params(
         provider_config: &ProviderConfig,
         model_override: Option<&str>,
         params: ModelParams,
     ) -> Result<Self> {
-        match provider_config {
-            #[cfg(feature = "openai")]
-            ProviderConfig::OpenAI {
-                api_key_env,
-                api_base,
-                default_model,
-            } => {
-                let api_key = std::env::var(api_key_env).map_err(|_| {
-                    AppError::Configuration(format!(
-                        "OpenAI API key environment variable '{}' is not set",
-                        api_key_env
-                    ))
-                })?;
-                Ok(Provider::OpenAI {
-                    api_key,
-                    api_base: api_base.clone(),
-                    model: model_override
-                        .map(String::from)
-                        .unwrap_or_else(|| default_model.clone()),
-                    params,
-                })
-            }
-
-            #[cfg(feature = "azure")]
-            ProviderConfig::Azure {
-                api_key_env,
-                base_url_env,
-                default_model,
-            } => {
-                let api_key = std::env::var(api_key_env).map_err(|_| {
-                    AppError::Configuration(format!(
-                        "Azure Foundry API key environment variable '{}' is not set",
-                        api_key_env
-                    ))
-                })?;
-                let api_base = std::env::var(base_url_env).map_err(|_| {
-                    AppError::Configuration(format!(
-                        "Azure Foundry base URL environment variable '{}' is not set",
-                        base_url_env
-                    ))
-                })?;
-                Ok(Provider::Azure {
-                    api_key,
-                    api_base,
-                    model: model_override
-                        .map(String::from)
-                        .unwrap_or_else(|| default_model.clone()),
-                    params,
-                })
-            }
-
-            #[cfg(feature = "anthropic")]
-            ProviderConfig::Anthropic {
-                api_key_env,
-                default_model,
-            } => {
-                let api_key = std::env::var(api_key_env).map_err(|_| {
-                    AppError::Configuration(format!(
-                        "Anthropic API key environment variable '{}' is not set",
-                        api_key_env
-                    ))
-                })?;
-                Ok(Provider::Anthropic {
-                    api_key,
-                    model: model_override
-                        .map(String::from)
-                        .unwrap_or_else(|| default_model.clone()),
-                    params,
-                })
-            }
-
-            #[cfg(feature = "bedrock")]
-            ProviderConfig::Bedrock {
-                api_key_env,
-                region_env,
-                default_model,
-            } => {
-                let api_key = std::env::var(api_key_env).map_err(|_| {
-                    AppError::Configuration(format!(
-                        "Bedrock API key environment variable '{}' is not set",
-                        api_key_env
-                    ))
-                })?;
-                let region = std::env::var(region_env).map_err(|_| {
-                    AppError::Configuration(format!(
-                        "Bedrock region environment variable '{}' is not set",
-                        region_env
-                    ))
-                })?;
-                Ok(Provider::Bedrock {
-                    api_key,
-                    region,
-                    model: model_override
-                        .map(String::from)
-                        .unwrap_or_else(|| default_model.clone()),
-                    params,
-                })
-            }
-
-            #[cfg(feature = "ollama")]
-            ProviderConfig::Ollama {
-                base_url,
-                default_model,
-                ..
-            } => Ok(Provider::Ollama {
-                base_url: base_url.clone(),
-                model: model_override
-                    .map(String::from)
-                    .unwrap_or_else(|| default_model.clone()),
-                params,
-            }),
-
-            // Catch-all for cfg-disabled variants: return a clear error so
-            // the runtime can surface it to the admin or the chat path.
-            #[allow(unreachable_patterns)]
-            _ => Err(AppError::Configuration(format!(
-                "{} provider configured but the corresponding feature is not enabled in this build",
-                provider_config.type_name()
-            ))),
-        }
+        Ok(Provider::Genai(genai_from_config(
+            provider_config,
+            model_override,
+            params,
+        )?))
     }
 
     /// Create a provider from a model configuration and its associated provider config
-    ///
-    /// This is the primary way to create providers from TOML config, as it resolves
-    /// the model -> provider reference chain.
     pub fn from_model_config(
         model_config: &ModelConfig,
         provider_config: &ProviderConfig,
@@ -787,37 +539,456 @@ impl Provider {
     }
 
     /// Create a runtime OpenAI-compatible provider from a runtime provider entry.
-    #[cfg(feature = "openai")]
     pub fn from_runtime_openai(
         api_key: String,
         api_base: String,
         model: String,
         params: ModelParams,
-        headers: std::collections::HashMap<String, String>,
+        headers: HashMap<String, String>,
     ) -> Self {
-        Provider::RuntimeOpenAI {
-            api_key,
-            api_base,
-            model,
-            params,
-            headers,
-        }
+        Provider::Genai(GenaiProvider::openai(
+            api_key, api_base, model, params, headers,
+        ))
     }
 
     /// Create a runtime Bedrock provider from a runtime provider entry.
-    #[cfg(feature = "bedrock")]
     pub fn from_runtime_bedrock(
         api_key: String,
         region: String,
         model: String,
         params: ModelParams,
     ) -> Self {
-        Provider::Bedrock {
-            api_key,
-            region,
+        Provider::Genai(GenaiProvider {
+            kind: AdapterKind::BedrockApi,
+            api_key: Some(api_key),
+            endpoint: None,
             model,
             params,
+            headers: HashMap::new(),
+            region: Some(region),
+            vertex_project: None,
+            vertex_location: None,
+            custom_index: None,
+        })
+    }
+}
+
+fn require_env(name: &str, what: &str) -> Result<String> {
+    std::env::var(name).map_err(|_| {
+        AppError::Configuration(format!(
+            "{what} environment variable '{name}' is not set"
+        ))
+    })
+}
+
+fn pick_model(model_override: Option<&str>, default_model: &str) -> String {
+    model_override
+        .map(String::from)
+        .unwrap_or_else(|| default_model.to_string())
+}
+
+fn genai_from_config(
+    config: &ProviderConfig,
+    model_override: Option<&str>,
+    params: ModelParams,
+) -> Result<GenaiProvider> {
+    match config {
+        ProviderConfig::OpenAI {
+            api_key_env,
+            api_base,
+            default_model,
+        } => {
+            let api_key = require_env(api_key_env, "OpenAI API key")?;
+            Ok(GenaiProvider::openai(
+                api_key,
+                api_base.clone(),
+                pick_model(model_override, default_model),
+                params,
+                HashMap::new(),
+            ))
         }
+        ProviderConfig::Azure {
+            api_key_env,
+            base_url_env,
+            default_model,
+        } => {
+            let api_key = require_env(api_key_env, "Azure Foundry API key")?;
+            let api_base = require_env(base_url_env, "Azure Foundry base URL")?;
+            Ok(GenaiProvider::openai(
+                api_key.clone(),
+                azure_normalize_base_url(&api_base),
+                azure_strip_model_prefix(&pick_model(model_override, default_model))
+                    .to_string(),
+                params,
+                azure_foundry_headers(&api_key),
+            ))
+        }
+        ProviderConfig::Anthropic {
+            api_key_env,
+            default_model,
+        } => {
+            let api_key = require_env(api_key_env, "Anthropic API key")?;
+            Ok(GenaiProvider {
+                kind: AdapterKind::Anthropic,
+                api_key: Some(api_key),
+                endpoint: None,
+                model: pick_model(model_override, default_model),
+                params,
+                headers: HashMap::new(),
+                region: None,
+                vertex_project: None,
+                vertex_location: None,
+                custom_index: None,
+            })
+        }
+        ProviderConfig::Bedrock {
+            api_key_env,
+            region_env,
+            default_model,
+        } => {
+            let api_key = require_env(api_key_env, "Bedrock API key")?;
+            let region = require_env(region_env, "Bedrock region")?;
+            Ok(GenaiProvider {
+                kind: AdapterKind::BedrockApi,
+                api_key: Some(api_key),
+                endpoint: None,
+                model: pick_model(model_override, default_model),
+                params,
+                headers: HashMap::new(),
+                region: Some(region),
+                vertex_project: None,
+                vertex_location: None,
+                custom_index: None,
+            })
+        }
+        ProviderConfig::Ollama {
+            base_url,
+            default_model,
+            ..
+        } => Ok(GenaiProvider {
+            kind: AdapterKind::Ollama,
+            api_key: None,
+            endpoint: Some(base_url.clone()),
+            model: pick_model(model_override, default_model),
+            params,
+            headers: HashMap::new(),
+            region: None,
+            vertex_project: None,
+            vertex_location: None,
+            custom_index: None,
+        }),
+        ProviderConfig::Vertex {
+            api_key_env,
+            project_env,
+            location_env,
+            default_model,
+        } => {
+            let api_key = require_env(api_key_env, "Vertex API key")?;
+            let project = std::env::var(project_env).ok();
+            let location = std::env::var(location_env).ok();
+            Ok(GenaiProvider {
+                kind: AdapterKind::Vertex,
+                api_key: Some(api_key),
+                endpoint: None,
+                model: pick_model(model_override, default_model),
+                params,
+                headers: HashMap::new(),
+                region: None,
+                vertex_project: project,
+                vertex_location: location,
+                custom_index: None,
+            })
+        }
+        ProviderConfig::Custom {
+            index,
+            endpoint,
+            api_key_env,
+            default_model,
+        } => {
+            let api_key = match api_key_env {
+                Some(env) if !env.is_empty() => Some(require_env(env, "Custom API key")?),
+                _ => std::env::var(format!("GENAI_{index}_API_KEY")).ok(),
+            };
+            Ok(GenaiProvider {
+                kind: AdapterKind::Custom(*index),
+                api_key,
+                endpoint: Some(endpoint.clone()),
+                model: pick_model(model_override, default_model),
+                params,
+                headers: HashMap::new(),
+                region: None,
+                vertex_project: None,
+                vertex_location: None,
+                custom_index: Some(*index),
+            })
+        }
+        other => {
+            let (kind, api_key_env, api_base, default_model) = simple_genai_fields(other);
+            let optional_key = matches!(kind, AdapterKind::Omlx);
+            let api_key = if optional_key {
+                std::env::var(api_key_env).ok().filter(|s| !s.is_empty())
+            } else {
+                Some(require_env(
+                    api_key_env,
+                    &format!("{} API key", other.type_name()),
+                )?)
+            };
+            Ok(GenaiProvider {
+                kind,
+                api_key,
+                endpoint: api_base.filter(|s| !s.is_empty()),
+                model: pick_model(model_override, default_model),
+                params,
+                headers: HashMap::new(),
+                region: None,
+                vertex_project: None,
+                vertex_location: None,
+                custom_index: None,
+            })
+        }
+    }
+}
+
+fn simple_genai_fields(
+    config: &ProviderConfig,
+) -> (AdapterKind, &str, Option<String>, &str) {
+    match config {
+        ProviderConfig::OpenAIResp {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (
+            AdapterKind::OpenAIResp,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
+        ProviderConfig::Gemini {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (
+            AdapterKind::Gemini,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
+        ProviderConfig::Fireworks {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (
+            AdapterKind::Fireworks,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
+        ProviderConfig::Together {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (
+            AdapterKind::Together,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
+        ProviderConfig::Groq {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (
+            AdapterKind::Groq,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
+        ProviderConfig::Aihubmix {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (
+            AdapterKind::Aihubmix,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
+        ProviderConfig::Kimi {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (AdapterKind::Kimi, api_key_env, api_base.clone(), default_model),
+        ProviderConfig::Mimo {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (AdapterKind::Mimo, api_key_env, api_base.clone(), default_model),
+        ProviderConfig::Moonshot {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (
+            AdapterKind::Moonshot,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
+        ProviderConfig::Nebius {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (
+            AdapterKind::Nebius,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
+        ProviderConfig::Xai {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (AdapterKind::Xai, api_key_env, api_base.clone(), default_model),
+        ProviderConfig::DeepSeek {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (
+            AdapterKind::DeepSeek,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
+        ProviderConfig::Zai {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (AdapterKind::Zai, api_key_env, api_base.clone(), default_model),
+        ProviderConfig::BigModel {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (
+            AdapterKind::BigModel,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
+        ProviderConfig::Aliyun {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (
+            AdapterKind::Aliyun,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
+        ProviderConfig::QwenCloud {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (
+            AdapterKind::QwenCloud,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
+        ProviderConfig::Baidu {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (
+            AdapterKind::Baidu,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
+        ProviderConfig::Cohere {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (
+            AdapterKind::Cohere,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
+        ProviderConfig::OllamaCloud {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (
+            AdapterKind::OllamaCloud,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
+        ProviderConfig::Omlx {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (AdapterKind::Omlx, api_key_env, api_base.clone(), default_model),
+        ProviderConfig::GithubCopilot {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (
+            AdapterKind::GithubCopilot,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
+        ProviderConfig::OpenCodeGo {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (
+            AdapterKind::OpenCodeGo,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
+        ProviderConfig::BedrockApi {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (
+            AdapterKind::BedrockApi,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
+        ProviderConfig::OpenRouter {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (
+            AdapterKind::OpenRouter,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
+        ProviderConfig::AtlasCloud {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (
+            AdapterKind::AtlasCloud,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
+        ProviderConfig::MiniMax {
+            api_key_env,
+            api_base,
+            default_model,
+        } => (
+            AdapterKind::MiniMax,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        ),
+        other => unreachable!("simple_genai_fields on {}", other.type_name()),
     }
 }
 
@@ -835,9 +1006,6 @@ pub trait LLMClientFactoryTrait: Send + Sync {
 }
 
 /// Configuration-based LLM client factory
-///
-/// Provides a convenient way to create LLM clients with a default provider
-/// while allowing runtime provider switching.
 pub struct LLMClientFactory {
     default_provider: Provider,
 }
@@ -849,8 +1017,6 @@ impl LLMClientFactory {
     }
 
     /// Create a factory from environment variables
-    ///
-    /// Uses `Provider::from_env()` to determine the default provider.
     pub fn from_env() -> Result<Self> {
         Ok(Self {
             default_provider: Provider::from_env()?,
@@ -931,6 +1097,8 @@ pub(crate) mod test_support {
                 tool_calls: vec![],
                 finish_reason: "stop".into(),
                 usage: None,
+                reasoning_content: None,
+                response_id: None,
             })
         }
 
@@ -944,6 +1112,8 @@ pub(crate) mod test_support {
                 tool_calls: vec![],
                 finish_reason: "stop".into(),
                 usage: None,
+                reasoning_content: None,
+                response_id: None,
             })
         }
 
@@ -957,6 +1127,8 @@ pub(crate) mod test_support {
                 tool_calls: vec![],
                 finish_reason: "stop".into(),
                 usage: None,
+                reasoning_content: None,
+                response_id: None,
             })
         }
 
@@ -992,19 +1164,36 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_llm_response_creation() {
-        let response = LLMResponse {
-            content: "Hello".to_string(),
+    fn llm_text(content: impl Into<String>) -> LLMResponse {
+        LLMResponse {
+            content: content.into(),
             tool_calls: vec![],
             finish_reason: "stop".to_string(),
             usage: None,
-        };
+            reasoning_content: None,
+            response_id: None,
+        }
+    }
 
+    fn genai_openai(api_base: &str, model: &str) -> Provider {
+        Provider::Genai(GenaiProvider::openai(
+            "sk-test".into(),
+            api_base.into(),
+            model.into(),
+            ModelParams::default(),
+            HashMap::new(),
+        ))
+    }
+
+    #[test]
+    fn test_llm_response_creation() {
+        let response = llm_text("Hello");
         assert_eq!(response.content, "Hello");
         assert!(response.tool_calls.is_empty());
         assert_eq!(response.finish_reason, "stop");
         assert!(response.usage.is_none());
+        assert!(response.reasoning_content.is_none());
+        assert!(response.response_id.is_none());
     }
 
     #[test]
@@ -1015,8 +1204,9 @@ mod tests {
             tool_calls: vec![],
             finish_reason: "stop".to_string(),
             usage: Some(usage),
+            reasoning_content: None,
+            response_id: None,
         };
-
         assert!(response.usage.is_some());
         let usage = response.usage.unwrap();
         assert_eq!(usage.prompt_tokens, 100);
@@ -1044,6 +1234,8 @@ mod tests {
             tool_calls,
             finish_reason: "tool_calls".to_string(),
             usage: Some(TokenUsage::new(50, 25)),
+            reasoning_content: None,
+            response_id: None,
         };
 
         assert_eq!(response.tool_calls.len(), 2);
@@ -1054,49 +1246,23 @@ mod tests {
 
     #[test]
     fn test_factory_creation() {
-        // This test just verifies the factory can be created
-        // Actual provider tests require feature flags
-        #[cfg(feature = "openai")]
-        {
-            let factory = LLMClientFactory::new(Provider::OpenAI {
-                api_key: "sk-test".to_string(),
-                api_base: "https://api.openai.com/v1".to_string(),
-                model: "test".to_string(),
-                params: ModelParams::default(),
-            });
-            assert_eq!(factory.default_provider().name(), "openai");
-        }
+        let factory = LLMClientFactory::new(genai_openai("https://api.openai.com/v1", "test"));
+        assert_eq!(factory.default_provider().name(), "openai");
     }
 
-    #[cfg(feature = "openai")]
     #[test]
     fn test_openai_provider_properties() {
-        let provider = Provider::OpenAI {
-            api_key: "sk-test".to_string(),
-            api_base: "https://api.openai.com/v1".to_string(),
-            model: "gpt-4".to_string(),
-            params: ModelParams::default(),
-        };
-
+        let provider = genai_openai("https://api.openai.com/v1", "gpt-4");
         assert_eq!(provider.name(), "openai");
         assert!(provider.requires_api_key());
         assert!(!provider.is_local());
     }
 
-    #[cfg(feature = "openai")]
     #[test]
     fn test_openai_local_provider() {
-        let provider = Provider::OpenAI {
-            api_key: "test".to_string(),
-            api_base: "http://localhost:8000/v1".to_string(),
-            model: "local-model".to_string(),
-            params: ModelParams::default(),
-        };
-
+        let provider = genai_openai("http://localhost:8000/v1", "local-model");
         assert!(provider.is_local());
     }
-
-    // ===== TokenUsage tests =====
 
     #[test]
     fn test_token_usage_default_all_zeros() {
@@ -1143,7 +1309,6 @@ mod tests {
 
     #[test]
     fn test_token_usage_serde_partial_json() {
-        // All fields present but verify deserialization accepts correct types
         let json = r#"{"prompt_tokens":42,"completion_tokens":58,"total_tokens":100}"#;
         let usage: TokenUsage = serde_json::from_str(json).unwrap();
         assert_eq!(usage.prompt_tokens, 42);
@@ -1165,8 +1330,6 @@ mod tests {
         assert!(debug_str.contains("TokenUsage"));
         assert!(debug_str.contains("prompt_tokens"));
     }
-
-    // ===== ModelParams tests =====
 
     #[test]
     fn test_model_params_default_all_none() {
@@ -1227,16 +1390,9 @@ mod tests {
         assert_eq!(params.presence_penalty, cloned.presence_penalty);
     }
 
-    // ===== LLMResponse tests =====
-
     #[test]
     fn test_llm_response_empty_content() {
-        let response = LLMResponse {
-            content: String::new(),
-            tool_calls: vec![],
-            finish_reason: "stop".to_string(),
-            usage: None,
-        };
+        let response = llm_text("");
         assert!(response.content.is_empty());
     }
 
@@ -1251,6 +1407,8 @@ mod tests {
             }],
             finish_reason: "tool_calls".to_string(),
             usage: Some(TokenUsage::new(10, 20)),
+            reasoning_content: None,
+            response_id: None,
         };
         let cloned = response.clone();
         assert_eq!(cloned.content, "hello");
@@ -1260,84 +1418,21 @@ mod tests {
         assert_eq!(cloned.usage.unwrap().total_tokens, 30);
     }
 
-    // ===== OpenAI provider tests (feature-gated) =====
-
-    #[cfg(feature = "openai")]
-    mod openai_tests {
-        use super::*;
-
-        #[test]
-        fn test_openai_name() {
-            let provider = Provider::OpenAI {
-                api_key: "sk-test".to_string(),
-                api_base: "https://api.openai.com/v1".to_string(),
-                model: "gpt-4".to_string(),
-                params: ModelParams::default(),
-            };
-            assert_eq!(provider.name(), "openai");
-        }
-
-        #[test]
-        fn test_openai_requires_api_key() {
-            let provider = Provider::OpenAI {
-                api_key: "sk-test".to_string(),
-                api_base: "https://api.openai.com/v1".to_string(),
-                model: "gpt-4".to_string(),
-                params: ModelParams::default(),
-            };
-            assert!(provider.requires_api_key());
-        }
-
-        #[test]
-        fn test_openai_is_local_localhost() {
-            let provider = Provider::OpenAI {
-                api_key: "test".to_string(),
-                api_base: "http://localhost:8000/v1".to_string(),
-                model: "local".to_string(),
-                params: ModelParams::default(),
-            };
-            assert!(provider.is_local());
-        }
-
-        #[test]
-        fn test_openai_is_local_127_0_0_1() {
-            let provider = Provider::OpenAI {
-                api_key: "test".to_string(),
-                api_base: "http://127.0.0.1:8000/v1".to_string(),
-                model: "local".to_string(),
-                params: ModelParams::default(),
-            };
-            assert!(provider.is_local());
-        }
-
-        #[test]
-        fn test_openai_is_not_local_remote() {
-            let provider = Provider::OpenAI {
-                api_key: "sk-test".to_string(),
-                api_base: "https://api.openai.com/v1".to_string(),
-                model: "gpt-4".to_string(),
-                params: ModelParams::default(),
-            };
-            assert!(!provider.is_local());
-        }
-
-        #[test]
-        fn test_openai_from_config_missing_env_var() {
-            // Ensure the env var is not set to test the error path
-            std::env::remove_var("TEST_OPENAI_MISSING_KEY");
-            let config = ProviderConfig::OpenAI {
-                api_key_env: "TEST_OPENAI_MISSING_KEY".to_string(),
-                api_base: "https://api.openai.com/v1".to_string(),
-                default_model: "gpt-4".to_string(),
-            };
-            let result = Provider::from_config(&config, None);
-            assert!(result.is_err());
-            match result.unwrap_err() {
-                AppError::Configuration(msg) => {
-                    assert!(msg.contains("TEST_OPENAI_MISSING_KEY"));
-                }
-                other => panic!("Expected Configuration error, got: {:?}", other),
+    #[test]
+    fn test_openai_from_config_missing_env_var() {
+        std::env::remove_var("TEST_OPENAI_MISSING_KEY");
+        let config = ProviderConfig::OpenAI {
+            api_key_env: "TEST_OPENAI_MISSING_KEY".to_string(),
+            api_base: "https://api.openai.com/v1".to_string(),
+            default_model: "gpt-4".to_string(),
+        };
+        let result = Provider::from_config(&config, None);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AppError::Configuration(msg) => {
+                assert!(msg.contains("TEST_OPENAI_MISSING_KEY"));
             }
+            other => panic!("Expected Configuration error, got: {:?}", other),
         }
     }
 
@@ -1397,7 +1492,7 @@ mod tests {
     mod llm_client_trait_tests {
         use super::*;
         use crate::client::test_support::MockLLMClient;
-        use crate::coordinator::{ConversationMessage, MessageRole};
+        use crate::coordinator::ConversationMessage;
         use ares_types::types::ToolDefinition;
 
         #[tokio::test]
@@ -1449,12 +1544,7 @@ mod tests {
         #[tokio::test]
         async fn test_generate_with_tools_and_history() {
             let client = MockLLMClient::new("both");
-            let messages = vec![ConversationMessage {
-                role: MessageRole::User,
-                content: "run tool".to_string(),
-                tool_calls: vec![],
-                tool_call_id: None,
-            }];
+            let messages = vec![ConversationMessage::user("run tool")];
             let tools = vec![ToolDefinition {
                 name: "calc".to_string(),
                 description: "Calculate".to_string(),
@@ -1485,8 +1575,6 @@ mod tests {
         fn default_supports_hints_is_false() {
             let client = MockLLMClient::new("hints");
             assert!(!client.supports_hints());
-            // Default set_hints is a no-op: calling it compiles and does
-            // nothing observable.
             client.set_hints(GenerationHints {
                 json_mode: true,
                 ..Default::default()
@@ -1498,7 +1586,6 @@ mod tests {
             use parking_lot::Mutex;
             use std::sync::Arc;
 
-            /// Mock recording every `set_hints` payload; the last one wins.
             #[derive(Default)]
             struct HintRecordingClient {
                 hints: Mutex<Vec<GenerationHints>>,
@@ -1586,15 +1673,12 @@ mod tests {
                 suppress_reasoning: false,
                 max_tokens: Some(256),
                 guided_grammar: None,
+                ..Default::default()
             });
             client.set_hints(GenerationHints::default());
 
             let recorded = client.hints.lock();
-            assert_eq!(
-                recorded.len(),
-                2,
-                "every set_hints call is recorded in order"
-            );
+            assert_eq!(recorded.len(), 2, "every set_hints call is recorded in order");
             assert!(recorded[0].json_mode && recorded[0].max_tokens == Some(256));
             assert_eq!(
                 recorded[1],

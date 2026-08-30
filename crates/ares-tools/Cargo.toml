@@ -33,7 +33,7 @@ chrono = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-reqwest = { version = "0.12.26", default-features = false, features = ["json", "rustls-tls", "multipart"] }
+reqwest = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 daedra = { version = "0.1.4", optional = true }

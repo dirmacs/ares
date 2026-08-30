@@ -16,13 +16,8 @@
 //!
 //! # Supported Providers
 //!
-//! Enable providers via Cargo features:
-//! - `openai` - OpenAI API (GPT-4, GPT-3.5, etc.)
-//! - `azure` - Azure AI Foundry OpenAI-compatible chat completions
-//! - `bedrock` - AWS Bedrock Claude via Anthropic Messages JSON
-//! - `anthropic` - Anthropic API (Claude 3, Claude 3.5, etc.)
-//! - `ollama` - Local Ollama server
-//! - `llamacpp` - llama.cpp server
+//! HTTP providers are routed through `genai` (default). Optional:
+//! - `llamacpp` - llama.cpp GGUF inference
 //!
 //! # Example
 //!
@@ -30,7 +25,7 @@
 //! use ares::llm::{ConfigBasedLLMFactory, LLMClientFactory, Provider};
 //!
 //! let factory = ConfigBasedLLMFactory::new(&config);
-//! let client = factory.create_client(Provider::OpenAI)?;
+//! let client = factory.create_default().await?;
 //!
 //! let response = client.generate("What is 2+2?", None).await?;
 //! println!("{}", response.content);
@@ -98,23 +93,15 @@ pub mod pool;
 /// Registry for managing multiple LLM provider instances.
 pub mod provider_registry;
 
-#[cfg(feature = "anthropic")]
-pub mod anthropic;
-#[cfg(feature = "azure")]
-pub mod azure;
-#[cfg(feature = "bedrock")]
-pub mod bedrock;
+pub mod genai_client;
 #[cfg(feature = "llamacpp")]
 pub mod llamacpp;
-#[cfg(feature = "ollama")]
-pub mod ollama;
-#[cfg(feature = "openai")]
-pub mod openai;
 
 pub use capabilities::{
     CapabilityRequirements, CapabilityRequirementsBuilder, ModelCapabilities, ModelWithCapabilities,
 };
-pub use client::{GenerationHints, LLMClient, LLMClientFactory, LLMResponse, Provider, TokenUsage};
+pub use client::{CacheControl, GenerationHints, GenaiProvider, LLMClient, LLMClientFactory, LLMResponse, Provider, TokenUsage};
+pub use genai::adapter::AdapterKind;
 pub use compact::{
     CompactConfig, CompactEvent, CompactionSnapshot, CompactionState, Compactor, TurnEntry,
 };

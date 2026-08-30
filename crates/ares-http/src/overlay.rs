@@ -3121,12 +3121,24 @@ api_key_env = "API"
 
     #[test]
     fn test_provider_config_from_str_openai_defaults() {
-        // After the NVIDIA-only refactor, the `openai` and `nvidia`
-        // literals both parse to the same default OpenAI-compatible
-        // provider pointing at the NVIDIA NIM catalog. Overriding any of
-        // these from the TOML is still possible via the [nvidia] section
-        // and per-agent model fields.
         let p: ProviderConfig = "openai".parse().unwrap();
+        if let ProviderConfig::OpenAI {
+            api_key_env,
+            api_base,
+            default_model,
+        } = p
+        {
+            assert_eq!(api_key_env, "OPENAI_API_KEY");
+            assert_eq!(api_base, "https://api.openai.com/v1");
+            assert_eq!(default_model, "gpt-4");
+        } else {
+            panic!("expected openai variant");
+        }
+    }
+
+    #[test]
+    fn test_provider_config_from_str_nvidia_keeps_nim_defaults() {
+        let p: ProviderConfig = "nvidia".parse().unwrap();
         if let ProviderConfig::OpenAI {
             api_key_env,
             api_base,
@@ -3137,7 +3149,7 @@ api_key_env = "API"
             assert_eq!(api_base, "https://integrate.api.nvidia.com/v1");
             assert_eq!(default_model, "nvidia/nemotron-3-ultra-550b-a55b");
         } else {
-            panic!("expected openai variant");
+            panic!("expected openai-compat nvidia variant");
         }
     }
 

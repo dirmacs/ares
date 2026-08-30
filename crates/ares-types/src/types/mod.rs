@@ -19,6 +19,47 @@ fn default_datetime() -> DateTime<Utc> {
 
 // ============= API Request/Response Types =============
 
+/// A multimodal content part on a chat request or conversation message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentPart {
+    /// UTF-8 text.
+    Text {
+        /// Text payload.
+        text: String,
+    },
+    /// Image referenced by URL.
+    ImageUrl {
+        /// Image URL.
+        url: String,
+    },
+    /// Image as a base64 payload.
+    ImageBase64 {
+        /// MIME type, e.g. `image/png`.
+        mime: String,
+        /// Base64-encoded bytes.
+        data: String,
+    },
+    /// File or PDF referenced by URL.
+    FileUrl {
+        /// File URL.
+        url: String,
+        /// Optional MIME type.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mime: Option<String>,
+    },
+    /// File or PDF as a base64 payload.
+    FileBase64 {
+        /// MIME type, e.g. `application/pdf`.
+        mime: String,
+        /// Base64-encoded bytes.
+        data: String,
+        /// Optional file name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+}
+
 /// Request payload for chat endpoints.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChatRequest {
@@ -37,6 +78,15 @@ pub struct ChatRequest {
     /// Optional per-request model override (Cordis intercept payload).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Optional multimodal parts. When set, they travel on the wire with `message`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts: Option<Vec<ContentPart>>,
+    /// OpenAI Responses stateful continuation id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_response_id: Option<String>,
+    /// When true, attach the LLM provider's built-in web search (not daedra).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_search: Option<bool>,
 }
 
 /// Response from chat endpoints.
@@ -744,6 +794,9 @@ mod tests {
             context_id: Some("ctx-1".into()),
             workspace_id: None,
             model: None,
+            parts: None,
+            previous_response_id: None,
+            web_search: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: ChatRequest = serde_json::from_str(&json).unwrap();
@@ -1281,6 +1334,9 @@ mod tests {
             context_id: None,
             workspace_id: Some("ws-éruka-42".into()),
             model: None,
+            parts: None,
+            previous_response_id: None,
+            web_search: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("workspace_id"));

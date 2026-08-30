@@ -21,7 +21,8 @@
 //! ```
 
 use crate::capabilities::{CapabilityRequirements, ModelCapabilities, ModelWithCapabilities};
-use crate::client::{LLMClient, ModelParams, Provider};
+use crate::client::{GenaiProvider, LLMClient, ModelParams, Provider};
+use genai::adapter::AdapterKind;
 use crate::config::{ModelConfig, ProviderConfig};
 use crate::nvidia_catalog::{NvidiaCatalogCache, NvidiaConfig};
 use arc_swap::ArcSwap;
@@ -116,12 +117,10 @@ impl ProviderRegistry {
             );
         }
 
-        #[cfg(feature = "bedrock")]
         providers
             .entry("bedrock".to_string())
             .or_insert_with(Self::default_bedrock_provider_config);
 
-        #[cfg(feature = "azure")]
         providers
             .entry("azure".to_string())
             .or_insert_with(Self::default_azure_provider_config);
@@ -312,13 +311,7 @@ impl ProviderRegistry {
 
     #[allow(dead_code)]
     fn provider_default_model(config: &ProviderConfig) -> &str {
-        match config {
-            ProviderConfig::OpenAI { default_model, .. }
-            | ProviderConfig::Anthropic { default_model, .. }
-            | ProviderConfig::Azure { default_model, .. }
-            | ProviderConfig::Bedrock { default_model, .. }
-            | ProviderConfig::Ollama { default_model, .. } => default_model,
-        }
+        config.default_model()
     }
 
     fn default_bedrock_provider_config() -> ProviderConfig {
@@ -408,82 +401,75 @@ impl ProviderRegistry {
             .or_else(|| entry.default_model.clone())
             .unwrap_or_default();
         match entry.provider_type.as_str() {
-            "openai-compatible" | "custom" => {
-                #[cfg(feature = "openai")]
-                {
-                    Ok(Provider::from_runtime_openai(
-                        Self::runtime_api_key(provider_name, entry)?,
-                        entry.api_base.clone(),
-                        model,
-                        params,
-                        entry.headers.clone(),
-                    ))
-                }
-
-                #[cfg(not(feature = "openai"))]
-                {
-                    Err(AppError::Configuration(
-                        "OpenAI provider configured but the corresponding feature is not enabled in this build".into(),
-                    ))
-                }
-            }
-            "anthropic-compatible" => {
-                #[cfg(feature = "anthropic")]
-                {
-                    Ok(Provider::Anthropic {
-                        api_key: Self::runtime_api_key(provider_name, entry)?,
-                        model,
-                        params,
-                    })
-                }
-
-                #[cfg(not(feature = "anthropic"))]
-                {
-                    Err(AppError::Configuration(
-                        "Anthropic provider configured but the corresponding feature is not enabled in this build".into(),
-                    ))
-                }
-            }
-            "bedrock" | "bedrock-compatible" => {
-                #[cfg(feature = "bedrock")]
-                {
-                    Ok(Provider::from_runtime_bedrock(
-                        Self::runtime_api_key(provider_name, entry)?,
-                        Self::runtime_bedrock_region(provider_name, entry)?,
-                        model,
-                        params,
-                    ))
-                }
-
-                #[cfg(not(feature = "bedrock"))]
-                {
-                    Err(AppError::Configuration(
-                        "Bedrock provider configured but the corresponding feature is not enabled in this build".into(),
-                    ))
-                }
-            }
+            "openai-compatible" | "custom" => Ok(Provider::from_runtime_openai(
+                Self::runtime_api_key(provider_name, entry)?,
+                entry.api_base.clone(),
+                model,
+                params,
+                entry.headers.clone(),
+            )),
+            "anthropic-compatible" => Ok(Provider::Genai(GenaiProvider {
+                kind: AdapterKind::Anthropic,
+                api_key: Some(Self::runtime_api_key(provider_name, entry)?),
+                endpoint: if entry.api_base.is_empty() {
+                    None
+                } else {
+                    Some(entry.api_base.clone())
+                },
+                model,
+                params,
+                headers: entry.headers.clone(),
+                region: None,
+                vertex_project: None,
+                vertex_location: None,
+                custom_index: None,
+            })),
+            "bedrock" | "bedrock-compatible" => Ok(Provider::from_runtime_bedrock(
+                Self::runtime_api_key(provider_name, entry)?,
+                Self::runtime_bedrock_region(provider_name, entry)?,
+                model,
+                params,
+            )),
             "azure" | "azure-compatible" => {
-                #[cfg(feature = "azure")]
-                {
-                    Ok(Provider::Azure {
-                        api_key: Self::runtime_api_key(provider_name, entry)?,
-                        api_base: entry.api_base.clone(),
-                        model,
-                        params,
-                    })
-                }
-
-                #[cfg(not(feature = "azure"))]
-                {
-                    Err(AppError::Configuration(
-                        "Azure provider configured but the corresponding feature is not enabled in this build".into(),
-                    ))
-                }
+                let api_key = Self::runtime_api_key(provider_name, entry)?;
+                Ok(Provider::from_runtime_openai(
+                    api_key.clone(),
+                    crate::client::azure_normalize_base_url(&entry.api_base),
+                    crate::client::azure_strip_model_prefix(&model).to_string(),
+                    params,
+                    crate::client::azure_foundry_headers(&api_key),
+                ))
             }
-            provider_type => Err(AppError::Configuration(format!(
-                "Runtime provider '{}' has unsupported provider_type '{}'",
-                provider_name, provider_type
-            ))),
+            provider_type => {
+                let kind_key = match provider_type {
+                    "openrouter" => "open_router",
+                    "github" => "github_copilot",
+                    other => other,
+                };
+                let kind = AdapterKind::from_lower_str(kind_key).ok_or_else(|| {
+                    AppError::Configuration(format!(
+                        "Runtime provider '{}' has unsupported provider_type '{}'",
+                        provider_name, provider_type
+                    ))
+                })?;
+                let endpoint = if entry.api_base.is_empty() {
+                    None
+                } else {
+                    Some(entry.api_base.clone())
+                };
+                Ok(Provider::Genai(GenaiProvider {
+                    kind,
+                    api_key: Some(Self::runtime_api_key(provider_name, entry)?),
+                    endpoint,
+                    model,
+                    params,
+                    headers: entry.headers.clone(),
+                    region: None,
+                    vertex_project: None,
+                    vertex_location: None,
+                    custom_index: None,
+                }))
+            }
         }
     }
 
@@ -1613,7 +1599,6 @@ mod tests {
         assert!(registry.get_provider("missing").is_none());
     }
 
-    #[cfg(feature = "openai")]
     #[test]
     fn test_runtime_openai_provider_preserves_key_and_headers() {
         let mut headers = HashMap::new();
@@ -1633,26 +1618,19 @@ mod tests {
         let provider = ProviderRegistry::provider_from_runtime_entry("runtime-openai", &entry)
             .expect("runtime provider should resolve");
         match provider {
-            Provider::RuntimeOpenAI {
-                api_key,
-                api_base,
-                model,
-                headers,
-                ..
-            } => {
-                assert_eq!(api_key, "resolved-runtime-key");
-                assert_eq!(api_base, "https://runtime.example.com/v1");
-                assert_eq!(model, "runtime-model");
+            Provider::Genai(g) => {
+                assert_eq!(g.api_key.as_deref(), Some("resolved-runtime-key"));
+                assert_eq!(g.endpoint.as_deref(), Some("https://runtime.example.com/v1"));
+                assert_eq!(g.model, "runtime-model");
                 assert_eq!(
-                    headers.get("X-Test-Header").map(String::as_str),
+                    g.headers.get("X-Test-Header").map(String::as_str),
                     Some("runtime-value")
                 );
             }
-            _ => panic!("expected RuntimeOpenAI provider"),
+            _ => panic!("expected Genai provider"),
         }
     }
 
-    #[cfg(feature = "openai")]
     #[test]
     fn test_runtime_provider_requires_resolved_api_key() {
         let entry = RuntimeProviderEntry {
@@ -1870,14 +1848,10 @@ mod tests {
         assert!(registry.has_provider("nvidia"));
         assert!(registry.has_model("fast"));
 
-        #[cfg(feature = "bedrock")]
-        let expected = vec![
-            "fast",
-            "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
-        ];
-        #[cfg(not(feature = "bedrock"))]
-        let expected = vec!["fast"];
-        assert_eq!(registry.model_names(), expected);
+        let names = registry.model_names();
+        assert!(names.contains(&"fast".to_string()));
+        assert!(names.iter().any(|n| n.starts_with("bedrock/")));
+        assert!(names.iter().any(|n| n.starts_with("azure/")));
     }
 
     #[tokio::test]

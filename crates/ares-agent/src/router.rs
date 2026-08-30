@@ -161,6 +161,8 @@ mod tests {
                 tool_calls: vec![],
                 finish_reason: "stop".to_string(),
                 usage: None,
+                reasoning_content: None,
+                response_id: None,
             })
         }
         async fn generate_with_tools(&self, _: &str, _: &[ToolDefinition]) -> Result<LLMResponse> {
@@ -169,6 +171,8 @@ mod tests {
                 tool_calls: vec![],
                 finish_reason: "stop".to_string(),
                 usage: None,
+                reasoning_content: None,
+                response_id: None,
             })
         }
         async fn generate_with_tools_and_history(
@@ -181,6 +185,8 @@ mod tests {
                 tool_calls: vec![],
                 finish_reason: "stop".to_string(),
                 usage: None,
+                reasoning_content: None,
+                response_id: None,
             })
         }
         async fn stream(&self, _: &str) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {

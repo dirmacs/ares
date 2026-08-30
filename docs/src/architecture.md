@@ -34,7 +34,7 @@ The same crates with one-line data-flow notes each:
 | `ares-agent` | The run pipeline: admitted request, tool-call rounds against `Tools`/`Llm`, assembled final response, run records toward storage. |
 | `ares-http` | HTTP in, responses out. Middleware attaches tenant identity and usage; handlers open realms and call `Execute`. |
 
-Feature flags forward down the chain: `postgres` enables sqlx in store, agent, mcp, tools, http; `openai`, `azure`, and `bedrock` add providers in `ares-llm`.
+Feature flags forward down the chain: `postgres` enables sqlx in store, agent, mcp, tools, http. HTTP LLM providers compile in through `ares-llm`'s default `genai` feature; `llamacpp` remains optional.
 
 ## Process lifecycle
 

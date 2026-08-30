@@ -493,6 +493,8 @@ async fn skill_llm_response(
         tool_calls: vec![],
         finish_reason: "stop".into(),
         usage: None,
+        reasoning_content: None,
+        response_id: None,
     })
 }
 

@@ -165,6 +165,7 @@ impl WorkflowEngine {
                 message: current_input.clone(),
                 history: Vec::new(),
                 ctx_provider: None,
+                ..Default::default()
             };
             let run = match exec.run(&req, &scoped).await {
                 Ok(r) => r,
@@ -181,6 +182,7 @@ impl WorkflowEngine {
                             message: current_input.clone(),
                             history: Vec::new(),
                             ctx_provider: None,
+                            ..Default::default()
                         };
                         exec.run(&req, &scoped).await?
                     } else {

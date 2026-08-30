@@ -9,7 +9,9 @@ publish = true
 description = "Shared live-test database harness for ARES integration tests (dev-only)"
 
 [dependencies]
-ares-store = { workspace = true, features = ["postgres"] }
+# Floor is crates.io 0.10.1 so this crate can publish before ares-store 0.11.0.
+# Path keeps the workspace on the local store crate.
+ares-store = { version = ">=0.10.1, <0.12.0", path = "../ares-store", features = ["postgres"] }
 sqlx = { workspace = true }
 tokio = { workspace = true }
 dotenvy = "0.15.7"

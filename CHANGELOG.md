@@ -4,7 +4,9 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ---
 
-## Unreleased
+## 0.11.1 - 2026-08-31
+
+**SSE multimodal, persist parts, remote rerank, and cfg-gated genai.**
 
 ### Added
 
@@ -19,6 +21,7 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 ### Changed
 
 - `ares-llm` genai adapters compile only with the `genai` feature. Default remains `["genai"]`.
+- Workspace version is `0.11.1`. `ares-vector` stays `0.1.4`.
 
 ---
 

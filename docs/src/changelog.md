@@ -4,6 +4,28 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ---
 
+## 0.11.2 - 2026-08-31
+
+**Live provider verification, GET stream extras, and transcript reload.**
+
+### Added
+
+- Live NVIDIA NIM integration harness (`crates/ares-llm/tests/live_nvidia.rs`). Run with
+  `cargo test -p ares-llm --features genai --test live_nvidia -- --ignored`. Proves completion,
+  streaming, tool calling, and embeddings against a real endpoint. Skips when `NVIDIA_API_KEY` is unset.
+- Chat UI reloads the persisted conversation transcript (including `parts`) from
+  `GET /conversations/{id}` on conversation change.
+
+### Changed
+
+- `GET /chat/stream` accepts `previous_response_id` and `web_search` query parameters, mirroring
+  `POST /chat/stream`. Invalid `web_search` or `parts` values fail closed as SSE error events.
+
+### Fixed
+
+- `ares-ui` compiles for `wasm32-unknown-unknown` again (FileReader moved into an `FnMut` closure)
+  and is clippy-clean under `-D warnings`.
+
 ## 0.11.1 - 2026-08-31
 
 **SSE multimodal, persist parts, remote rerank, and cfg-gated genai.**

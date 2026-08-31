@@ -260,9 +260,10 @@ async fn read_file_as_data_url(file: &File) -> Result<String, String> {
         let reject_onerror = reject.clone();
         let reject_read = reject.clone();
 
+        let reader_cb = reader_for_cb.clone();
         let onload =
             Closure::<dyn FnMut(ProgressEvent)>::once(
-                move |_ev: ProgressEvent| match reader_for_cb.result() {
+                move |_ev: ProgressEvent| match reader_cb.result() {
                     Ok(value) => {
                         let _ = resolve.call1(&JsValue::UNDEFINED, &value);
                     }

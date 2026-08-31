@@ -4,6 +4,28 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ---
 
+## 0.11.3 - 2026-08-31
+
+**Multimodal prompt fix, live-proven against NVIDIA NIM.**
+
+### Fixed
+
+- The typed prompt is no longer dropped when a user message carries multimodal `parts`.
+  `POST /chat` with an attachment sent only the binaries to the provider; the message text is
+  now kept (and still not duplicated when the caller supplies it as a `Text` part).
+
+### Added
+
+- Live NVIDIA NIM integration tests (`crates/ares-llm/tests/live_nvidia.rs`, `#[ignore]`-gated,
+  run with `-- --ignored`): completion, streaming, tool loop, embeddings, text streaming through
+  the parts API, and a vision test that sends a base64 image `ContentPart` to a vision-capable
+  catalog model (`NVIDIA_VISION_MODEL` overrides discovery, `NVIDIA_API_BASE` retargets the endpoint).
+  All six pass against live NIM.
+
+### Changed
+
+- Live tests honor `NVIDIA_API_BASE` so they can be pointed at a local proxy or request sink.
+
 ## 0.11.2 - 2026-08-31
 
 **Live provider verification, GET stream extras, and transcript reload.**

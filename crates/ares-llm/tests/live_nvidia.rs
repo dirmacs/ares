@@ -3,14 +3,15 @@
 //! Construction uses [`ProviderRegistry::from_config`] + [`ConfigBasedLLMFactory`]
 //! (the same path as the loader). Tests do **not** hand-roll a `genai::Client`.
 //!
-//! Vision / multimodal `ContentPart`s are out of scope: NIM text models are
-//! exercised here; image/file parts are not sent live.
+//! `live_vision_parts` sends a base64 image `ContentPart` to a vision-capable
+//! NIM model (overridable via `NVIDIA_VISION_MODEL`) when the catalog offers one.
 
+use ares_llm::coordinator::ConversationMessage;
 use ares_llm::{
     CatalogEntry, ConfigBasedLLMFactory, GenerationHints, LLMClient, ModelConfig,
     NvidiaCatalogCache, NvidiaConfig, Provider, ProviderConfig, ProviderRegistry,
 };
-use ares_types::types::ToolDefinition;
+use ares_types::types::{ContentPart as AresContentPart, ToolDefinition};
 use futures::StreamExt;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -23,6 +24,18 @@ fn nvidia_key_present() -> bool {
     std::env::var(KEY_ENV)
         .map(|k| !k.trim().is_empty())
         .unwrap_or(false)
+}
+/// Honor `NVIDIA_API_BASE` (e.g. `http://127.0.0.1:9999/v1`) so the live tests
+/// can be pointed at a local sink/proxy for request debugging.
+fn apply_base_override(nvidia: &mut NvidiaConfig) {
+    if let Ok(base) = std::env::var("NVIDIA_API_BASE") {
+        let base = base.trim().trim_end_matches('/').to_string();
+        if !base.is_empty() {
+            eprintln!("nvidia api base override: {base}");
+            nvidia.api_base = base.clone();
+            nvidia.models_url = format!("{base}/models");
+        }
+    }
 }
 
 fn skip_without_key(test: &str) -> bool {
@@ -62,7 +75,8 @@ struct LiveStack {
 }
 
 async fn live_stack() -> LiveStack {
-    let nvidia = NvidiaConfig::default();
+    let mut nvidia = NvidiaConfig::default();
+    apply_base_override(&mut nvidia);
     let catalog = Arc::new(NvidiaCatalogCache::new(nvidia.clone()));
     match catalog.refresh().await {
         Ok(n) => eprintln!("nvidia catalog refreshed: {n} chat models"),
@@ -143,6 +157,38 @@ fn pick_chat_model(entries: &[CatalogEntry], nvidia: &NvidiaConfig) -> String {
         .max_by_key(|e| score(&e.id))
         .map(|e| e.id.clone())
         .unwrap_or_else(|| nvidia.default_model.clone())
+}
+
+/// Pick a vision-capable chat model from the catalog, if any.
+fn pick_vision_model(entries: &[CatalogEntry]) -> Option<String> {
+    if let Ok(over) = std::env::var("NVIDIA_VISION_MODEL") {
+        let over = over.trim().to_string();
+        if !over.is_empty() {
+            return Some(over);
+        }
+    }
+    let score = |id: &str| -> i64 {
+        let l = id.to_lowercase();
+        let mut s: i64 = 0;
+        if l.contains("vision") {
+            s += 100;
+        }
+        if l.contains("vila") {
+            s += 80;
+        }
+        if l.contains("vlm") {
+            s += 60;
+        }
+        if l.contains("embed") || l.contains("rerank") {
+            s -= 10_000;
+        }
+        s
+    };
+    entries
+        .iter()
+        .map(|e| e.id.clone())
+        .max_by_key(|id| score(id))
+        .filter(|id| score(id) > 0)
 }
 
 async fn chat_client(stack: &LiveStack) -> Box<dyn LLMClient> {
@@ -428,5 +474,142 @@ async fn live_embed() {
     }
     if vectors[0].is_empty() {
         panic!("live_embed: embedding vector was empty");
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn live_stream_text_tools_api() {
+    if skip_without_key("live_stream_text_tools_api") {
+        return;
+    }
+    let stack = live_stack().await;
+    let client = chat_client(&stack).await;
+    let user = ConversationMessage::user("Reply with exactly one word: pong");
+    let mut stream = tokio::time::timeout(
+        CALL_TIMEOUT,
+        client.stream_with_tools_and_history(&[user], &[]),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("live_stream_text_tools_api setup timed out"))
+    .unwrap_or_else(|e| panic_redacted("live_stream_text_tools_api setup", e));
+    let mut text = String::new();
+    let collect = async {
+        while let Some(item) = stream.next().await {
+            match item.unwrap_or_else(|e| panic_redacted("live_stream_text_tools_api chunk", e)) {
+                ares_llm::LlmStreamEvent::Text(t) => text.push_str(&t),
+                ares_llm::LlmStreamEvent::ToolCalls(_) => {}
+            }
+        }
+    };
+    tokio::time::timeout(CALL_TIMEOUT, collect)
+        .await
+        .unwrap_or_else(|_| panic!("live_stream_text_tools_api collect timed out"));
+    eprintln!(
+        "live_stream_text_tools_api model={} chars={}",
+        client.model_name(),
+        text.len()
+    );
+    assert!(
+        !text.trim().is_empty(),
+        "live_stream_text_tools_api: expected non-empty text"
+    );
+}
+
+/// 1x1 red PNG, base64-encoded. Small enough to send inline; enough for a
+/// "what color" prompt on any vision-capable model.
+const TINY_PNG_BASE64: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+#[tokio::test]
+#[ignore]
+async fn live_vision_parts() {
+    if skip_without_key("live_vision_parts") {
+        return;
+    }
+    let mut nvidia = NvidiaConfig::default();
+    apply_base_override(&mut nvidia);
+    let catalog = Arc::new(NvidiaCatalogCache::new(nvidia.clone()));
+    match catalog.refresh().await {
+        Ok(n) => eprintln!("nvidia catalog refreshed: {n} chat models"),
+        Err(e) => eprintln!(
+            "nvidia catalog refresh failed (vision discovery limited): {}",
+            redact(&e.to_string())
+        ),
+    }
+    let Some(vision_model) = pick_vision_model(&catalog.snapshot()) else {
+        eprintln!(
+            "SKIPPED live_vision_parts: no vision-capable model found in the NVIDIA catalog \
+             (set NVIDIA_VISION_MODEL to force one)"
+        );
+        return;
+    };
+    eprintln!("nvidia vision model: {vision_model}");
+
+    let mut registry = ProviderRegistry::from_config(HashMap::new(), HashMap::new(), Some(&nvidia))
+        .with_catalog(catalog.clone());
+    registry.register_model(
+        "live-vision",
+        ModelConfig {
+            provider: "nvidia".to_string(),
+            model: vision_model.clone(),
+            temperature: 0.2,
+            max_tokens: 64,
+        },
+    );
+    let factory = ConfigBasedLLMFactory::new(Arc::new(registry), "live-vision");
+    let client = factory
+        .create_default()
+        .await
+        .unwrap_or_else(|e| panic_redacted("live_vision_parts create client", e));
+    client.set_hints(GenerationHints {
+        max_tokens: Some(64),
+        ..GenerationHints::default()
+    });
+    eprintln!("supports_vision() = {}", client.supports_vision());
+
+    // The exact shape the HTTP chat path persists and forwards: a user message
+    // whose multimodal content lives in `parts`.
+    let user = ConversationMessage {
+        parts: vec![AresContentPart::ImageBase64 {
+            mime: "image/png".to_string(),
+            data: TINY_PNG_BASE64.to_string(),
+        }],
+        ..ConversationMessage::user("Reply with exactly one word: the color of the image.")
+    };
+
+    let mut stream = tokio::time::timeout(
+        CALL_TIMEOUT,
+        client.stream_with_tools_and_history(&[user], &[]),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("live_vision_parts setup timed out"))
+    .unwrap_or_else(|e| panic_redacted("live_vision_parts stream_with_tools_and_history", e));
+
+    let mut text = String::new();
+    let collect = async {
+        while let Some(item) = stream.next().await {
+            match item.unwrap_or_else(|e| panic_redacted("live_vision_parts chunk", e)) {
+                ares_llm::LlmStreamEvent::Text(t) => text.push_str(&t),
+                ares_llm::LlmStreamEvent::ToolCalls(calls) => {
+                    eprintln!("live_vision_parts: unexpected tool calls: {calls:?}")
+                }
+            }
+        }
+    };
+    tokio::time::timeout(CALL_TIMEOUT, collect)
+        .await
+        .unwrap_or_else(|_| panic!("live_vision_parts collect timed out"));
+
+    eprintln!(
+        "live_vision_parts model={} chars={}",
+        client.model_name(),
+        text.len()
+    );
+    if text.trim().is_empty() {
+        panic!(
+            "live_vision_parts: expected non-empty answer from {} for an image part",
+            client.model_name()
+        );
     }
 }

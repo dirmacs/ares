@@ -10,7 +10,7 @@ exclude = ["ui"]
 resolver = "2"
 
 [workspace.package]
-version = "0.11.2"
+version = "0.11.3"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/dirmacs/ares"
@@ -30,16 +30,16 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10.4"
 async-trait = "0.1"
 
-ares-types = { version = "0.11.2", path = "crates/ares-types" }
-ares-rag = { version = "0.11.2", path = "crates/ares-rag" }
-ares-tools = { version = "0.11.2", path = "crates/ares-tools" }
-ares-llm = { version = "0.11.2", path = "crates/ares-llm" }
-ares-store = { version = "0.11.2", path = "crates/ares-store" }
-ares-mcp = { version = "0.11.2", path = "crates/ares-mcp", default-features = false }
-ares-agent = { version = "0.11.2", path = "crates/ares-agent" }
-ares-http = { version = "0.11.2", path = "crates/ares-http" }
-cordis = { version = "0.11.2", path = "crates/cordis", package = "ares-cordis", default-features = false }
-ares-test-support = { version = "0.11.2", path = "crates/ares-test-support" }
+ares-types = { version = "0.11.3", path = "crates/ares-types" }
+ares-rag = { version = "0.11.3", path = "crates/ares-rag" }
+ares-tools = { version = "0.11.3", path = "crates/ares-tools" }
+ares-llm = { version = "0.11.3", path = "crates/ares-llm" }
+ares-store = { version = "0.11.3", path = "crates/ares-store" }
+ares-mcp = { version = "0.11.3", path = "crates/ares-mcp", default-features = false }
+ares-agent = { version = "0.11.3", path = "crates/ares-agent" }
+ares-http = { version = "0.11.3", path = "crates/ares-http" }
+cordis = { version = "0.11.3", path = "crates/cordis", package = "ares-cordis", default-features = false }
+ares-test-support = { version = "0.11.3", path = "crates/ares-test-support" }
 anyhow = "1.0.100"
 hex = "0.4"
 rand = "0.9.2"

@@ -568,29 +568,35 @@ fn ares_parts_to_genai(parts: &[AresPart], fallback: &str) -> Vec<ContentPart> {
             vec![ContentPart::Text(fallback.to_string())]
         };
     }
-    parts
-        .iter()
-        .map(|part| match part {
-            AresPart::Text { text } => ContentPart::Text(text.clone()),
-            AresPart::ImageUrl { url } => {
-                ContentPart::Binary(Binary::from_url("image/*", url.clone(), None))
-            }
-            AresPart::ImageBase64 { mime, data } => {
-                ContentPart::Binary(Binary::from_base64(mime.clone(), data.clone(), None))
-            }
-            AresPart::FileUrl { url, mime } => ContentPart::Binary(Binary::from_url(
-                mime.clone()
-                    .unwrap_or_else(|| "application/octet-stream".into()),
-                url.clone(),
-                None,
-            )),
-            AresPart::FileBase64 { mime, data, name } => ContentPart::Binary(Binary::from_base64(
-                mime.clone(),
-                data.clone(),
-                name.clone(),
-            )),
-        })
-        .collect()
+    let mut out: Vec<ContentPart> =
+        parts
+            .iter()
+            .map(|part| match part {
+                AresPart::Text { text } => ContentPart::Text(text.clone()),
+                AresPart::ImageUrl { url } => {
+                    ContentPart::Binary(Binary::from_url("image/*", url.clone(), None))
+                }
+                AresPart::ImageBase64 { mime, data } => {
+                    ContentPart::Binary(Binary::from_base64(mime.clone(), data.clone(), None))
+                }
+                AresPart::FileUrl { url, mime } => ContentPart::Binary(Binary::from_url(
+                    mime.clone()
+                        .unwrap_or_else(|| "application/octet-stream".into()),
+                    url.clone(),
+                    None,
+                )),
+                AresPart::FileBase64 { mime, data, name } => ContentPart::Binary(
+                    Binary::from_base64(mime.clone(), data.clone(), name.clone()),
+                ),
+            })
+            .collect();
+    // Callers pass the typed prompt as `content` and attachments as `parts`
+    // (e.g. HTTP chat). Keep the prompt unless a Text part already covers it,
+    // otherwise it is silently dropped and only binaries reach the provider.
+    if !fallback.is_empty() && !parts.iter().any(|p| matches!(p, AresPart::Text { .. })) {
+        out.insert(0, ContentPart::Text(fallback.to_string()));
+    }
+    out
 }
 
 fn map_response(response: ChatResponse) -> LLMResponse {
@@ -806,6 +812,48 @@ mod tests {
         ];
         assert_eq!(join_parts(&parts), "hello world");
         assert_eq!(join_parts(&[]), "");
+    }
+
+    #[test]
+    fn content_fallback_kept_when_parts_have_no_text() {
+        let parts = vec![AresPart::ImageBase64 {
+            mime: "image/png".into(),
+            data: "AAAA".into(),
+        }];
+        let out = ares_parts_to_genai(&parts, "describe this");
+        assert_eq!(out.len(), 2, "fallback text must be prepended");
+        assert!(matches!(&out[0], ContentPart::Text(t) if t == "describe this"));
+        assert!(matches!(out[1], ContentPart::Binary(_)));
+    }
+
+    #[test]
+    fn content_fallback_not_duplicated_when_text_part_present() {
+        let parts = vec![
+            AresPart::Text {
+                text: "typed prompt".into(),
+            },
+            AresPart::ImageBase64 {
+                mime: "image/png".into(),
+                data: "AAAA".into(),
+            },
+        ];
+        let out = ares_parts_to_genai(&parts, "typed prompt");
+        let texts = out
+            .iter()
+            .filter(|p| matches!(p, ContentPart::Text(_)))
+            .count();
+        assert_eq!(texts, 1, "content fallback must not duplicate a Text part");
+    }
+
+    #[test]
+    fn content_fallback_skipped_when_empty() {
+        let parts = vec![AresPart::ImageBase64 {
+            mime: "image/png".into(),
+            data: "AAAA".into(),
+        }];
+        let out = ares_parts_to_genai(&parts, "");
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0], ContentPart::Binary(_)));
     }
 
     #[test]

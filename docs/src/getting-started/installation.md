@@ -135,7 +135,7 @@ Build with `cargo build --release --offline`. Two notes apply:
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `package \`ares-server v0.11.0\` cannot be built because it requires rustc 1.98 or newer` | Toolchain older than the declared `rust-version` | Run `rustup update stable`, then retry |
+| `package \`ares-server v0.11.1\` cannot be built because it requires rustc 1.98 or newer` | Toolchain older than the declared `rust-version` | Run `rustup update stable`, then retry |
 | Installed binary prints `requires the \`postgres\` feature` and exits 1 | Built or installed with `--no-default-features` or without `postgres` | Reinstall with `--features postgres`, or keep `default` |
 | `error: failed to run custom build command` naming `protoc` | `lancedb` enabled without Protocol Buffers compiler | Install `protoc`, or drop `lancedb` from `--features` |
 | Link errors mentioning ONNXRuntime under `local-embeddings` | Missing ONNX Runtime library, or Windows MSVC host | Install ONNX Runtime, or use a remote embeddings endpoint without the feature |
@@ -150,5 +150,5 @@ Print the version:
 
 ```console
 $ ares-server --version
-ares-server 0.11.0
+ares-server 0.11.1
 ```

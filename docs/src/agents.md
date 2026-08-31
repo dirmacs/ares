@@ -1,6 +1,6 @@
 # Agents
 
-This chapter describes the agent configuration model in ARES v0.11.0.
+This chapter describes the agent configuration model in ARES v0.11.1.
 Every field here is read from the source files named in each section.
 
 Agent behavior comes from TOML configuration. The root file `ares.toml` carries an `[agents]` table. You can also keep agents in TOON files under `config/agents/`. The `config.agents_dir` key in `ares.toml` sets that directory (`crates/ares-http/src/overlay.rs`, `DynamicConfigPaths`).

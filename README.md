@@ -63,7 +63,7 @@ Add this dependency to your project:
 
 ```toml
 [dependencies]
-ares-server = "0.11.0"
+ares-server = "0.11.1"
 ```
 
 Basic usage:
@@ -78,7 +78,7 @@ For a headless embed, turn the defaults off and name only what you need:
 
 ```toml
 [dependencies]
-ares-server = { version = "0.11.0", default-features = false }
+ares-server = { version = "0.11.1", default-features = false }
 ```
 
 The headless build compiles no axum, clap, sqlx, Ollama, Boa, or Rhai code. Every type the library guide uses is reachable through the `ares_server` facade. See `docs/src/library.md`.

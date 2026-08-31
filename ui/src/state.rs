@@ -6,6 +6,7 @@ use crate::types::{AuthResponse, Conversation, AgentInfo, WorkflowInfo};
 
 const STORAGE_KEY_TOKEN: &str = "ares_token";
 const STORAGE_KEY_REFRESH: &str = "ares_refresh_token";
+const STORAGE_KEY_CONVERSATION: &str = "ares_conversation_id";
 
 /// Global application state
 #[derive(Clone)]
@@ -31,24 +32,39 @@ pub struct AppState {
 impl AppState {
     pub fn new() -> Self {
         // Try to load from localStorage
-        let (token, refresh) = Self::load_from_storage();
-        
+        let (token, refresh, conversation_id) = Self::load_from_storage();
+
         Self {
             token: RwSignal::new(token),
             refresh_token: RwSignal::new(refresh),
             agents: RwSignal::new(vec![]),
             workflows: RwSignal::new(vec![]),
-            conversation: RwSignal::new(Conversation::default()),
+            conversation: RwSignal::new(Conversation {
+                id: conversation_id,
+                ..Conversation::default()
+            }),
             is_loading: RwSignal::new(false),
             error: RwSignal::new(None),
             api_base: RwSignal::new("http://localhost:3000".to_string()),
         }
     }
 
-    fn load_from_storage() -> (Option<String>, Option<String>) {
+    fn load_from_storage() -> (Option<String>, Option<String>, Option<String>) {
         let token: Option<String> = LocalStorage::get(STORAGE_KEY_TOKEN).ok();
         let refresh: Option<String> = LocalStorage::get(STORAGE_KEY_REFRESH).ok();
-        (token, refresh)
+        let conversation_id: Option<String> = LocalStorage::get(STORAGE_KEY_CONVERSATION)
+            .ok()
+            .filter(|id: &String| !id.trim().is_empty());
+        (token, refresh, conversation_id)
+    }
+
+    pub fn persist_conversation_id(&self, id: Option<&str>) {
+        match id.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(id) => {
+                let _ = LocalStorage::set(STORAGE_KEY_CONVERSATION, id);
+            }
+            None => LocalStorage::delete(STORAGE_KEY_CONVERSATION),
+        }
     }
 
     pub fn save_auth(&self, auth: &AuthResponse) {
@@ -62,9 +78,11 @@ impl AppState {
     pub fn clear_auth(&self) {
         LocalStorage::delete(STORAGE_KEY_TOKEN);
         LocalStorage::delete(STORAGE_KEY_REFRESH);
-        
+        LocalStorage::delete(STORAGE_KEY_CONVERSATION);
+
         self.token.set(None);
         self.refresh_token.set(None);
+        self.conversation.set(Conversation::default());
     }
 
     pub fn is_authenticated(&self) -> bool {

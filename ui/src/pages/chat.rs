@@ -1,9 +1,9 @@
 //! Chat page - main conversation interface
 
-use crate::api::{load_agents, load_workflows, send_chat, stream_chat};
+use crate::api::{fetch_conversation, load_agents, load_workflows, send_chat, stream_chat};
 use crate::components::{ChatInput, ChatMessage, Header, Sidebar, TypingIndicator};
 use crate::state::AppState;
-use crate::types::{ContentPart, Message, MessageRole};
+use crate::types::{merge_transcript, ContentPart, Message, MessageRole};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::use_navigate;
@@ -50,6 +50,73 @@ pub fn ChatPage() -> impl IntoView {
             el.scroll_into_view_with_scroll_into_view_options(&options);
         }
     };
+
+    // Reload persisted transcript when a conversation id is present (stored id on
+    // mount, or after the first response sets one). Once per id; no polling.
+    let state_for_reload = state.clone();
+    let loaded_transcript_id = RwSignal::new(Option::<String>::None);
+    let conversation_id = Signal::derive({
+        let state = state_for_reload.clone();
+        move || state.conversation.with(|c| c.id.clone())
+    });
+    Effect::new(move |_| {
+        let conversation_id = conversation_id.get();
+        state_for_reload.persist_conversation_id(conversation_id.as_deref());
+
+        let sending = is_sending.get();
+        let Some(conversation_id) = conversation_id.filter(|id| !id.trim().is_empty()) else {
+            loaded_transcript_id.set(None);
+            return;
+        };
+        if sending {
+            return;
+        }
+        if loaded_transcript_id.get_untracked().as_deref() == Some(conversation_id.as_str()) {
+            return;
+        }
+
+        let Some(token) = state_for_reload.token.get_untracked() else {
+            return;
+        };
+        let base_url = state_for_reload.api_base.get_untracked();
+        let state = state_for_reload.clone();
+        loaded_transcript_id.set(Some(conversation_id.clone()));
+
+        spawn_local(async move {
+            match fetch_conversation(&base_url, &token, &conversation_id).await {
+                Ok(details) => {
+                    if state.conversation.get_untracked().id.as_deref()
+                        != Some(conversation_id.as_str())
+                    {
+                        return;
+                    }
+                    match details.into_messages() {
+                        Ok(server_messages) => {
+                            state.conversation.update(|c| {
+                                let local = std::mem::take(&mut c.messages);
+                                c.messages = merge_transcript(server_messages, local);
+                            });
+                            if let Some(el) = messages_end_ref.get() {
+                                let options = ScrollIntoViewOptions::new();
+                                options.set_behavior(ScrollBehavior::Smooth);
+                                el.scroll_into_view_with_scroll_into_view_options(&options);
+                            }
+                        }
+                        Err(e) => {
+                            loaded_transcript_id.set(None);
+                            state.set_error(e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to load conversation: {}", e);
+                    if state.conversation.get_untracked().messages.is_empty() {
+                        state.set_error(e);
+                    }
+                }
+            }
+        });
+    });
 
     // Send message helper function with streaming support
     let state_for_send = state.clone();
@@ -315,7 +382,7 @@ pub fn ChatPage() -> impl IntoView {
                                     let do_send = do_send.clone();
                                     view! { <EmptyState selected_agent=selected_agent on_prompt=move |prompt: String| do_send(prompt, Vec::new()) /> }.into_any()
                                 } else {
-                                    view! {}.into_any()
+                                    Vec::<AnyView>::new().into_any()
                                 }
                             }
                         }

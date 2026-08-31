@@ -144,6 +144,31 @@ pub async fn fetch_memory(base_url: &str, token: &str) -> Result<UserMemory, Str
     fetch_with_auth(&url, Some(token.to_string())).await
 }
 
+/// Fetch a persisted conversation transcript (`GET /api/conversations/{id}`).
+pub async fn fetch_conversation(
+    base_url: &str,
+    token: &str,
+    conversation_id: &str,
+) -> Result<ConversationDetails, String> {
+    let conversation_id = conversation_id.trim();
+    if conversation_id.is_empty() {
+        return Err("conversation id must not be empty".to_string());
+    }
+    if conversation_id.contains('/')
+        || conversation_id.contains('?')
+        || conversation_id.contains('#')
+    {
+        return Err("invalid conversation id".to_string());
+    }
+    let encoded = js_sys::encode_uri_component(conversation_id);
+    let url = format!(
+        "{}/api/conversations/{}",
+        base_url.trim_end_matches('/'),
+        String::from(encoded)
+    );
+    fetch_with_auth(&url, Some(token.to_string())).await
+}
+
 /// Load agents into app state
 pub fn load_agents(state: AppState) {
     spawn_local(async move {

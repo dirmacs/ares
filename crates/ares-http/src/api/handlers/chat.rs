@@ -507,6 +507,11 @@ pub struct ChatStreamQuery {
     /// JSON array of `ContentPart`. EventSource cannot send a body, so parts ride on the query string.
     #[serde(default)]
     pub parts: Option<String>,
+    #[serde(default)]
+    pub previous_response_id: Option<String>,
+    /// `"true"`/`"false"` (case-insensitive). EventSource params are strings.
+    #[serde(default)]
+    pub web_search: Option<String>,
 }
 
 fn chat_request_from_stream_query(
@@ -519,6 +524,12 @@ fn chat_request_from_stream_query(
                 .map_err(|e| format!("invalid parts query parameter: {e}"))?,
         ),
     };
+    let web_search = match query.web_search.as_deref() {
+        None | Some("") => None,
+        Some(v) if v.eq_ignore_ascii_case("true") => Some(true),
+        Some(v) if v.eq_ignore_ascii_case("false") => Some(false),
+        Some(v) => return Err(format!("invalid web_search query parameter: {}", v)),
+    };
     Ok(ChatRequest {
         message: query.message,
         agent_type: query.agent_type,
@@ -526,8 +537,8 @@ fn chat_request_from_stream_query(
         workspace_id: query.workspace_id,
         model: None,
         parts,
-        previous_response_id: None,
-        web_search: None,
+        previous_response_id: query.previous_response_id,
+        web_search,
     })
 }
 
@@ -1218,6 +1229,8 @@ mod tests {
             context_id: Some("ctx-1".into()),
             workspace_id: Some("ws-1".into()),
             parts: None,
+            previous_response_id: None,
+            web_search: None,
         })
         .expect("query maps");
 
@@ -1238,6 +1251,8 @@ mod tests {
             context_id: None,
             workspace_id: None,
             parts: Some(r#"[{"type":"text","text":"img"}]"#.into()),
+            previous_response_id: None,
+            web_search: None,
         })
         .expect("valid parts json");
         let parts = req.parts.expect("parts present");
@@ -1256,6 +1271,8 @@ mod tests {
             context_id: None,
             workspace_id: None,
             parts: Some("not-json".into()),
+            previous_response_id: None,
+            web_search: None,
         })
         .expect_err("invalid parts json");
         assert!(
@@ -1272,9 +1289,120 @@ mod tests {
             context_id: None,
             workspace_id: None,
             parts: Some(String::new()),
+            previous_response_id: None,
+            web_search: None,
         })
         .expect("empty parts string");
         assert!(req.parts.is_none());
+    }
+
+    #[test]
+    fn chat_stream_query_maps_valid_previous_response_id() {
+        let req = chat_request_from_stream_query(ChatStreamQuery {
+            message: "hello".into(),
+            agent_type: None,
+            context_id: None,
+            workspace_id: None,
+            parts: None,
+            previous_response_id: Some("resp_abc".into()),
+            web_search: None,
+        })
+        .expect("previous_response_id maps");
+        assert_eq!(req.previous_response_id.as_deref(), Some("resp_abc"));
+        assert!(req.web_search.is_none());
+    }
+
+    #[test]
+    fn chat_stream_query_maps_web_search_true() {
+        for value in ["true", "TRUE", "True"] {
+            let req = chat_request_from_stream_query(ChatStreamQuery {
+                message: "hello".into(),
+                agent_type: None,
+                context_id: None,
+                workspace_id: None,
+                parts: None,
+                previous_response_id: None,
+                web_search: Some(value.into()),
+            })
+            .expect("web_search true");
+            assert_eq!(req.web_search, Some(true), "{value}");
+        }
+    }
+
+    #[test]
+    fn chat_stream_query_maps_web_search_false() {
+        for value in ["false", "FALSE", "False"] {
+            let req = chat_request_from_stream_query(ChatStreamQuery {
+                message: "hello".into(),
+                agent_type: None,
+                context_id: None,
+                workspace_id: None,
+                parts: None,
+                previous_response_id: None,
+                web_search: Some(value.into()),
+            })
+            .expect("web_search false");
+            assert_eq!(req.web_search, Some(false), "{value}");
+        }
+    }
+
+    #[test]
+    fn chat_stream_query_empty_web_search_string_is_none() {
+        let req = chat_request_from_stream_query(ChatStreamQuery {
+            message: "hello".into(),
+            agent_type: None,
+            context_id: None,
+            workspace_id: None,
+            parts: None,
+            previous_response_id: None,
+            web_search: Some(String::new()),
+        })
+        .expect("empty web_search string");
+        assert!(req.web_search.is_none());
+    }
+
+    #[test]
+    fn chat_stream_query_rejects_invalid_web_search() {
+        let err = chat_request_from_stream_query(ChatStreamQuery {
+            message: "hello".into(),
+            agent_type: None,
+            context_id: None,
+            workspace_id: None,
+            parts: None,
+            previous_response_id: None,
+            web_search: Some("yes".into()),
+        })
+        .expect_err("invalid web_search");
+        assert!(
+            err.contains("web_search"),
+            "error should mention web_search, got {err}"
+        );
+        assert!(
+            err.contains("yes"),
+            "error should include the invalid value, got {err}"
+        );
+    }
+
+    #[test]
+    fn chat_stream_query_maps_parts_previous_response_id_and_web_search() {
+        let req = chat_request_from_stream_query(ChatStreamQuery {
+            message: "hello".into(),
+            agent_type: None,
+            context_id: None,
+            workspace_id: None,
+            parts: Some(r#"[{"type":"text","text":"img"}]"#.into()),
+            previous_response_id: Some("resp_1".into()),
+            web_search: Some("true".into()),
+        })
+        .expect("combined query maps");
+        let parts = req.parts.expect("parts present");
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            ares_types::types::ContentPart::Text { text } => assert_eq!(text, "img"),
+            other => panic!("expected text part, got {other:?}"),
+        }
+        assert_eq!(req.previous_response_id.as_deref(), Some("resp_1"));
+        assert_eq!(req.web_search, Some(true));
     }
 
     #[test]

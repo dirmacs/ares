@@ -4,14 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-# Published so downstream dev-dependency resolution succeeds during the 0.11.0 train.
+# Published so downstream dev-dependency resolution succeeds during the 0.11.1 train.
 publish = true
 description = "Shared live-test database harness for ARES integration tests (dev-only)"
 
 [dependencies]
-# Floor is crates.io 0.10.1 so this crate can publish before ares-store 0.11.0.
+# Floor is crates.io 0.11.0 so this crate can publish before ares-store 0.11.1.
 # Path keeps the workspace on the local store crate.
-ares-store = { version = ">=0.10.1, <0.12.0", path = "../ares-store", features = ["postgres"] }
+ares-store = { version = ">=0.11.0, <0.12.0", path = "../ares-store", features = ["postgres"] }
 sqlx = { workspace = true }
 tokio = { workspace = true }
 dotenvy = "0.15.7"

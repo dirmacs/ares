@@ -1,0 +1,37 @@
+name: Live NVIDIA NIM
+
+# Runs the `#[ignore]`-gated live provider suite against a real NVIDIA NIM
+# endpoint. Proves completion, streaming, tool calls, embeddings, and
+# multimodal parts end to end through the genai adapter.
+#
+# Needs the `NVIDIA_API_KEY` repository secret (an inference-entitled key).
+# When the secret is absent every test prints SKIPPED and the job stays green,
+# so the schedule is safe to leave enabled.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 03:17 UTC daily
+    - cron: "17 3 * * *"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  live-nvidia:
+    name: ares-llm live_nvidia
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run live NVIDIA suite
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        run: |
+          if [ -z "${NVIDIA_API_KEY}" ]; then
+            echo "::warning::NVIDIA_API_KEY secret is not set; live tests will SKIP"
+          fi
+          cargo test -p ares-llm --features genai --test live_nvidia -- \
+            --ignored --test-threads=1 --nocapture

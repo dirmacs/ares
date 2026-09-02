@@ -415,6 +415,29 @@ pub(crate) fn join_parts(parts: &[AresPart]) -> String {
         .join("")
 }
 
+/// Text for a system message: `content` plus any `Text` parts, in that order.
+///
+/// System prompts are text-only on every provider; binary parts are ignored.
+/// The typed `content` is kept unless a `Text` part already carries it, so a
+/// caller that passes the prompt in `content` and extras in `parts` does not
+/// lose the prompt (same rule as [`ares_parts_to_genai`]).
+pub(crate) fn system_text(parts: &[AresPart], content: &str) -> String {
+    if parts.is_empty() {
+        return content.to_string();
+    }
+    let joined = join_parts(parts);
+    let covered = parts
+        .iter()
+        .any(|p| matches!(p, AresPart::Text { text } if text == content));
+    if content.is_empty() || covered {
+        joined
+    } else if joined.is_empty() {
+        content.to_string()
+    } else {
+        format!("{content}\n{joined}")
+    }
+}
+
 /// Map ARES tool definitions to genai tools, stripping `provider_web_search`
 /// and injecting [`ToolName::WebSearch`] when requested.
 pub(crate) fn map_tools(tools: &[ToolDefinition], web_search: bool) -> Vec<Tool> {
@@ -478,12 +501,7 @@ fn request_from_conversation(
                 if !system.is_empty() {
                     system.push('\n');
                 }
-                let text = if msg.parts.is_empty() {
-                    msg.content.clone()
-                } else {
-                    join_parts(&msg.parts)
-                };
-                system.push_str(&text);
+                system.push_str(&system_text(&msg.parts, &msg.content));
             }
             MessageRole::User => {
                 let mut message = ChatMessage::user(parts_to_content(&msg.parts, &msg.content));
@@ -854,6 +872,33 @@ mod tests {
         let out = ares_parts_to_genai(&parts, "");
         assert_eq!(out.len(), 1);
         assert!(matches!(out[0], ContentPart::Binary(_)));
+    }
+
+    #[test]
+    fn system_text_keeps_content_with_non_text_parts() {
+        let parts = vec![AresPart::ImageBase64 {
+            mime: "image/png".into(),
+            data: "AAAA".into(),
+        }];
+        assert_eq!(system_text(&parts, "be terse"), "be terse");
+    }
+
+    #[test]
+    fn system_text_appends_text_parts_after_content() {
+        let parts = vec![AresPart::Text {
+            text: "extra rule".into(),
+        }];
+        assert_eq!(system_text(&parts, "be terse"), "be terse\nextra rule");
+    }
+
+    #[test]
+    fn system_text_does_not_duplicate_covering_text_part() {
+        let parts = vec![AresPart::Text {
+            text: "be terse".into(),
+        }];
+        assert_eq!(system_text(&parts, "be terse"), "be terse");
+        assert_eq!(system_text(&[], "be terse"), "be terse");
+        assert_eq!(system_text(&parts, ""), "be terse");
     }
 
     #[test]

@@ -2,7 +2,9 @@ use crate::query_builders::{
     message_role_from_db, message_role_to_db, DELETE_SESSION_BY_ID_SQL,
     DELETE_SESSION_BY_TOKEN_SQL, INSERT_MESSAGE_SQL, SELECT_MESSAGES_SQL, VALIDATE_SESSION_SQL,
 };
-use ares_types::types::{AppError, ContentPart, MemoryFact, Message, MessageRole, Preference, Result};
+use ares_types::types::{
+    AppError, ContentPart, MemoryFact, Message, MessageRole, Preference, Result,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{postgres::PgPoolOptions, PgPool};
@@ -156,6 +158,13 @@ pub struct PostgresClient {
     pub pool: PgPool,
 }
 
+/// Epoch seconds -> RFC3339, empty string for out-of-range values.
+fn epoch_to_rfc3339(ts: i64) -> String {
+    DateTime::from_timestamp(ts, 0)
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_default()
+}
+
 impl PostgresClient {
     pub async fn new_remote(url: String, _auth_token: String) -> Result<Self> {
         let config = PostgresConfig {
@@ -298,12 +307,58 @@ impl PostgresClient {
         &self,
         user_id: &str,
     ) -> Result<Vec<crate::traits::ConversationSummary>> {
-        let rows = sqlx::query_as::<_, crate::traits::ConversationSummary>(
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            id: String,
+            title: String,
+            created_at: i64,
+            updated_at: i64,
+            message_count: i64,
+        }
+        let rows = sqlx::query_as::<_, Row>(
             "SELECT c.id, COALESCE(c.title, '') as title, c.created_at, c.updated_at, (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id) as message_count FROM conversations c WHERE c.user_id = $1 ORDER BY c.updated_at DESC"
         )
         .bind(user_id).fetch_all(&self.pool).await
         .map_err(|e| AppError::Database(format!("Failed to query conversations: {}", e)))?;
-        Ok(rows)
+        Ok(rows
+            .into_iter()
+            .map(|r| crate::traits::ConversationSummary {
+                id: r.id,
+                title: r.title,
+                created_at: epoch_to_rfc3339(r.created_at),
+                updated_at: epoch_to_rfc3339(r.updated_at),
+                message_count: i32::try_from(r.message_count).unwrap_or(i32::MAX),
+            })
+            .collect())
+    }
+
+    /// Fetch one conversation by id. Timestamps are stored as epoch seconds
+    /// (`BIGINT`) and exposed as RFC3339 strings, matching the Turso client.
+    pub async fn get_conversation(&self, conversation_id: &str) -> Result<Conversation> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            id: String,
+            user_id: String,
+            title: Option<String>,
+            created_at: i64,
+            updated_at: i64,
+        }
+        let row = sqlx::query_as::<_, Row>(
+            "SELECT id, user_id, title, created_at, updated_at FROM conversations WHERE id = $1",
+        )
+        .bind(conversation_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?
+        .ok_or_else(|| AppError::NotFound("Conversation not found".into()))?;
+        Ok(Conversation {
+            id: row.id,
+            user_id: row.user_id,
+            title: row.title,
+            message_count: 0,
+            created_at: epoch_to_rfc3339(row.created_at),
+            updated_at: epoch_to_rfc3339(row.updated_at),
+        })
     }
 
     pub async fn add_message(
@@ -1210,6 +1265,35 @@ mod tests {
             assert_eq!(history[0].content, "Hello");
             assert!(matches!(history[1].role, MessageRole::Assistant));
             assert_eq!(history[1].content, "Hi there");
+
+            // Regression: conversations.created_at/updated_at are BIGINT epoch
+            // seconds; decoding them straight into String returned a 500 from
+            // GET /api/conversations{,/{id}} on Postgres.
+            let convo = client
+                .get_conversation(&conv_id)
+                .await
+                .expect("get conversation");
+            assert_eq!(convo.id, conv_id);
+            assert_eq!(convo.title.as_deref(), Some("My Chat"));
+            assert!(
+                DateTime::parse_from_rfc3339(&convo.created_at).is_ok(),
+                "created_at must be RFC3339, got {:?}",
+                convo.created_at
+            );
+            assert!(DateTime::parse_from_rfc3339(&convo.updated_at).is_ok());
+
+            let listed = client
+                .get_user_conversations(&user_id)
+                .await
+                .expect("list conversations");
+            let summary = listed
+                .iter()
+                .find(|c| c.id == conv_id)
+                .expect("listed conversation");
+            assert_eq!(summary.title, "My Chat");
+            assert_eq!(summary.message_count, 2);
+            assert!(DateTime::parse_from_rfc3339(&summary.created_at).is_ok());
+            assert!(DateTime::parse_from_rfc3339(&summary.updated_at).is_ok());
         }
 
         #[tokio::test]

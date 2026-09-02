@@ -220,8 +220,7 @@ impl DatabaseClient for super::postgres::PostgresClient {
         &self,
         conversation_id: &str,
     ) -> Result<super::postgres::Conversation> {
-        let row = sqlx::query_as::<_, super::postgres::Conversation>("SELECT id, user_id, title, created_at, updated_at, 0 as message_count FROM conversations WHERE id = $1").bind(conversation_id).fetch_optional(&self.pool).await.map_err(|e| AppError::Database(e.to_string()))?;
-        row.ok_or_else(|| AppError::NotFound("Conversation not found".into()))
+        super::postgres::PostgresClient::get_conversation(self, conversation_id).await
     }
     async fn delete_conversation(&self, conversation_id: &str) -> Result<()> {
         sqlx::query("DELETE FROM messages WHERE conversation_id = $1")

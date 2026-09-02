@@ -4,6 +4,36 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ---
 
+## 0.11.4 - 2026-09-02
+
+**Postgres transcript fix, remaining prompt-drop sites, full-stack live proof.**
+
+### Fixed
+
+- `GET /api/conversations` and `GET /api/conversations/{id}` returned 500 on Postgres:
+  `conversations.created_at`/`updated_at` are `BIGINT` epoch seconds and were decoded straight
+  into `String`. Both now map to RFC3339 like the Turso client. Found by the new full-stack live
+  test; covered by a Postgres integration test.
+- llama.cpp client kept only `parts` and dropped the typed `content` when a message carried
+  attachments (same class as the 0.11.3 genai fix). Text is preserved; binary parts are
+  reported with one `warn!` since llama.cpp is text-only and no caller gates on `supports_vision`.
+- System-role messages with `parts` dropped `content`; `system_text` keeps it and appends any
+  `Text` parts without duplication.
+
+### Added
+
+- `crates/ares-http/tests/live_chat_stream.rs` (`#[ignore]`): boots the real axum router
+  in-process on Postgres, registers a user, streams `POST /api/chat/stream` with an
+  `image_base64` part against NVIDIA NIM, asserts `start`/`token`/`done` SSE events, then reads
+  the persisted transcript and asserts the stored `parts`. Passes live.
+- `crates/ares-llm/tests/live_nvidia.rs`: `live_stream_with_tools` (tool call arriving as a
+  `ToolCalls` stream event). Header documents opt-in routing through nimaproxy via
+  `NVIDIA_API_BASE` (vision/embed skip there because the proxy pool has no such models).
+- `crates/ares-llm/tests/parts_wire_shape.rs`: wiremock proof of the OpenAI-compatible wire
+  shape for multimodal parts, including the PDF `{"type":"file","file":{...}}` object.
+- `.github/workflows/live-nvidia.yml`: nightly/manual live suite; skips when the
+  `NVIDIA_API_KEY` secret is absent.
+
 ## 0.11.3 - 2026-08-31
 
 **Multimodal prompt fix, live-proven against NVIDIA NIM.**

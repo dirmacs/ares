@@ -32,7 +32,7 @@ use llama_cpp_2::{
     context::params::LlamaContextParams,
     llama_backend::LlamaBackend,
     llama_batch::LlamaBatch,
-    model::{AddBos, LlamaModel, Special, params::LlamaModelParams},
+    model::{params::LlamaModelParams, AddBos, LlamaModel, Special},
     sampling::LlamaSampler,
 };
 use std::num::NonZeroU32;
@@ -579,6 +579,14 @@ fn conversation_messages_to_history(
     tools_system: Option<&str>,
 ) -> Vec<(String, String)> {
     let mut history: Vec<(String, String)> = Vec::new();
+    // Binary parts (images/files) have no ChatML text representation and
+    // this client's `supports_vision()` (below) always returns `false`, but
+    // no caller in ares-agent or ares-http checks that flag before routing
+    // a message with image/file parts here. Accumulate what got dropped and
+    // warn once instead of silently losing it (never error, never inject
+    // placeholder text).
+    let mut dropped_binary_count = 0usize;
+    let mut dropped_binary_kinds: Vec<&str> = Vec::new();
 
     if let Some(system) = tools_system.filter(|s| !s.is_empty()) {
         history.push(("system".to_string(), system.to_string()));
@@ -595,14 +603,48 @@ fn conversation_messages_to_history(
         let text = if msg.parts.is_empty() {
             msg.content.clone()
         } else {
-            msg.parts
+            let joined_text_parts = msg
+                .parts
                 .iter()
                 .filter_map(|part| match part {
                     ContentPart::Text { text } => Some(text.as_str()),
                     _ => None,
                 })
                 .collect::<Vec<_>>()
-                .join("")
+                .join("");
+
+            // Callers (HTTP chat, the tool coordinator) pass the typed
+            // prompt in `content` and any extra text/attachments in
+            // `parts`. Keep `content` unless a `Text` part already covers
+            // it -- mirrors `ares_parts_to_genai` in genai_client.rs --
+            // then append the joined `Text` parts, in that order.
+            let has_text_part = msg
+                .parts
+                .iter()
+                .any(|part| matches!(part, ContentPart::Text { .. }));
+            let combined_text = if !msg.content.is_empty() && !has_text_part {
+                format!("{}{}", msg.content, joined_text_parts)
+            } else {
+                joined_text_parts
+            };
+
+            for part in &msg.parts {
+                let kind = match part {
+                    ContentPart::Text { .. } => None,
+                    ContentPart::ImageUrl { .. } => Some("image_url"),
+                    ContentPart::ImageBase64 { mime, .. } => Some(mime.as_str()),
+                    ContentPart::FileUrl { mime, .. } => {
+                        Some(mime.as_deref().unwrap_or("file_url"))
+                    }
+                    ContentPart::FileBase64 { mime, .. } => Some(mime.as_str()),
+                };
+                if let Some(kind) = kind {
+                    dropped_binary_count += 1;
+                    dropped_binary_kinds.push(kind);
+                }
+            }
+
+            combined_text
         };
         let content = if msg.role == MessageRole::Tool {
             format!(
@@ -618,6 +660,14 @@ fn conversation_messages_to_history(
         };
 
         history.push((role.to_string(), content));
+    }
+
+    if dropped_binary_count > 0 {
+        tracing::warn!(
+            count = dropped_binary_count,
+            kinds = %dropped_binary_kinds.join(", "),
+            "llama.cpp is text-only; dropping binary content part(s) from conversation history"
+        );
     }
 
     history
@@ -807,9 +857,49 @@ mod hint_tests {
         );
         assert!(out.contains("system\nDo not emit think blocks."));
         assert!(out.ends_with("<|im_start|>assistant\n"));
-        assert!(
-            format_chatml_history(&[("user".into(), "x".into())])
-                .ends_with("<|im_start|>assistant\n")
+        assert!(format_chatml_history(&[("user".into(), "x".into())])
+            .ends_with("<|im_start|>assistant\n"));
+    }
+
+    /// Image-only parts (no `Text` part) must not shadow the typed prompt
+    /// carried in `content` — this is the bug fixed alongside
+    /// `ares_parts_to_genai` in `genai_client.rs` for the HTTP providers.
+    #[test]
+    fn content_kept_with_image_only_parts() {
+        let mut msg = ConversationMessage::user("describe this");
+        msg.parts = vec![ContentPart::ImageBase64 {
+            mime: "image/png".to_string(),
+            data: "AAAA".to_string(),
+        }];
+        let history = conversation_messages_to_history(&[msg], None);
+        assert_eq!(
+            history,
+            vec![("user".to_string(), "describe this".to_string())]
         );
+    }
+
+    /// When a `Text` part already carries the same text as `content`, the
+    /// prompt must appear exactly once in the ChatML history, not twice.
+    #[test]
+    fn no_duplication_when_text_part_equals_content() {
+        let mut msg = ConversationMessage::user("hello");
+        msg.parts = vec![ContentPart::Text {
+            text: "hello".to_string(),
+        }];
+        let history = conversation_messages_to_history(&[msg], None);
+        assert_eq!(history, vec![("user".to_string(), "hello".to_string())]);
+    }
+
+    /// Empty `content` with only binary parts must not panic and must not
+    /// synthesize placeholder text — the resulting turn is an empty string.
+    #[test]
+    fn empty_content_with_parts() {
+        let mut msg = ConversationMessage::user("");
+        msg.parts = vec![ContentPart::ImageBase64 {
+            mime: "image/jpeg".to_string(),
+            data: "BBBB".to_string(),
+        }];
+        let history = conversation_messages_to_history(&[msg], None);
+        assert_eq!(history, vec![("user".to_string(), String::new())]);
     }
 }

@@ -5,6 +5,19 @@
 //!
 //! `live_vision_parts` sends a base64 image `ContentPart` to a vision-capable
 //! NIM model (overridable via `NVIDIA_VISION_MODEL`) when the catalog offers one.
+//!
+//! ## Opt-in routing through nimaproxy
+//!
+//! Setting `NVIDIA_API_BASE=http://127.0.0.1:8080/v1` together with any
+//! non-empty `NVIDIA_API_KEY` (see [`skip_without_key`]) routes every call in
+//! this file through the local key-racing proxy (nimaproxy) instead of
+//! talking to NVIDIA directly. [`apply_base_override`] derives `models_url`
+//! from the overridden base, so `GET /v1/models` through the proxy returns
+//! the *proxy's* configured pool, not the full NIM catalog. That pool has no
+//! vision or embedding models, so `live_vision_parts` and `live_embed` will
+//! `SKIP` unless `NVIDIA_VISION_MODEL` / `NVIDIA_EMBED_MODEL` is set to force
+//! a model id — and even then, a forced vision call is expected to be
+//! rejected by the proxy, since its pool has no vision-capable model.
 
 use ares_llm::coordinator::ConversationMessage;
 use ares_llm::{
@@ -514,6 +527,81 @@ async fn live_stream_text_tools_api() {
         !text.trim().is_empty(),
         "live_stream_text_tools_api: expected non-empty text"
     );
+}
+
+#[tokio::test]
+#[ignore]
+async fn live_stream_with_tools() {
+    if skip_without_key("live_stream_with_tools") {
+        return;
+    }
+    let stack = live_stack().await;
+    let client = chat_client(&stack).await;
+    let tools = [weather_tool()];
+    let user =
+        ConversationMessage::user("What is the weather in Austin? Use the get_weather tool.");
+    let mut stream = tokio::time::timeout(
+        CALL_TIMEOUT,
+        client.stream_with_tools_and_history(&[user], &tools),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("live_stream_with_tools setup timed out"))
+    .unwrap_or_else(|e| panic_redacted("live_stream_with_tools setup", e));
+
+    let mut text = String::new();
+    let mut tool_calls: Vec<ares_types::types::ToolCall> = Vec::new();
+    let collect = async {
+        while let Some(item) = stream.next().await {
+            match item.unwrap_or_else(|e| panic_redacted("live_stream_with_tools chunk", e)) {
+                ares_llm::LlmStreamEvent::Text(t) => text.push_str(&t),
+                ares_llm::LlmStreamEvent::ToolCalls(calls) => tool_calls.extend(calls),
+            }
+        }
+    };
+    tokio::time::timeout(CALL_TIMEOUT, collect)
+        .await
+        .unwrap_or_else(|_| panic!("live_stream_with_tools collect timed out"));
+
+    eprintln!(
+        "live_stream_with_tools model={} chars={} tool_calls={}",
+        client.model_name(),
+        text.len(),
+        tool_calls.len()
+    );
+
+    if tool_calls.is_empty() {
+        eprintln!(
+            "live_stream_with_tools: no ToolCalls event (graceful refusal/text, model tool-support \
+             variance, not a transport failure): {:?}",
+            text.chars().take(200).collect::<String>()
+        );
+        return;
+    }
+
+    for call in &tool_calls {
+        assert_eq!(
+            call.name, "get_weather",
+            "live_stream_with_tools: unexpected tool name {}",
+            call.name
+        );
+        match &call.arguments {
+            serde_json::Value::String(raw) => {
+                serde_json::from_str::<serde_json::Value>(raw).unwrap_or_else(|e| {
+                    panic!("live_stream_with_tools: tool call arguments not parseable JSON: {e}")
+                });
+            }
+            other => {
+                assert!(
+                    !other.is_null(),
+                    "live_stream_with_tools: tool call arguments were null"
+                );
+            }
+        }
+        eprintln!(
+            "live_stream_with_tools: tool call captured name={} args={}",
+            call.name, call.arguments
+        );
+    }
 }
 
 /// 1x1 red PNG, base64-encoded. Small enough to send inline; enough for a

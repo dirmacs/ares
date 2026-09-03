@@ -8,11 +8,13 @@ use cordis::Context;
 #[path = "v1/stream.rs"] pub mod stream;
 #[path = "v1/agents.rs"] pub mod agents;
 #[path = "v1/shared.rs"] pub mod shared;
+#[path = "v1/usage_ingest.rs"] pub mod usage_ingest;
 
 pub use shared::*;
 pub use chat::*;
 pub use stream::*;
 pub use agents::*;
+pub use usage_ingest::*;
 
 // =============================================================================
 // Response types — designed to match enterprise-portal's expected types

@@ -755,6 +755,12 @@ pub fn routes() -> axum::Router<Arc<Context>> {
         .route("/v1/agents/run_agent", post(run_agent))
         .route("/v1/agents/list_agent_runs", get(list_agent_runs))
         .route("/v1/agents/get_usage", get(get_usage))
+        // External usage ingest (served today via `create_router`; repeated
+        // here so the `build_routes` cutover keeps it).
+        .route(
+            "/v1/usage/events",
+            post(super::usage_ingest::ingest_usage_events),
+        )
         .route("/v1/agents/list_api_keys", get(list_api_keys))
         .route("/v1/agents/create_api_key", post(create_api_key))
         .route("/v1/agents/revoke_api_key", delete(revoke_api_key))

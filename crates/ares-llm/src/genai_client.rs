@@ -37,6 +37,7 @@ impl GenaiClient {
     pub fn new(provider: GenaiProvider) -> Result<Self> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(300))
+            .no_proxy()
             .build()
             .map_err(|e| AppError::External(format!("failed to build reqwest client: {e}")))?;
         let inner = Client::builder().with_reqwest(http).build();

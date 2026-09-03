@@ -664,6 +664,12 @@ pub fn create_router(
             get(crate::api::handlers::v1::list_agent_logs),
         )
         .route("/usage", get(crate::api::handlers::v1::get_usage))
+        // External usage ingest for library-embedded callers. Unmetered by
+        // design: reporting usage must not itself consume quota.
+        .route(
+            "/usage/events",
+            post(crate::api::handlers::v1::ingest_usage_events),
+        )
         .route(
             "/api-keys",
             get(crate::api::handlers::v1::list_api_keys)

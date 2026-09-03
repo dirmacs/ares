@@ -166,6 +166,7 @@ impl NvidiaCatalogCache {
         let client = reqwest::ClientBuilder::new()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(10))
+            .no_proxy()
             .build()
             .expect("failed to build reqwest client");
         let resp = client

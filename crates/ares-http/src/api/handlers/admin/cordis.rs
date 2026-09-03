@@ -814,11 +814,11 @@ pub async fn move_cordis_entry(
     let path = current_entries.path.clone();
 
     let parent = body.get("parent").map(|p| {
-        p.as_str()
-            .map(str::to_string)
-            .ok_or_else(|| HttpError::from(ares_types::types::AppError::InvalidInput(
+        p.as_str().map(str::to_string).ok_or_else(|| {
+            HttpError::from(ares_types::types::AppError::InvalidInput(
                 "\"parent\" must be a string or null".to_string(),
-            )))
+            ))
+        })
     });
     let parent = match parent {
         Some(Ok(p)) => Some(p),
@@ -849,9 +849,15 @@ pub async fn move_cordis_entry(
     }
 
     let journal = ctx.get::<cordis::LoaderJournal>().expect("loader state");
-    let outcome =
-        cordis::loader::Loader::move_entry(&ctx, &mut tree, &journal, &id, parent.as_deref(), position)
-            .await;
+    let outcome = cordis::loader::Loader::move_entry(
+        &ctx,
+        &mut tree,
+        &journal,
+        &id,
+        parent.as_deref(),
+        position,
+    )
+    .await;
     let outcome = match outcome {
         Ok(outcome) => outcome,
         Err(e) => {
@@ -1775,8 +1781,11 @@ mod tests {
     /// still persisted + re-applied through the shared flow.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn patch_empty_body_is_noop() {
-        let (ctx, dir) =
-            build_entries_fixture("patch-empty", CALC_TOML_BLOCK, vec![probe_entry("calc", false)]);
+        let (ctx, dir) = build_entries_fixture(
+            "patch-empty",
+            CALC_TOML_BLOCK,
+            vec![probe_entry("calc", false)],
+        );
 
         let (status, Json(body)) = patch_cordis_entry(
             State(ctx.clone()),
@@ -1787,7 +1796,10 @@ mod tests {
         .expect("resp");
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["patched"], json!(true));
-        assert_eq!(body["entry"], serde_json::to_value(probe_entry("calc", false)).unwrap());
+        assert_eq!(
+            body["entry"],
+            serde_json::to_value(probe_entry("calc", false)).unwrap()
+        );
 
         // The same entry set round-trips: exactly one calc entry remains and
         // no field was altered by the empty patch body.
@@ -1796,7 +1808,11 @@ mod tests {
             .lines()
             .filter_map(|l| l.strip_prefix("id = "))
             .collect();
-        assert_eq!(ids, vec!["\"calc\""], "no-op patch keeps the entry set intact");
+        assert_eq!(
+            ids,
+            vec!["\"calc\""],
+            "no-op patch keeps the entry set intact"
+        );
         assert!(after.contains("id = \"calc\""));
         assert!(!after.contains("v ="), "config untouched by empty body");
 
@@ -1807,8 +1823,11 @@ mod tests {
     /// applied.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn patch_unknown_id_404s() {
-        let (ctx, dir) =
-            build_entries_fixture("patch-unknown", CALC_TOML_BLOCK, vec![probe_entry("calc", false)]);
+        let (ctx, dir) = build_entries_fixture(
+            "patch-unknown",
+            CALC_TOML_BLOCK,
+            vec![probe_entry("calc", false)],
+        );
         let before = std::fs::read_to_string(dir.join("cordis-entries.toml")).expect("read");
 
         let update = cordis::loader::EntryUpdate {
@@ -1904,10 +1923,13 @@ mod tests {
             config: Some(serde_json::json!({"v": 8})),
             ..Default::default()
         };
-        let (status, Json(ok_body)) =
-            patch_cordis_entry(State(ctx.clone()), Path("calc".into()), axum::Json(ok_update))
-                .await
-                .expect("resp");
+        let (status, Json(ok_body)) = patch_cordis_entry(
+            State(ctx.clone()),
+            Path("calc".into()),
+            axum::Json(ok_update),
+        )
+        .await
+        .expect("resp");
         assert_eq!(status, StatusCode::OK);
         assert_eq!(ok_body["patched"], json!(true));
         assert!(ok_body.get("issues").is_none(), "success carries no issues");
@@ -1936,9 +1958,7 @@ mod tests {
             "GroupMarker",
             Arc::new(|ctx: &Arc<::cordis::Context>, _cfg| {
                 let fut = ctx.plugin(Anchor(std::sync::atomic::AtomicU64::new(0)));
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(fut)
-                })
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
             }),
         );
 

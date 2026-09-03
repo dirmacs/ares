@@ -96,11 +96,15 @@ impl McpRegistry {
 }
 
 impl cordis::Service for McpRegistry {
-    fn name(&self) -> &'static str { "mcp_registry" }
+    fn name(&self) -> &'static str {
+        "mcp_registry"
+    }
     fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
-    fn check(&self) -> bool { true }
+    fn check(&self) -> bool {
+        true
+    }
 }
 
 fn is_mcp_config_file(path: &Path) -> bool {
@@ -133,10 +137,14 @@ fn load_mcp_config(path: &Path) -> Result<McpServerConfig, Box<dyn std::error::E
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolRegistered { pub name: String }
+pub struct ToolRegistered {
+    pub name: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolUnregistered { pub name: String }
+pub struct ToolUnregistered {
+    pub name: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum RegistryError {
@@ -155,7 +163,12 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    pub fn new() -> Self { Self { tools: HashMap::new(), extensions: Vec::new() } }
+    pub fn new() -> Self {
+        Self {
+            tools: HashMap::new(),
+            extensions: Vec::new(),
+        }
+    }
     pub fn with_builtin_tools() -> Self {
         let mut registry = Self::new();
         for tool in builtin_ares_tools() {
@@ -166,40 +179,77 @@ impl ToolRegistry {
     pub fn register(&mut self, tool: Tool) -> Result<ToolRegistered, RegistryError> {
         register_tool(&mut self.tools, tool)
     }
-    pub fn get(&self, name: &str) -> Result<&Tool, RegistryError> { get_tool(&self.tools, name) }
-    pub fn unregister(&mut self, name: &str) -> Result<ToolUnregistered, RegistryError> {
-        self.tools.remove(name).ok_or_else(|| RegistryError::NotFound(name.to_string()))?;
-        Ok(ToolUnregistered { name: name.to_string() })
+    pub fn get(&self, name: &str) -> Result<&Tool, RegistryError> {
+        get_tool(&self.tools, name)
     }
-    pub fn list(&self) -> Vec<Tool> { list_tools(&self.tools, &self.extensions) }
-    pub fn register_extension(&mut self, ext: Arc<dyn McpToolExtension>) { self.extensions.push(ext); }
+    pub fn unregister(&mut self, name: &str) -> Result<ToolUnregistered, RegistryError> {
+        self.tools
+            .remove(name)
+            .ok_or_else(|| RegistryError::NotFound(name.to_string()))?;
+        Ok(ToolUnregistered {
+            name: name.to_string(),
+        })
+    }
+    pub fn list(&self) -> Vec<Tool> {
+        list_tools(&self.tools, &self.extensions)
+    }
+    pub fn register_extension(&mut self, ext: Arc<dyn McpToolExtension>) {
+        self.extensions.push(ext);
+    }
     pub fn remove_extension(&mut self, index: usize) -> bool {
-        if index >= self.extensions.len() { return false; }
+        if index >= self.extensions.len() {
+            return false;
+        }
         self.extensions.remove(index);
         true
     }
-    pub fn extensions(&self) -> &[Arc<dyn McpToolExtension>] { &self.extensions }
-    pub fn tool_count(&self) -> usize { self.tools.len() }
-    pub fn extension_count(&self) -> usize { self.extensions.len() }
+    pub fn extensions(&self) -> &[Arc<dyn McpToolExtension>] {
+        &self.extensions
+    }
+    pub fn tool_count(&self) -> usize {
+        self.tools.len()
+    }
+    pub fn extension_count(&self) -> usize {
+        self.extensions.len()
+    }
 }
 
-impl Default for ToolRegistry { fn default() -> Self { Self::new() } }
+impl Default for ToolRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-pub fn register_tool(tools: &mut HashMap<String, Tool>, tool: Tool) -> Result<ToolRegistered, RegistryError> {
+pub fn register_tool(
+    tools: &mut HashMap<String, Tool>,
+    tool: Tool,
+) -> Result<ToolRegistered, RegistryError> {
     validate_tool_schema(&tool)?;
     let name = tool.name.to_string();
-    if tools.contains_key(&name) { return Err(RegistryError::Duplicate(name.clone())); }
+    if tools.contains_key(&name) {
+        return Err(RegistryError::Duplicate(name.clone()));
+    }
     tools.insert(name.clone(), tool);
     Ok(ToolRegistered { name })
 }
 
-pub fn get_tool<'a>(tools: &'a HashMap<String, Tool>, name: &str) -> Result<&'a Tool, RegistryError> {
-    tools.get(name).ok_or_else(|| RegistryError::NotFound(name.to_string()))
+pub fn get_tool<'a>(
+    tools: &'a HashMap<String, Tool>,
+    name: &str,
+) -> Result<&'a Tool, RegistryError> {
+    tools
+        .get(name)
+        .ok_or_else(|| RegistryError::NotFound(name.to_string()))
 }
 
-pub fn list_tools(tools: &HashMap<String, Tool>, extensions: &[Arc<dyn McpToolExtension>]) -> Vec<Tool> {
+pub fn list_tools(
+    tools: &HashMap<String, Tool>,
+    extensions: &[Arc<dyn McpToolExtension>],
+) -> Vec<Tool> {
     let mut out: Vec<Tool> = tools.values().cloned().collect();
-    for ext in extensions { out.extend(ext.tools()); }
+    for ext in extensions {
+        out.extend(ext.tools());
+    }
     out
 }
 
@@ -215,29 +265,37 @@ pub async fn extension_dispatch(
 pub fn tool_to_definition(tool: &Tool) -> ToolDefinition {
     ToolDefinition {
         name: tool.name.to_string(),
-        description: tool.description.clone().map(|d| d.to_string()).unwrap_or_default(),
+        description: tool
+            .description
+            .clone()
+            .map(|d| d.to_string())
+            .unwrap_or_default(),
         parameters: serde_json::to_value(&tool.input_schema).unwrap_or_else(|_| json!({})),
     }
 }
 
 pub fn validate_tool_schema(tool: &Tool) -> Result<(), RegistryError> {
     if tool.name.as_ref().trim().is_empty() {
-        return Err(RegistryError::InvalidSchema("tool name must not be empty".into()));
+        return Err(RegistryError::InvalidSchema(
+            "tool name must not be empty".into(),
+        ));
     }
     let schema_value = serde_json::to_value(&tool.input_schema)
         .map_err(|e| RegistryError::InvalidSchema(format!("input_schema not serializable: {e}")))?;
     match schema_value.get("type").and_then(|t| t.as_str()) {
         Some("object") => Ok(()),
-        Some(other) => Err(RegistryError::InvalidSchema(format!("input_schema type must be object, got {other}"))),
-        None => Err(RegistryError::InvalidSchema("input_schema must include type: object".into())),
+        Some(other) => Err(RegistryError::InvalidSchema(format!(
+            "input_schema type must be object, got {other}"
+        ))),
+        None => Err(RegistryError::InvalidSchema(
+            "input_schema must include type: object".into(),
+        )),
     }
 }
 
 fn build_tool(name: &str, description: &str, schema: serde_json::Value, title: &str) -> Tool {
-    let input_schema: rmcp::model::JsonObject =
-        serde_json::from_value(schema).unwrap_or_default();
-    Tool::new(name.to_string(), description.to_string(), input_schema)
-        .with_title(title.to_string())
+    let input_schema: rmcp::model::JsonObject = serde_json::from_value(schema).unwrap_or_default();
+    Tool::new(name.to_string(), description.to_string(), input_schema).with_title(title.to_string())
 }
 
 pub fn builtin_ares_tools() -> Vec<Tool> {
@@ -365,10 +423,7 @@ timeout_secs: 15
 
     #[test]
     fn from_dir_missing_directory_returns_empty_registry() {
-        let path = std::env::temp_dir().join(format!(
-            "ares-mcp-missing-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let path = std::env::temp_dir().join(format!("ares-mcp-missing-{}", uuid::Uuid::new_v4()));
         assert!(!path.exists());
 
         let registry = McpRegistry::from_dir(path.to_str().unwrap()).unwrap();
@@ -431,12 +486,15 @@ timeout_secs = 10
     use rmcp::model::ContentBlock;
 
     fn sample_tool(name: &str) -> Tool {
-        let input_schema: rmcp::model::JsonObject = serde_json::from_value(json!({"type":"object","properties":{},"required":[]})).unwrap_or_default();
+        let input_schema: rmcp::model::JsonObject =
+            serde_json::from_value(json!({"type":"object","properties":{},"required":[]}))
+                .unwrap_or_default();
         Tool::new(name.to_string(), format!("{name} tool"), input_schema)
     }
 
     fn serde_roundtrip<T>(value: &T) -> T
-    where T: serde::Serialize + for<'de> serde::Deserialize<'de> + PartialEq + std::fmt::Debug,
+    where
+        T: serde::Serialize + for<'de> serde::Deserialize<'de> + PartialEq + std::fmt::Debug,
     {
         let j = serde_json::to_string(value).unwrap();
         let p: T = serde_json::from_str(&j).unwrap();
@@ -444,110 +502,221 @@ timeout_secs = 10
         p
     }
 
-    #[test] fn tool_registry_new_is_empty() { let r = ToolRegistry::new(); assert_eq!(r.tool_count(), 0); assert!(r.list().is_empty()); }
-    #[test] fn tool_registry_default_matches_new() { assert_eq!(ToolRegistry::default().tool_count(), 0); }
-    #[test] fn tool_registry_with_builtin_has_five_unique_tools() {
+    #[test]
+    fn tool_registry_new_is_empty() {
+        let r = ToolRegistry::new();
+        assert_eq!(r.tool_count(), 0);
+        assert!(r.list().is_empty());
+    }
+    #[test]
+    fn tool_registry_default_matches_new() {
+        assert_eq!(ToolRegistry::default().tool_count(), 0);
+    }
+    #[test]
+    fn tool_registry_with_builtin_has_five_unique_tools() {
         let r = ToolRegistry::with_builtin_tools();
         assert_eq!(r.tool_count(), 5);
         let names: Vec<String> = r.list().into_iter().map(|t| t.name.to_string()).collect();
         assert!(names.iter().any(|n| n == "ares_list_agents"));
-        assert_eq!(names.len(), names.iter().collect::<std::collections::HashSet<_>>().len());
+        assert_eq!(
+            names.len(),
+            names.iter().collect::<std::collections::HashSet<_>>().len()
+        );
     }
-    #[test] fn register_tool_inserts_and_returns_event() {
+    #[test]
+    fn register_tool_inserts_and_returns_event() {
         let mut tools = HashMap::new();
-        assert_eq!(register_tool(&mut tools, sample_tool("custom")).unwrap().name, "custom");
+        assert_eq!(
+            register_tool(&mut tools, sample_tool("custom"))
+                .unwrap()
+                .name,
+            "custom"
+        );
     }
-    #[test] fn register_tool_duplicate_returns_error() {
+    #[test]
+    fn register_tool_duplicate_returns_error() {
         let mut r = ToolRegistry::new();
         r.register(sample_tool("dup")).unwrap();
-        assert!(matches!(r.register(sample_tool("dup")).unwrap_err(), RegistryError::Duplicate(_)));
+        assert!(matches!(
+            r.register(sample_tool("dup")).unwrap_err(),
+            RegistryError::Duplicate(_)
+        ));
     }
-    #[test] fn get_tool_returns_reference_when_present() {
-        assert_eq!(ToolRegistry::with_builtin_tools().get("ares_list_agents").unwrap().name.as_ref(), "ares_list_agents");
+    #[test]
+    fn get_tool_returns_reference_when_present() {
+        assert_eq!(
+            ToolRegistry::with_builtin_tools()
+                .get("ares_list_agents")
+                .unwrap()
+                .name
+                .as_ref(),
+            "ares_list_agents"
+        );
     }
-    #[test] fn get_tool_not_found_returns_error() {
-        assert!(matches!(ToolRegistry::with_builtin_tools().get("missing").unwrap_err(), RegistryError::NotFound(_)));
+    #[test]
+    fn get_tool_not_found_returns_error() {
+        assert!(matches!(
+            ToolRegistry::with_builtin_tools()
+                .get("missing")
+                .unwrap_err(),
+            RegistryError::NotFound(_)
+        ));
     }
-    #[test] fn unregister_tool_returns_event() {
+    #[test]
+    fn unregister_tool_returns_event() {
         let mut r = ToolRegistry::new();
         r.register(sample_tool("temp")).unwrap();
         assert_eq!(r.unregister("temp").unwrap().name, "temp");
         assert_eq!(r.tool_count(), 0);
     }
-    #[test] fn unregister_tool_not_found_returns_error() {
-        assert!(matches!(ToolRegistry::new().unregister("ghost").unwrap_err(), RegistryError::NotFound(_)));
+    #[test]
+    fn unregister_tool_not_found_returns_error() {
+        assert!(matches!(
+            ToolRegistry::new().unregister("ghost").unwrap_err(),
+            RegistryError::NotFound(_)
+        ));
     }
-    #[test] fn list_tools_includes_extension_tools() {
+    #[test]
+    fn list_tools_includes_extension_tools() {
         struct Ext;
         #[async_trait]
         impl McpToolExtension for Ext {
-            fn tools(&self) -> Vec<Tool> { vec![sample_tool("ext_search")] }
-            async fn execute(&self, _tool_name: &str, _arguments: serde_json::Value, _tenant_id: &str) -> Option<Result<CallToolResult, String>> { None }
+            fn tools(&self) -> Vec<Tool> {
+                vec![sample_tool("ext_search")]
+            }
+            async fn execute(
+                &self,
+                _tool_name: &str,
+                _arguments: serde_json::Value,
+                _tenant_id: &str,
+            ) -> Option<Result<CallToolResult, String>> {
+                None
+            }
         }
         let mut r = ToolRegistry::with_builtin_tools();
         r.register_extension(Arc::new(Ext));
         assert_eq!(r.list().len(), 6);
     }
-    #[test] fn register_and_remove_extension() {
+    #[test]
+    fn register_and_remove_extension() {
         let mut r = ToolRegistry::new();
         r.register_extension(Arc::new(NoOpMcpExtension));
         assert!(r.remove_extension(0));
         assert!(!r.remove_extension(0));
     }
-    #[test] fn validate_tool_schema_rejects_empty_name() {
-        assert!(matches!(validate_tool_schema(&sample_tool(" ")).unwrap_err(), RegistryError::InvalidSchema(_)));
+    #[test]
+    fn validate_tool_schema_rejects_empty_name() {
+        assert!(matches!(
+            validate_tool_schema(&sample_tool(" ")).unwrap_err(),
+            RegistryError::InvalidSchema(_)
+        ));
     }
-    #[test] fn validate_tool_schema_rejects_non_object_type() {
+    #[test]
+    fn validate_tool_schema_rejects_non_object_type() {
         let mut t = sample_tool("bad");
         t.input_schema = serde_json::from_value(json!({"type":"string"})).unwrap_or_default();
-        assert!(matches!(validate_tool_schema(&t).unwrap_err(), RegistryError::InvalidSchema(_)));
+        assert!(matches!(
+            validate_tool_schema(&t).unwrap_err(),
+            RegistryError::InvalidSchema(_)
+        ));
     }
-    #[test] fn validate_tool_schema_accepts_builtin_tools() { for t in builtin_ares_tools() { validate_tool_schema(&t).unwrap(); } }
-    #[test] fn tool_to_definition_maps_fields() {
+    #[test]
+    fn validate_tool_schema_accepts_builtin_tools() {
+        for t in builtin_ares_tools() {
+            validate_tool_schema(&t).unwrap();
+        }
+    }
+    #[test]
+    fn tool_to_definition_maps_fields() {
         let d = tool_to_definition(&sample_tool("mapper"));
         assert_eq!(d.name, "mapper");
         assert_eq!(d.parameters["type"], "object");
     }
-    #[test] fn tool_registered_serde_roundtrip() { serde_roundtrip(&ToolRegistered { name: "x".into() }); }
-    #[test] fn tool_unregistered_serde_roundtrip() { serde_roundtrip(&ToolUnregistered { name: "y".into() }); }
-    #[test] fn tool_definition_from_builtin_serde_roundtrip() {
-        let t = builtin_ares_tools().into_iter().find(|x| x.name.as_ref() == "ares_deploy_agent").unwrap();
+    #[test]
+    fn tool_registered_serde_roundtrip() {
+        serde_roundtrip(&ToolRegistered { name: "x".into() });
+    }
+    #[test]
+    fn tool_unregistered_serde_roundtrip() {
+        serde_roundtrip(&ToolUnregistered { name: "y".into() });
+    }
+    #[test]
+    fn tool_definition_from_builtin_serde_roundtrip() {
+        let t = builtin_ares_tools()
+            .into_iter()
+            .find(|x| x.name.as_ref() == "ares_deploy_agent")
+            .unwrap();
         let d = tool_to_definition(&t);
         let r: ToolDefinition = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
         assert_eq!(r.name, "ares_deploy_agent");
     }
-    #[test] fn pure_get_tool_helper_matches_registry_get() {
+    #[test]
+    fn pure_get_tool_helper_matches_registry_get() {
         let mut tools = HashMap::new();
         register_tool(&mut tools, sample_tool("ares_get_status")).unwrap();
-        assert_eq!(get_tool(&tools, "ares_get_status").unwrap().name.as_ref(), ToolRegistry::with_builtin_tools().get("ares_get_status").unwrap().name.as_ref());
+        assert_eq!(
+            get_tool(&tools, "ares_get_status").unwrap().name.as_ref(),
+            ToolRegistry::with_builtin_tools()
+                .get("ares_get_status")
+                .unwrap()
+                .name
+                .as_ref()
+        );
     }
-    #[test] fn pure_list_tools_helper_without_extensions() {
+    #[test]
+    fn pure_list_tools_helper_without_extensions() {
         let mut tools = HashMap::new();
-        for t in builtin_ares_tools() { register_tool(&mut tools, t).unwrap(); }
+        for t in builtin_ares_tools() {
+            register_tool(&mut tools, t).unwrap();
+        }
         assert_eq!(list_tools(&tools, &[]).len(), 5);
     }
-    #[tokio::test] async fn extension_dispatch_returns_none_for_unknown_tool() {
-        assert!(extension_dispatch(ToolRegistry::new().extensions(), "unknown", json!({}), "t").await.is_none());
+    #[tokio::test]
+    async fn extension_dispatch_returns_none_for_unknown_tool() {
+        assert!(
+            extension_dispatch(ToolRegistry::new().extensions(), "unknown", json!({}), "t")
+                .await
+                .is_none()
+        );
     }
-    #[tokio::test] async fn extension_dispatch_returns_ok_when_extension_handles_tool() {
+    #[tokio::test]
+    async fn extension_dispatch_returns_ok_when_extension_handles_tool() {
         struct Echo;
         #[async_trait]
         impl McpToolExtension for Echo {
-            fn tools(&self) -> Vec<Tool> { vec![sample_tool("echo_ext")] }
-            async fn execute(&self, n: &str, _: serde_json::Value, _: &str) -> Option<Result<CallToolResult, String>> {
-                if n == "echo_ext" { Some(Ok(CallToolResult::success(vec![ContentBlock::text("ok")]))) } else { None }
+            fn tools(&self) -> Vec<Tool> {
+                vec![sample_tool("echo_ext")]
+            }
+            async fn execute(
+                &self,
+                n: &str,
+                _: serde_json::Value,
+                _: &str,
+            ) -> Option<Result<CallToolResult, String>> {
+                if n == "echo_ext" {
+                    Some(Ok(CallToolResult::success(vec![ContentBlock::text("ok")])))
+                } else {
+                    None
+                }
             }
         }
         let mut r = ToolRegistry::new();
         r.register_extension(Arc::new(Echo));
-        let ok = extension_dispatch(r.extensions(), "echo_ext", json!({}), "t").await.unwrap().unwrap();
+        let ok = extension_dispatch(r.extensions(), "echo_ext", json!({}), "t")
+            .await
+            .unwrap()
+            .unwrap();
         assert!(!ok.is_error.unwrap_or(true));
     }
-    #[test] fn register_tool_rejects_invalid_schema_before_duplicate_check() {
+    #[test]
+    fn register_tool_rejects_invalid_schema_before_duplicate_check() {
         let mut tools = HashMap::new();
         let mut bad = sample_tool("bad");
         bad.input_schema = serde_json::from_value(json!({"type":"array"})).unwrap_or_default();
-        assert!(matches!(register_tool(&mut tools, bad).unwrap_err(), RegistryError::InvalidSchema(_)));
+        assert!(matches!(
+            register_tool(&mut tools, bad).unwrap_err(),
+            RegistryError::InvalidSchema(_)
+        ));
         assert!(tools.is_empty());
     }
 
@@ -560,5 +729,4 @@ timeout_secs = 10
         assert_eq!(got.name(), "mcp_registry");
         assert!(got.check());
     }
-
 }

@@ -91,9 +91,9 @@ impl McpSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ares_types::types::AppError;
     #[cfg(feature = "postgres")]
     use ares_types::{TenantContext, TenantTier};
-    use ares_types::types::AppError;
     use std::sync::Mutex;
 
     /// Serializes tests that read `ARES_API_KEY` while another test may remove it.
@@ -234,8 +234,7 @@ mod tests {
             McpAuthError::InvalidKey("bad prefix".into()).to_string(),
             "Invalid API key: bad prefix"
         );
-        let db_err: McpAuthError =
-            AppError::Database("connection refused".into()).into();
+        let db_err: McpAuthError = AppError::Database("connection refused".into()).into();
         assert_eq!(
             db_err.to_string(),
             "Database error during auth: Database error: connection refused"
@@ -468,6 +467,4 @@ mod tests {
             }
         }
     }
-
 }
-

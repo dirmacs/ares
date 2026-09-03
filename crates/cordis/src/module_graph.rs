@@ -271,9 +271,7 @@ impl ModuleGraph {
                 Err(err) => {
                     let rollback_err = reloader.rollback(ctx, &plugin).err();
                     let error = match rollback_err {
-                        Some(rb) => format!(
-                            "{err}; ROLLBACK ALSO FAILED for {plugin}: {rb}"
-                        ),
+                        Some(rb) => format!("{err}; ROLLBACK ALSO FAILED for {plugin}: {rb}"),
                         None => format!("{err}; rolled back {plugin} to its previous state"),
                     };
                     tracing::error!(
@@ -296,10 +294,7 @@ impl ModuleGraph {
 
 /// Modules whose `dependencies` contain `target`, in ascending key order
 /// (deterministic because storage is a `BTreeMap`).
-fn reverse_edges(
-    modules: &BTreeMap<String, ModuleEntry>,
-    target: &str,
-) -> Vec<String> {
+fn reverse_edges(modules: &BTreeMap<String, ModuleEntry>, target: &str) -> Vec<String> {
     modules
         .iter()
         .filter(|(_, entry)| entry.dependencies.iter().any(|d| d == target))
@@ -363,15 +358,9 @@ mod tests {
         assert_eq!(graph.depends_on("a"), vec!["a", "b", "c"]);
 
         let outcome = graph.change_many(&ctx(), &["a".to_string()]);
-        assert_eq!(
-            outcome,
-            ChangeOutcome::Reloaded(s(&["P.a", "P.b", "P.c"]))
-        );
+        assert_eq!(outcome, ChangeOutcome::Reloaded(s(&["P.a", "P.b", "P.c"])));
         // Exactly one reload per plugin, propagation order.
-        assert_eq!(
-            fake.ops(),
-            vec!["reload:P.a", "reload:P.b", "reload:P.c"]
-        );
+        assert_eq!(fake.ops(), vec!["reload:P.a", "reload:P.b", "reload:P.c"]);
     }
 
     #[tokio::test]
@@ -387,15 +376,9 @@ mod tests {
         assert_eq!(graph.depends_on("m2"), vec!["m2", "m1", "m3"]);
 
         let outcome = graph.change_many(&ctx(), &["m2".to_string()]);
-        assert_eq!(
-            outcome,
-            ChangeOutcome::Reloaded(s(&["P.2", "P.1", "P.3"]))
-        );
+        assert_eq!(outcome, ChangeOutcome::Reloaded(s(&["P.2", "P.1", "P.3"])));
         // Each cycle member reloaded exactly once — no infinite loop, no dupes.
-        assert_eq!(
-            fake.ops(),
-            vec!["reload:P.2", "reload:P.1", "reload:P.3"]
-        );
+        assert_eq!(fake.ops(), vec!["reload:P.2", "reload:P.1", "reload:P.3"]);
     }
 
     #[tokio::test]
@@ -408,18 +391,11 @@ mod tests {
         graph.register_module("z", vec!["x".into(), "y".into()], "P.z");
         graph.register_module("w", vec![], "P.w");
 
-        let keys = vec![
-            "x".to_string(),
-            "x".to_string(),
-            "y".to_string(),
-        ];
+        let keys = vec!["x".to_string(), "x".to_string(), "y".to_string()];
         let outcome = graph.change_many(&ctx(), &keys);
         assert_eq!(outcome, ChangeOutcome::Reloaded(s(&["P.x", "P.y", "P.z"])));
         // z reachable from BOTH x and y reloads EXACTLY ONCE; w untouched.
-        assert_eq!(
-            fake.ops(),
-            vec!["reload:P.x", "reload:P.y", "reload:P.z"]
-        );
+        assert_eq!(fake.ops(), vec!["reload:P.x", "reload:P.y", "reload:P.z"]);
     }
 
     #[tokio::test]
@@ -449,11 +425,7 @@ mod tests {
         // C never attempted (first-failure stop).
         assert_eq!(
             fake.ops(),
-            vec![
-                "reload:P.a",
-                "reload:P.b",
-                "rollback:P.b",
-            ]
+            vec!["reload:P.a", "reload:P.b", "rollback:P.b",]
         );
     }
 

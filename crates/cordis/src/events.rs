@@ -874,7 +874,8 @@ impl EventsService {
         if self.listener_count(INTERNAL_CONFIG_EVENT) == 0 {
             return Ok(raw);
         }
-        self.bail_from(INTERNAL_CONFIG_EVENT.into(), raw, None).await
+        self.bail_from(INTERNAL_CONFIG_EVENT.into(), raw, None)
+            .await
     }
 
     /// Restart-schedule interception at the `internal/update` veto point.
@@ -1123,7 +1124,10 @@ pub(crate) fn blocking_intercept_get(events: &EventsService, service: &str) -> R
 
 /// Synchronous bridge for the `internal/set` write veto. `Err` vetoes the
 /// write; without a runtime the write passes untouched.
-pub(crate) fn blocking_intercept_set(events: &EventsService, service: &str) -> Result<(), CordisError> {
+pub(crate) fn blocking_intercept_set(
+    events: &EventsService,
+    service: &str,
+) -> Result<(), CordisError> {
     if events.listener_count(INTERNAL_SET_EVENT) == 0 {
         return Ok(());
     }
@@ -1991,13 +1995,25 @@ mod tests {
         )
         .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-        assert_eq!(ran_a.load(Ordering::SeqCst), 0, "rejecting filter excludes a");
-        assert_eq!(ran_b.load(Ordering::SeqCst), 0, "rejecting filter excludes b");
+        assert_eq!(
+            ran_a.load(Ordering::SeqCst),
+            0,
+            "rejecting filter excludes a"
+        );
+        assert_eq!(
+            ran_b.load(Ordering::SeqCst),
+            0,
+            "rejecting filter excludes b"
+        );
 
         // Exclusion was per-dispatch: an UNFILTERED emit runs both listeners.
-        svc.dispatch("filtered.test".into(), serde_json::json!({}), Dispatch::Emit)
-            .await
-            .unwrap();
+        svc.dispatch(
+            "filtered.test".into(),
+            serde_json::json!({}),
+            Dispatch::Emit,
+        )
+        .await
+        .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         assert_eq!(
             ran_a.load(Ordering::SeqCst),
@@ -2232,9 +2248,13 @@ mod tests {
             }
         });
         handle.dispose(); // must flip nothing
-        svc.dispatch("blocked.event".into(), serde_json::json!({}), Dispatch::Bail)
-            .await
-            .unwrap();
+        svc.dispatch(
+            "blocked.event".into(),
+            serde_json::json!({}),
+            Dispatch::Bail,
+        )
+        .await
+        .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         assert!(
             !ran.load(Ordering::SeqCst),
@@ -2280,7 +2300,9 @@ mod tests {
         allow_gate.dispose();
     }
 
-    fn p_owned(p: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>> {
+    fn p_owned(
+        p: serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>> {
         Box::pin(async move { Ok(p) })
     }
 
@@ -2295,9 +2317,7 @@ mod tests {
         svc.on(INTERNAL_DISPATCH_EVENT.into(), move |payload| {
             let s = s.clone();
             async move {
-                if let Ok(parsed) =
-                    serde_json::from_value::<InternalDispatchPayload>(payload)
-                {
+                if let Ok(parsed) = serde_json::from_value::<InternalDispatchPayload>(payload) {
                     s.lock().push(parsed);
                 }
                 Ok(serde_json::Value::Null)
@@ -2305,9 +2325,13 @@ mod tests {
         });
 
         // Three product-mode dispatches + one meta dispatch.
-        svc.dispatch("observed.a".into(), serde_json::json!({ "n": 1 }), Dispatch::Emit)
-            .await
-            .unwrap();
+        svc.dispatch(
+            "observed.a".into(),
+            serde_json::json!({ "n": 1 }),
+            Dispatch::Emit,
+        )
+        .await
+        .unwrap();
         svc.dispatch(
             "observed.b".into(),
             serde_json::json!({ "n": 2 }),
@@ -2390,17 +2414,13 @@ mod tests {
         let svc = EventsService::new();
         let flat_ran = Arc::new(AtomicUsize::new(0));
         let f = flat_ran.clone();
-        svc.on_with(
-            "wf.filtered".into(),
-            EventOptions::default(),
-            move |_p| {
-                let f = f.clone();
-                async move {
-                    f.fetch_add(1, Ordering::SeqCst);
-                    Ok(serde_json::Value::Null)
-                }
-            },
-        );
+        svc.on_with("wf.filtered".into(), EventOptions::default(), move |_p| {
+            let f = f.clone();
+            async move {
+                f.fetch_add(1, Ordering::SeqCst);
+                Ok(serde_json::Value::Null)
+            }
+        });
         let wf_ran = Arc::new(AtomicUsize::new(0));
         let w = wf_ran.clone();
         svc.on_waterfall("wf.filtered".into(), move |_p, next| {

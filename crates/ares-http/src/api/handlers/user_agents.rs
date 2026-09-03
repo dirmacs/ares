@@ -1,15 +1,13 @@
-use std::sync::Arc;
-use cordis::Context;
-use crate::Result;
 use crate::HttpError;
+use crate::Result;
 use crate::{
-    db::postgres::UserAgent,
-    db::traits::DatabaseClient,
-    types::{AppError},
+    db::postgres::UserAgent, db::traits::DatabaseClient, types::AppError,
     utils::toml_config::AgentConfig,
 };
+use cordis::Context;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CreateUserAgentReq {
@@ -132,7 +130,9 @@ pub(crate) fn resolve_from_candidates(
             "system".into(),
         ));
     }
-    Err(HttpError::from(AppError::NotFound(format!("Agent '{agent_name}' not found").into())))
+    Err(HttpError::from(AppError::NotFound(
+        format!("Agent '{agent_name}' not found").into(),
+    )))
 }
 
 pub async fn resolve_agent(
@@ -141,20 +141,23 @@ pub async fn resolve_agent(
     agent_name: String,
 ) -> Result<(UserAgent, String)> {
     let user_id = ares_agent::user_id_from_ctx(state, user_id);
-    let user_agent = state.get::<ares_store::PostgresClient>().expect("not provided")
+    let user_agent = state
+        .get::<ares_store::PostgresClient>()
+        .expect("not provided")
         .get_user_agent_by_name(&user_id, &agent_name)
         .await?;
-    let public_agent = state.get::<ares_store::PostgresClient>().expect("not provided").get_public_agent_by_name(&agent_name).await?;
-    let config = state.get::<crate::overlay::AresConfigManager>().expect("not provided").config();
+    let public_agent = state
+        .get::<ares_store::PostgresClient>()
+        .expect("not provided")
+        .get_public_agent_by_name(&agent_name)
+        .await?;
+    let config = state
+        .get::<crate::overlay::AresConfigManager>()
+        .expect("not provided")
+        .config();
     let system_config = config.get_agent(&agent_name);
     let now = chrono::Utc::now().timestamp();
-    resolve_from_candidates(
-        user_agent,
-        public_agent,
-        system_config,
-        &agent_name,
-        now,
-    )
+    resolve_from_candidates(user_agent, public_agent, system_config, &agent_name, now)
 }
 
 // Dummy stubs to fix routing
@@ -197,15 +200,15 @@ mod tests {
 
     fn sample_agent_config() -> AgentConfig {
         AgentConfig {
-                        model: "llama3".into(),
-                        system_prompt: Some("system prompt".into()),
-                        tools: vec!["search".into(), "calc".into()],
-                        allowed_tools: None,
-                        max_tool_iterations: 7,
-                        parallel_tools: true,
-                        extra: HashMap::new(),
-                        compaction_enabled: None,
-                    }
+            model: "llama3".into(),
+            system_prompt: Some("system prompt".into()),
+            tools: vec!["search".into(), "calc".into()],
+            allowed_tools: None,
+            max_tool_iterations: 7,
+            parallel_tools: true,
+            extra: HashMap::new(),
+            compaction_enabled: None,
+        }
     }
 
     fn minimal_overlay_config(agent_name: &str, cfg: AgentConfig) -> AresConfig {
@@ -419,14 +422,9 @@ url = "postgres://localhost/ares"
         let u = sample_user_agent("router", "u1");
         let c = sample_user_agent("router", "");
         let cfg = sample_agent_config();
-        let (got, src) = resolve_from_candidates(
-            Some(u.clone()),
-            Some(c),
-            Some(&cfg),
-            "router",
-            FIXED_NOW,
-        )
-        .unwrap();
+        let (got, src) =
+            resolve_from_candidates(Some(u.clone()), Some(c), Some(&cfg), "router", FIXED_NOW)
+                .unwrap();
         assert_eq!(src, "user");
         assert_eq!(got.id, u.id);
     }

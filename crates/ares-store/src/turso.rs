@@ -1,6 +1,8 @@
 use super::postgres::{Conversation, User, UserAgent};
 use super::traits::{ConversationSummary, DatabaseClient};
-use ares_types::types::{AppError, ContentPart, MemoryFact, Message, MessageRole, Preference, Result};
+use ares_types::types::{
+    AppError, ContentPart, MemoryFact, Message, MessageRole, Preference, Result,
+};
 use async_trait::async_trait;
 use chrono::Utc;
 use libsql::{params, Builder, Connection, Database};

@@ -87,10 +87,7 @@ mod tests {
             expected: 384,
             actual: 128,
         };
-        assert_eq!(
-            err.to_string(),
-            "Dimension mismatch: expected 384, got 128"
-        );
+        assert_eq!(err.to_string(), "Dimension mismatch: expected 384, got 128");
     }
 
     #[test]
@@ -102,10 +99,7 @@ mod tests {
     #[test]
     fn numerical_instability_display() {
         let err = Error::NumericalInstability("norm overflow".into());
-        assert_eq!(
-            err.to_string(),
-            "Numerical instability: norm overflow"
-        );
+        assert_eq!(err.to_string(), "Numerical instability: norm overflow");
     }
 
     #[test]

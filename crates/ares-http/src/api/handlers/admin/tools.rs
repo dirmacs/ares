@@ -1,17 +1,17 @@
 //! Admin tools domain — cordis Phase6
 //! Bodies moved from `admin.rs` (190KB/5946 lines).
 
-use std::sync::Arc;
-use ::cordis::Context;
 use super::*;
+use ::cordis::Context;
+use std::sync::Arc;
 
-use ares_store::audit_log;
-use ares_types::types::{AppError};
-use crate::Result;
 use crate::HttpError;
+use crate::Result;
+use ares_store::audit_log;
+use ares_types::types::AppError;
 use axum::{
-    Json,
     extract::{Path, State},
+    Json,
 };
 use sha2::Digest;
 
@@ -25,7 +25,11 @@ async fn reload_runtime_tools(ctx: &Arc<Context>, when: &str) {
 pub async fn list_runtime_tools(
     State(ctx): State<Arc<Context>>,
 ) -> Result<Json<Vec<ares_store::runtime_tools::RuntimeTool>>> {
-    let __pool_1 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_1 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = RuntimeToolStore::new(&__pool_1);
     let tools = store.get_all().await?;
     Ok(Json(tools))
@@ -36,12 +40,15 @@ pub async fn get_runtime_tool(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
 ) -> Result<Json<ares_store::runtime_tools::RuntimeTool>> {
-    let __pool_2 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_2 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = RuntimeToolStore::new(&__pool_2);
-    let tool = store
-        .get_by_id(&id)
-        .await?
-        .ok_or_else(|| HttpError::from(AppError::NotFound(format!("runtime tool {id} not found"))))?;
+    let tool = store.get_by_id(&id).await?.ok_or_else(|| {
+        HttpError::from(AppError::NotFound(format!("runtime tool {id} not found")))
+    })?;
     Ok(Json(tool))
 }
 
@@ -53,13 +60,21 @@ pub async fn create_runtime_tool(
 ) -> Result<Json<serde_json::Value>> {
     validate_runtime_tool_execution_config(&req.tool_type, &req.execution_config)?;
 
-    let __pool_3 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_3 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = RuntimeToolStore::new(&__pool_3);
     let tool = store.create(&req).await?;
 
     reload_runtime_tools(&ctx, "after create").await;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let tool_id = tool.id.clone();
     let tool_name = tool.name.clone();
     let tool_type = tool.tool_type.clone();
@@ -97,20 +112,27 @@ pub async fn update_runtime_tool(
     Json(req): Json<UpdateRuntimeToolRequest>,
 ) -> Result<Json<serde_json::Value>> {
     validate_runtime_tool_update_scope_preflight(&req)?;
-    let __pool_4 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_4 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = RuntimeToolStore::new(&__pool_4);
     if let Some(execution_config) = &req.execution_config {
-        let existing = store
-            .get_by_id(&id)
-            .await?
-            .ok_or_else(|| HttpError::from(AppError::NotFound(format!("runtime tool {id} not found"))))?;
+        let existing = store.get_by_id(&id).await?.ok_or_else(|| {
+            HttpError::from(AppError::NotFound(format!("runtime tool {id} not found")))
+        })?;
         validate_runtime_tool_execution_config(&existing.tool_type, execution_config)?;
     }
     let tool = store.update(&id, &req).await?;
 
     reload_runtime_tools(&ctx, "after update").await;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let tool_id = id.clone();
     let new_version = tool.version;
     tokio::spawn(async move {
@@ -139,16 +161,26 @@ pub async fn delete_runtime_tool(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    let __pool_5 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_5 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = RuntimeToolStore::new(&__pool_5);
     let affected = store.delete(&id).await?;
     if affected == 0 {
-        return Err(HttpError::from(AppError::NotFound(format!("runtime tool {id} not found").into())));
+        return Err(HttpError::from(AppError::NotFound(
+            format!("runtime tool {id} not found").into(),
+        )));
     }
 
     reload_runtime_tools(&ctx, "after delete").await;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let tool_id = id.clone();
     tokio::spawn(async move {
         let _ = audit_log::log_admin_action(
@@ -174,12 +206,15 @@ pub async fn test_runtime_tool(
     Path(id): Path<String>,
     Json(req): Json<TestRuntimeToolRequest>,
 ) -> Result<Json<TestRuntimeToolResponse>> {
-    let __pool_6 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_6 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = RuntimeToolStore::new(&__pool_6);
-    let tool = store
-        .get_by_id(&id)
-        .await?
-        .ok_or_else(|| HttpError::from(AppError::NotFound(format!("runtime tool {id} not found"))))?;
+    let tool = store.get_by_id(&id).await?.ok_or_else(|| {
+        HttpError::from(AppError::NotFound(format!("runtime tool {id} not found")))
+    })?;
 
     let start = std::time::Instant::now();
 
@@ -221,7 +256,11 @@ pub async fn test_runtime_tool(
         tracing::warn!("Failed to log runtime tool test execution: {}", e);
     }
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let tool_id = id.clone();
     tokio::spawn(async move {
         let details = serde_json::json!({
@@ -253,13 +292,16 @@ pub async fn list_runtime_tool_versions(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<ares_store::runtime_tools::RuntimeToolVersion>>> {
-    let __pool_7 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_7 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = RuntimeToolStore::new(&__pool_7);
     // Verify the tool exists before returning versions.
-    let _ = store
-        .get_by_id(&id)
-        .await?
-        .ok_or_else(|| HttpError::from(AppError::NotFound(format!("runtime tool {id} not found"))))?;
+    let _ = store.get_by_id(&id).await?.ok_or_else(|| {
+        HttpError::from(AppError::NotFound(format!("runtime tool {id} not found")))
+    })?;
 
     let versions = store.get_versions(&id, 100).await?;
     Ok(Json(versions))
@@ -274,19 +316,26 @@ pub async fn rollback_runtime_tool(
     State(ctx): State<Arc<Context>>,
     Path((id, version)): Path<(String, i32)>,
 ) -> Result<Json<serde_json::Value>> {
-    let __pool_8 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_8 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = RuntimeToolStore::new(&__pool_8);
 
-    let _ = store
-        .get_by_id(&id)
-        .await?
-        .ok_or_else(|| HttpError::from(AppError::NotFound(format!("runtime tool {id} not found"))))?;
+    let _ = store.get_by_id(&id).await?.ok_or_else(|| {
+        HttpError::from(AppError::NotFound(format!("runtime tool {id} not found")))
+    })?;
 
     let versions = store.get_versions(&id, 1000).await?;
     let target = versions
         .into_iter()
         .find(|v| v.version == version)
-        .ok_or_else(|| HttpError::from(AppError::NotFound(format!("version {version} not found for tool {id}"))))?;
+        .ok_or_else(|| {
+            HttpError::from(AppError::NotFound(format!(
+                "version {version} not found for tool {id}"
+            )))
+        })?;
 
     let update_req = UpdateRuntimeToolRequest {
         display_name: None,
@@ -303,7 +352,11 @@ pub async fn rollback_runtime_tool(
 
     reload_runtime_tools(&ctx, "after rollback").await;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let tool_id = id.clone();
     let new_version = updated.version;
     tokio::spawn(async move {
@@ -341,7 +394,10 @@ pub fn routes() -> axum::Router<Arc<Context>> {
         .route("/tools/update_runtime_tool", put(update_runtime_tool))
         .route("/tools/delete_runtime_tool", delete(delete_runtime_tool))
         .route("/tools/test_runtime_tool", post(test_runtime_tool))
-        .route("/tools/list_runtime_tool_versions", get(list_runtime_tool_versions))
+        .route(
+            "/tools/list_runtime_tool_versions",
+            get(list_runtime_tool_versions),
+        )
         .route("/tools/rollback_runtime_tool", post(rollback_runtime_tool))
 }
 

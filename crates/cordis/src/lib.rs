@@ -98,8 +98,8 @@ pub mod timer;
 
 pub use context::{Accessor, Context, EffectHandle};
 pub use effect::Disposable;
-pub use events::{summarize_listener_errors, AggregateError, Dispatch, EventsService};
 pub use error::{ValidationError, ValidationIssue};
+pub use events::{summarize_listener_errors, AggregateError, Dispatch, EventsService};
 pub use fiber::{Fiber, FiberState, UndoMeta};
 pub use service::{CordisError, Service, ServiceInitFuture};
 
@@ -113,13 +113,13 @@ pub use events_payload::{
     LlmCompleteRequest, LlmCompleteResult, LlmEmbedEvent, LlmEmbedRequest, LlmEmbedResponse,
     LlmGenerateEvent, LlmGeneratePayload, LlmGenerateToolsEvent, LlmGenerateToolsPayload,
     LlmGetClientEvent, LlmGetClientPayload, LlmMessage, PipelineFanoutCompletedEvent,
-    PipelineFanoutCompletedPayload,
-    PipelineStepFinishedEvent, PipelineStepFinishedPayload, PipelineStepStartedEvent,
-    PipelineStepStartedPayload, ScheduleDispatchedEvent, ScheduleDispatchedPayload,
-    SchedulerAdmitEvent, SchedulerAdmitPayload, SchedulerBeforeRunEvent, SchedulerBeforeRunPayload,
-    SchedulerTickEvent, SchedulerTickPayload, ServiceChangedEvent, ServiceChangedPayload,
-    ToolsExecuteEvent, ToolsExecutePayload, ToolsListEvent, ToolsListRequest, ToolsListResult,
-    ToolsResolveEvent, ToolsResolveRequest, TriggerFiredEvent, TriggerFiredPayload, TypedEvent,
+    PipelineFanoutCompletedPayload, PipelineStepFinishedEvent, PipelineStepFinishedPayload,
+    PipelineStepStartedEvent, PipelineStepStartedPayload, ScheduleDispatchedEvent,
+    ScheduleDispatchedPayload, SchedulerAdmitEvent, SchedulerAdmitPayload, SchedulerBeforeRunEvent,
+    SchedulerBeforeRunPayload, SchedulerTickEvent, SchedulerTickPayload, ServiceChangedEvent,
+    ServiceChangedPayload, ToolsExecuteEvent, ToolsExecutePayload, ToolsListEvent,
+    ToolsListRequest, ToolsListResult, ToolsResolveEvent, ToolsResolveRequest, TriggerFiredEvent,
+    TriggerFiredPayload, TypedEvent,
 };
 pub mod loader;
 pub use loader::{
@@ -142,12 +142,12 @@ pub mod hmr;
 pub mod module_graph;
 pub mod registry;
 pub mod watcher;
-pub use registry::{Plugin, RegistryService};
 pub use module_graph::{ChangeOutcome, ModuleEntry, ModuleGraph, ModuleReload, NoopReload};
+pub use registry::{Plugin, RegistryService};
 
 pub use logger::{
-    derived_name, hyphenate, Exporter, ExporterConfig, LogArg, LogKind, LogLevel,
-    LoggerIntercept, LoggerService, Message,
+    derived_name, hyphenate, Exporter, ExporterConfig, LogArg, LogKind, LogLevel, LoggerIntercept,
+    LoggerService, Message,
 };
 
 pub mod compose;

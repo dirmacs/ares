@@ -10,15 +10,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
+use ares_agent::AgentRegistry;
 use ares_http::{
     auth::jwt::AuthService,
+    config::{AuthConfig as TomlAuthConfig, ServerConfig as TomlServerConfig},
     overlay::{
         AgentConfig, AresConfig, BillingConfig, DatabaseConfig as TomlDatabaseConfig,
         DynamicConfigPaths, ModelConfig, ProviderConfig, RagConfig,
     },
-    config::{AuthConfig as TomlAuthConfig, ServerConfig as TomlServerConfig},
     AresConfigManager, DynamicConfigManager,
 };
+use ares_llm::{ConfigBasedLLMFactory, ProviderRegistry};
 use ares_store::{
     tenant_agents::{
         create_tenant_agent, update_tenant_agent, CreateTenantAgentRequest,
@@ -26,10 +28,8 @@ use ares_store::{
     },
     TenantDb,
 };
-use ares_types::models::TenantTier;
-use ares_agent::AgentRegistry;
-use ares_llm::{ConfigBasedLLMFactory, ProviderRegistry};
 use ares_tools::Tools;
+use ares_types::models::TenantTier;
 use cordis::Context;
 
 mod common;
@@ -174,7 +174,11 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
     };
 
     let config_manager = Arc::new(AresConfigManager::from_config(overlay_config));
-    let provider_registry = Arc::new(ProviderRegistry::from_config(config_manager.config().providers.clone(), config_manager.config().models.clone(), config_manager.config().nvidia.as_ref()));
+    let provider_registry = Arc::new(ProviderRegistry::from_config(
+        config_manager.config().providers.clone(),
+        config_manager.config().models.clone(),
+        config_manager.config().nvidia.as_ref(),
+    ));
     let llm_factory = Arc::new(ConfigBasedLLMFactory::new(
         provider_registry.clone(),
         "default",
@@ -209,7 +213,7 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
     let db = Arc::new(db);
     let tenant_db = Arc::new(ares_store::TenantDb::new(db.clone()));
     let auth_service = Arc::new(auth_service);
-        let llm = Arc::new(
+    let llm = Arc::new(
         ares_llm::Llm::new(
             provider_registry.clone(),
             Arc::new(ares_llm::ClientPool::with_defaults()),
@@ -236,9 +240,11 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
     state.provide(ares_http::api::handlers::deploy::DeployRegistry::default());
     state.provide(ares_http::api::handlers::loops::LoopRegistry::new());
     state.provide(ares_agent::EmergencyStop::new(false));
-    state.provide(ares_agent::ContextProviderHandle::new(std::sync::Arc::new(ares_agent::context_provider::NoOpContextProvider)));
+    state.provide(ares_agent::ContextProviderHandle::new(std::sync::Arc::new(
+        ares_agent::context_provider::NoOpContextProvider,
+    )));
     state.provide(ares_store::FleetSecrets::new());
-        state.provide(ares_http::active_runs::ActiveRuns::new());
+    state.provide(ares_http::active_runs::ActiveRuns::new());
     state.provide_arc(skill_engine);
     // v1 chat/run delegate to Execute (capability cutover); without it handlers 503.
     state.provide_arc(Arc::new(ares_agent::execution::Execute::new()));

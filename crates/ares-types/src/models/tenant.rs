@@ -221,11 +221,15 @@ impl TenantContext {
 // Cordis Service impl — makes TenantContext a valid intercept key so per-request
 // tenant scope flows through the Cordis context via ctx.with_intercept(tenant_ctx).
 impl cordis::Service for TenantContext {
-    fn name(&self) -> &'static str { "tenant_context" }
+    fn name(&self) -> &'static str {
+        "tenant_context"
+    }
     fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
-    fn check(&self) -> bool { true }
+    fn check(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
@@ -416,7 +420,10 @@ mod tests {
     #[test]
     fn test_tenant_tier_from_str_case_insensitive() {
         assert_eq!(TenantTier::from_str("FREE"), Some(TenantTier::Free));
-        assert_eq!(TenantTier::from_str("Enterprise"), Some(TenantTier::Enterprise));
+        assert_eq!(
+            TenantTier::from_str("Enterprise"),
+            Some(TenantTier::Enterprise)
+        );
         assert_eq!(TenantTier::from_str(""), None);
     }
 
@@ -441,11 +448,7 @@ mod tests {
 
     #[test]
     fn test_tenant_serde_roundtrip_unicode_name() {
-        let tenant = Tenant::new(
-            "t-unicode".into(),
-            "租户 🏢".into(),
-            TenantTier::Pro,
-        );
+        let tenant = Tenant::new("t-unicode".into(), "租户 🏢".into(), TenantTier::Pro);
         let parsed: Tenant =
             serde_json::from_str(&serde_json::to_string(&tenant).unwrap()).unwrap();
         assert_eq!(parsed.name, "租户 🏢");
@@ -464,8 +467,7 @@ mod tests {
             created_at: 0,
             expires_at: Some(i64::MAX),
         };
-        let parsed: ApiKey =
-            serde_json::from_str(&serde_json::to_string(&key).unwrap()).unwrap();
+        let parsed: ApiKey = serde_json::from_str(&serde_json::to_string(&key).unwrap()).unwrap();
         assert!(!parsed.is_active);
         assert_eq!(parsed.expires_at, Some(i64::MAX));
         assert!(parsed.name.is_empty());
@@ -546,8 +548,7 @@ mod tests {
             "ares_xyz".into(),
             "Primary".into(),
         );
-        let parsed: ApiKey =
-            serde_json::from_str(&serde_json::to_string(&key).unwrap()).unwrap();
+        let parsed: ApiKey = serde_json::from_str(&serde_json::to_string(&key).unwrap()).unwrap();
         assert_eq!(parsed.id, key.id);
         assert_eq!(parsed.tenant_id, key.tenant_id);
         assert_eq!(parsed.key_hash, key.key_hash);
@@ -630,7 +631,10 @@ mod tests {
         let cloned = ctx.clone();
         assert_eq!(cloned.tenant_id, ctx.tenant_id);
         assert_eq!(cloned.tier, ctx.tier);
-        assert_eq!(cloned.quota.requests_per_month, ctx.quota.requests_per_month);
+        assert_eq!(
+            cloned.quota.requests_per_month,
+            ctx.quota.requests_per_month
+        );
     }
 
     #[test]
@@ -656,7 +660,9 @@ mod tests {
         // After intercept — TenantContext is readable.
         let tc = TenantContext::new("acme".into(), TenantTier::Pro);
         let child = root.with_intercept(tc);
-        let retrieved = child.get::<TenantContext>().expect("intercept must make TenantContext readable");
+        let retrieved = child
+            .get::<TenantContext>()
+            .expect("intercept must make TenantContext readable");
         assert_eq!(retrieved.tenant_id, "acme");
         assert_eq!(retrieved.tier, TenantTier::Pro);
     }

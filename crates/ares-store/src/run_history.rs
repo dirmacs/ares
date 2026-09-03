@@ -36,7 +36,7 @@ pub struct RunLlmCall {
     pub total_tokens: i64,
     pub estimated_cost_usd: Decimal,
     pub latency_ms: i64,
-        /// Tokens served from the provider-side prompt cache (`None` when the
+    /// Tokens served from the provider-side prompt cache (`None` when the
     /// provider does not report cache hits).
     pub cached_tokens: Option<i64>,
     /// End-to-end wall-clock time for the whole call in milliseconds,
@@ -172,7 +172,7 @@ pub struct LogLlmCallRequest {
     pub total_tokens: i64,
     pub estimated_cost_usd: Decimal,
     pub latency_ms: i64,
-        /// Tokens served from the provider-side prompt cache; `None` when
+    /// Tokens served from the provider-side prompt cache; `None` when
     /// unknown or not reported.
     #[serde(default)]
     pub cached_tokens: Option<i64>,
@@ -1028,8 +1028,8 @@ fn row_to_llm_call(row: &sqlx::postgres::PgRow) -> Result<RunLlmCall> {
         total_tokens: row.try_get("total_tokens").map_err(sqlx_err)?,
         estimated_cost_usd: row.try_get("estimated_cost_usd").map_err(sqlx_err)?,
         latency_ms: row.try_get("latency_ms").map_err(sqlx_err)?,
-                cached_tokens: row.try_get("cached_tokens").map_err(sqlx_err)?,
-                total_time_ms: row.try_get("total_time_ms").map_err(sqlx_err)?,
+        cached_tokens: row.try_get("cached_tokens").map_err(sqlx_err)?,
+        total_time_ms: row.try_get("total_time_ms").map_err(sqlx_err)?,
         status: row.try_get("status").map_err(sqlx_err)?,
         error_message: row.try_get("error_message").map_err(sqlx_err)?,
         request_payload: row.try_get("request_payload").map_err(sqlx_err)?,
@@ -1631,11 +1631,9 @@ mod tests {
         seed_integration_parents(&pool, "tenant-integration", "run-integration-cache").await;
 
         // Clean up
-        let _ = sqlx::query(
-            "DELETE FROM run_llm_calls WHERE agent_name LIKE 'integration-test-%'",
-        )
-        .execute(&pool)
-        .await;
+        let _ = sqlx::query("DELETE FROM run_llm_calls WHERE agent_name LIKE 'integration-test-%'")
+            .execute(&pool)
+            .await;
 
         let req = LogLlmCallRequest {
             id: uuid::Uuid::new_v4().to_string(),
@@ -1698,11 +1696,9 @@ mod tests {
         assert_eq!(stat.avg_total_time_ms, Some(215.0));
 
         // Cleanup
-        let _ = sqlx::query(
-            "DELETE FROM run_llm_calls WHERE agent_name LIKE 'integration-test-%'",
-        )
-        .execute(&pool)
-        .await;
+        let _ = sqlx::query("DELETE FROM run_llm_calls WHERE agent_name LIKE 'integration-test-%'")
+            .execute(&pool)
+            .await;
     }
 
     #[tokio::test]

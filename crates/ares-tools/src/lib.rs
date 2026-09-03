@@ -37,12 +37,12 @@ pub mod mcp_bridge;
 pub mod connectors;
 
 pub use calculator::{Calculator, CalculatorConfig, CalculatorService};
-pub use tools::provider_web_search::ProviderWebSearch;
 pub use plugins::register_plugins;
 pub use registry::Tool;
 #[cfg(feature = "script-tools")]
 pub use rhai_tool::{RhaiTool, RhaiToolConfig};
 pub use tool_service::Tools;
+pub use tools::provider_web_search::ProviderWebSearch;
 
 #[cfg(test)]
 mod tests {

@@ -13,8 +13,9 @@ use std::fmt;
 /// - **Euclidean**: Best for raw feature vectors where magnitude matters.
 /// - **DotProduct**: Best for vectors that are already normalized.
 /// - **Manhattan**: Robust to outliers, good for sparse vectors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub enum DistanceMetric {
     /// Cosine similarity (1 - cosine_distance).
     ///
@@ -347,7 +348,11 @@ fn cosine_similarity_scalar(a: &[f32], b: &[f32]) -> f32 {
     let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
     let denom = norm_a * norm_b;
-    if denom == 0.0 { 0.0 } else { dot / denom }
+    if denom == 0.0 {
+        0.0
+    } else {
+        dot / denom
+    }
 }
 
 #[cfg(test)]
@@ -800,10 +805,7 @@ mod tests {
             expected: 384,
             actual: 128,
         };
-        assert_eq!(
-            err.to_string(),
-            "Dimension mismatch: expected 384, got 128"
-        );
+        assert_eq!(err.to_string(), "Dimension mismatch: expected 384, got 128");
     }
 
     #[test]
@@ -815,10 +817,7 @@ mod tests {
     #[test]
     fn error_numerical_instability_display() {
         let err = Error::NumericalInstability("norm overflow".into());
-        assert_eq!(
-            err.to_string(),
-            "Numerical instability: norm overflow"
-        );
+        assert_eq!(err.to_string(), "Numerical instability: norm overflow");
     }
 
     // ------------------------------------------------------------------------
@@ -857,7 +856,10 @@ mod tests {
     fn test_dot_product_metric() {
         let a = vec![1.0, 2.0, 3.0];
         let b = vec![4.0, 5.0, 6.0];
-        assert!(approx_eq(DistanceMetric::DotProduct.similarity(&a, &b), 32.0));
+        assert!(approx_eq(
+            DistanceMetric::DotProduct.similarity(&a, &b),
+            32.0
+        ));
     }
 
     #[test]
@@ -865,7 +867,10 @@ mod tests {
         let a = vec![3.0];
         let b = vec![4.0];
         assert!(approx_eq(DistanceMetric::Euclidean.distance(&a, &b), 1.0));
-        assert!(approx_eq(DistanceMetric::DotProduct.similarity(&a, &b), 12.0));
+        assert!(approx_eq(
+            DistanceMetric::DotProduct.similarity(&a, &b),
+            12.0
+        ));
     }
 
     #[test]
@@ -932,5 +937,4 @@ mod tests {
             assert_eq!(restored, metric);
         }
     }
-
 }

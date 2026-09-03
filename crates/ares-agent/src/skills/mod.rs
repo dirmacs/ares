@@ -503,7 +503,8 @@ async fn skill_llm_response(
 /// Kept byte-stable across calls so provider-side prompt caches hit on the
 /// template; only the per-call tail (skill id, input, result) varies.
 #[cfg(feature = "postgres")]
-const DELEGATED_REVIEW_TEMPLATE: &str = "You are reviewing the result of a delegated sub-workflow step.\n\
+const DELEGATED_REVIEW_TEMPLATE: &str =
+    "You are reviewing the result of a delegated sub-workflow step.\n\
                                          Judge the result for consistency with the requested input \
                                          and overall task fit.\n\
                                          Reply with ACCEPT or REJECT on the first line, then one \
@@ -810,9 +811,10 @@ impl SkillsService {
             for step in steps {
                 match step {
                     SkillStep::ToolCall { tool_name, args } => {
-                        check_tool_round_cap(tool_rounds, &format!(
-                            "skill {skill_id} main step {step_index}"
-                        ))?;
+                        check_tool_round_cap(
+                            tool_rounds,
+                            &format!("skill {skill_id} main step {step_index}"),
+                        )?;
                         tool_rounds += 1;
                         tracing::info!("Step {}: tool_call {}", step_index, tool_name);
                         let start = std::time::Instant::now();
@@ -907,13 +909,8 @@ impl SkillsService {
                         sanitize_result_value(&mut result);
                         let result = match review_input {
                             Some(review_input) => {
-                                self.review_nested_result(
-                                    &inner_id,
-                                    &review_input,
-                                    result,
-                                    ctx,
-                                )
-                                .await?
+                                self.review_nested_result(&inner_id, &review_input, result, ctx)
+                                    .await?
                             }
                             None => result,
                         };
@@ -965,10 +962,7 @@ impl SkillsService {
     ) -> Result<(), String> {
         match step {
             SkillStep::ToolCall { tool_name, args } => {
-                check_tool_round_cap(
-                    *tool_rounds,
-                    &format!("skill sub-step {step_index}"),
-                )?;
+                check_tool_round_cap(*tool_rounds, &format!("skill sub-step {step_index}"))?;
                 *tool_rounds += 1;
                 let start = std::time::Instant::now();
                 let result = execute_skill_tool(ctx, tenant_id, tool_name, args.clone()).await?;
@@ -1041,7 +1035,9 @@ impl SkillsService {
                 // delegated text before it enters the parent context.
                 let mut result = result;
                 sanitize_result_value(&mut result);
-                let result = self.review_nested_result(skill_id, input, result, ctx).await?;
+                let result = self
+                    .review_nested_result(skill_id, input, result, ctx)
+                    .await?;
                 context[&format!("step_{}", step_index)] = successful_step_context(result);
                 Ok(())
             }
@@ -1089,9 +1085,7 @@ impl SkillsService {
             if !self.review_delegated_results {
                 return Ok(result);
             }
-            match
-                review_delegated_result(ctx, delegated_skill_id, delegated_input, &result).await
-            {
+            match review_delegated_result(ctx, delegated_skill_id, delegated_input, &result).await {
                 Ok(v) if v.accepted => Ok(result),
                 Ok(v) => Ok(serde_json::json!({
                     "status": "rejected",
@@ -1573,7 +1567,7 @@ mod tool_call_tests {
 
 #[cfg(test)]
 mod review_gate_tests {
-    use super::{Execute, MAX_SKILL_CALL_DEPTH, SkillsService};
+    use super::{Execute, SkillsService, MAX_SKILL_CALL_DEPTH};
     use ares_llm::{ClientPool, Llm, ModelConfig, ProviderConfig, ProviderRegistry};
     use cordis::{Context, EventsService};
     use serde_json::json;
@@ -1636,8 +1630,7 @@ mod review_gate_tests {
     #[tokio::test]
     async fn gate_off_passthrough_identical() {
         // Even a rejecting reviewer must not run while the gate is off.
-        let ctx = ctx_with_reviewer(Some("REJECT inconsistent with input\nbad fit"))
-            .await;
+        let ctx = ctx_with_reviewer(Some("REJECT inconsistent with input\nbad fit")).await;
         let svc = service(false);
         let original = json!({"status":"success","answer":"42"});
         let out = svc
@@ -1668,7 +1661,12 @@ mod review_gate_tests {
         let svc = service(true);
         let original = json!({"status":"success","answer":"banana"});
         let out = svc
-            .review_nested_result("child-skill", &json!({"q": "apples"}), original.clone(), &ctx)
+            .review_nested_result(
+                "child-skill",
+                &json!({"q": "apples"}),
+                original.clone(),
+                &ctx,
+            )
             .await
             .expect("structured rejection");
         assert_eq!(out.get("status"), Some(&json!("rejected")));
@@ -1719,7 +1717,7 @@ mod review_gate_tests {
 mod tool_hygiene_tests {
     use super::{
         check_tool_round_cap, sanitize_result_text, sanitize_result_value, validate_delegated_step,
-        Execute, MAX_SKILL_CALL_DEPTH, SkillsService,
+        Execute, SkillsService, MAX_SKILL_CALL_DEPTH,
     };
     use ares_tools::{Tool, Tools};
     use cordis::{Context, EventsService};
@@ -1880,17 +1878,13 @@ mod tool_hygiene_tests {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let root = Context::new_root();
         root.provide(EventsService::new());
-        root.provide(ares_store::PostgresClient {
-            pool: pool.clone(),
-        });
+        root.provide(ares_store::PostgresClient { pool: pool.clone() });
         // Skill steps resolve tools inside the tenant realm: provide into the
         // labeled isolate and pass THAT context onward (existing tool_call_tests pattern).
         let ctx = root.isolate::<Tools>("acme");
-        ctx.provide(Tools::from_static([
-            Arc::new(CountingTool {
-                calls: Arc::clone(&calls),
-            }) as Arc<dyn Tool>,
-        ]));
+        ctx.provide(Tools::from_static([Arc::new(CountingTool {
+            calls: Arc::clone(&calls),
+        }) as Arc<dyn Tool>]));
         seed_skill(
             &pool,
             "hygiene-cap",
@@ -1929,13 +1923,9 @@ mod tool_hygiene_tests {
         let pool = try_test_pool().await;
         let root = Context::new_root();
         root.provide(EventsService::new());
-        root.provide(ares_store::PostgresClient {
-            pool: pool.clone(),
-        });
+        root.provide(ares_store::PostgresClient { pool: pool.clone() });
         let ctx = root.isolate::<Tools>("acme");
-        ctx.provide(Tools::from_static([
-            Arc::new(ChatterTool) as Arc<dyn Tool>,
-        ]));
+        ctx.provide(Tools::from_static([Arc::new(ChatterTool) as Arc<dyn Tool>]));
         // Parent delegates once (allowed at depth 0); the child runs one
         // chatty tool step. The delegated step's input carries the tenant so
         // the child resolves its own skill row; the integrated parent
@@ -1977,7 +1967,6 @@ mod tool_hygiene_tests {
         );
         assert_eq!(content, "answer: 42");
     }
-
 }
 #[cfg(all(test, feature = "postgres"))]
 mod delegation_flag_tests {
@@ -1985,16 +1974,12 @@ mod delegation_flag_tests {
 
     #[test]
     fn parse_flags_quote_aware_tokens() {
-        let parsed = parse_delegation_args(
-            r#"translate "hello | world" --model fast-model --tools"#,
-        )
-        .expect("quoted delegation args should parse");
+        let parsed =
+            parse_delegation_args(r#"translate "hello | world" --model fast-model --tools"#)
+                .expect("quoted delegation args should parse");
         assert_eq!(
             parsed.tasks,
-            vec![vec![
-                "translate".to_string(),
-                "hello | world".to_string(),
-            ]]
+            vec![vec!["translate".to_string(), "hello | world".to_string(),]]
         );
         assert_eq!(parsed.model.as_deref(), Some("fast-model"));
         assert!(parsed.tools);
@@ -2003,10 +1988,9 @@ mod delegation_flag_tests {
 
     #[test]
     fn parallel_latch_splits_tasks() {
-        let parsed = parse_delegation_args(
-            r#"alpha | beta --parallel gamma "delta echo" | epsilon"#,
-        )
-        .expect("latched delegation args should parse");
+        let parsed =
+            parse_delegation_args(r#"alpha | beta --parallel gamma "delta echo" | epsilon"#)
+                .expect("latched delegation args should parse");
         assert!(parsed.parallel);
         assert_eq!(
             parsed.tasks,
@@ -2042,7 +2026,10 @@ mod delegation_flag_tests {
     #[test]
     fn tools_flag_enables_inner_loop() {
         let off = parse_delegation_args("summarize notes").expect("parse");
-        assert!(!off.tools, "--tools absent must keep the inner loop disabled");
+        assert!(
+            !off.tools,
+            "--tools absent must keep the inner loop disabled"
+        );
 
         let on = parse_delegation_args("research topic --tools").expect("parse");
         assert!(on.tools, "--tools must enable the inner tool loop");

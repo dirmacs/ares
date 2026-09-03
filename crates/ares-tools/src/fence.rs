@@ -258,12 +258,13 @@ impl Fence {
                 self.record(&resolved, Some(guard), FsError::FS_EXISTS);
                 return Err(FsError::new(
                     FsError::FS_EXISTS,
-                    format!("create refused, path already exists: {}", resolved.display()),
+                    format!(
+                        "create refused, path already exists: {}",
+                        resolved.display()
+                    ),
                 ));
             }
-            WriteGuard::ReplaceIfVersion { version }
-                if !exists || current != Some(version) =>
-            {
+            WriteGuard::ReplaceIfVersion { version } if !exists || current != Some(version) => {
                 self.record(&resolved, Some(guard), FsError::FS_VERSION_CONFLICT);
                 return Err(FsError::new(
                     FsError::FS_VERSION_CONFLICT,
@@ -809,11 +810,8 @@ mod tests {
         let strict = fence(FenceMode::WorkspaceWrite, ws.path());
         let unconditional = strict.fence_write(&target, WriteGuard::Unconditional, b"no");
         let create = strict.fence_write(&target, WriteGuard::CreateIfAbsent, b"no");
-        let replace = strict.fence_write(
-            &target,
-            WriteGuard::ReplaceIfVersion { version: 0 },
-            b"no",
-        );
+        let replace =
+            strict.fence_write(&target, WriteGuard::ReplaceIfVersion { version: 0 }, b"no");
         assert_eq!(unconditional.unwrap_err().code, FsError::FS_NOT_OBSERVED);
         assert_eq!(create.unwrap_err().code, FsError::FS_NOT_OBSERVED);
         assert_eq!(replace.unwrap_err().code, FsError::FS_NOT_OBSERVED);
@@ -1016,7 +1014,11 @@ mod tests {
             .filter_map(|entry| entry.ok())
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(leftovers, vec!["private.txt".to_string()], "tmp renamed away");
+        assert_eq!(
+            leftovers,
+            vec!["private.txt".to_string()],
+            "tmp renamed away"
+        );
 
         #[cfg(unix)]
         {

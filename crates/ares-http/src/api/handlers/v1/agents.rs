@@ -3,14 +3,14 @@
 
 use super::*;
 
+use crate::observability::RunObservability;
+use crate::HttpError;
+use crate::Result;
 use ares_agent::context_provider::AgentRuntimeContext;
 use ares_store::agent_runs;
 use ares_store::tenant_agents::{self};
 use ares_types::models::TenantContext;
-use crate::observability::RunObservability;
-use ares_types::types::{AgentContext};
-use crate::Result;
-use crate::HttpError;
+use ares_types::types::AgentContext;
 use axum::{
     extract::{Extension, Path, Query, State},
     http::StatusCode,
@@ -18,8 +18,8 @@ use axum::{
     Json,
 };
 use chrono::{TimeZone, Utc};
-use std::sync::Arc;
 use cordis::Context;
+use std::sync::Arc;
 
 /// GET /v1/agents — list all agents for this tenant
 pub async fn list_agents(
@@ -38,7 +38,15 @@ pub async fn list_agents(
     let page = normalize_page(q.page);
     let per_page = normalize_per_page(q.per_page, 20);
 
-    let agents = tenant_agents::list_tenant_agents(&state_ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone(), &tc.tenant_id).await?;
+    let agents = tenant_agents::list_tenant_agents(
+        &state_ctx
+            .get::<ares_store::TenantDb>()
+            .expect("not provided")
+            .pool()
+            .clone(),
+        &tc.tenant_id,
+    )
+    .await?;
     let items: Vec<V1Agent> = agents.into_iter().map(V1Agent::from).collect();
 
     Ok(Json(paginate_vec(items, page, per_page)))
@@ -58,8 +66,16 @@ pub async fn get_agent(
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,
     };
-    let agent =
-        tenant_agents::get_tenant_agent(&state_ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone(), &tc.tenant_id, &name).await?;
+    let agent = tenant_agents::get_tenant_agent(
+        &state_ctx
+            .get::<ares_store::TenantDb>()
+            .expect("not provided")
+            .pool()
+            .clone(),
+        &tc.tenant_id,
+        &name,
+    )
+    .await?;
     Ok(Json(V1Agent::from(agent)))
 }
 
@@ -80,7 +96,9 @@ pub async fn run_agent(
     };
 
     // Emergency stop
-    if state_ctx.get::<ares_agent::EmergencyStop>().expect("not provided")
+    if state_ctx
+        .get::<ares_agent::EmergencyStop>()
+        .expect("not provided")
         .is_active()
     {
         return Err(HttpError::from(ares_types::types::AppError::Unavailable(
@@ -104,13 +122,21 @@ pub async fn run_agent(
     let start = std::time::Instant::now();
     let state_ctx = ares_agent::tenant_scope(&state_ctx, &tc.tenant_id);
     let tenant_row = tenant_agents::get_tenant_agent(
-        &state_ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone(),
+        &state_ctx
+            .get::<ares_store::TenantDb>()
+            .expect("not provided")
+            .pool()
+            .clone(),
         &tc.tenant_id,
         &name,
     )
     .await
     .ok();
-    let config_source = if tenant_row.is_some() { "tenant-db" } else { "system" };
+    let config_source = if tenant_row.is_some() {
+        "tenant-db"
+    } else {
+        "system"
+    };
     let config_version = tenant_row
         .as_ref()
         .map(|row| format!("tenant-db:{}", row.updated_at));
@@ -120,8 +146,11 @@ pub async fn run_agent(
         .as_ref()
         .and_then(|row| row.config.get("skill_id").and_then(|v| v.as_str()))
     {
-            let run_id = uuid::Uuid::new_v4().to_string();
-            state_ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").start(crate::active_runs::ActiveRun {
+        let run_id = uuid::Uuid::new_v4().to_string();
+        state_ctx
+            .get::<crate::active_runs::ActiveRuns>()
+            .expect("not provided")
+            .start(crate::active_runs::ActiveRun {
                 run_id: run_id.clone(),
                 tenant_id: tc.tenant_id.clone(),
                 agent_name: name.clone(),
@@ -138,139 +167,148 @@ pub async fn run_agent(
                 schedule_id: None,
                 trigger_id: None,
             });
-            let skill_result = state_ctx.get::<ares_agent::skills::SkillEngine>().expect("not provided")
-                .execute_skill(skill_id, &tc.tenant_id, input.clone(), &run_id, &state_ctx)
-                .await;
-            let duration_ms = start.elapsed().as_millis() as u64;
-            let skill_status = if skill_result.is_ok() {
+        let skill_result = state_ctx
+            .get::<ares_agent::skills::SkillEngine>()
+            .expect("not provided")
+            .execute_skill(skill_id, &tc.tenant_id, input.clone(), &run_id, &state_ctx)
+            .await;
+        let duration_ms = start.elapsed().as_millis() as u64;
+        let skill_status = if skill_result.is_ok() {
+            "completed"
+        } else {
+            "error"
+        };
+        state_ctx
+            .get::<crate::active_runs::ActiveRuns>()
+            .expect("not provided")
+            .finish(&run_id, skill_status);
+
+        // Record agent run
+        {
+            let pool = state_ctx
+                .get::<ares_store::TenantDb>()
+                .expect("not provided")
+                .pool()
+                .clone();
+            let tid = tc.tenant_id.clone();
+            let aname = name.clone();
+            let dur = duration_ms as i64;
+            let metadata = agent_runs::AgentRunMetadata {
+                workspace_id: runtime_workspace_id.clone(),
+                session_id: Some(agent_context.session_id.clone()),
+                request_source: Some("api_v1_agent_run".to_string()),
+                product: None,
+                agent_config_source: Some(config_source.to_string()),
+                agent_config_version: config_version.clone(),
+                eruka_binding_id: None,
+                eruka_context_hit: false,
+                eruka_read_count: 0,
+                eruka_write_count: 0,
+                pipeline_id: None,
+                schedule_id: None,
+                trigger_id: None,
+            };
+            let status = if skill_result.is_ok() {
                 "completed"
             } else {
-                "error"
+                "failed"
             };
-            state_ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").finish(&run_id, skill_status);
+            let (input_tokens, output_tokens) = skill_result
+                .as_ref()
+                .map(ares_agent::skills::skill_result_token_counts)
+                .unwrap_or((0, 0));
+            let err_msg = skill_result.as_ref().err().cloned();
+            let run_id_for_insert = run_id.clone();
+            tokio::spawn(async move {
+                let _ = agent_runs::insert_agent_run_with_id_and_metadata(
+                    &pool,
+                    &run_id_for_insert,
+                    &tid,
+                    &aname,
+                    None,
+                    status,
+                    input_tokens,
+                    output_tokens,
+                    dur,
+                    err_msg.as_deref(),
+                    "skill",
+                    "skill",
+                    false,
+                    Some(&metadata),
+                )
+                .await;
+            });
+        }
 
-            // Record agent run
-            {
-                let pool = state_ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
-                let tid = tc.tenant_id.clone();
-                let aname = name.clone();
-                let dur = duration_ms as i64;
-                let metadata = agent_runs::AgentRunMetadata {
-                    workspace_id: runtime_workspace_id.clone(),
-                    session_id: Some(agent_context.session_id.clone()),
-                    request_source: Some("api_v1_agent_run".to_string()),
-                    product: None,
-                    agent_config_source: Some(config_source.to_string()),
-                    agent_config_version: config_version.clone(),
-                    eruka_binding_id: None,
-                    eruka_context_hit: false,
-                    eruka_read_count: 0,
-                    eruka_write_count: 0,
-                    pipeline_id: None,
-                    schedule_id: None,
-                    trigger_id: None,
+        let response_agent_id = name.clone();
+        let (response, input_tokens, output_tokens) = match skill_result {
+            Ok(context) => {
+                let (input_tokens, output_tokens) =
+                    ares_agent::skills::skill_result_token_counts(&context);
+                let total_tokens = (input_tokens + output_tokens).max(0) as u64;
+                let response = V1AgentRun {
+                    id: run_id,
+                    agent_id: response_agent_id.clone(),
+                    status: "completed".to_string(),
+                    input: input.clone(),
+                    output: Some(context),
+                    error: None,
+                    started_at: Utc::now(),
+                    finished_at: Some(Utc::now()),
+                    duration_ms: Some(duration_ms),
+                    tokens_used: Some(total_tokens),
                 };
-                let status = if skill_result.is_ok() {
-                    "completed"
-                } else {
-                    "failed"
-                };
-                let (input_tokens, output_tokens) = skill_result
-                    .as_ref()
-                    .map(ares_agent::skills::skill_result_token_counts)
-                    .unwrap_or((0, 0));
-                let err_msg = skill_result.as_ref().err().cloned();
-                let run_id_for_insert = run_id.clone();
-                tokio::spawn(async move {
-                    let _ = agent_runs::insert_agent_run_with_id_and_metadata(
-                        &pool,
-                        &run_id_for_insert,
-                        &tid,
-                        &aname,
-                        None,
-                        status,
-                        input_tokens,
-                        output_tokens,
-                        dur,
-                        err_msg.as_deref(),
-                        "skill",
-                        "skill",
-                        false,
-                        Some(&metadata),
-                    )
-                    .await;
-                });
+                (
+                    response,
+                    input_tokens.max(0) as u64,
+                    output_tokens.max(0) as u64,
+                )
             }
+            Err(e) => {
+                let response = V1AgentRun {
+                    id: run_id,
+                    agent_id: response_agent_id.clone(),
+                    status: "failed".to_string(),
+                    input: input.clone(),
+                    output: None,
+                    error: Some(e),
+                    started_at: Utc::now(),
+                    finished_at: Some(Utc::now()),
+                    duration_ms: Some(duration_ms),
+                    tokens_used: Some(0),
+                };
+                (response, 0u64, 0u64)
+            }
+        };
 
-            let response_agent_id = name.clone();
-            let (response, input_tokens, output_tokens) = match skill_result {
-                Ok(context) => {
-                    let (input_tokens, output_tokens) =
-                        ares_agent::skills::skill_result_token_counts(&context);
-                    let total_tokens = (input_tokens + output_tokens).max(0) as u64;
-                    let response = V1AgentRun {
-                        id: run_id,
-                        agent_id: response_agent_id.clone(),
-                        status: "completed".to_string(),
-                        input: input.clone(),
-                        output: Some(context),
-                        error: None,
-                        started_at: Utc::now(),
-                        finished_at: Some(Utc::now()),
-                        duration_ms: Some(duration_ms),
-                        tokens_used: Some(total_tokens),
-                    };
-                    (
-                        response,
-                        input_tokens.max(0) as u64,
-                        output_tokens.max(0) as u64,
-                    )
-                }
-                Err(e) => {
-                    let response = V1AgentRun {
-                        id: run_id,
-                        agent_id: response_agent_id.clone(),
-                        status: "failed".to_string(),
-                        input: input.clone(),
-                        output: None,
-                        error: Some(e),
-                        started_at: Utc::now(),
-                        finished_at: Some(Utc::now()),
-                        duration_ms: Some(duration_ms),
-                        tokens_used: Some(0),
-                    };
-                    (response, 0u64, 0u64)
-                }
-            };
-
-            let mut response = usage_response(
-                response,
-                input_tokens,
-                output_tokens,
-                "skill",
-                "skill",
-                &response_agent_id,
-            );
+        let mut response = usage_response(
+            response,
+            input_tokens,
+            output_tokens,
+            "skill",
+            "skill",
+            &response_agent_id,
+        );
+        set_header(
+            response.headers_mut(),
+            "x-agent-config-source",
+            config_source,
+        );
+        if let Some(config_version) = &config_version {
             set_header(
                 response.headers_mut(),
-                "x-agent-config-source",
-                config_source,
+                "x-agent-config-version",
+                config_version,
             );
-            if let Some(config_version) = &config_version {
-                set_header(
-                    response.headers_mut(),
-                    "x-agent-config-version",
-                    config_version,
-                );
-            }
-            if let Some(workspace_id) = &runtime_workspace_id {
-                set_header(
-                    response.headers_mut(),
-                    "x-runtime-workspace-id",
-                    workspace_id,
-                );
-            }
-            return Ok(response);
+        }
+        if let Some(workspace_id) = &runtime_workspace_id {
+            set_header(
+                response.headers_mut(),
+                "x-runtime-workspace-id",
+                workspace_id,
+            );
+        }
+        return Ok(response);
     }
 
     // Run observability
@@ -279,14 +317,21 @@ pub async fn run_agent(
         run_id: run_id.clone(),
         tenant_id: tc.tenant_id.clone(),
         agent_name: name.clone(),
-        pool: state_ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone(),
+        pool: state_ctx
+            .get::<ares_store::TenantDb>()
+            .expect("not provided")
+            .pool()
+            .clone(),
     });
     let mut runtime_context =
         AgentRuntimeContext::new(tc.tenant_id.clone(), name.clone(), "api_v1_agent_run");
     runtime_context.workspace_id = runtime_workspace_id.clone();
     runtime_context.session_id = Some(agent_context.session_id.clone());
 
-    let eruka_context = state_ctx.get::<ares_agent::ContextProviderHandle>().expect("not provided").0
+    let eruka_context = state_ctx
+        .get::<ares_agent::ContextProviderHandle>()
+        .expect("not provided")
+        .0
         .get_context_for_run(&runtime_context)
         .await;
     let eruka_context_hit = eruka_context.is_some();
@@ -302,23 +347,26 @@ pub async fn run_agent(
         message.clone()
     };
 
-    state_ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").start(crate::active_runs::ActiveRun {
-        run_id: run_id.clone(),
-        tenant_id: tc.tenant_id.clone(),
-        agent_name: name.clone(),
-        started_at: chrono::Utc::now().timestamp(),
-        status: "running".to_string(),
-        current_step: 0,
-        total_steps: 0,
-        last_update: chrono::Utc::now().timestamp(),
-        tool_name: None,
-        model: None,
-        is_catchup: false,
-        request_source: Some("api_v1_agent_run".to_string()),
-        pipeline_id: None,
-        schedule_id: None,
-        trigger_id: None,
-    });
+    state_ctx
+        .get::<crate::active_runs::ActiveRuns>()
+        .expect("not provided")
+        .start(crate::active_runs::ActiveRun {
+            run_id: run_id.clone(),
+            tenant_id: tc.tenant_id.clone(),
+            agent_name: name.clone(),
+            started_at: chrono::Utc::now().timestamp(),
+            status: "running".to_string(),
+            current_step: 0,
+            total_steps: 0,
+            last_update: chrono::Utc::now().timestamp(),
+            tool_name: None,
+            model: None,
+            is_catchup: false,
+            request_source: Some("api_v1_agent_run".to_string()),
+            pipeline_id: None,
+            schedule_id: None,
+            trigger_id: None,
+        });
     let exec = state_ctx
         .get::<ares_agent::Execute>()
         .ok_or_else(|| ares_types::types::AppError::Unavailable("Execute not provided".into()))?;
@@ -337,7 +385,11 @@ pub async fn run_agent(
 
     // Aggregate run costs (fire-and-forget)
     let dur_i64 = duration_ms as i64;
-    let _pool_clone = state_ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let _pool_clone = state_ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let obs_for_spawn = obs.clone();
     tokio::spawn(async move {
         obs_for_spawn.aggregate_run_cost(dur_i64).await;
@@ -361,13 +413,23 @@ pub async fn run_agent(
                 .as_ref()
                 .map(|m| m.provider_name.clone())
                 .unwrap_or_else(|| "unknown".to_string());
-            state_ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").update_model(&run_id, Some(&model_name));
-            state_ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").finish(&run_id, "completed");
+            state_ctx
+                .get::<crate::active_runs::ActiveRuns>()
+                .expect("not provided")
+                .update_model(&run_id, Some(&model_name));
+            state_ctx
+                .get::<crate::active_runs::ActiveRuns>()
+                .expect("not provided")
+                .finish(&run_id, "completed");
 
             // Record agent run
             {
                 let run_id_for_insert = run_id.clone();
-                let pool = state_ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+                let pool = state_ctx
+                    .get::<ares_store::TenantDb>()
+                    .expect("not provided")
+                    .pool()
+                    .clone();
                 let tid = tc.tenant_id.clone();
                 let aname = name.clone();
                 let itok = input_tokens as i64;
@@ -455,10 +517,17 @@ pub async fn run_agent(
             Ok(response)
         }
         Err(e) => {
-            state_ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").finish(&run_id, "error");
+            state_ctx
+                .get::<crate::active_runs::ActiveRuns>()
+                .expect("not provided")
+                .finish(&run_id, "error");
             // Record failed run
             {
-                let pool = state_ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+                let pool = state_ctx
+                    .get::<ares_store::TenantDb>()
+                    .expect("not provided")
+                    .pool()
+                    .clone();
                 let tid = tc.tenant_id.clone();
                 let aname = name.clone();
                 let err_msg = e.to_string();
@@ -552,7 +621,12 @@ pub async fn list_agent_runs(
     let per_page = normalize_per_page(q.per_page, 25);
     let offset = list_runs_offset(page, per_page);
 
-    let runs = agent_runs::list_agent_runs(&state_ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone(),
+    let runs = agent_runs::list_agent_runs(
+        &state_ctx
+            .get::<ares_store::TenantDb>()
+            .expect("not provided")
+            .pool()
+            .clone(),
         &tc.tenant_id,
         Some(&name),
         per_page as i64,
@@ -585,7 +659,11 @@ pub async fn get_usage(
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,
     };
-    let summary = state_ctx.get::<ares_store::TenantDb>().expect("not provided").get_usage_summary(&tc.tenant_id).await?;
+    let summary = state_ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .get_usage_summary(&tc.tenant_id)
+        .await?;
 
     let now = Utc::now();
     let period_start = usage_period_start(now);
@@ -619,7 +697,11 @@ pub async fn list_api_keys(
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,
     };
-    let keys = state_ctx.get::<ares_store::TenantDb>().expect("not provided").list_api_keys(&tc.tenant_id).await?;
+    let keys = state_ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .list_api_keys(&tc.tenant_id)
+        .await?;
 
     let response: Vec<V1ApiKey> = keys
         .into_iter()
@@ -651,7 +733,9 @@ pub async fn create_api_key(
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,
     };
-    let (api_key, raw_key) = state_ctx.get::<ares_store::TenantDb>().expect("not provided")
+    let (api_key, raw_key) = state_ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
         .create_api_key(&tc.tenant_id, payload.name)
         .await?;
 
@@ -682,7 +766,9 @@ pub async fn revoke_api_key(
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,
     };
-    state_ctx.get::<ares_store::TenantDb>().expect("not provided")
+    state_ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
         .revoke_api_key(&tc.tenant_id, &key_id)
         .await?;
     Ok(StatusCode::NO_CONTENT)
@@ -704,7 +790,11 @@ pub async fn delete_tenant_data(
     };
     let tid = &tc.tenant_id;
 
-    let pool = state_ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = state_ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
 
     let usage_rows: Vec<i64> =
         sqlx::query_scalar("DELETE FROM usage_events WHERE tenant_id = $1 RETURNING 1")

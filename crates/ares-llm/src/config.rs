@@ -709,7 +709,10 @@ mod tests {
             ProviderConfig::from_str("gemini").unwrap().type_name(),
             "gemini"
         );
-        assert_eq!(ProviderConfig::from_str("groq").unwrap().type_name(), "groq");
+        assert_eq!(
+            ProviderConfig::from_str("groq").unwrap().type_name(),
+            "groq"
+        );
         assert_eq!(
             ProviderConfig::from_str("openai_resp").unwrap().type_name(),
             "openai_resp"

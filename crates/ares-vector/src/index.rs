@@ -145,8 +145,7 @@ pub fn index_type_string(index_type: IndexType) -> &'static str {
 
 /// pgvector distance operator for ORDER BY / WHERE clauses.
 pub fn distance_operator(metric: DistanceMetric) -> IndexResult<&'static str> {
-    crate::distance::distance_operator(metric)
-        .ok_or(IndexConfigError::UnsupportedDistance(metric))
+    crate::distance::distance_operator(metric).ok_or(IndexConfigError::UnsupportedDistance(metric))
 }
 
 /// pgvector opclass suffix used when creating indexes.
@@ -210,7 +209,9 @@ pub fn validate_index_config(config: &IndexConfig) -> IndexResult<()> {
         if config.ef_construction < MIN_HNSW_EF_CONSTRUCTION
             || config.ef_construction > MAX_HNSW_EF_CONSTRUCTION
         {
-            return Err(IndexConfigError::InvalidEfConstruction(config.ef_construction));
+            return Err(IndexConfigError::InvalidEfConstruction(
+                config.ef_construction,
+            ));
         }
     }
     Ok(())
@@ -971,7 +972,9 @@ mod tests {
         index.insert("near", &[1.0, 0.0, 0.0], None).unwrap();
         index.insert("far", &[0.0, 1.0, 0.0], None).unwrap();
 
-        let results = index.search_with_threshold(&[1.0, 0.0, 0.0], 10, 0.99).unwrap();
+        let results = index
+            .search_with_threshold(&[1.0, 0.0, 0.0], 10, 0.99)
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "near");
     }
@@ -1208,16 +1211,27 @@ mod tests {
 
     #[test]
     fn distance_operator_maps_pgvector_operators() {
-        assert_eq!(distance_operator(DistanceMetric::Euclidean).expect("l2"), "<->");
-        assert_eq!(distance_operator(DistanceMetric::DotProduct).expect("dot"), "<#>");
-        assert_eq!(distance_operator(DistanceMetric::Cosine).expect("cosine"), "<=>");
+        assert_eq!(
+            distance_operator(DistanceMetric::Euclidean).expect("l2"),
+            "<->"
+        );
+        assert_eq!(
+            distance_operator(DistanceMetric::DotProduct).expect("dot"),
+            "<#>"
+        );
+        assert_eq!(
+            distance_operator(DistanceMetric::Cosine).expect("cosine"),
+            "<=>"
+        );
     }
 
     #[test]
     fn distance_operator_rejects_manhattan() {
         assert!(matches!(
             distance_operator(DistanceMetric::Manhattan),
-            Err(IndexConfigError::UnsupportedDistance(DistanceMetric::Manhattan))
+            Err(IndexConfigError::UnsupportedDistance(
+                DistanceMetric::Manhattan
+            ))
         ));
     }
 
@@ -1277,6 +1291,4 @@ mod tests {
         assert_eq!(err, cloned);
         assert!(format!("{err:?}").contains("InvalidM"));
     }
-
 }
-

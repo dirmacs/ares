@@ -20,6 +20,9 @@ pub mod deploy;
 pub mod document_upload;
 /// Field-change trigger handlers.
 pub mod field_change;
+/// Cordis health_context handler — State with Context proof (shim phase).
+/// Runtime-gated via PostgresService check (was feature-gated).
+pub mod health_context;
 /// Loop-mode agent lifecycle handlers (start/list/stop).
 pub mod loops;
 /// RAG (document ingestion/search) handlers.
@@ -37,6 +40,3 @@ pub mod user_agents;
 pub mod v1;
 /// Workflow execution handlers.
 pub mod workflows;
-/// Cordis health_context handler — State with Context proof (shim phase).
-/// Runtime-gated via PostgresService check (was feature-gated).
-pub mod health_context;

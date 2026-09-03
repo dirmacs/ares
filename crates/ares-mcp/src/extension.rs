@@ -236,13 +236,8 @@ mod tests {
     #[tokio::test]
     async fn test_dispatch_no_extensions_returns_none() {
         let extensions: Vec<Arc<dyn McpToolExtension>> = vec![];
-        let result = dispatch_extensions(
-            &extensions,
-            "custom_tool",
-            sample_arguments(),
-            "tenant_1",
-        )
-        .await;
+        let result =
+            dispatch_extensions(&extensions, "custom_tool", sample_arguments(), "tenant_1").await;
         assert!(result.is_none(), "empty registry should fall through");
     }
 
@@ -252,15 +247,11 @@ mod tests {
             tool_name: "custom_tool",
             result_text: "custom result",
         })];
-        let result = dispatch_extensions(
-            &extensions,
-            "custom_tool",
-            sample_arguments(),
-            "tenant_1",
-        )
-        .await
-        .expect("extension should handle tool")
-        .expect("dispatch should succeed");
+        let result =
+            dispatch_extensions(&extensions, "custom_tool", sample_arguments(), "tenant_1")
+                .await
+                .expect("extension should handle tool")
+                .expect("dispatch should succeed");
         let text = result
             .content
             .first()
@@ -278,14 +269,10 @@ mod tests {
             tool_name: "failing_tool",
             error_message: "extension failure",
         })];
-        let result = dispatch_extensions(
-            &extensions,
-            "failing_tool",
-            sample_arguments(),
-            "tenant_1",
-        )
-        .await
-        .expect("extension should claim tool");
+        let result =
+            dispatch_extensions(&extensions, "failing_tool", sample_arguments(), "tenant_1")
+                .await
+                .expect("extension should claim tool");
         let err = result.expect_err("dispatch should propagate extension error");
         assert_eq!(err, "extension failure");
     }
@@ -294,13 +281,8 @@ mod tests {
     async fn test_dispatch_fallback_when_no_extension_matches() {
         let extensions: Vec<Arc<dyn McpToolExtension>> =
             vec![Arc::new(PassThroughExtension), Arc::new(NoOpMcpExtension)];
-        let result = dispatch_extensions(
-            &extensions,
-            "unknown_tool",
-            sample_arguments(),
-            "tenant_1",
-        )
-        .await;
+        let result =
+            dispatch_extensions(&extensions, "unknown_tool", sample_arguments(), "tenant_1").await;
         assert!(
             result.is_none(),
             "unhandled tools should fall through to caller fallback"
@@ -319,15 +301,11 @@ mod tests {
                 result_text: "second",
             }),
         ];
-        let result = dispatch_extensions(
-            &extensions,
-            "custom_tool",
-            sample_arguments(),
-            "tenant_1",
-        )
-        .await
-        .expect("extension should handle tool")
-        .expect("dispatch should succeed");
+        let result =
+            dispatch_extensions(&extensions, "custom_tool", sample_arguments(), "tenant_1")
+                .await
+                .expect("extension should handle tool")
+                .expect("dispatch should succeed");
         let text = result
             .content
             .first()
@@ -348,15 +326,11 @@ mod tests {
                 result_text: "from second extension",
             }),
         ];
-        let result = dispatch_extensions(
-            &extensions,
-            "custom_tool",
-            sample_arguments(),
-            "tenant_1",
-        )
-        .await
-        .expect("later extension should handle tool")
-        .expect("dispatch should succeed");
+        let result =
+            dispatch_extensions(&extensions, "custom_tool", sample_arguments(), "tenant_1")
+                .await
+                .expect("later extension should handle tool")
+                .expect("dispatch should succeed");
         let text = result
             .content
             .first()
@@ -370,17 +344,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatch_passes_tenant_id_to_extension() {
-        let extensions: Vec<Arc<dyn McpToolExtension>> =
-            vec![Arc::new(TenantCapturingExtension)];
-        let result = dispatch_extensions(
-            &extensions,
-            "tenant_echo",
-            sample_arguments(),
-            "tenant_42",
-        )
-        .await
-        .expect("extension should handle tool")
-        .expect("dispatch should succeed");
+        let extensions: Vec<Arc<dyn McpToolExtension>> = vec![Arc::new(TenantCapturingExtension)];
+        let result =
+            dispatch_extensions(&extensions, "tenant_echo", sample_arguments(), "tenant_42")
+                .await
+                .expect("extension should handle tool")
+                .expect("dispatch should succeed");
         let text = result
             .content
             .first()

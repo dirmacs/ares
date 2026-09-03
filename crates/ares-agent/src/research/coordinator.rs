@@ -66,7 +66,11 @@ impl fmt::Display for ResearchPlan {
             } else {
                 format!(" (after {})", phase.depends_on.join(", "))
             };
-            writeln!(f, "  [{} / {:?}] {}{}", phase.id, phase.mode, phase.query, deps)?;
+            writeln!(
+                f,
+                "  [{} / {:?}] {}{}",
+                phase.id, phase.mode, phase.query, deps
+            )?;
         }
         Ok(())
     }
@@ -74,34 +78,75 @@ impl fmt::Display for ResearchPlan {
 
 impl fmt::Display for ResearchPhase {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ResearchPhase {} [{:?}]: {}", self.id, self.mode, self.query)
+        write!(
+            f,
+            "ResearchPhase {} [{:?}]: {}",
+            self.id, self.mode, self.query
+        )
     }
 }
 
 impl fmt::Display for ResearchResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "ResearchResult: {} finding(s), {} source(s), partial={}", self.findings.len(), self.sources.len(), self.partial)?;
+        writeln!(
+            f,
+            "ResearchResult: {} finding(s), {} source(s), partial={}",
+            self.findings.len(),
+            self.sources.len(),
+            self.partial
+        )?;
         if !self.failed_phase_ids.is_empty() {
             writeln!(f, "  failed phases: {}", self.failed_phase_ids.join(", "))?;
         }
         for finding in &self.findings {
-            writeln!(f, "  - {} (relevance {:.2}): {}", finding.phase_id, finding.relevance_score, finding.content)?;
+            writeln!(
+                f,
+                "  - {} (relevance {:.2}): {}",
+                finding.phase_id, finding.relevance_score, finding.content
+            )?;
         }
         Ok(())
     }
 }
 
-pub fn plan_research_phases(root_query: &str, sub_queries: &[String], parallel: bool) -> ResearchPlan {
-    let mode = if parallel { PhaseExecutionMode::Parallel } else { PhaseExecutionMode::Sequential };
-    let phases = sub_queries.iter().enumerate().map(|(index, query)| {
-        let id = format!("phase-{}", index + 1);
-        let depends_on = if parallel || index == 0 { Vec::new() } else { vec![format!("phase-{index}")] };
-        ResearchPhase { id, query: query.clone(), mode, depends_on }
-    }).collect();
-    ResearchPlan { root_query: root_query.to_string(), phases }
+pub fn plan_research_phases(
+    root_query: &str,
+    sub_queries: &[String],
+    parallel: bool,
+) -> ResearchPlan {
+    let mode = if parallel {
+        PhaseExecutionMode::Parallel
+    } else {
+        PhaseExecutionMode::Sequential
+    };
+    let phases = sub_queries
+        .iter()
+        .enumerate()
+        .map(|(index, query)| {
+            let id = format!("phase-{}", index + 1);
+            let depends_on = if parallel || index == 0 {
+                Vec::new()
+            } else {
+                vec![format!("phase-{index}")]
+            };
+            ResearchPhase {
+                id,
+                query: query.clone(),
+                mode,
+                depends_on,
+            }
+        })
+        .collect();
+    ResearchPlan {
+        root_query: root_query.to_string(),
+        phases,
+    }
 }
 
-pub fn execute_phase<F>(phase: &ResearchPhase, executor: &mut F) -> std::result::Result<ResearchFinding, String>
+pub fn execute_phase<F>(
+    phase: &ResearchPhase,
+    executor: &mut F,
+) -> std::result::Result<ResearchFinding, String>
 where
     F: FnMut(&ResearchPhase) -> std::result::Result<String, String>,
 {
@@ -121,18 +166,29 @@ where
     let mut raw_findings = Vec::new();
     let mut failed_phase_ids = Vec::new();
     loop {
-        let ready: Vec<&ResearchPhase> = plan.phases.iter().filter(|phase| {
-            !completed.contains(&phase.id)
+        let ready: Vec<&ResearchPhase> = plan
+            .phases
+            .iter()
+            .filter(|phase| {
+                !completed.contains(&phase.id)
                     && !failed_phase_ids.contains(&phase.id)
                     && phase.depends_on.iter().all(|dep| completed.contains(dep))
-        }).collect();
-        if ready.is_empty() { break; }
+            })
+            .collect();
+        if ready.is_empty() {
+            break;
+        }
         let parallel = ready[0].mode == PhaseExecutionMode::Parallel;
         let batch: Vec<&ResearchPhase> = if parallel { ready } else { vec![ready[0]] };
         for phase in batch {
             match execute_phase(phase, executor) {
-                Ok(finding) => { completed.insert(phase.id.clone()); raw_findings.push(finding); }
-                Err(_) => { failed_phase_ids.push(phase.id.clone()); }
+                Ok(finding) => {
+                    completed.insert(phase.id.clone());
+                    raw_findings.push(finding);
+                }
+                Err(_) => {
+                    failed_phase_ids.push(phase.id.clone());
+                }
             }
         }
     }
@@ -178,76 +234,130 @@ pub fn aggregate_findings(findings: &[ResearchFinding]) -> Vec<ResearchFinding> 
     unique
 }
 
-pub fn rank_sources(candidates: &[SourceCandidate], query: &str, now_epoch_secs: u64) -> Vec<Source> {
-    let mut scored: Vec<(f32, &SourceCandidate)> = candidates.iter().map(|candidate| {
-        let recency = recency_score(candidate.published_epoch_secs, now_epoch_secs);
-        let content = candidate.content_match_score.max(score_content_relevance(query, &candidate.source.title));
-        let composite = 0.45 * candidate.authority_score + 0.30 * recency + 0.25 * content;
-        (composite, candidate)
-    }).collect();
-    scored.sort_by(|(left, _), (right, _)| right.partial_cmp(left).unwrap_or(std::cmp::Ordering::Equal));
-    scored.into_iter().map(|(score, candidate)| {
-        let mut source = candidate.source.clone();
-        source.relevance_score = score.clamp(0.0, 1.0);
-        source
-    }).collect()
+pub fn rank_sources(
+    candidates: &[SourceCandidate],
+    query: &str,
+    now_epoch_secs: u64,
+) -> Vec<Source> {
+    let mut scored: Vec<(f32, &SourceCandidate)> = candidates
+        .iter()
+        .map(|candidate| {
+            let recency = recency_score(candidate.published_epoch_secs, now_epoch_secs);
+            let content = candidate
+                .content_match_score
+                .max(score_content_relevance(query, &candidate.source.title));
+            let composite = 0.45 * candidate.authority_score + 0.30 * recency + 0.25 * content;
+            (composite, candidate)
+        })
+        .collect();
+    scored.sort_by(|(left, _), (right, _)| {
+        right.partial_cmp(left).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    scored
+        .into_iter()
+        .map(|(score, candidate)| {
+            let mut source = candidate.source.clone();
+            source.relevance_score = score.clamp(0.0, 1.0);
+            source
+        })
+        .collect()
 }
 
 pub fn score_content_relevance(query: &str, content: &str) -> f32 {
     let query_tokens = tokenize(query);
-    if query_tokens.is_empty() { return 0.0; }
+    if query_tokens.is_empty() {
+        return 0.0;
+    }
     let content_tokens = tokenize(content);
-    let overlap = query_tokens.iter().filter(|token| content_tokens.contains(*token)).count();
+    let overlap = query_tokens
+        .iter()
+        .filter(|token| content_tokens.contains(*token))
+        .count();
     (overlap as f32 / query_tokens.len() as f32).clamp(0.0, 1.0)
 }
 
 fn recency_score(published_epoch_secs: Option<u64>, now_epoch_secs: u64) -> f32 {
-    published_epoch_secs.map(|published| {
-        let age_days = now_epoch_secs.saturating_sub(published) / 86_400;
-        (1.0 - (age_days as f32 / 365.0)).clamp(0.0, 1.0)
-    }).unwrap_or(0.5)
+    published_epoch_secs
+        .map(|published| {
+            let age_days = now_epoch_secs.saturating_sub(published) / 86_400;
+            (1.0 - (age_days as f32 / 365.0)).clamp(0.0, 1.0)
+        })
+        .unwrap_or(0.5)
 }
 
 fn score_authority(url: Option<&str>) -> f32 {
-    let Some(url) = url else { return 0.3; };
+    let Some(url) = url else {
+        return 0.3;
+    };
     let lower = url.to_ascii_lowercase();
-    if lower.contains(".gov") || lower.contains(".edu") { 1.0 }
-    else if lower.contains("arxiv.org") || lower.contains("doi.org") || lower.contains(".org") { 0.85 }
-    else { 0.55 }
+    if lower.contains(".gov") || lower.contains(".edu") {
+        1.0
+    } else if lower.contains("arxiv.org") || lower.contains("doi.org") || lower.contains(".org") {
+        0.85
+    } else {
+        0.55
+    }
 }
 
 fn normalize_content(content: &str) -> String {
-    content.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase()
+    content
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
 }
 
 fn tokenize(text: &str) -> HashSet<String> {
-    text.split(|c: char| !c.is_alphanumeric()).filter(|token| token.len() >= 3).map(|token| token.to_ascii_lowercase()).collect()
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|token| token.len() >= 3)
+        .map(|token| token.to_ascii_lowercase())
+        .collect()
 }
 
 fn extract_url(text: &str) -> Option<String> {
-    text.split_whitespace().find(|word| word.starts_with("http://") || word.starts_with("https://")).map(str::to_string)
+    text.split_whitespace()
+        .find(|word| word.starts_with("http://") || word.starts_with("https://"))
+        .map(str::to_string)
 }
 
 fn extract_published_epoch(text: &str) -> Option<u64> {
-    text.split_whitespace().find_map(|word| word.strip_prefix("published:").and_then(|value| value.parse().ok()))
+    text.split_whitespace().find_map(|word| {
+        word.strip_prefix("published:")
+            .and_then(|value| value.parse().ok())
+    })
 }
 
-fn findings_to_source_candidates(findings: &[ResearchFinding], root_query: &str) -> Vec<SourceCandidate> {
-    findings.iter().enumerate().map(|(index, finding)| {
-        let url = extract_url(&finding.content);
-        let authority_score = score_authority(url.as_deref());
-        let content_match_score = score_content_relevance(root_query, &finding.content).max(finding.relevance_score);
-        SourceCandidate {
-            source: Source { title: format!("Research Finding {}", index + 1), url, relevance_score: content_match_score },
-            published_epoch_secs: extract_published_epoch(&finding.content),
-            authority_score,
-            content_match_score,
-        }
-    }).collect()
+fn findings_to_source_candidates(
+    findings: &[ResearchFinding],
+    root_query: &str,
+) -> Vec<SourceCandidate> {
+    findings
+        .iter()
+        .enumerate()
+        .map(|(index, finding)| {
+            let url = extract_url(&finding.content);
+            let authority_score = score_authority(url.as_deref());
+            let content_match_score =
+                score_content_relevance(root_query, &finding.content).max(finding.relevance_score);
+            SourceCandidate {
+                source: Source {
+                    title: format!("Research Finding {}", index + 1),
+                    url,
+                    relevance_score: content_match_score,
+                },
+                published_epoch_secs: extract_published_epoch(&finding.content),
+                authority_score,
+                content_match_score,
+            }
+        })
+        .collect()
 }
 
 fn current_epoch_secs() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|duration| duration.as_secs()).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 /// Token usage accumulated across the LLM calls made by a research run.
@@ -577,11 +687,7 @@ mod tests {
             })
         }
 
-        async fn generate_with_tools(
-            &self,
-            _: &str,
-            _: &[ToolDefinition],
-        ) -> Result<LLMResponse> {
+        async fn generate_with_tools(&self, _: &str, _: &[ToolDefinition]) -> Result<LLMResponse> {
             Ok(LLMResponse {
                 content: String::new(),
                 tool_calls: vec![],
@@ -629,7 +735,6 @@ mod tests {
             Ok(Box::new(futures::stream::empty()))
         }
     }
-
 
     fn sample_sub_queries() -> Vec<String> {
         vec![
@@ -697,7 +802,10 @@ mod tests {
     fn plan_research_phases_parallel_has_no_dependencies() {
         let plan = plan_research_phases("root", &sample_sub_queries(), true);
         assert!(plan.phases.iter().all(|phase| phase.depends_on.is_empty()));
-        assert!(plan.phases.iter().all(|phase| phase.mode == PhaseExecutionMode::Parallel));
+        assert!(plan
+            .phases
+            .iter()
+            .all(|phase| phase.mode == PhaseExecutionMode::Parallel));
     }
 
     #[test]
@@ -706,14 +814,21 @@ mod tests {
         assert_eq!(plan.phases[0].depends_on, Vec::<String>::new());
         assert_eq!(plan.phases[1].depends_on, vec!["phase-1".to_string()]);
         assert_eq!(plan.phases[2].depends_on, vec!["phase-2".to_string()]);
-        assert!(plan.phases.iter().all(|phase| phase.mode == PhaseExecutionMode::Sequential));
+        assert!(plan
+            .phases
+            .iter()
+            .all(|phase| phase.mode == PhaseExecutionMode::Sequential));
     }
 
     #[test]
     fn plan_research_phases_preserves_sub_queries() {
         let queries = sample_sub_queries();
         let plan = plan_research_phases("root", &queries, true);
-        let planned: Vec<_> = plan.phases.iter().map(|phase| phase.query.clone()).collect();
+        let planned: Vec<_> = plan
+            .phases
+            .iter()
+            .map(|phase| phase.query.clone())
+            .collect();
         assert_eq!(planned, queries);
     }
 
@@ -726,7 +841,10 @@ mod tests {
             depends_on: vec![],
         };
         let mut executor = |_: &ResearchPhase| {
-            Ok("quantum error correction advances published:1700000000 https://arxiv.org/abs/123".into())
+            Ok(
+                "quantum error correction advances published:1700000000 https://arxiv.org/abs/123"
+                    .into(),
+            )
         };
         let finding = execute_phase(&phase, &mut executor).expect("phase should succeed");
         assert_eq!(finding.phase_id, "phase-1");
@@ -749,8 +867,16 @@ mod tests {
     #[test]
     fn aggregate_findings_deduplicates_normalized_content() {
         let findings = vec![
-            ResearchFinding { phase_id: "a".into(), content: "Same   content here".into(), relevance_score: 0.4 },
-            ResearchFinding { phase_id: "b".into(), content: "same content here".into(), relevance_score: 0.9 },
+            ResearchFinding {
+                phase_id: "a".into(),
+                content: "Same   content here".into(),
+                relevance_score: 0.4,
+            },
+            ResearchFinding {
+                phase_id: "b".into(),
+                content: "same content here".into(),
+                relevance_score: 0.9,
+            },
         ];
         let aggregated = aggregate_findings(&findings);
         assert_eq!(aggregated.len(), 1);
@@ -760,8 +886,16 @@ mod tests {
     #[test]
     fn aggregate_findings_sorts_by_relevance_descending() {
         let findings = vec![
-            ResearchFinding { phase_id: "low".into(), content: "alpha".into(), relevance_score: 0.2 },
-            ResearchFinding { phase_id: "high".into(), content: "beta".into(), relevance_score: 0.95 },
+            ResearchFinding {
+                phase_id: "low".into(),
+                content: "alpha".into(),
+                relevance_score: 0.2,
+            },
+            ResearchFinding {
+                phase_id: "high".into(),
+                content: "beta".into(),
+                relevance_score: 0.95,
+            },
         ];
         let aggregated = aggregate_findings(&findings);
         assert_eq!(aggregated[0].phase_id, "high");
@@ -783,12 +917,24 @@ mod tests {
         let now = 1_700_000_000;
         let candidates = vec![
             SourceCandidate {
-                source: Source { title: "Blog".into(), url: Some("https://example.com/post".into()), relevance_score: 0.0 },
-                published_epoch_secs: Some(now), authority_score: 0.55, content_match_score: 0.5,
+                source: Source {
+                    title: "Blog".into(),
+                    url: Some("https://example.com/post".into()),
+                    relevance_score: 0.0,
+                },
+                published_epoch_secs: Some(now),
+                authority_score: 0.55,
+                content_match_score: 0.5,
             },
             SourceCandidate {
-                source: Source { title: "Government report".into(), url: Some("https://agency.gov/report".into()), relevance_score: 0.0 },
-                published_epoch_secs: Some(now), authority_score: 1.0, content_match_score: 0.5,
+                source: Source {
+                    title: "Government report".into(),
+                    url: Some("https://agency.gov/report".into()),
+                    relevance_score: 0.0,
+                },
+                published_epoch_secs: Some(now),
+                authority_score: 1.0,
+                content_match_score: 0.5,
             },
         ];
         let ranked = rank_sources(&candidates, "report", now);
@@ -800,12 +946,24 @@ mod tests {
         let now = 1_700_000_000;
         let candidates = vec![
             SourceCandidate {
-                source: Source { title: "Old".into(), url: Some("https://example.com/old".into()), relevance_score: 0.0 },
-                published_epoch_secs: Some(now - 400 * 86_400), authority_score: 0.55, content_match_score: 0.6,
+                source: Source {
+                    title: "Old".into(),
+                    url: Some("https://example.com/old".into()),
+                    relevance_score: 0.0,
+                },
+                published_epoch_secs: Some(now - 400 * 86_400),
+                authority_score: 0.55,
+                content_match_score: 0.6,
             },
             SourceCandidate {
-                source: Source { title: "New".into(), url: Some("https://example.com/new".into()), relevance_score: 0.0 },
-                published_epoch_secs: Some(now - 7 * 86_400), authority_score: 0.55, content_match_score: 0.6,
+                source: Source {
+                    title: "New".into(),
+                    url: Some("https://example.com/new".into()),
+                    relevance_score: 0.0,
+                },
+                published_epoch_secs: Some(now - 7 * 86_400),
+                authority_score: 0.55,
+                content_match_score: 0.6,
             },
         ];
         let ranked = rank_sources(&candidates, "example", now);
@@ -817,12 +975,24 @@ mod tests {
         let now = 1_700_000_000;
         let candidates = vec![
             SourceCandidate {
-                source: Source { title: "Unrelated".into(), url: None, relevance_score: 0.0 },
-                published_epoch_secs: Some(now), authority_score: 0.55, content_match_score: 0.1,
+                source: Source {
+                    title: "Unrelated".into(),
+                    url: None,
+                    relevance_score: 0.0,
+                },
+                published_epoch_secs: Some(now),
+                authority_score: 0.55,
+                content_match_score: 0.1,
             },
             SourceCandidate {
-                source: Source { title: "Quantum networking overview".into(), url: None, relevance_score: 0.0 },
-                published_epoch_secs: Some(now), authority_score: 0.55, content_match_score: 0.95,
+                source: Source {
+                    title: "Quantum networking overview".into(),
+                    url: None,
+                    relevance_score: 0.0,
+                },
+                published_epoch_secs: Some(now),
+                authority_score: 0.55,
+                content_match_score: 0.95,
             },
         ];
         let ranked = rank_sources(&candidates, "quantum networking", now);
@@ -841,9 +1011,17 @@ mod tests {
 
     #[test]
     fn run_research_plan_sequential_stops_after_failure() {
-        let plan = plan_research_phases("root", &["first".into(), "second".into(), "third".into()], false);
+        let plan = plan_research_phases(
+            "root",
+            &["first".into(), "second".into(), "third".into()],
+            false,
+        );
         let mut executor = |phase: &ResearchPhase| {
-            if phase.id == "phase-2" { Err("phase two failed".into()) } else { Ok(format!("ok {}", phase.id)) }
+            if phase.id == "phase-2" {
+                Err("phase two failed".into())
+            } else {
+                Ok(format!("ok {}", phase.id))
+            }
         };
         let result = run_research_plan(&plan, &mut executor);
         assert_eq!(result.findings.len(), 1);
@@ -872,7 +1050,12 @@ mod tests {
 
     #[test]
     fn research_phase_display_formats_id_and_query() {
-        let phase = ResearchPhase { id: "phase-9".into(), query: "market size".into(), mode: PhaseExecutionMode::Parallel, depends_on: vec![] };
+        let phase = ResearchPhase {
+            id: "phase-9".into(),
+            query: "market size".into(),
+            mode: PhaseExecutionMode::Parallel,
+            depends_on: vec![],
+        };
         let text = phase.to_string();
         assert!(text.contains("phase-9"));
         assert!(text.contains("market size"));
@@ -881,8 +1064,14 @@ mod tests {
     #[test]
     fn research_result_display_lists_findings() {
         let result = ResearchResult {
-            findings: vec![ResearchFinding { phase_id: "phase-1".into(), content: "data".into(), relevance_score: 0.5 }],
-            sources: vec![], failed_phase_ids: vec![], partial: false,
+            findings: vec![ResearchFinding {
+                phase_id: "phase-1".into(),
+                content: "data".into(),
+                relevance_score: 0.5,
+            }],
+            sources: vec![],
+            failed_phase_ids: vec![],
+            partial: false,
         };
         let text = result.to_string();
         assert!(text.contains("1 finding(s)"));
@@ -898,7 +1087,10 @@ mod tests {
 
     #[test]
     fn research_usage_debug_clone() {
-        let usage = ResearchUsage { input_tokens: 3, output_tokens: 7 };
+        let usage = ResearchUsage {
+            input_tokens: 3,
+            output_tokens: 7,
+        };
         let cloned = usage.clone();
         assert_eq!(format!("{usage:?}"), format!("{cloned:?}"));
     }
@@ -917,7 +1109,10 @@ mod tests {
             relevance_score: 0.8,
         }];
         let candidates = findings_to_source_candidates(&findings, "quantum paper");
-        assert_eq!(candidates[0].source.url.as_deref(), Some("https://arxiv.org/abs/123"));
+        assert_eq!(
+            candidates[0].source.url.as_deref(),
+            Some("https://arxiv.org/abs/123")
+        );
         assert_eq!(candidates[0].published_epoch_secs, Some(1_700_000_000));
         assert!(candidates[0].authority_score >= 0.85);
     }
@@ -984,4 +1179,3 @@ mod tests {
         assert!(usage.is_none());
     }
 }
-

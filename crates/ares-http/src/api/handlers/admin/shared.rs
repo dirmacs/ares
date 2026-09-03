@@ -1,27 +1,27 @@
-use std::sync::Arc;
+pub use crate::overlay::BillingConfig;
+use crate::HttpError;
+use crate::Result;
 use ::cordis::Context;
+pub use ares_llm::ProviderConfig;
 pub use ares_store::agent_runs;
 pub use ares_store::agent_versions;
 pub use ares_store::audit_log;
 pub use ares_store::schedules as db_schedules;
 pub use ares_store::tenants::UsageSummary;
 pub use ares_types::models::{Tenant, TenantTier};
-pub use ares_types::types::{AppError};
-use crate::Result;
-use crate::HttpError;
-pub use crate::overlay::BillingConfig;
-pub use ares_llm::ProviderConfig;
+pub use ares_types::types::AppError;
 pub use axum::{
-    Json,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     middleware::Next,
     response::Response,
+    Json,
 };
 pub use rust_decimal::prelude::ToPrimitive;
 pub use serde::{Deserialize, Serialize};
 pub use sha2::{Digest, Sha256};
 pub use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CreateTenantRequest {
@@ -102,7 +102,8 @@ const INVALID_TIER_MSG: &str = "Invalid tier. Must be: free, dev, pro, or enterp
 
 /// Validates a tier string from admin request payloads.
 pub fn parse_tenant_tier(tier: &str) -> Result<TenantTier> {
-    TenantTier::from_str(tier).ok_or_else(|| HttpError::from(AppError::InvalidInput(INVALID_TIER_MSG.to_string())))
+    TenantTier::from_str(tier)
+        .ok_or_else(|| HttpError::from(AppError::InvalidInput(INVALID_TIER_MSG.to_string())))
 }
 
 /// Validates that every tool name referenced in an agent config is executable
@@ -145,7 +146,10 @@ pub fn validate_agent_config_tools(
     Ok(())
 }
 
-pub fn parse_agent_config_tool_names(field: &str, value: &serde_json::Value) -> Result<Vec<String>> {
+pub fn parse_agent_config_tool_names(
+    field: &str,
+    value: &serde_json::Value,
+) -> Result<Vec<String>> {
     match value {
         serde_json::Value::Array(values) => values
             .iter()
@@ -158,9 +162,9 @@ pub fn parse_agent_config_tool_names(field: &str, value: &serde_json::Value) -> 
             })
             .collect(),
         serde_json::Value::Null => Ok(Vec::new()),
-        _ => Err(HttpError::from(AppError::InvalidInput(format!(
-            "Agent config field '{field}' must be an array"
-        ).into()))),
+        _ => Err(HttpError::from(AppError::InvalidInput(
+            format!("Agent config field '{field}' must be an array").into(),
+        ))),
     }
 }
 
@@ -360,7 +364,10 @@ impl AgentRunResponse {
     }
 }
 
-pub fn estimate_run_cost(billing: &BillingConfig, run: &agent_runs::AgentRun) -> CostEstimateResponse {
+pub fn estimate_run_cost(
+    billing: &BillingConfig,
+    run: &agent_runs::AgentRun,
+) -> CostEstimateResponse {
     let Some(pricing) = billing.pricing_for(&run.provider_name, &run.model_name) else {
         return CostEstimateResponse::unknown();
     };
@@ -411,7 +418,9 @@ pub struct AllowRagSourceRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::handlers::admin::{has_admin_role, AdminClaims, RoleEntry, admin_token_from_request, runtime_tool_capabilities};
+    use crate::api::handlers::admin::{
+        admin_token_from_request, has_admin_role, runtime_tool_capabilities, AdminClaims, RoleEntry,
+    };
     use crate::overlay::ModelPricingConfig;
 
     fn run(provider_name: &str, model_name: &str) -> agent_runs::AgentRun {
@@ -500,7 +509,10 @@ mod tests {
             serde_json::json!({"type": "object"})
         }
 
-        async fn execute(&self, _args: serde_json::Value) -> std::result::Result<serde_json::Value, AppError> {
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+        ) -> std::result::Result<serde_json::Value, AppError> {
             Ok(serde_json::json!({"ok": true}))
         }
     }
@@ -527,9 +539,8 @@ mod tests {
 
     #[tokio::test]
     async fn validate_agent_config_tools_accepts_builtin_tools() {
-        let tools = ares_tools::Tools::from_static([
-            Arc::new(TestTool) as Arc<dyn ares_tools::Tool>,
-        ]);
+        let tools =
+            ares_tools::Tools::from_static([Arc::new(TestTool) as Arc<dyn ares_tools::Tool>]);
         let ctx = Context::new_root();
         let config = serde_json::json!({"allowed_tools": ["builtin_search"]});
 
@@ -539,9 +550,7 @@ mod tests {
 
     #[tokio::test]
     async fn validate_agent_config_tools_rejects_unknown_tools() {
-        let tools = ares_tools::Tools::from_static(
-            [] as [Arc<dyn ares_tools::Tool>; 0],
-        );
+        let tools = ares_tools::Tools::from_static([] as [Arc<dyn ares_tools::Tool>; 0]);
         let ctx = Context::new_root();
         let config = serde_json::json!({"allowed_tools": ["ghost"]});
 
@@ -553,9 +562,8 @@ mod tests {
 
     #[tokio::test]
     async fn validate_agent_config_tools_supports_legacy_tools_field() {
-        let tools = ares_tools::Tools::from_static([
-            Arc::new(TestTool) as Arc<dyn ares_tools::Tool>,
-        ]);
+        let tools =
+            ares_tools::Tools::from_static([Arc::new(TestTool) as Arc<dyn ares_tools::Tool>]);
         let ctx = Context::new_root();
         let config = serde_json::json!({"tools": ["builtin_search"]});
 
@@ -565,9 +573,7 @@ mod tests {
 
     #[tokio::test]
     async fn validate_agent_config_tools_rejects_non_string_allowed_tools() {
-        let tools = ares_tools::Tools::from_static(
-            [] as [Arc<dyn ares_tools::Tool>; 0],
-        );
+        let tools = ares_tools::Tools::from_static([] as [Arc<dyn ares_tools::Tool>; 0]);
         let ctx = Context::new_root();
         let config = serde_json::json!({"allowed_tools": ["builtin_search", 7]});
 
@@ -581,9 +587,7 @@ mod tests {
 
     #[tokio::test]
     async fn validate_agent_config_tools_rejects_non_array_legacy_tools() {
-        let tools = ares_tools::Tools::from_static(
-            [] as [Arc<dyn ares_tools::Tool>; 0],
-        );
+        let tools = ares_tools::Tools::from_static([] as [Arc<dyn ares_tools::Tool>; 0]);
         let ctx = Context::new_root();
         let config = serde_json::json!({"tools": "builtin_search"});
 
@@ -1589,7 +1593,11 @@ pub async fn list_agent_versions_handler(
     State(ctx): State<Arc<Context>>,
     Path(agent_id): Path<String>,
 ) -> Result<Json<Vec<agent_versions::AgentVersionRecord>>> {
-    let __pool_1 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_1 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let records = agent_versions::get_agent_version_history(&__pool_1, &agent_id, 50)
         .await
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -1604,7 +1612,11 @@ pub async fn rollback_agent_handler(
     Path((agent_id, version)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>> {
     // Fetch the target version from DB
-    let __pool_2 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_2 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let history = agent_versions::get_agent_version_history(&__pool_2, &agent_id, 100)
         .await
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -1626,10 +1638,16 @@ pub async fn rollback_agent_handler(
         })?;
 
     // Hot-swap into the in-memory DynamicConfigManager
-    ctx.get::<crate::toon_config::DynamicConfigManager>().expect("not provided").upsert_agent(agent_config.clone());
+    ctx.get::<crate::toon_config::DynamicConfigManager>()
+        .expect("not provided")
+        .upsert_agent(agent_config.clone());
 
     // Record the rollback as a new version entry
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let input = ares_store::AgentVersionInput {
         name: agent_config.name.clone(),
         version: agent_config.version.clone(),
@@ -1639,7 +1657,11 @@ pub async fn rollback_agent_handler(
     let _ = agent_versions::record_agent_versions(&pool, &[input], "rollback").await;
 
     // Audit log
-    let __pool_3 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_3 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let aid = agent_id.clone();
     let ver = version.clone();
     tokio::spawn(async move {
@@ -1690,14 +1712,18 @@ pub fn emergency_stop_status(active: bool) -> EmergencyStopStatus {
 // =============================================================================
 
 pub use ares_store::fleet_provider_secrets as fps;
-pub use ares_store::{MasterKey, decrypt_api_key, last_n_visible};
+pub use ares_store::{decrypt_api_key, last_n_visible, MasterKey};
 
 /// ]
 /// ```
 pub async fn list_fleet_providers(
     State(ctx): State<Arc<Context>>,
 ) -> Result<Json<Vec<serde_json::Value>>> {
-    let __pool_4 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_4 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = fps::FleetProviderSecretsStore::new(&__pool_4);
     let master = MasterKey::from_env();
     // Decrypt all rows so the UI can show the last-4 of the stored key.
@@ -1792,16 +1818,21 @@ pub fn resolve_env_key(pc: &ProviderConfig) -> Option<String> {
 // =============================================================================
 
 pub use ares_store::runtime_tools::{
-    CreateRuntimeToolRequest, RuntimeToolStore, UpdateRuntimeToolRequest,
-    validate_runtime_tool_update_scope_preflight,
+    validate_runtime_tool_update_scope_preflight, CreateRuntimeToolRequest, RuntimeToolStore,
+    UpdateRuntimeToolRequest,
 };
 
 pub fn validate_runtime_tool_execution_config(
     tool_type: &str,
     execution_config: &serde_json::Value,
 ) -> Result<()> {
-    ares_tools::Tools::validate_runtime_tool_execution_config(tool_type, execution_config)
-    .map_err(|e| HttpError::from(AppError::InvalidInput(format!("invalid execution_config: {e}"))))
+    ares_tools::Tools::validate_runtime_tool_execution_config(tool_type, execution_config).map_err(
+        |e| {
+            HttpError::from(AppError::InvalidInput(format!(
+                "invalid execution_config: {e}"
+            )))
+        },
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -1903,7 +1934,7 @@ pub(crate) async fn preserve_redacted_runtime_provider_secret(
         .await?
     else {
         return Err(HttpError::from(AppError::InvalidInput(
-            "runtime provider api_key is redacted but no existing provider secret was found".into()
+            "runtime provider api_key is redacted but no existing provider secret was found".into(),
         )));
     };
     let Some(existing_api_key) =
@@ -1911,7 +1942,7 @@ pub(crate) async fn preserve_redacted_runtime_provider_secret(
     else {
         return Err(HttpError::from(AppError::InvalidInput(
             "runtime provider api_key is redacted but existing provider has no direct api_key"
-                .into()
+                .into(),
         )));
     };
 
@@ -1933,7 +1964,10 @@ pub fn runtime_provider_headers_have_redacted_api_key(headers: Option<&serde_jso
         == Some(RUNTIME_PROVIDER_SECRET_REDACTION)
 }
 
-pub fn runtime_provider_header_value(headers: Option<&serde_json::Value>, key: &str) -> Option<String> {
+pub fn runtime_provider_header_value(
+    headers: Option<&serde_json::Value>,
+    key: &str,
+) -> Option<String> {
     headers
         .and_then(|headers| headers.as_object())
         .and_then(|headers| headers.get(key))
@@ -2106,9 +2140,11 @@ pub fn default_list_limit_i64() -> i64 {
 }
 
 pub fn billing_month_bounds(month: &str) -> Result<(String, i64, i64)> {
-    let (year, month_num) = month
-        .split_once('-')
-        .ok_or_else(|| HttpError::from(AppError::InvalidInput("month must use YYYY-MM format".to_string())))?;
+    let (year, month_num) = month.split_once('-').ok_or_else(|| {
+        HttpError::from(AppError::InvalidInput(
+            "month must use YYYY-MM format".to_string(),
+        ))
+    })?;
     let year: i32 = year
         .parse()
         .map_err(|_| AppError::InvalidInput("month year must be numeric".to_string()))?;
@@ -2241,7 +2277,9 @@ pub fn required_skill_tenant_id(params: &HashMap<String, String>) -> Result<&str
 pub fn normalized_skill_tenant_id(tenant_id: &str) -> Result<&str> {
     let trimmed = tenant_id.trim();
     if trimmed.is_empty() {
-        Err(HttpError::from(AppError::InvalidInput("tenant_id must not be empty".to_string())))
+        Err(HttpError::from(AppError::InvalidInput(
+            "tenant_id must not be empty".to_string(),
+        )))
     } else {
         Ok(trimmed)
     }
@@ -2447,12 +2485,16 @@ pub fn percent_decode_component(value: &str) -> Result<String> {
             }
             b'%' => {
                 if i + 2 >= bytes.len() {
-                    return Err(HttpError::from(AppError::InvalidInput("malformed OAuth state".to_string())));
+                    return Err(HttpError::from(AppError::InvalidInput(
+                        "malformed OAuth state".to_string(),
+                    )));
                 }
-                let hi = hex_value(bytes[i + 1])
-                    .ok_or_else(|| HttpError::from(AppError::InvalidInput("malformed OAuth state".into())))?;
-                let lo = hex_value(bytes[i + 2])
-                    .ok_or_else(|| HttpError::from(AppError::InvalidInput("malformed OAuth state".into())))?;
+                let hi = hex_value(bytes[i + 1]).ok_or_else(|| {
+                    HttpError::from(AppError::InvalidInput("malformed OAuth state".into()))
+                })?;
+                let lo = hex_value(bytes[i + 2]).ok_or_else(|| {
+                    HttpError::from(AppError::InvalidInput("malformed OAuth state".into()))
+                })?;
                 out.push((hi << 4) | lo);
                 i += 3;
             }
@@ -2462,7 +2504,8 @@ pub fn percent_decode_component(value: &str) -> Result<String> {
             }
         }
     }
-    String::from_utf8(out).map_err(|_| HttpError::from(AppError::InvalidInput("malformed OAuth state".into())))
+    String::from_utf8(out)
+        .map_err(|_| HttpError::from(AppError::InvalidInput("malformed OAuth state".into())))
 }
 
 pub fn safe_callback_redirect_uri(value: &str) -> String {
@@ -2553,7 +2596,9 @@ pub fn decode_oauth_state(value: &str) -> Result<OAuthState> {
     let signing_key = oauth_state_signing_key()?;
     let expected = hmac_sha256_hex(signing_key.as_bytes(), payload.as_bytes());
     if !constant_time_eq(signature.as_bytes(), expected.as_bytes()) {
-        return Err(HttpError::from(AppError::InvalidInput("invalid OAuth state".to_string())));
+        return Err(HttpError::from(AppError::InvalidInput(
+            "invalid OAuth state".to_string(),
+        )));
     }
 
     decode_oauth_state_payload(payload)
@@ -2565,26 +2610,32 @@ pub fn decode_oauth_state_payload(value: &str) -> Result<OAuthState> {
     let mut redirect_uri = None;
 
     for pair in value.split('&') {
-        let (key, raw_value) = pair
-            .split_once('=')
-            .ok_or_else(|| HttpError::from(AppError::InvalidInput("malformed OAuth state".into())))?;
+        let (key, raw_value) = pair.split_once('=').ok_or_else(|| {
+            HttpError::from(AppError::InvalidInput("malformed OAuth state".into()))
+        })?;
         match key {
             "tenant_id" => tenant_id = Some(percent_decode_component(raw_value)?),
             "connector_type" => connector_type = Some(percent_decode_component(raw_value)?),
             "redirect_uri" => redirect_uri = Some(percent_decode_component(raw_value)?),
-            _ => return Err(HttpError::from(AppError::InvalidInput("malformed OAuth state".to_string()))),
+            _ => {
+                return Err(HttpError::from(AppError::InvalidInput(
+                    "malformed OAuth state".to_string(),
+                )))
+            }
         }
     }
 
-    let tenant_id =
-        tenant_id.ok_or_else(|| HttpError::from(AppError::InvalidInput("malformed OAuth state".into())))?;
-    let connector_type =
-        connector_type.ok_or_else(|| HttpError::from(AppError::InvalidInput("malformed OAuth state".into())))?;
-    let redirect_uri =
-        redirect_uri.ok_or_else(|| HttpError::from(AppError::InvalidInput("malformed OAuth state".into())))?;
+    let tenant_id = tenant_id
+        .ok_or_else(|| HttpError::from(AppError::InvalidInput("malformed OAuth state".into())))?;
+    let connector_type = connector_type
+        .ok_or_else(|| HttpError::from(AppError::InvalidInput("malformed OAuth state".into())))?;
+    let redirect_uri = redirect_uri
+        .ok_or_else(|| HttpError::from(AppError::InvalidInput("malformed OAuth state".into())))?;
 
     if tenant_id.trim().is_empty() || connector_type.trim().is_empty() {
-        return Err(HttpError::from(AppError::InvalidInput("malformed OAuth state".to_string())));
+        return Err(HttpError::from(AppError::InvalidInput(
+            "malformed OAuth state".to_string(),
+        )));
     }
 
     Ok(OAuthState {
@@ -2741,14 +2792,18 @@ pub async fn receive_webhook(
             }
         }
     }
-    let __pool_5 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_5 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = db_schedules::EventTriggerStore::new(&__pool_5);
     let trigger = store.get_trigger(&trigger_id).await?;
     if let Some(trigger) = trigger {
         if !webhook_trigger_matches(&trigger) {
-            return Err(HttpError::from(AppError::NotFound(format!(
-                "Webhook trigger {trigger_id} not found"
-            ).into())));
+            return Err(HttpError::from(AppError::NotFound(
+                format!("Webhook trigger {trigger_id} not found").into(),
+            )));
         }
         if trigger.enabled {
             tracing::info!(
@@ -2758,12 +2813,8 @@ pub async fn receive_webhook(
                 "Webhook received — triggering agent"
             );
             let message = serde_json::to_string(&payload).unwrap_or_default();
-            if let Err(e) = ares_agent::trigger::execute_triggered_agent(
-                &trigger,
-                &message,
-                &ctx,
-            )
-            .await
+            if let Err(e) =
+                ares_agent::trigger::execute_triggered_agent(&trigger, &message, &ctx).await
             {
                 tracing::warn!(
                     trigger_id = %trigger_id,
@@ -2781,9 +2832,9 @@ pub async fn receive_webhook(
             ))
         }
     } else {
-        Err(HttpError::from(AppError::NotFound(format!(
-            "Trigger {trigger_id} not found"
-        ).into())))
+        Err(HttpError::from(AppError::NotFound(
+            format!("Trigger {trigger_id} not found").into(),
+        )))
     }
 }
 

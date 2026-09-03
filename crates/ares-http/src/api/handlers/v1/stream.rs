@@ -1,17 +1,17 @@
 //! V1 stream domain — cordis Phase6
 //! Bodies moved from v1.rs
 
-use std::sync::Arc;
-use cordis::Context;
 use super::*;
+use cordis::Context;
+use std::sync::Arc;
 
+use crate::HttpError;
+use crate::Result;
 use ares_agent::tenant_agent;
+use ares_agent::Agent;
 use ares_store::agent_runs;
 use ares_store::run_history::{LogToolCallRequest, RunHistoryStore};
 use ares_types::models::TenantContext;
-use crate::Result;
-use crate::HttpError;
-use ares_agent::Agent;
 use ares_types::types::ToolDefinition;
 use axum::{
     extract::{Extension, Path, Query, State},
@@ -35,16 +35,27 @@ pub async fn sandbox_run_agent(
         None => state_ctx,
     };
 
-    let mut resolved_agent = tenant_agent::resolve_required_tenant_agent_from_ctx(&state_ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone(),
-        &state_ctx.get::<ares_agent::AgentRegistry>().expect("AgentRegistry not provided"),
+    let mut resolved_agent = tenant_agent::resolve_required_tenant_agent_from_ctx(
+        &state_ctx
+            .get::<ares_store::TenantDb>()
+            .expect("not provided")
+            .pool()
+            .clone(),
+        &state_ctx
+            .get::<ares_agent::AgentRegistry>()
+            .expect("AgentRegistry not provided"),
         &state_ctx,
         &name,
-        &state_ctx.get::<ares_store::FleetSecrets>().expect("not provided"),
+        &state_ctx
+            .get::<ares_store::FleetSecrets>()
+            .expect("not provided"),
     )
     .await?;
-    resolved_agent
-        .agent
-        .set_tools(state_ctx.get::<ares_tools::Tools>().expect("Tools not provided"));
+    resolved_agent.agent.set_tools(
+        state_ctx
+            .get::<ares_tools::Tools>()
+            .expect("Tools not provided"),
+    );
     resolved_agent.agent.bind_request_ctx(state_ctx.clone());
 
     let run_id = uuid::Uuid::new_v4().to_string();
@@ -86,7 +97,12 @@ pub async fn sandbox_run_agent(
         schedule_id: None,
         trigger_id: None,
     };
-    agent_runs::insert_agent_run_with_id_and_metadata(&state_ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone(),
+    agent_runs::insert_agent_run_with_id_and_metadata(
+        &state_ctx
+            .get::<ares_store::TenantDb>()
+            .expect("not provided")
+            .pool()
+            .clone(),
         &run_id,
         &tc.tenant_id,
         &name,
@@ -103,7 +119,11 @@ pub async fn sandbox_run_agent(
     )
     .await?;
 
-    let pool = state_ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = state_ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = RunHistoryStore::new(&pool);
     for call in sandbox_tool_call_requests(
         &run_id,
@@ -246,13 +266,17 @@ pub async fn semantic_search(
         None => _state,
     };
     if payload.collection.is_empty() {
-        return Err(HttpError::from(AppError::InvalidInput("Collection name required".to_string())));
+        return Err(HttpError::from(AppError::InvalidInput(
+            "Collection name required".to_string(),
+        )));
     }
     if payload.query.is_empty() {
-        return Err(HttpError::from(AppError::InvalidInput("Query required".to_string())));
+        return Err(HttpError::from(AppError::InvalidInput(
+            "Query required".to_string(),
+        )));
     }
     Err(HttpError::from(AppError::InvalidInput(
-        "semantic search not enabled — vector service unavailable (enable ares-vector)".into()
+        "semantic search not enabled — vector service unavailable (enable ares-vector)".into(),
     )))
 }
 

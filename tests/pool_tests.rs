@@ -2,7 +2,6 @@
 //!
 //! These tests verify the connection pooling functionality for LLM clients.
 
-
 fn ollama_provider(base_url: &str, model: &str) -> ares_llm::Provider {
     use ares_llm::{AdapterKind, GenaiProvider, Provider};
     Provider::Genai(GenaiProvider {

@@ -704,9 +704,7 @@ impl LLMClient for BoxedArcClient {
     ) -> ares_types::types::Result<
         Box<dyn futures::Stream<Item = ares_types::types::Result<LlmStreamEvent>> + Send + Unpin>,
     > {
-        self.0
-            .stream_with_tools_and_history(messages, tools)
-            .await
+        self.0.stream_with_tools_and_history(messages, tools).await
     }
 
     fn model_name(&self) -> &str {

@@ -157,8 +157,11 @@ static NEXT_SEQ: AtomicU64 = AtomicU64::new(1);
 /// Insert one entry into the shared wheel, spawning/unparking the shared
 /// timer thread as needed.
 fn schedule(deadline: Instant, job: Job) {
-    let entry =
-        Entry { deadline, job, seq: NEXT_SEQ.fetch_add(1, Ordering::Relaxed) };
+    let entry = Entry {
+        deadline,
+        job,
+        seq: NEXT_SEQ.fetch_add(1, Ordering::Relaxed),
+    };
     WHEEL.lock().heap.push(entry);
     timer_thread().thread().unpark();
 }
@@ -226,7 +229,10 @@ struct HandleInner {
 
 impl Default for HandleInner {
     fn default() -> Self {
-        Self { disposed: AtomicBool::new(false), on_dispose: Mutex::new(None) }
+        Self {
+            disposed: AtomicBool::new(false),
+            on_dispose: Mutex::new(None),
+        }
     }
 }
 
@@ -258,7 +264,9 @@ pub struct EffectHandle {
 
 impl Clone for EffectHandle {
     fn clone(&self) -> Self {
-        Self { inner: self.inner.clone() }
+        Self {
+            inner: self.inner.clone(),
+        }
     }
 }
 
@@ -388,23 +396,20 @@ pub fn sleep(delay: Duration) -> (EffectHandle, impl Future<Output = ()> + Send)
     });
 
     let fut_state = state;
-    (
-        handle,
-        async move {
-            core::future::poll_fn(move |cx| {
-                if fut_state.resolved() {
-                    return Poll::Ready(());
-                }
-                *fut_state.waker.lock() = Some(cx.waker().clone());
-                // Re-check after registering to close the lost-wakeup race.
-                if fut_state.resolved() {
-                    return Poll::Ready(());
-                }
-                Poll::Pending
-            })
-            .await;
-        },
-    )
+    (handle, async move {
+        core::future::poll_fn(move |cx| {
+            if fut_state.resolved() {
+                return Poll::Ready(());
+            }
+            *fut_state.waker.lock() = Some(cx.waker().clone());
+            // Re-check after registering to close the lost-wakeup race.
+            if fut_state.resolved() {
+                return Poll::Ready(());
+            }
+            Poll::Pending
+        })
+        .await;
+    })
 }
 
 /// Repeating: run `callback` every `delay`. Each tick re-arms the NEXT tick
@@ -420,11 +425,7 @@ where
         // the cell intact and simply stops further re-arming.
         type CallbackCell = Arc<Mutex<Option<Box<dyn FnMut() + Send>>>>;
         let cell: CallbackCell = Arc::new(Mutex::new(Some(Box::new(callback))));
-        fn rearm(
-            flag: Arc<HandleInner>,
-            cell: CallbackCell,
-            delay: Duration,
-        ) {
+        fn rearm(flag: Arc<HandleInner>, cell: CallbackCell, delay: Duration) {
             schedule(
                 Instant::now() + delay,
                 Box::new(move || {
@@ -507,10 +508,7 @@ impl Drop for Interval {
 impl Stream for Interval {
     type Item = TickResult;
 
-    fn poll_next(
-        self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-    ) -> Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
         // SAFETY: structural pin projection over owned fields; nothing is
         // moved out of `self`, so `get_unchecked_mut` cannot violate the
         // pinning guarantee here.
@@ -613,10 +611,17 @@ pub fn interval_stream(delay: Duration) -> Interval {
             }
         }));
         rearm(flag.clone(), tx, waker_slot.clone(), delay);
-        EffectHandle { inner: flag.clone() }
+        EffectHandle {
+            inner: flag.clone(),
+        }
     });
 
-    Interval { rx, state: flag, waker: waker_slot, final_emitted: AtomicBool::new(false) }
+    Interval {
+        rx,
+        state: flag,
+        waker: waker_slot,
+        final_emitted: AtomicBool::new(false),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -699,7 +704,9 @@ pub fn debounce<T: Send + 'static>(delay: Duration) -> Scheduled<T> {
             *hook_latest.lock() = None;
             hook_gen.fetch_add(1, Ordering::SeqCst);
         }));
-        EffectHandle { inner: flag.clone() }
+        EffectHandle {
+            inner: flag.clone(),
+        }
     });
 
     let submit = {
@@ -735,7 +742,12 @@ pub fn debounce<T: Send + 'static>(delay: Duration) -> Scheduled<T> {
         }) as Box<dyn Fn(T) + Send + Sync>
     };
 
-    Scheduled { tx, rx, handle, submit }
+    Scheduled {
+        tx,
+        rx,
+        handle,
+        submit,
+    }
 }
 
 /// Rate limiter with leading edge plus optional trailing edge.
@@ -764,7 +776,9 @@ pub fn throttle<T: Send + 'static>(delay: Duration, no_trailing: bool) -> Schedu
             *hook_pending.lock() = None;
             hook_window.store(false, Ordering::Release);
         }));
-        EffectHandle { inner: flag.clone() }
+        EffectHandle {
+            inner: flag.clone(),
+        }
     });
 
     let submit = {
@@ -805,7 +819,12 @@ pub fn throttle<T: Send + 'static>(delay: Duration, no_trailing: bool) -> Schedu
         }) as Box<dyn Fn(T) + Send + Sync>
     };
 
-    Scheduled { tx, rx, handle, submit }
+    Scheduled {
+        tx,
+        rx,
+        handle,
+        submit,
+    }
 }
 
 /// Tiny helper keeping the trailing-edge send site readable; identical to
@@ -870,15 +889,27 @@ mod tests {
             })
         });
         assert!(!handle.is_cancelled());
-        assert_eq!(hits.load(Ordering::SeqCst), 0, "nothing fired before the deadline");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "nothing fired before the deadline"
+        );
 
         std::thread::sleep(Duration::from_millis(60));
-        assert_eq!(hits.load(Ordering::SeqCst), 1, "callback must run exactly once");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "callback must run exactly once"
+        );
 
         // Disposal via the owning fiber cancels the effect.
         block_on_bounded(fiber.dispose(), Duration::from_secs(2)).unwrap();
         assert!(handle.is_cancelled(), "fiber disposal must cancel timers");
-        assert_eq!(hits.load(Ordering::SeqCst), 1, "no extra fire after disposal");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "no extra fire after disposal"
+        );
     }
 
     #[test]
@@ -893,7 +924,11 @@ mod tests {
         });
         Disposable::dispose(Box::new(handle));
         std::thread::sleep(Duration::from_millis(90));
-        assert_eq!(hits.load(Ordering::SeqCst), 0, "disposed timeout must never fire");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "disposed timeout must never fire"
+        );
     }
 
     #[test]
@@ -936,14 +971,17 @@ mod tests {
 
         Disposable::dispose(Box::new(handle));
         std::thread::sleep(Duration::from_millis(60));
-        assert_eq!(hits.load(Ordering::SeqCst), count, "ticks must stop after disposal");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            count,
+            "ticks must stop after disposal"
+        );
     }
 
     #[test]
     fn interval_stream_final_err_on_dispose() {
         let fiber = Arc::new(Fiber::new());
-        let mut stream =
-            with_current_fiber(&fiber, || interval_stream(Duration::from_millis(10)));
+        let mut stream = with_current_fiber(&fiber, || interval_stream(Duration::from_millis(10)));
 
         // Collect two live ticks.
         let mut live_ticks = 0u32;
@@ -975,8 +1013,7 @@ mod tests {
     #[test]
     fn interval_stream_discards_stale_live_ticks_before_final_err() {
         let fiber = Arc::new(Fiber::new());
-        let mut stream =
-            with_current_fiber(&fiber, || interval_stream(Duration::from_millis(5)));
+        let mut stream = with_current_fiber(&fiber, || interval_stream(Duration::from_millis(5)));
 
         // Accumulate several live ticks WITHOUT polling, then dispose; the
         // final observation must be the error, not a stale Ok.
@@ -1002,8 +1039,7 @@ mod tests {
     #[test]
     fn debounce_collapses_bursts() {
         let fiber = Arc::new(Fiber::new());
-        let mut sched =
-            with_current_fiber(&fiber, || debounce::<u32>(Duration::from_millis(40)));
+        let mut sched = with_current_fiber(&fiber, || debounce::<u32>(Duration::from_millis(40)));
 
         // Burst: five calls inside the sliding quiet window (~16ms total).
         for i in 0..5 {
@@ -1013,7 +1049,11 @@ mod tests {
 
         // Only the LAST value survives the window.
         let delivered = sched.receive_timeout(Duration::from_secs(2));
-        assert_eq!(delivered, Some(4), "debounce must deliver only the trailing value");
+        assert_eq!(
+            delivered,
+            Some(4),
+            "debounce must deliver only the trailing value"
+        );
 
         // Quiet period: no further deliveries.
         let extra = sched.receive_timeout(Duration::from_millis(120));
@@ -1042,7 +1082,11 @@ mod tests {
         assert_eq!(leading, Some(0), "leading edge passes immediately");
 
         let trailing = sched.receive_timeout(Duration::from_secs(2));
-        assert_eq!(trailing, Some(4), "trailing edge must respect the last value");
+        assert_eq!(
+            trailing,
+            Some(4),
+            "trailing edge must respect the last value"
+        );
 
         let extra = sched.receive_timeout(Duration::from_millis(120));
         assert_eq!(extra, None, "exactly leading + trailing per burst");
@@ -1076,27 +1120,34 @@ mod tests {
 
         let (t_handle, timeout_hits, interval_hits, i_handle, mut stream) =
             with_current_fiber(&fiber, || {
-            let th = Arc::new(AtomicU64::new(0));
-            let th2 = th.clone();
-            let t = timeout(Duration::from_millis(70), move || {
-                th2.fetch_add(1, Ordering::SeqCst);
+                let th = Arc::new(AtomicU64::new(0));
+                let th2 = th.clone();
+                let t = timeout(Duration::from_millis(70), move || {
+                    th2.fetch_add(1, Ordering::SeqCst);
+                });
+                let ih = Arc::new(AtomicU64::new(0));
+                let ih2 = ih.clone();
+                let i = interval(Duration::from_millis(15), move || {
+                    ih2.fetch_add(1, Ordering::SeqCst);
+                });
+                let s = interval_stream(Duration::from_millis(12));
+                (t, th, ih, i, s)
             });
-            let ih = Arc::new(AtomicU64::new(0));
-            let ih2 = ih.clone();
-            let i = interval(Duration::from_millis(15), move || {
-                ih2.fetch_add(1, Ordering::SeqCst);
-            });
-            let s = interval_stream(Duration::from_millis(12));
-            (t, th, ih, i, s)
-        });
         let _ = (&t_handle, &i_handle);
 
         // Let the interval tick at least once BEFORE death; the 70ms timeout
         // must still be pending.
         std::thread::sleep(Duration::from_millis(50));
         let pre_interval_hits = interval_hits.load(Ordering::SeqCst);
-        assert!(pre_interval_hits >= 1, "interval should tick before fiber death");
-        assert_eq!(timeout_hits.load(Ordering::SeqCst), 0, "timeout still pending");
+        assert!(
+            pre_interval_hits >= 1,
+            "interval should tick before fiber death"
+        );
+        assert_eq!(
+            timeout_hits.load(Ordering::SeqCst),
+            0,
+            "timeout still pending"
+        );
 
         // Fiber death: every timer effect must be cancelled.
         block_on_bounded(fiber.dispose(), Duration::from_secs(2)).unwrap();
@@ -1126,7 +1177,10 @@ mod tests {
                 None => std::thread::sleep(Duration::from_millis(2)),
             }
         }
-        assert!(saw_final_err, "disposed interval_stream must yield Err(InactiveEffect)");
+        assert!(
+            saw_final_err,
+            "disposed interval_stream must yield Err(InactiveEffect)"
+        );
         assert!(poll_stream_once(&mut stream).is_none(), "then terminate");
     }
 

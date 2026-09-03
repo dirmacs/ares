@@ -1,22 +1,21 @@
 //! Skill execution engine — turns a Skill definition into an agent run.
 
+use ares_llm::{
+    CapabilityRequirements, LLMResponse, Llm, MicroEngine, MicroOutcome, MicroTask,
+    TenantModelPolicy,
+};
 use ares_store::run_history::{LogLlmCallRequest, LogToolCallRequest, RunHistoryStore};
 use ares_store::skills::SkillStore;
 use ares_store::tenant_allowlist::TenantAllowlistStore;
-use ares_llm::{
-    CapabilityRequirements, Llm, LLMResponse, MicroEngine, MicroOutcome, MicroTask,
-    TenantModelPolicy,
-};
 use ares_tools::Tools;
 use ares_types::AppError;
 use sqlx::PgPool;
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use crate::EmergencyStop;
 use std::sync::Arc;
-
 
 async fn resolve_model_tier(
     tenant_id: &str,
@@ -29,7 +28,6 @@ async fn resolve_model_tier(
         _ => None,
     }
 }
-
 
 fn estimated_cost_usd(prompt_tokens: i64, completion_tokens: i64) -> rust_decimal::Decimal {
     rust_decimal::Decimal::new((prompt_tokens + completion_tokens) * 2, 6)
@@ -103,8 +101,7 @@ const SELF_CHECK_TEMPLATE: &str = "You are double-checking the final answer of a
 /// record path (`run_llm_calls.response_payload["ambient_enrichment"]`).
 /// Enrichment never delays or fails the completion itself: failures are
 /// logged and silently skipped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct AmbientEnrichmentConfig {
     /// Master switch. `false` (the default) issues no enrichment calls.
     pub enabled: bool,
@@ -145,8 +142,12 @@ async fn run_ambient_micro_call(
 fn merge_micro_outcome(outcome: &Option<MicroOutcome>, target: &mut serde_json::Value) {
     let Some(outcome) = outcome else { return };
     let Some(json) = &outcome.json else { return };
-    let Some(object) = json.as_object() else { return };
-    let Some(target_object) = target.as_object_mut() else { return };
+    let Some(object) = json.as_object() else {
+        return;
+    };
+    let Some(target_object) = target.as_object_mut() else {
+        return;
+    };
     for (key, value) in object {
         target_object.insert(key.clone(), value.clone());
     }
@@ -271,11 +272,7 @@ impl SkillEngine {
     ///
     /// Ambient enrichment defaults to off; enable it with
     /// [`SkillEngine::with_ambient_enrichment`].
-    pub fn new(
-        pool: PgPool,
-        tools: Arc<Tools>,
-        llm: Arc<Llm>,
-    ) -> Self {
+    pub fn new(pool: PgPool, tools: Arc<Tools>, llm: Arc<Llm>) -> Self {
         Self {
             pool,
             tools,
@@ -391,7 +388,9 @@ impl SkillEngine {
         name: &str,
     ) -> Option<Arc<dyn ares_tools::Tool>> {
         let scoped = self.scoped_tool_context(ctx, tenant_id);
-        let tools = scoped.get::<Tools>().unwrap_or_else(|| Arc::clone(&self.tools));
+        let tools = scoped
+            .get::<Tools>()
+            .unwrap_or_else(|| Arc::clone(&self.tools));
         tools.resolve(&scoped, name)
     }
 
@@ -403,7 +402,9 @@ impl SkillEngine {
         args: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
         let scoped = self.scoped_tool_context(ctx, tenant_id);
-        let tools = scoped.get::<Tools>().unwrap_or_else(|| Arc::clone(&self.tools));
+        let tools = scoped
+            .get::<Tools>()
+            .unwrap_or_else(|| Arc::clone(&self.tools));
         tools
             .execute(&scoped, name, args)
             .await
@@ -426,10 +427,7 @@ impl SkillEngine {
 
     /// Fold a corrected answer back into the result: structured results keep
     /// their shape (only `content` moves); bare strings are replaced whole.
-    fn apply_self_check_answer(
-        mut current: serde_json::Value,
-        answer: &str,
-    ) -> serde_json::Value {
+    fn apply_self_check_answer(mut current: serde_json::Value, answer: &str) -> serde_json::Value {
         if current.is_object() && current.get("content").is_some() {
             current["content"] = serde_json::Value::String(answer.to_string());
             current
@@ -515,27 +513,25 @@ impl SkillEngine {
             .map(|(_, content)| content.as_str())
             .collect::<Vec<_>>()
             .join("\n");
-        let request_ctx = if model_name.is_empty() || ctx.get::<ares_llm::ModelOverride>().is_some() {
+        let request_ctx = if model_name.is_empty() || ctx.get::<ares_llm::ModelOverride>().is_some()
+        {
             Arc::clone(ctx)
         } else {
             ctx.with_intercept(ares_llm::ModelOverride {
                 model: model_name.to_string(),
             })
         };
-        let content = self
-            .llm
-            .complete(&request_ctx, &prompt)
-            .await;
-        let response = content.map_err(|e| format!("LLM generation failed: {e}")).map(
-            |content| LLMResponse {
+        let content = self.llm.complete(&request_ctx, &prompt).await;
+        let response = content
+            .map_err(|e| format!("LLM generation failed: {e}"))
+            .map(|content| LLMResponse {
                 content,
                 tool_calls: Vec::new(),
                 finish_reason: "stop".to_string(),
                 usage: None,
                 reasoning_content: None,
                 response_id: None,
-            },
-        );
+            });
         let metadata = match (&self.ambient, &response) {
             (AmbientEnrichmentConfig { enabled: true }, Ok(response)) => {
                 self.run_ambient_enrichment(
@@ -571,7 +567,11 @@ impl SkillEngine {
         provider_name: &str,
         model_name: &str,
     ) -> serde_json::Value {
-        let client = match self.llm.get_client(ctx, CapabilityRequirements::default()).await {
+        let client = match self
+            .llm
+            .get_client(ctx, CapabilityRequirements::default())
+            .await
+        {
             Ok(client) => client,
             Err(err) => {
                 tracing::debug!(error = %err, "ambient enrichment client unavailable; skipping");
@@ -865,9 +865,14 @@ impl SkillEngine {
             }
             SkillStep::SkillCall { skill_id, input } => {
                 tracing::info!("Sub-step {}: skill_call {}", step_index, skill_id);
-                let result = Box::pin(
-                    self.delegate_skill_call(skill_id, input.clone(), tenant_id, run_id, ctx, depth),
-                )
+                let result = Box::pin(self.delegate_skill_call(
+                    skill_id,
+                    input.clone(),
+                    tenant_id,
+                    run_id,
+                    ctx,
+                    depth,
+                ))
                 .await?;
                 context[&format!("step_{}", step_index)] = successful_step_context(result);
             }
@@ -986,10 +991,8 @@ impl SkillEngine {
     ) -> Result<(), String> {
         let store = RunHistoryStore::new(&self.pool);
         let usage = response.usage.unwrap_or_default();
-        let estimated_cost_usd = estimated_cost_usd(
-            usage.prompt_tokens as i64,
-            usage.completion_tokens as i64,
-        );
+        let estimated_cost_usd =
+            estimated_cost_usd(usage.prompt_tokens as i64, usage.completion_tokens as i64);
         let req = LogLlmCallRequest {
             id: uuid::Uuid::new_v4().to_string(),
             run_id: run_id.to_string(),
@@ -1170,10 +1173,7 @@ impl cordis::Service for SkillEngine {
     fn name(&self) -> &'static str {
         "skill_engine"
     }
-    fn init(
-        &self,
-        _ctx: &std::sync::Arc<cordis::Context>,
-    ) -> cordis::ServiceInitFuture<'_> {
+    fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
     fn check(&self) -> bool {
@@ -1252,7 +1252,10 @@ mod tests {
         let (response, ambient) = engine
             .complete_llm_step_with_metadata(
                 &ctx,
-                &[("user".to_string(), "ignored if provider is reached".to_string())],
+                &[(
+                    "user".to_string(),
+                    "ignored if provider is reached".to_string(),
+                )],
                 "test-model",
                 None,
                 None,
@@ -1285,9 +1288,8 @@ mod tests {
         ));
         // Scope lookup misses (no per-tenant Tools on ctx) fall back to the
         // engine's own registry — which holds the event probe.
-        let engine_tools = Tools::from_static([
-            Arc::new(EventProbeTool(Arc::clone(&reached))) as Arc<dyn Tool>,
-        ]);
+        let engine_tools =
+            Tools::from_static([Arc::new(EventProbeTool(Arc::clone(&reached))) as Arc<dyn Tool>]);
         let engine = SkillEngine::new(
             PgPool::connect_lazy("postgres://localhost/ares_test").expect("lazy pool"),
             Arc::new(engine_tools),
@@ -1397,10 +1399,7 @@ mod tests {
     #[test]
     fn skill_llm_cost_estimate_uses_token_counts() {
         assert!(estimated_cost_usd(10, 5) > rust_decimal::Decimal::ZERO);
-        assert_eq!(
-            estimated_cost_usd(0, 0),
-            rust_decimal::Decimal::ZERO
-        );
+        assert_eq!(estimated_cost_usd(0, 0), rust_decimal::Decimal::ZERO);
     }
 
     #[test]
@@ -1642,9 +1641,7 @@ mod tests {
                     };
                     Ok(make_answer(which))
                 }
-                AmbientBehavior::Fail(message) => {
-                    Err(AppError::Internal(message.clone()))
-                }
+                AmbientBehavior::Fail(message) => Err(AppError::Internal(message.clone())),
             }
         }
 
@@ -1674,8 +1671,9 @@ mod tests {
         async fn stream(
             &self,
             _prompt: &str,
-        ) -> ares_types::Result<Box<dyn futures::Stream<Item = ares_types::Result<String>> + Send + Unpin>>
-        {
+        ) -> ares_types::Result<
+            Box<dyn futures::Stream<Item = ares_types::Result<String>> + Send + Unpin>,
+        > {
             Err(AppError::Internal("unused".into()))
         }
 
@@ -1683,16 +1681,18 @@ mod tests {
             &self,
             _system: &str,
             _prompt: &str,
-        ) -> ares_types::Result<Box<dyn futures::Stream<Item = ares_types::Result<String>> + Send + Unpin>>
-        {
+        ) -> ares_types::Result<
+            Box<dyn futures::Stream<Item = ares_types::Result<String>> + Send + Unpin>,
+        > {
             Err(AppError::Internal("unused".into()))
         }
 
         async fn stream_with_history(
             &self,
             _messages: &[(String, String)],
-        ) -> ares_types::Result<Box<dyn futures::Stream<Item = ares_types::Result<String>> + Send + Unpin>>
-        {
+        ) -> ares_types::Result<
+            Box<dyn futures::Stream<Item = ares_types::Result<String>> + Send + Unpin>,
+        > {
             Err(AppError::Internal("unused".into()))
         }
 
@@ -1860,7 +1860,9 @@ mod tests {
             .await;
 
         assert_eq!(
-            response.expect("completion must succeed despite enrichment failure").content,
+            response
+                .expect("completion must succeed despite enrichment failure")
+                .content,
             "classification-of-hello there"
         );
         assert!(
@@ -2015,9 +2017,17 @@ mod tests {
         });
         let engine = self_check_engine(SelfCheckMockClient::scripted(vec![]), None);
         let out = engine
-            .self_check_nested_result(&ctx, "child-skill", &json!({"q": "capital of France"}), result.clone())
+            .self_check_nested_result(
+                &ctx,
+                "child-skill",
+                &json!({"q": "capital of France"}),
+                result.clone(),
+            )
             .await;
-        assert_eq!(out, result, "off must return the delegated result unchanged");
+        assert_eq!(
+            out, result,
+            "off must return the delegated result unchanged"
+        );
 
         // Explicit zero behaves identically to off.
         let engine_zero = self_check_engine(SelfCheckMockClient::scripted(vec![]), Some(0));
@@ -2030,19 +2040,33 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn one_round_fixes_flawed_answer() {
         let ctx = Context::new_root();
-        let mock = SelfCheckMockClient::scripted(vec![Ok("The capital of France is Paris.".into())]);
+        let mock =
+            SelfCheckMockClient::scripted(vec![Ok("The capital of France is Paris.".into())]);
         let engine = self_check_engine(Arc::clone(&mock), Some(1));
 
         let flawed = json!({"status": "success", "content": "The capital of France is Lyon."});
         let out = engine
-            .self_check_nested_result(&ctx, "geo-skill", &json!({"task": "capital of France"}), flawed)
+            .self_check_nested_result(
+                &ctx,
+                "geo-skill",
+                &json!({"task": "capital of France"}),
+                flawed,
+            )
             .await;
 
         assert_eq!(out["content"], json!("The capital of France is Paris."));
-        assert_eq!(out["status"], json!("success"), "non-content fields stay intact");
+        assert_eq!(
+            out["status"],
+            json!("success"),
+            "non-content fields stay intact"
+        );
 
         let prompts = mock.recorded_prompts();
-        assert_eq!(prompts.len(), 1, "exactly one round means exactly one LLM call");
+        assert_eq!(
+            prompts.len(),
+            1,
+            "exactly one round means exactly one LLM call"
+        );
         assert!(
             prompts[0].starts_with(SELF_CHECK_TEMPLATE),
             "round prompt must lead with the cache-stable template"
@@ -2054,7 +2078,11 @@ mod tests {
         let bare = engine
             .self_check_nested_result(&ctx, "s", &json!({}), json!("stale text"))
             .await;
-        assert_eq!(bare, json!("stale text"), "verbatim reply keeps the original");
+        assert_eq!(
+            bare,
+            json!("stale text"),
+            "verbatim reply keeps the original"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2080,12 +2108,14 @@ mod tests {
         assert_eq!(mock.recorded_prompts().len(), 2, "both rounds attempted");
 
         // A failure on the FIRST round degrades to the untouched input.
-        let first_fails =
-            SelfCheckMockClient::scripted(vec![Err("down".into())]);
+        let first_fails = SelfCheckMockClient::scripted(vec![Err("down".into())]);
         let degraded = self_check_engine(first_fails.clone(), Some(3))
             .self_check_nested_result(&ctx, "child", &json!({}), flawed.clone())
             .await;
-        assert_eq!(degraded, flawed, "first-round failure passes the original through");
+        assert_eq!(
+            degraded, flawed,
+            "first-round failure passes the original through"
+        );
         assert_eq!(first_fails.recorded_prompts().len(), 1);
     }
     // -------------------------------------------------------------------
@@ -2338,10 +2368,7 @@ mod tests {
         );
         assert_eq!(
             fixture.prompts(),
-            vec![
-                "parent-zero".to_string(),
-                "child-round-0".to_string(),
-            ],
+            vec!["parent-zero".to_string(), "child-round-0".to_string(),],
             "parent tail and child round 1 must never start after cancellation"
         );
         assert!(

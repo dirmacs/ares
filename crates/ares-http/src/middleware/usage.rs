@@ -1,6 +1,6 @@
 use ares_store::tenants::TenantDb;
-use cordis::{Context, Service, ServiceInitFuture};
 use axum::{extract::Request, middleware::Next, response::Response};
+use cordis::{Context, Service, ServiceInitFuture};
 use parking_lot::Mutex;
 use std::sync::Arc;
 
@@ -23,10 +23,7 @@ pub async fn track_usage(mut req: Request, next: Next) -> Response {
             let tid = tenant_id.expect("checked above");
             let db = tenant_db.expect("checked above");
             let pool = db.pool().clone();
-            let tenant_id = usage
-                .as_ref()
-                .map(|u| u.tenant_id.clone())
-                .unwrap_or(tid);
+            let tenant_id = usage.as_ref().map(|u| u.tenant_id.clone()).unwrap_or(tid);
             tokio::spawn(async move {
                 let _ = record_usage_params(&tenant_id, &snapshot, &pool).await;
             });
@@ -122,9 +119,7 @@ pub(crate) fn has_metering_headers(headers: &axum::http::HeaderMap) -> bool {
 }
 
 /// Parses metering headers into a snapshot, or `None` when no metering headers are set.
-pub(crate) fn parse_metering_headers(
-    headers: &axum::http::HeaderMap,
-) -> Option<MeteringSnapshot> {
+pub(crate) fn parse_metering_headers(headers: &axum::http::HeaderMap) -> Option<MeteringSnapshot> {
     if !has_metering_headers(headers) {
         return None;
     }
@@ -167,10 +162,7 @@ pub(crate) fn extract_metering_from_response(
 }
 
 /// Builds INSERT bind parameters from a tenant id and metering snapshot.
-pub(crate) fn usage_event_params(
-    tenant_id: &str,
-    snapshot: &MeteringSnapshot,
-) -> UsageEventParams {
+pub(crate) fn usage_event_params(tenant_id: &str, snapshot: &MeteringSnapshot) -> UsageEventParams {
     UsageEventParams {
         tenant_id: tenant_id.to_string(),
         request_count: 1,
@@ -243,27 +235,42 @@ mod tests {
 
     #[test]
     fn has_metering_headers_true_for_input_tokens() {
-        assert!(has_metering_headers(&headers_with(&[("x-input-tokens", "10")])));
+        assert!(has_metering_headers(&headers_with(&[(
+            "x-input-tokens",
+            "10"
+        )])));
     }
 
     #[test]
     fn has_metering_headers_true_for_output_tokens() {
-        assert!(has_metering_headers(&headers_with(&[("x-output-tokens", "5")])));
+        assert!(has_metering_headers(&headers_with(&[(
+            "x-output-tokens",
+            "5"
+        )])));
     }
 
     #[test]
     fn has_metering_headers_true_for_model_name() {
-        assert!(has_metering_headers(&headers_with(&[("x-model-name", "gpt-4")])));
+        assert!(has_metering_headers(&headers_with(&[(
+            "x-model-name",
+            "gpt-4"
+        )])));
     }
 
     #[test]
     fn has_metering_headers_true_for_agent_name() {
-        assert!(has_metering_headers(&headers_with(&[("x-agent-name", "router")])));
+        assert!(has_metering_headers(&headers_with(&[(
+            "x-agent-name",
+            "router"
+        )])));
     }
 
     #[test]
     fn has_metering_headers_true_for_provider_name() {
-        assert!(has_metering_headers(&headers_with(&[("x-provider-name", "openai")])));
+        assert!(has_metering_headers(&headers_with(&[(
+            "x-provider-name",
+            "openai"
+        )])));
     }
 
     #[test]
@@ -341,10 +348,7 @@ mod tests {
 
     #[test]
     fn extract_metering_from_response_delegates_to_parser() {
-        let headers = headers_with(&[
-            ("x-input-tokens", "4"),
-            ("x-output-tokens", "6"),
-        ]);
+        let headers = headers_with(&[("x-input-tokens", "4"), ("x-output-tokens", "6")]);
 
         let snapshot = extract_metering_from_response(&headers).expect("snapshot");
         assert_eq!(snapshot.token_count, 10);

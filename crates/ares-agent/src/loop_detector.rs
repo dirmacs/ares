@@ -194,11 +194,7 @@ fn signatures_similar(a: &str, b: &str) -> bool {
     if min_len < 10 {
         return false;
     }
-    let common = a
-        .chars()
-        .zip(b.chars())
-        .take_while(|(x, y)| x == y)
-        .count();
+    let common = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count();
     common * 100 / min_len >= 80
 }
 

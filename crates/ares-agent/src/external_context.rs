@@ -21,7 +21,9 @@ mod tests {
         let ctx = Context::new_root();
         ctx.provide(ExternalContext("binding-42".into()));
         assert_eq!(
-            ctx.get::<ExternalContext>().as_deref().map(|e| e.0.as_str()),
+            ctx.get::<ExternalContext>()
+                .as_deref()
+                .map(|e| e.0.as_str()),
             Some("binding-42")
         );
     }
@@ -31,7 +33,9 @@ mod tests {
         let ctx = Context::new_root().with_intercept(ExternalContext("first".into()));
         let ctx = ctx.with_intercept(ExternalContext("second".into()));
         assert_eq!(
-            ctx.get::<ExternalContext>().as_deref().map(|e| e.0.as_str()),
+            ctx.get::<ExternalContext>()
+                .as_deref()
+                .map(|e| e.0.as_str()),
             Some("second")
         );
     }

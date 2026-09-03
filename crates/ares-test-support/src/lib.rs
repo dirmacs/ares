@@ -183,9 +183,15 @@ mod tests {
         if let Some(v) = saved_db {
             std::env::set_var("DATABASE_URL", v);
         }
-        assert!(url.contains("%2Fvar%2Frun%2Fpostgresql"), "unexpected: {url}");
+        assert!(
+            url.contains("%2Fvar%2Frun%2Fpostgresql"),
+            "unexpected: {url}"
+        );
         assert!(url.ends_with("/ares_test"), "unexpected: {url}");
-        assert!(!url.contains("localhost"), "no TCP fallback expected: {url}");
+        assert!(
+            !url.contains("localhost"),
+            "no TCP fallback expected: {url}"
+        );
     }
 
     #[test]
@@ -202,7 +208,10 @@ mod tests {
         if let Some(v) = saved_db {
             std::env::set_var("DATABASE_URL", v);
         }
-        assert!(url.contains("%2Fvar%2Frun%2Fpostgresql"), "unexpected: {url}");
+        assert!(
+            url.contains("%2Fvar%2Frun%2Fpostgresql"),
+            "unexpected: {url}"
+        );
     }
 
     /// Local smoke test: run with `cargo test -p ares-test-support -- --ignored`.

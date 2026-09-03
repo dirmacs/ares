@@ -5,9 +5,9 @@
 //! `PostgresClient` and [`ares_agent::ContextProviderHandle`] are native Service
 //! types; handlers `ctx.get` them directly.
 
-use std::sync::Arc;
 use cordis::Context;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use cordis::Service;
 
@@ -62,5 +62,4 @@ mod tests {
         got.set_active(true);
         assert!(got.is_active());
     }
-
 }

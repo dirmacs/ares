@@ -44,7 +44,10 @@ impl Accessor {
             + Sync
             + 'static,
     {
-        Self { getter: Some(Arc::new(getter)), setter: None }
+        Self {
+            getter: Some(Arc::new(getter)),
+            setter: None,
+        }
     }
 
     /// Read-write property.
@@ -54,17 +57,29 @@ impl Accessor {
             + Send
             + Sync
             + 'static,
-        S: Fn(&Context, Arc<dyn Any + Send + Sync>) -> Result<(), CordisError> + Send + Sync + 'static,
+        S: Fn(&Context, Arc<dyn Any + Send + Sync>) -> Result<(), CordisError>
+            + Send
+            + Sync
+            + 'static,
     {
-        Self { getter: Some(Arc::new(getter)), setter: Some(Arc::new(setter)) }
+        Self {
+            getter: Some(Arc::new(getter)),
+            setter: Some(Arc::new(setter)),
+        }
     }
 
     /// Write-only property: reads resolve `None`, writes go through `setter`.
     pub fn setter_only<S>(setter: S) -> Self
     where
-        S: Fn(&Context, Arc<dyn Any + Send + Sync>) -> Result<(), CordisError> + Send + Sync + 'static,
+        S: Fn(&Context, Arc<dyn Any + Send + Sync>) -> Result<(), CordisError>
+            + Send
+            + Sync
+            + 'static,
     {
-        Self { getter: None, setter: Some(Arc::new(setter)) }
+        Self {
+            getter: None,
+            setter: Some(Arc::new(setter)),
+        }
     }
 }
 
@@ -314,14 +329,15 @@ impl Context {
         // fully intact — no store/owners/version mutation happens). With no
         // listener registered the consult is two map reads.
         if let Some(events) = self.get_unintercepted::<crate::EventsService>() {
-            if crate::events::blocking_intercept_set(&events, std::any::type_name::<T>()).is_err()
-            {
+            if crate::events::blocking_intercept_set(&events, std::any::type_name::<T>()).is_err() {
                 tracing::info!(
                     service = std::any::type_name::<T>(),
                     "internal/set vetoed provider write; previous value stays"
                 );
                 let prev_any = self.store.read().get(&tid).cloned();
-                return prev_any.and_then(|any| any.downcast::<T>().ok()).unwrap_or(svc);
+                return prev_any
+                    .and_then(|any| any.downcast::<T>().ok())
+                    .unwrap_or(svc);
             }
         }
         let any: Arc<dyn Any + Send + Sync> = svc.clone();
@@ -522,7 +538,11 @@ impl Context {
 
     /// Read the EFFECTIVE (innermost) intercept override without removing it.
     pub(crate) fn peek_intercept_untyped(&self, tid: TypeId) -> Option<Arc<dyn Any + Send + Sync>> {
-        self.intercept.read().get(&tid).and_then(|layers| layers.last()).cloned()
+        self.intercept
+            .read()
+            .get(&tid)
+            .and_then(|layers| layers.last())
+            .cloned()
     }
 
     /// Pop the innermost intercept layer. The key is removed entirely once
@@ -590,7 +610,9 @@ impl Context {
                 }
             });
         }
-        self.parent.as_ref().and_then(|parent| parent.get_relaxed::<T>())
+        self.parent
+            .as_ref()
+            .and_then(|parent| parent.get_relaxed::<T>())
     }
 
     /// True when the owner fiber of `tid` has been disposed.
@@ -688,7 +710,9 @@ impl Context {
                 }
             });
         }
-        self.parent.as_ref().and_then(|parent| parent.get_impl::<T>())
+        self.parent
+            .as_ref()
+            .and_then(|parent| parent.get_impl::<T>())
     }
 
     /// The single-source-discipline refusal for a TypeId that is already
@@ -713,10 +737,12 @@ impl Context {
     }
 
     pub(crate) fn is_available(&self, tid: TypeId) -> bool {
-        if self
-            .isolate_label(tid)
-            .is_none()
-            && self.intercept.read().get(&tid).is_some_and(|layers| !layers.is_empty())
+        if self.isolate_label(tid).is_none()
+            && self
+                .intercept
+                .read()
+                .get(&tid)
+                .is_some_and(|layers| !layers.is_empty())
         {
             return true;
         }
@@ -850,12 +876,14 @@ impl Context {
     ) -> Result<Option<Arc<T>>, CordisError> {
         match self.read_property(name)? {
             None => Ok(None),
-            Some(any) => any.downcast::<T>().map(Some).map_err(|_| {
-                CordisError::PropertyTypeMismatch {
-                    name: name.to_string(),
-                    expected: std::any::type_name::<T>().to_string(),
-                }
-            }),
+            Some(any) => {
+                any.downcast::<T>()
+                    .map(Some)
+                    .map_err(|_| CordisError::PropertyTypeMismatch {
+                        name: name.to_string(),
+                        expected: std::any::type_name::<T>().to_string(),
+                    })
+            }
         }
     }
 
@@ -1119,10 +1147,7 @@ mod relaxed_tests {
         ] {
             fiber.set_state(state.clone());
             let relaxed = ctx.get_relaxed::<TransitionProbe>();
-            assert!(
-                relaxed.is_some(),
-                "relaxed read must succeed in {state:?}"
-            );
+            assert!(relaxed.is_some(), "relaxed read must succeed in {state:?}");
             assert_eq!(
                 relaxed.as_ref().map(|s| s.0),
                 Some(7),
@@ -1164,8 +1189,9 @@ mod accessor_tests {
            + Sync
            + 'static {
         move |_| {
-            Ok(Some(Arc::new(PropValue(*cell.lock()))
-                as Arc<dyn Any + Send + Sync>))
+            Ok(Some(
+                Arc::new(PropValue(*cell.lock())) as Arc<dyn Any + Send + Sync>
+            ))
         }
     }
 
@@ -1190,10 +1216,17 @@ mod accessor_tests {
             )
             .unwrap();
 
-        let got = ctx.read_property_typed::<PropValue>("quota").unwrap().unwrap();
+        let got = ctx
+            .read_property_typed::<PropValue>("quota")
+            .unwrap()
+            .unwrap();
         assert_eq!(*got, PropValue(1));
-        ctx.write_property("quota", Arc::new(PropValue(42))).unwrap();
-        let got = ctx.read_property_typed::<PropValue>("quota").unwrap().unwrap();
+        ctx.write_property("quota", Arc::new(PropValue(42)))
+            .unwrap();
+        let got = ctx
+            .read_property_typed::<PropValue>("quota")
+            .unwrap()
+            .unwrap();
         assert_eq!(*got, PropValue(42));
         assert_eq!(*cell.lock(), 42);
 
@@ -1228,7 +1261,9 @@ mod accessor_tests {
                 Accessor::read_only(read_cell_getter(Arc::new(StdMutex::new(7u64)))),
             )
             .unwrap();
-        let err = ctx.write_property("ro", Arc::new(PropValue(9))).unwrap_err();
+        let err = ctx
+            .write_property("ro", Arc::new(PropValue(9)))
+            .unwrap_err();
         assert!(matches!(err, CordisError::ReadOnlyProperty(ref n) if n == "ro"));
         // The stored resolution is untouched.
         assert_eq!(
@@ -1247,7 +1282,9 @@ mod accessor_tests {
         assert!(handle.dispose(), "live handle reports removal");
         // Still resolves none afterwards, but writes now hit the undeclared path.
         assert!(ctx.read_property("gone").unwrap().is_none());
-        let err = ctx.write_property("gone", Arc::new(PropValue(1))).unwrap_err();
+        let err = ctx
+            .write_property("gone", Arc::new(PropValue(1)))
+            .unwrap_err();
         assert!(
             matches!(err, CordisError::ServiceNotFound(ref m) if m.contains("cannot set property")),
             "unexpected error: {err}"
@@ -1271,8 +1308,7 @@ mod accessor_tests {
                 Accessor::read_write(
                     read_cell_getter(cell),
                     move |_ctx, value: Arc<dyn Any + Send + Sync>| {
-                        *write_cell.lock() =
-                            value.downcast::<PropValue>().unwrap().0;
+                        *write_cell.lock() = value.downcast::<PropValue>().unwrap().0;
                         Ok(())
                     },
                 ),
@@ -1282,13 +1318,17 @@ mod accessor_tests {
 
         // Same getter through the alias.
         assert_eq!(
-            *ctx.read_property_typed::<PropValue>("nick").unwrap().unwrap(),
+            *ctx.read_property_typed::<PropValue>("nick")
+                .unwrap()
+                .unwrap(),
             PropValue(5)
         );
         // Same setter through the alias.
         ctx.write_property("nick", Arc::new(PropValue(6))).unwrap();
         assert_eq!(
-            *ctx.read_property_typed::<PropValue>("primary").unwrap().unwrap(),
+            *ctx.read_property_typed::<PropValue>("primary")
+                .unwrap()
+                .unwrap(),
             PropValue(6)
         );
 
@@ -1318,14 +1358,12 @@ mod accessor_tests {
         ctx.provide_arc(events.clone());
 
         // Refuse every strict service read and veto every service write.
-        let _get_gate = events
-            .on(crate::events::INTERNAL_GET_EVENT.into(), |_p| async move {
-                Ok(serde_json::json!({ "refuse": true }))
-            });
-        let _set_gate = events
-            .on(crate::events::INTERNAL_SET_EVENT.into(), |_p| async move {
-                Ok(serde_json::json!("vetoed"))
-            });
+        let _get_gate = events.on(crate::events::INTERNAL_GET_EVENT.into(), |_p| async move {
+            Ok(serde_json::json!({ "refuse": true }))
+        });
+        let _set_gate = events.on(crate::events::INTERNAL_SET_EVENT.into(), |_p| async move {
+            Ok(serde_json::json!("vetoed"))
+        });
 
         // Sanity: with the gates up, the strict paths ARE intercepted.
         ctx.provide(Marker);
@@ -1343,21 +1381,24 @@ mod accessor_tests {
                 Accessor::read_write(
                     read_cell_getter(cell),
                     move |_c, value: Arc<dyn Any + Send + Sync>| {
-                        *write_cell.lock() =
-                            value.downcast::<PropValue>().unwrap().0;
+                        *write_cell.lock() = value.downcast::<PropValue>().unwrap().0;
                         Ok(())
                     },
                 ),
             )
             .unwrap();
         assert_eq!(
-            *ctx.read_property_typed::<PropValue>("open").unwrap().unwrap(),
+            *ctx.read_property_typed::<PropValue>("open")
+                .unwrap()
+                .unwrap(),
             PropValue(3),
             "accessor read bypasses internal/get"
         );
         ctx.write_property("open", Arc::new(PropValue(4))).unwrap();
         assert_eq!(
-            *ctx.read_property_typed::<PropValue>("open").unwrap().unwrap(),
+            *ctx.read_property_typed::<PropValue>("open")
+                .unwrap()
+                .unwrap(),
             PropValue(4),
             "accessor write bypasses internal/set"
         );

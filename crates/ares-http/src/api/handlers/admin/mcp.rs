@@ -14,11 +14,13 @@ pub async fn runtime_tool_capabilities() -> Json<RuntimeToolCapabilitiesResponse
 
 pub fn routes() -> axum::Router<Arc<Context>> {
     use axum::routing::get;
-    axum::Router::new()
-        .route("/mcp/runtime_tool_capabilities", get(runtime_tool_capabilities))
+    axum::Router::new().route(
+        "/mcp/runtime_tool_capabilities",
+        get(runtime_tool_capabilities),
+    )
 }
 
 // cordis Phase6: RouteSet Service — registered via build_routes(ctx)
+use ::cordis::Context;
 use ::cordis::Service;
 use std::sync::Arc;
-use ::cordis::Context;

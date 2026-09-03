@@ -83,8 +83,8 @@ compile_error!(
 
 pub mod config;
 pub use config::{
-    HybridWeightsConfig, RagChunkingConfig, RagConfig, RagRerankingConfig, RagSearchConfig,
-    RAGVectorConfig,
+    HybridWeightsConfig, RAGVectorConfig, RagChunkingConfig, RagConfig, RagRerankingConfig,
+    RagSearchConfig,
 };
 
 pub mod cache;

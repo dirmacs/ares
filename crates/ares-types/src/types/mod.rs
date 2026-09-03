@@ -669,14 +669,14 @@ pub enum AppError {
 
     /// Service temporarily unavailable (emergency stop, maintenance).
     #[error("Service unavailable: {0}")]
- Unavailable(String),
+    Unavailable(String),
     /// RAG feature was disabled by configuration
     #[error("Feature disabled: {0}")]
     FeatureDisabled(String),
 
- /// Rate limit / quota exceeded.
- #[error("Rate limited: {0}")]
- RateLimited(String),
+    /// Rate limit / quota exceeded.
+    #[error("Rate limited: {0}")]
+    RateLimited(String),
 }
 
 impl AppError {
@@ -692,9 +692,9 @@ impl AppError {
             AppError::External(_) => ErrorCode::ExternalServiceError,
             AppError::Internal(_) => ErrorCode::InternalError,
             AppError::Unavailable(_) => ErrorCode::InternalError,
-AppError::RateLimited(_) => ErrorCode::InternalError,
-AppError::FeatureDisabled(_) => ErrorCode::InternalError,
-    }
+            AppError::RateLimited(_) => ErrorCode::InternalError,
+            AppError::FeatureDisabled(_) => ErrorCode::InternalError,
+        }
     }
 
     /// Check if this error is transient and retrying with a fallback provider
@@ -814,7 +814,8 @@ mod tests {
             url: Some("https://example.com".into()),
             relevance_score: 0.9,
         };
-        let parsed: Source = serde_json::from_str(&serde_json::to_string(&source).unwrap()).unwrap();
+        let parsed: Source =
+            serde_json::from_str(&serde_json::to_string(&source).unwrap()).unwrap();
         assert_eq!(parsed.title, "Doc");
         assert_eq!(parsed.relevance_score, 0.9);
     }
@@ -834,16 +835,29 @@ mod tests {
             name: "search".into(),
             arguments: serde_json::json!({"q": "ares"}),
         };
-        let parsed: ToolCall = serde_json::from_str(&serde_json::to_string(&call).unwrap()).unwrap();
+        let parsed: ToolCall =
+            serde_json::from_str(&serde_json::to_string(&call).unwrap()).unwrap();
         assert_eq!(parsed.name, "search");
     }
 
     #[test]
     fn test_app_error_code_mapping() {
-        assert!(matches!(AppError::Database("x".into()).code(), ErrorCode::DatabaseError));
-        assert!(matches!(AppError::Auth("x".into()).code(), ErrorCode::AuthenticationFailed));
-        assert!(matches!(AppError::NotFound("x".into()).code(), ErrorCode::NotFound));
-        assert!(matches!(AppError::RateLimited("x".into()).code(), ErrorCode::InternalError));
+        assert!(matches!(
+            AppError::Database("x".into()).code(),
+            ErrorCode::DatabaseError
+        ));
+        assert!(matches!(
+            AppError::Auth("x".into()).code(),
+            ErrorCode::AuthenticationFailed
+        ));
+        assert!(matches!(
+            AppError::NotFound("x".into()).code(),
+            ErrorCode::NotFound
+        ));
+        assert!(matches!(
+            AppError::RateLimited("x".into()).code(),
+            ErrorCode::InternalError
+        ));
     }
 
     #[test]
@@ -856,7 +870,9 @@ mod tests {
     #[test]
     fn test_app_error_from_serde_json() {
         let bad = "{not json";
-        let err: AppError = serde_json::from_str::<serde_json::Value>(bad).unwrap_err().into();
+        let err: AppError = serde_json::from_str::<serde_json::Value>(bad)
+            .unwrap_err()
+            .into();
         assert!(matches!(err, AppError::InvalidInput(_)));
     }
 
@@ -873,8 +889,16 @@ mod tests {
             },
             embedding: None,
         };
-        let filters = [SearchFilter { field: "tags".into(), value: "rust".into() },
-            SearchFilter { field: "source".into(), value: "docs/rust".into() }];
+        let filters = [
+            SearchFilter {
+                field: "tags".into(),
+                value: "rust".into(),
+            },
+            SearchFilter {
+                field: "source".into(),
+                value: "docs/rust".into(),
+            },
+        ];
         let matches = filters.iter().all(|f| match f.field.as_str() {
             "tags" => doc.metadata.tags.iter().any(|t| t == &f.value),
             "source" => doc.metadata.source == f.value,
@@ -1046,10 +1070,7 @@ mod tests {
 
     #[test]
     fn test_agent_type_serde_builtin_and_custom_unicode() {
-        for (agent, expected) in [
-            (AgentType::Router, "\"router\""),
-            (AgentType::HR, "\"hr\""),
-        ] {
+        for (agent, expected) in [(AgentType::Router, "\"router\""), (AgentType::HR, "\"hr\"")] {
             let json = serde_json::to_string(&agent).unwrap();
             assert_eq!(json, expected);
             let parsed: AgentType = serde_json::from_str(&json).unwrap();
@@ -1092,8 +1113,7 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
             parts: vec![],
         };
-        let parsed: Message =
-            serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
+        let parsed: Message = serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
         assert_eq!(parsed.content, "emoji 🚀 & unicode ñ");
         assert!(matches!(parsed.role, MessageRole::User));
     }
@@ -1114,8 +1134,7 @@ mod tests {
                 text: "photo".into(),
             }],
         };
-        let parsed: Message =
-            serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
+        let parsed: Message = serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
         assert_eq!(
             parsed.parts,
             vec![ContentPart::Text {
@@ -1194,8 +1213,7 @@ mod tests {
             metadata: DocumentMetadata::default(),
             embedding: None,
         };
-        let parsed: Document =
-            serde_json::from_str(&serde_json::to_string(&doc).unwrap()).unwrap();
+        let parsed: Document = serde_json::from_str(&serde_json::to_string(&doc).unwrap()).unwrap();
         assert!(parsed.content.is_empty());
         assert!(parsed.embedding.is_none());
         assert!(parsed.metadata.title.is_empty());
@@ -1229,7 +1247,12 @@ mod tests {
         };
         let cloned_result = result.clone();
         assert!((cloned_result.score - 0.0).abs() < f32::EPSILON);
-        assert!(cloned_result.document.embedding.as_ref().unwrap().is_empty());
+        assert!(cloned_result
+            .document
+            .embedding
+            .as_ref()
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -1351,8 +1374,7 @@ mod tests {
             url: Some("https://example.com?q=100%".into()),
             relevance_score: 1.0,
         };
-        let parsed: Source =
-            serde_json::from_str(&serde_json::to_string(&max).unwrap()).unwrap();
+        let parsed: Source = serde_json::from_str(&serde_json::to_string(&max).unwrap()).unwrap();
         assert!((parsed.relevance_score - 1.0).abs() < f32::EPSILON);
     }
 

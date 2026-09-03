@@ -111,7 +111,11 @@ impl Agent for OrchestratorAgent {
 
         if subtasks.is_empty() {
             let content = self.llm.generate(input).await?;
-            return Ok(AgentResponse { content, usage: None, metadata: None });
+            return Ok(AgentResponse {
+                content,
+                usage: None,
+                metadata: None,
+            });
         }
 
         // Execute subtasks concurrently via try_join_all
@@ -132,7 +136,11 @@ impl Agent for OrchestratorAgent {
         );
 
         let content = self.llm.generate(&synthesis_prompt).await?;
-        Ok(AgentResponse { content, usage: None, metadata: None })
+        Ok(AgentResponse {
+            content,
+            usage: None,
+            metadata: None,
+        })
     }
 
     fn system_prompt(&self) -> String {
@@ -171,7 +179,9 @@ mod tests {
     impl ScriptedLlm {
         fn new(responses: Vec<&str>) -> Self {
             Self {
-                responses: Arc::new(Mutex::new(responses.into_iter().map(str::to_string).collect())),
+                responses: Arc::new(Mutex::new(
+                    responses.into_iter().map(str::to_string).collect(),
+                )),
                 system_prompts: Arc::new(Mutex::new(Vec::new())),
                 generate_prompts: Arc::new(Mutex::new(Vec::new())),
             }
@@ -200,7 +210,10 @@ mod tests {
             "scripted-test"
         }
         async fn generate(&self, prompt: &str) -> Result<String> {
-            self.generate_prompts.lock().unwrap().push(prompt.to_string());
+            self.generate_prompts
+                .lock()
+                .unwrap()
+                .push(prompt.to_string());
             Ok(self.next_response())
         }
         async fn generate_with_system(&self, system: &str, _: &str) -> Result<String> {
@@ -241,13 +254,23 @@ mod tests {
                 response_id: None,
             })
         }
-        async fn stream(&self, _: &str) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+        async fn stream(
+            &self,
+            _: &str,
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
             Ok(Box::new(futures::stream::empty()))
         }
-        async fn stream_with_system(&self, _: &str, _: &str) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+        async fn stream_with_system(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
             Ok(Box::new(futures::stream::empty()))
         }
-        async fn stream_with_history(&self, _: &[(String, String)]) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+        async fn stream_with_history(
+            &self,
+            _: &[(String, String)],
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
             Ok(Box::new(futures::stream::empty()))
         }
     }
@@ -299,7 +322,6 @@ mod tests {
         );
         Arc::new(registry)
     }
-
 
     fn create_test_provider_registry_with_base_url(base_url: &str) -> Arc<ProviderRegistry> {
         let mut registry = ProviderRegistry::new();
@@ -356,24 +378,32 @@ mod tests {
         Arc::new(registry)
     }
 
-    fn build_orchestrator(llm: ScriptedLlm, agents: &[&str], config: HashMap<String, AgentConfig>) -> OrchestratorAgent {
-        OrchestratorAgent::new(
-            Box::new(llm),
-            Arc::new(config),
-            build_registry(agents),
-        )
+    fn build_orchestrator(
+        llm: ScriptedLlm,
+        agents: &[&str],
+        config: HashMap<String, AgentConfig>,
+    ) -> OrchestratorAgent {
+        OrchestratorAgent::new(Box::new(llm), Arc::new(config), build_registry(agents))
     }
 
     #[tokio::test]
     async fn test_decompose_task_parses_valid_json() {
         let orch = build_orchestrator(
-            ScriptedLlm::new(vec![r#"[{"agent":"sales","task":"Get Q1 revenue"},{"agent":"product","task":"Top SKUs"}]"#]),
+            ScriptedLlm::new(vec![
+                r#"[{"agent":"sales","task":"Get Q1 revenue"},{"agent":"product","task":"Top SKUs"}]"#,
+            ]),
             &["sales", "product"],
             create_test_agent_map(HashMap::new()),
         );
-        let tasks = orch.decompose_task("Quarterly business review").await.expect("decompose");
+        let tasks = orch
+            .decompose_task("Quarterly business review")
+            .await
+            .expect("decompose");
         assert_eq!(tasks.len(), 2);
-        assert_eq!(tasks[0], ("sales".to_string(), "Get Q1 revenue".to_string()));
+        assert_eq!(
+            tasks[0],
+            ("sales".to_string(), "Get Q1 revenue".to_string())
+        );
         assert_eq!(tasks[1], ("product".to_string(), "Top SKUs".to_string()));
     }
 
@@ -385,7 +415,10 @@ mod tests {
             create_test_agent_map(HashMap::new()),
         );
         let tasks = orch.decompose_task("task").await.expect("decompose");
-        assert_eq!(tasks, vec![("product".to_string(), "Do something".to_string())]);
+        assert_eq!(
+            tasks,
+            vec![("product".to_string(), "Do something".to_string())]
+        );
     }
 
     #[tokio::test]
@@ -403,9 +436,17 @@ mod tests {
     async fn test_decompose_task_excludes_orchestrator_and_router_from_prompt() {
         let llm = ScriptedLlm::new(vec![r#"[]"#]);
         let llm_clone = llm.clone();
-        let orch = build_orchestrator(llm, &["sales", "product"], create_test_agent_map(HashMap::new()));
+        let orch = build_orchestrator(
+            llm,
+            &["sales", "product"],
+            create_test_agent_map(HashMap::new()),
+        );
         orch.decompose_task("plan").await.expect("decompose");
-        let system = llm_clone.system_prompts().into_iter().next().expect("system prompt");
+        let system = llm_clone
+            .system_prompts()
+            .into_iter()
+            .next()
+            .expect("system prompt");
         assert!(system.contains("sales"));
         assert!(system.contains("product"));
         assert!(!system.contains("orchestrator"));
@@ -419,7 +460,10 @@ mod tests {
             &["product"],
             create_test_agent_map(HashMap::new()),
         );
-        let resp = orch.execute("simple question", &test_context()).await.expect("execute");
+        let resp = orch
+            .execute("simple question", &test_context())
+            .await
+            .expect("execute");
         assert_eq!(resp.content, "direct-answer");
     }
 
@@ -455,9 +499,9 @@ mod tests {
                 tools: vec![],
                 max_tool_iterations: 10,
                 parallel_tools: false,
-            allowed_tools: None,
-            extra: HashMap::new(),
-            compaction_enabled: None,
+                allowed_tools: None,
+                extra: HashMap::new(),
+                compaction_enabled: None,
             },
         );
         let orch = build_orchestrator(ScriptedLlm::new(vec![]), &[], create_test_agent_map(agents));
@@ -466,13 +510,21 @@ mod tests {
 
     #[test]
     fn test_system_prompt_default_when_missing() {
-        let orch = build_orchestrator(ScriptedLlm::new(vec![]), &[], create_test_agent_map(HashMap::new()));
+        let orch = build_orchestrator(
+            ScriptedLlm::new(vec![]),
+            &[],
+            create_test_agent_map(HashMap::new()),
+        );
         assert!(orch.system_prompt().contains("orchestrator agent"));
     }
 
     #[test]
     fn test_agent_type_is_orchestrator() {
-        let orch = build_orchestrator(ScriptedLlm::new(vec![]), &[], create_test_agent_map(HashMap::new()));
+        let orch = build_orchestrator(
+            ScriptedLlm::new(vec![]),
+            &[],
+            create_test_agent_map(HashMap::new()),
+        );
         assert_eq!(orch.agent_type(), AgentType::Orchestrator);
     }
 
@@ -551,7 +603,11 @@ mod tests {
         let llm_clone = llm.clone();
         let orch = build_orchestrator(llm, &[], create_test_agent_map(HashMap::new()));
         orch.decompose_task("plan").await.expect("decompose");
-        let system = llm_clone.system_prompts().into_iter().next().expect("system prompt");
+        let system = llm_clone
+            .system_prompts()
+            .into_iter()
+            .next()
+            .expect("system prompt");
         assert!(system.contains("Available agents: "));
         assert!(!system.contains("orchestrator"));
         assert!(!system.contains("router"));
@@ -565,9 +621,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(chat_done_json("subtask-body")),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(chat_done_json("subtask-body")))
             .mount(&server)
             .await;
 
@@ -605,9 +659,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(chat_done_json("agent-output")),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(chat_done_json("agent-output")))
             .mount(&server)
             .await;
 
@@ -627,7 +679,11 @@ mod tests {
             .await
             .expect("execute");
         assert_eq!(resp.content, "combined answer");
-        let synthesis = llm_clone.generate_prompts().into_iter().next().expect("synthesis prompt");
+        let synthesis = llm_clone
+            .generate_prompts()
+            .into_iter()
+            .next()
+            .expect("synthesis prompt");
         assert!(synthesis.contains("Original query: annual review"));
         assert!(synthesis.contains("[sales] agent-output"));
         assert!(synthesis.contains("[finance] agent-output"));
@@ -665,6 +721,4 @@ mod tests {
         assert!(resp.usage.is_none());
         assert!(resp.metadata.is_none());
     }
-
-
 }

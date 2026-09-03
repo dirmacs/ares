@@ -64,8 +64,6 @@ pub enum CheckpointStatus {
     Halted(String),
 }
 
-
-
 /// On-disk / index metadata for a checkpoint.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CheckpointMetadata {
@@ -147,7 +145,15 @@ pub fn create_checkpoint(
     status: CheckpointStatus,
 ) -> AgentCheckpoint {
     create_checkpoint_with_ttl(
-        agent_id, run_id, step, messages, tool_calls, partial_results, timestamp, None, status,
+        agent_id,
+        run_id,
+        step,
+        messages,
+        tool_calls,
+        partial_results,
+        timestamp,
+        None,
+        status,
     )
 }
 
@@ -236,12 +242,14 @@ impl CheckpointManager {
     pub fn save(&self, checkpoint: &Checkpoint) -> std::io::Result<()> {
         let filename = checkpoint_step_filename(&checkpoint.session_id, checkpoint.step);
         let path = self.checkpoint_dir.join(&filename);
-        let bytes = serialize_state(checkpoint)
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        let bytes =
+            serialize_state(checkpoint).map_err(|e| std::io::Error::other(e.to_string()))?;
         std::fs::write(&path, bytes)?;
 
         // Also update the "latest" symlink/pointer
-        let latest_path = self.checkpoint_dir.join(format!("{}_latest.json", checkpoint.session_id));
+        let latest_path = self
+            .checkpoint_dir
+            .join(format!("{}_latest.json", checkpoint.session_id));
         std::fs::write(&latest_path, &filename)?;
 
         Ok(())
@@ -249,7 +257,9 @@ impl CheckpointManager {
 
     /// Load the latest checkpoint for a session.
     pub fn load_latest(&self, session_id: &str) -> std::io::Result<Option<Checkpoint>> {
-        let latest_path = self.checkpoint_dir.join(format!("{}_latest.json", session_id));
+        let latest_path = self
+            .checkpoint_dir
+            .join(format!("{}_latest.json", session_id));
         if !latest_path.exists() {
             return Ok(None);
         }
@@ -303,7 +313,6 @@ impl CheckpointManager {
         Ok(removed)
     }
 
-
     /// Remove checkpoint files whose metadata has expired relative to `now`.
     pub fn cleanup_expired(&self, now: u64) -> std::io::Result<usize> {
         let mut removed = 0;
@@ -331,7 +340,9 @@ impl CheckpointManager {
 
     /// Check if a session has a recoverable checkpoint.
     pub fn has_checkpoint(&self, session_id: &str) -> bool {
-        let latest_path = self.checkpoint_dir.join(format!("{}_latest.json", session_id));
+        let latest_path = self
+            .checkpoint_dir
+            .join(format!("{}_latest.json", session_id));
         latest_path.exists()
     }
 }
@@ -462,7 +473,8 @@ mod tests {
             timestamp: 100,
             ttl_secs: Some(3600),
         };
-        let back: CheckpointMetadata = serde_json::from_str(&serde_json::to_string(&meta).unwrap()).unwrap();
+        let back: CheckpointMetadata =
+            serde_json::from_str(&serde_json::to_string(&meta).unwrap()).unwrap();
         assert_eq!(back, meta);
     }
 
@@ -712,7 +724,11 @@ mod tests {
         let dir = temp_dir();
         let mgr = CheckpointManager::new(dir.path()).unwrap();
         let session = "bad-json";
-        std::fs::write(dir.path().join(format!("{session}_0.json")), "not valid json").unwrap();
+        std::fs::write(
+            dir.path().join(format!("{session}_0.json")),
+            "not valid json",
+        )
+        .unwrap();
         std::fs::write(
             dir.path().join(format!("{session}_latest.json")),
             format!("{session}_0.json"),
@@ -760,7 +776,10 @@ mod tests {
     #[test]
     fn default_dir_initializes_manager() {
         let mgr = CheckpointManager::default_dir().expect("default_dir should succeed");
-        assert!(mgr.checkpoint_dir.to_string_lossy().ends_with("checkpoints"));
+        assert!(mgr
+            .checkpoint_dir
+            .to_string_lossy()
+            .ends_with("checkpoints"));
     }
 
     #[test]

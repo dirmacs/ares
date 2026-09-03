@@ -1,17 +1,17 @@
-use crate::Result;
 use crate::HttpError;
+use crate::Result;
 use crate::{
     auth::middleware::AuthUser,
     research::coordinator::ResearchCoordinator,
     types::{Claims, ResearchRequest, ResearchResponse, Source},
     utils::toml_config::{AresConfig, WorkflowConfig},
 };
-use std::sync::Arc;
-use cordis::Context;
 use axum::{
     extract::{Extension, State},
     Json,
 };
+use cordis::Context;
+use std::sync::Arc;
 use std::time::Instant;
 
 async fn jwt_tenant_tier(ctx: &Arc<Context>, tenant_id: &str) -> ares_types::models::TenantTier {
@@ -82,9 +82,7 @@ fn research_emergency_stop_message() -> &'static str {
     "All agents are currently under human review. Please try again later."
 }
 
-fn ensure_research_emergency_stop_inactive(
-    stop: &ares_agent::EmergencyStop,
-) -> Result<()> {
+fn ensure_research_emergency_stop_inactive(stop: &ares_agent::EmergencyStop) -> Result<()> {
     if stop.is_active() {
         return Err(HttpError::from(ares_types::types::AppError::Unavailable(
             research_emergency_stop_message().to_string(),
@@ -115,9 +113,15 @@ pub async fn deep_research(
 ) -> Result<Json<ResearchResponse>> {
     let ctx = intercept_jwt_tenant(ctx, &claims, tenant_ctx).await;
     let start = Instant::now();
-    ensure_research_emergency_stop_inactive(&ctx.get::<ares_agent::EmergencyStop>().expect("not provided"))?;
+    ensure_research_emergency_stop_inactive(
+        &ctx.get::<ares_agent::EmergencyStop>()
+            .expect("not provided"),
+    )?;
 
-    let config = ctx.get::<crate::overlay::AresConfigManager>().expect("not provided").config();
+    let config = ctx
+        .get::<crate::overlay::AresConfigManager>()
+        .expect("not provided")
+        .config();
     let (depth, max_iterations, model_name) = plan_research_run(&config, &payload);
 
     let llm = ctx.get::<ares_llm::Llm>().ok_or_else(|| {
@@ -146,10 +150,10 @@ pub async fn deep_research(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{AuthConfig, ServerConfig};
     use crate::overlay::{
         AgentConfig, BillingConfig, DatabaseConfig, DynamicConfigPaths, RagConfig,
     };
-    use crate::config::{AuthConfig, ServerConfig};
     use std::collections::HashMap;
     use std::time::Duration;
 

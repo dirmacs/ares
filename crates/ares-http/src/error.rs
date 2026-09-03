@@ -59,8 +59,8 @@ pub fn app_error_into_response(err: ares_types::AppError) -> Response {
         tracing::error!(error = %err, code = ?err.code(), "Internal error occurred");
     }
 
-    let status = StatusCode::from_u16(err.status_code())
-        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let status =
+        StatusCode::from_u16(err.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let message = err.to_string();
     let body = serde_json::json!({
         "error": message,

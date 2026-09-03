@@ -1,17 +1,19 @@
 //! V1 chat domain — cordis Phase6
 //! Bodies moved from v1.rs
 
-use std::sync::Arc;
-use cordis::Context;
 use super::*;
+use cordis::Context;
+use std::sync::Arc;
 
+use crate::HttpError;
+use crate::Result;
 use ares_agent::context_provider::AgentRuntimeContext;
+use ares_agent::research::coordinator::ResearchCoordinator;
 use ares_store::agent_runs;
 use ares_types::models::TenantContext;
-use ares_agent::research::coordinator::ResearchCoordinator;
-use ares_types::types::{AgentContext, AgentType, AppError, ChatRequest, ChatResponse, ResearchRequest, ResearchResponse};
-use crate::Result;
-use crate::HttpError;
+use ares_types::types::{
+    AgentContext, AgentType, AppError, ChatRequest, ChatResponse, ResearchRequest, ResearchResponse,
+};
 use axum::{
     extract::{Extension, State},
     response::Response,
@@ -36,7 +38,9 @@ pub async fn v1_chat(
     // (see the DI path below: state_ctx.with_intercept(ModelOverride { .. })).
 
     // Emergency stop — kill switch for all agents
-    if state_ctx.get::<ares_agent::EmergencyStop>().expect("not provided")
+    if state_ctx
+        .get::<ares_agent::EmergencyStop>()
+        .expect("not provided")
         .is_active()
     {
         return Err(HttpError::from(ares_types::types::AppError::Unavailable(
@@ -72,7 +76,10 @@ pub async fn v1_chat(
     runtime_context.workspace_id = payload.workspace_id.clone();
     runtime_context.session_id = Some(agent_context.session_id.clone());
 
-    let eruka_context = state_ctx.get::<ares_agent::ContextProviderHandle>().expect("not provided").0
+    let eruka_context = state_ctx
+        .get::<ares_agent::ContextProviderHandle>()
+        .expect("not provided")
+        .0
         .get_context_for_run(&runtime_context)
         .await;
     let eruka_context_hit = eruka_context.is_some();
@@ -113,9 +120,8 @@ pub async fn v1_chat(
             let allowed_models = ares_store::tenant_allowlist::TenantAllowlistStore::new(&pool)
                 .list_models(&tc.tenant_id)
                 .await?;
-            let child = state_ctx.with_intercept(ares_agent::execution::ModelOverride {
-                model: m.clone(),
-            });
+            let child =
+                state_ctx.with_intercept(ares_agent::execution::ModelOverride { model: m.clone() });
             child.provide(ares_llm::TenantModelPolicy::new(
                 tc.tenant_id.clone(),
                 allowed_models.into_iter().map(|item| item.model_id),
@@ -131,13 +137,21 @@ pub async fn v1_chat(
         let exec_result = exec_svc.run(&req, &req_ctx).await?;
         let duration_ms = start.elapsed().as_millis() as i64;
         let response_text = exec_result.response.content;
-        let (model_name, provider_name) = execution_metadata_names(exec_result.response.metadata.as_ref());
-        let (input_tokens, output_tokens) =
-            llm_token_counts_u32(exec_result.response.usage.as_ref(), &effective_message, &response_text);
+        let (model_name, provider_name) =
+            execution_metadata_names(exec_result.response.metadata.as_ref());
+        let (input_tokens, output_tokens) = llm_token_counts_u32(
+            exec_result.response.usage.as_ref(),
+            &effective_message,
+            &response_text,
+        );
 
         // Record agent run with metadata from ExecutionResult
         {
-            let pool = state_ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+            let pool = state_ctx
+                .get::<ares_store::TenantDb>()
+                .expect("not provided")
+                .pool()
+                .clone();
             let tid = tc.tenant_id.clone();
             let aname = exec_result.agent_name.clone();
             let itok = input_tokens as i64;
@@ -161,9 +175,21 @@ pub async fn v1_chat(
             };
             tokio::spawn(async move {
                 let _ = agent_runs::insert_agent_run_with_metadata(
-                    &pool, &tid, &aname, None, "completed", itok, otok, duration_ms,
-                    None, &mname, &pname, false, Some(&metadata),
-                ).await;
+                    &pool,
+                    &tid,
+                    &aname,
+                    None,
+                    "completed",
+                    itok,
+                    otok,
+                    duration_ms,
+                    None,
+                    &mname,
+                    &pname,
+                    false,
+                    Some(&metadata),
+                )
+                .await;
             });
         }
 
@@ -177,11 +203,12 @@ pub async fn v1_chat(
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
             }
-        })).into_response());
+        }))
+        .into_response());
     }
 
     Err(HttpError::from(AppError::Unavailable(
-        "Execute is not provided on the request context".into()
+        "Execute is not provided on the request context".into(),
     )))
 }
 
@@ -190,7 +217,11 @@ async fn ensure_research_model_allowed(
     tenant_id: &str,
     model_name: &str,
 ) -> Result<()> {
-    let pool = state_ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = state_ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let allowlist_store = ares_store::tenant_allowlist::TenantAllowlistStore::new(&pool);
     research_model_allowlist_decision(
         allowlist_store
@@ -204,10 +235,9 @@ pub(crate) fn research_model_allowlist_decision(is_allowed: bool, model_name: &s
     if is_allowed {
         return Ok(());
     }
-    Err(HttpError::from(AppError::Auth(format!(
-        "Model '{}' is not allowed for this tenant",
-        model_name
-    ).into())))
+    Err(HttpError::from(AppError::Auth(
+        format!("Model '{}' is not allowed for this tenant", model_name).into(),
+    )))
 }
 
 /// POST /v1/research — tenant-scoped research with provider-reported metering.
@@ -224,16 +254,21 @@ pub async fn v1_research(
         None => state_ctx,
     };
 
-    if state_ctx.get::<ares_agent::EmergencyStop>().expect("not provided")
+    if state_ctx
+        .get::<ares_agent::EmergencyStop>()
+        .expect("not provided")
         .is_active()
     {
         return Err(HttpError::from(AppError::Unavailable(
-            "All agents are currently under human review. Please try again later.".to_string()
+            "All agents are currently under human review. Please try again later.".to_string(),
         )));
     }
 
     let start = std::time::Instant::now();
-    let config = state_ctx.get::<crate::overlay::AresConfigManager>().expect("not provided").config();
+    let config = state_ctx
+        .get::<crate::overlay::AresConfigManager>()
+        .expect("not provided")
+        .config();
     let workflow = config.get_workflow("research");
     let (depth, max_iterations) = research_depth_and_iterations(
         payload.depth,
@@ -297,8 +332,8 @@ use cordis::Service;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ares_agent::ConfigurableAgent;
     use ares_agent::AgentConfig;
+    use ares_agent::ConfigurableAgent;
     use ares_llm::{LLMClient, LLMResponse};
     use ares_tools::Tool;
     use ares_types::types::ToolDefinition;
@@ -379,7 +414,9 @@ mod tests {
         async fn stream(
             &self,
             _prompt: &str,
-        ) -> ares_types::Result<Box<dyn futures::Stream<Item = ares_types::Result<String>> + Send + Unpin>> {
+        ) -> ares_types::Result<
+            Box<dyn futures::Stream<Item = ares_types::Result<String>> + Send + Unpin>,
+        > {
             Ok(Box::new(futures::stream::empty()))
         }
 
@@ -387,14 +424,18 @@ mod tests {
             &self,
             _system: &str,
             _prompt: &str,
-        ) -> ares_types::Result<Box<dyn futures::Stream<Item = ares_types::Result<String>> + Send + Unpin>> {
+        ) -> ares_types::Result<
+            Box<dyn futures::Stream<Item = ares_types::Result<String>> + Send + Unpin>,
+        > {
             Ok(Box::new(futures::stream::empty()))
         }
 
         async fn stream_with_history(
             &self,
             _messages: &[(String, String)],
-        ) -> ares_types::Result<Box<dyn futures::Stream<Item = ares_types::Result<String>> + Send + Unpin>> {
+        ) -> ares_types::Result<
+            Box<dyn futures::Stream<Item = ares_types::Result<String>> + Send + Unpin>,
+        > {
             Ok(Box::new(futures::stream::empty()))
         }
 
@@ -406,9 +447,8 @@ mod tests {
     #[test]
     fn tenant_isolated_service_reaches_agent_and_denies_other_tenant_tool() {
         let root = Context::new_root();
-        let tenant_b_tools = ares_tools::Tools::from_static([
-            Arc::new(TestTool("tenant_b_tool")) as Arc<dyn Tool>,
-        ]);
+        let tenant_b_tools =
+            ares_tools::Tools::from_static([Arc::new(TestTool("tenant_b_tool")) as Arc<dyn Tool>]);
         root.provide(tenant_b_tools);
 
         // Tenant A's realm isolates its own tool registry; the parent's
@@ -428,18 +468,20 @@ mod tests {
             extra: std::collections::HashMap::new(),
             compaction_enabled: None,
         };
-        let mut agent = ConfigurableAgent::new_with_tool_service(
-            "tenant-a",
-            &config,
-            Box::new(TestLlm),
-            None,
-        );
+        let mut agent =
+            ConfigurableAgent::new_with_tool_service("tenant-a", &config, Box::new(TestLlm), None);
 
         agent.set_tools(scoped_a.get::<ares_tools::Tools>().expect("Tools"));
         agent.bind_request_ctx(scoped_a.clone());
 
         let definitions = agent.get_filtered_tool_definitions();
-        assert_eq!(definitions.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["tenant_a_tool"]);
+        assert_eq!(
+            definitions
+                .iter()
+                .map(|d| d.name.as_str())
+                .collect::<Vec<_>>(),
+            ["tenant_a_tool"]
+        );
         assert!(agent.can_use_tool("tenant_a_tool"));
         assert!(!agent.can_use_tool("tenant_b_tool"));
     }

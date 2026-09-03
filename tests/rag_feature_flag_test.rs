@@ -5,8 +5,8 @@
 
 #![cfg(all(feature = "postgres", feature = "http"))]
 
-use ares_types::types::{Document, DocumentMetadata, RagIngestRequest, RagSearchRequest};
 use ares_http::overlay::RagConfig;
+use ares_types::types::{Document, DocumentMetadata, RagIngestRequest, RagSearchRequest};
 use chrono::Utc;
 
 #[test]

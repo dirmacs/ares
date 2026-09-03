@@ -1,42 +1,57 @@
-use std::sync::Arc;
-use ::cordis::Context;
-use crate::Result;
 use crate::HttpError;
+use crate::Result;
+use ::cordis::Context;
 use ares_types::types::AppError;
+use std::sync::Arc;
 // Admin handlers — decomposed via Cordis (Phase 6)
 // Each domain lives in `admin/*.rs`; shared DTOs/helpers in `admin/shared.rs`.
 // This shim re-exports domains and provides middleware + routing.
 
-#[path = "admin/tenants.rs"] pub mod tenants;
-#[path = "admin/agents.rs"] pub mod agents;
-#[path = "admin/providers.rs"] pub mod providers;
-#[path = "admin/tools.rs"] pub mod tools;
-#[path = "admin/schedules.rs"] pub mod schedules;
-#[path = "admin/triggers.rs"] pub mod triggers;
-#[path = "admin/pipelines.rs"] pub mod pipelines;
-#[path = "admin/billing.rs"] pub mod billing;
-#[path = "admin/mcp.rs"] pub mod mcp;
-#[path = "admin/fleet_secrets.rs"] pub mod fleet_secrets;
-#[path = "admin/connectors.rs"] pub mod connectors;
-#[path = "admin/health.rs"] pub mod health;
-#[path = "admin/audit.rs"] pub mod audit;
-#[path = "admin/cordis.rs"] pub mod cordis;
-#[path = "admin/shared.rs"] pub mod shared;
+#[path = "admin/agents.rs"]
+pub mod agents;
+#[path = "admin/audit.rs"]
+pub mod audit;
+#[path = "admin/billing.rs"]
+pub mod billing;
+#[path = "admin/connectors.rs"]
+pub mod connectors;
+#[path = "admin/cordis.rs"]
+pub mod cordis;
+#[path = "admin/fleet_secrets.rs"]
+pub mod fleet_secrets;
+#[path = "admin/health.rs"]
+pub mod health;
+#[path = "admin/mcp.rs"]
+pub mod mcp;
+#[path = "admin/pipelines.rs"]
+pub mod pipelines;
+#[path = "admin/providers.rs"]
+pub mod providers;
+#[path = "admin/schedules.rs"]
+pub mod schedules;
+#[path = "admin/shared.rs"]
+pub mod shared;
+#[path = "admin/tenants.rs"]
+pub mod tenants;
+#[path = "admin/tools.rs"]
+pub mod tools;
+#[path = "admin/triggers.rs"]
+pub mod triggers;
 
-pub use tenants::*;
 pub use agents::*;
-pub use providers::*;
-pub use tools::*;
-pub use schedules::*;
-pub use triggers::*;
-pub use pipelines::*;
-pub use billing::*;
-pub use mcp::*;
-pub use fleet_secrets::*;
-pub use connectors::*;
-pub use health::*;
 pub use audit::*;
+pub use billing::*;
+pub use connectors::*;
 pub use cordis::*;
+pub use fleet_secrets::*;
+pub use health::*;
+pub use mcp::*;
+pub use pipelines::*;
+pub use providers::*;
+pub use schedules::*;
+pub use tenants::*;
+pub use tools::*;
+pub use triggers::*;
 
 // Re-export shared DTOs/helpers so `use super::*;` in shards resolves.
 pub use shared::*;
@@ -102,8 +117,8 @@ fn admin_percent_decode(value: &str) -> Result<String> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hi = hex_value(bytes[i+1]);
-            let lo = hex_value(bytes[i+2]);
+            let hi = hex_value(bytes[i + 1]);
+            let lo = hex_value(bytes[i + 2]);
             if let (Some(h), Some(l)) = (hi, lo) {
                 out.push((h << 4) | l);
                 i += 3;
@@ -113,7 +128,8 @@ fn admin_percent_decode(value: &str) -> Result<String> {
         out.push(bytes[i]);
         i += 1;
     }
-    String::from_utf8(out).map_err(|e| HttpError::from(AppError::InvalidInput(format!("invalid utf8: {e}"))))
+    String::from_utf8(out)
+        .map_err(|e| HttpError::from(AppError::InvalidInput(format!("invalid utf8: {e}"))))
 }
 
 pub async fn admin_middleware(req: axum::extract::Request, next: Next) -> Response {
@@ -147,7 +163,10 @@ pub async fn admin_middleware(req: axum::extract::Request, next: Next) -> Respon
     Response::builder()
         .status(StatusCode::UNAUTHORIZED)
         .header("Content-Type", "application/json")
-        .body(r#"{"error":"Admin access requires X-Admin-Secret header or JWT with admin role"}"#.into())
+        .body(
+            r#"{"error":"Admin access requires X-Admin-Secret header or JWT with admin role"}"#
+                .into(),
+        )
         .unwrap()
 }
 

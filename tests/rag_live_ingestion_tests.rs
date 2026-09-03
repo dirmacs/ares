@@ -162,10 +162,7 @@ async fn test_live_document_discovery() {
 
     let markdown_files = find_markdown_files(&docs_path);
 
-    println!(
-        "Found {} markdown files:",
-        markdown_files.len()
-    );
+    println!("Found {} markdown files:", markdown_files.len());
 
     for file in &markdown_files {
         println!("  - {:?}", file);
@@ -196,9 +193,8 @@ async fn test_live_batch_ingestion() {
     let vector_path = get_vector_path();
 
     // Initialize services
-    let embedding_service =
-        EmbeddingService::with_model(EmbeddingModelType::BgeSmallEnV15)
-            .expect("Failed to create embedding service");
+    let embedding_service = EmbeddingService::with_model(EmbeddingModelType::BgeSmallEnV15)
+        .expect("Failed to create embedding service");
 
     let store = AresVectorStore::new(vector_path)
         .await
@@ -219,10 +215,7 @@ async fn test_live_batch_ingestion() {
 
     // Find and process documents
     let markdown_files = find_markdown_files(&docs_path);
-    println!(
-        "Found {} documents to ingest\n",
-        markdown_files.len()
-    );
+    println!("Found {} documents to ingest\n", markdown_files.len());
 
     let chunker = TextChunker::with_word_chunking(300, 50);
     let mut total_chunks = 0;
@@ -249,10 +242,7 @@ async fn test_live_batch_ingestion() {
                 Ok(count) => {
                     total_chunks += count;
                     successful_docs += 1;
-                    println!(
-                        "  Ingested {}: {} chunks",
-                        title, count
-                    );
+                    println!("  Ingested {}: {} chunks", title, count);
                 }
                 Err(e) => {
                     eprintln!("  Failed to upsert {}: {}", title, e);
@@ -301,9 +291,8 @@ async fn test_live_semantic_search() {
         collection
     );
 
-    let embedding_service =
-        EmbeddingService::with_model(EmbeddingModelType::BgeSmallEnV15)
-            .expect("Failed to create embedding service");
+    let embedding_service = EmbeddingService::with_model(EmbeddingModelType::BgeSmallEnV15)
+        .expect("Failed to create embedding service");
 
     // Test queries relevant to local docs
     let test_queries = vec![
@@ -374,9 +363,8 @@ async fn test_live_context_injection() {
         collection
     );
 
-    let embedding_service =
-        EmbeddingService::with_model(EmbeddingModelType::BgeSmallEnV15)
-            .expect("Failed to create embedding service");
+    let embedding_service = EmbeddingService::with_model(EmbeddingModelType::BgeSmallEnV15)
+        .expect("Failed to create embedding service");
 
     // Simulate a user query that needs context injection
     let user_query = "What should I do if I'm feeling stressed and anxious?";
@@ -410,10 +398,7 @@ async fn test_live_context_injection() {
     let context = context_parts.join("\n\n---\n\n");
 
     println!("=== Retrieved Context for LLM ===\n");
-    println!(
-        "Total context length: {} characters",
-        context.len()
-    );
+    println!("Total context length: {} characters", context.len());
     println!("\n{}\n", context);
 
     // Verify context is useful
@@ -422,10 +407,7 @@ async fn test_live_context_injection() {
         context.len() > 100,
         "Context should have substantial content"
     );
-    assert!(
-        results.len() > 0,
-        "Should retrieve at least some context"
-    );
+    assert!(results.len() > 0, "Should retrieve at least some context");
 
     // Verify all results have proper metadata
     for result in &results {
@@ -476,10 +458,7 @@ async fn test_live_collection_stats() {
     );
     println!("  Distance metric: {}", stats.distance_metric);
 
-    assert!(
-        stats.document_count > 0,
-        "Collection should have documents"
-    );
+    assert!(stats.document_count > 0, "Collection should have documents");
     assert_eq!(stats.dimensions, 384, "Should use BGE small embeddings");
 }
 
@@ -503,9 +482,8 @@ async fn test_live_search_accuracy() {
         collection
     );
 
-    let embedding_service =
-        EmbeddingService::with_model(EmbeddingModelType::BgeSmallEnV15)
-            .expect("Failed to create embedding service");
+    let embedding_service = EmbeddingService::with_model(EmbeddingModelType::BgeSmallEnV15)
+        .expect("Failed to create embedding service");
 
     // Test cases with expected keywords in results
     let test_cases = vec![
@@ -548,11 +526,7 @@ async fn test_live_search_accuracy() {
 
         println!(
             "  Top result relevance: {}",
-            if has_relevant_content {
-                "PASS"
-            } else {
-                "WARN"
-            }
+            if has_relevant_content { "PASS" } else { "WARN" }
         );
 
         if !has_relevant_content {

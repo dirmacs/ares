@@ -443,11 +443,13 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
-            response.headers().get("content-type").and_then(|v| v.to_str().ok()),
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
             Some("application/json")
         );
     }
-
 
     #[tokio::test]
     async fn test_middleware_rejects_bearer_with_leading_space_in_token() {
@@ -462,10 +464,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/protected")
-                    .header(
-                        "Authorization",
-                        format!("Bearer  {}", tokens.access_token),
-                    )
+                    .header("Authorization", format!("Bearer  {}", tokens.access_token))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -600,14 +599,16 @@ mod tests {
     fn create_test_app_with_ctx(auth_service: Arc<AuthService>, ctx: Arc<Context>) -> Router {
         Router::new()
             .route("/protected", get(protected_handler))
-            .layer(axum::middleware::from_fn(move |mut req: axum::extract::Request, next: axum::middleware::Next| {
-                let auth = auth_service.clone();
-                let ctx = ctx.clone();
-                async move {
-                    req.extensions_mut().insert(ctx);
-                    auth_middleware(auth, req, next).await
-                }
-            }))
+            .layer(axum::middleware::from_fn(
+                move |mut req: axum::extract::Request, next: axum::middleware::Next| {
+                    let auth = auth_service.clone();
+                    let ctx = ctx.clone();
+                    async move {
+                        req.extensions_mut().insert(ctx);
+                        auth_middleware(auth, req, next).await
+                    }
+                },
+            ))
     }
 
     #[tokio::test]

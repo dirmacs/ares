@@ -82,10 +82,7 @@ impl ReadinessBarrier {
     /// fiber gated by this barrier (see
     /// [`RegistryService::register_with_readiness`]). Composition unions
     /// both sides.
-    pub fn watching(
-        mut self,
-        keys: impl IntoIterator<Item = TypeId>,
-    ) -> ReadinessBarrier {
+    pub fn watching(mut self, keys: impl IntoIterator<Item = TypeId>) -> ReadinessBarrier {
         self.keys.extend(keys);
         self
     }
@@ -95,9 +92,7 @@ impl ReadinessBarrier {
 /// readiness predicates into one [`ReadinessBarrier`] that is ready only
 /// when every operand is ready. `with_readiness([a, b, c])` reads as
 /// "ready when a AND b AND c"; the empty slice is vacuously ready.
-pub fn with_readiness(
-    barriers: impl IntoIterator<Item = ReadinessBarrier>,
-) -> ReadinessBarrier {
+pub fn with_readiness(barriers: impl IntoIterator<Item = ReadinessBarrier>) -> ReadinessBarrier {
     let mut combined: Option<ReadinessBarrier> = None;
     for barrier in barriers {
         combined = Some(match combined {
@@ -301,10 +296,9 @@ impl RegistryService {
                 .upgrade()
                 .and_then(|owner| owner.effective_config_override())
                 .unwrap_or_else(|| config_value.clone());
-            let config =
-                serde_json::from_value::<P::Config>(cfg_raw).map_err(|error| {
-                    CordisError::Configuration(format!("cannot deserialize plugin config: {error}"))
-                })?;
+            let config = serde_json::from_value::<P::Config>(cfg_raw).map_err(|error| {
+                CordisError::Configuration(format!("cannot deserialize plugin config: {error}"))
+            })?;
             let owner = weak_fiber
                 .upgrade()
                 .ok_or_else(|| CordisError::Fiber("registration fiber was dropped".into()))?;
@@ -1169,7 +1163,9 @@ mod tests {
         // (disposed), which retracts the service and reactively notifies the
         // consumer.
         let _ = registry.get_fiber(provider_fid).unwrap().dispose().await;
-        reflect.notify_with_ctx(TypeId::of::<FooService>(), &ctx).await;
+        reflect
+            .notify_with_ctx(TypeId::of::<FooService>(), &ctx)
+            .await;
         assert!(
             matches!(fiber.state(), FiberState::Pending),
             "consumer must rest Pending after dep loss, got {:?}",
@@ -1187,8 +1183,12 @@ mod tests {
         assert!(registry.get_fiber(fid).is_some(), "still tracked");
 
         // Provider returns: the surviving Pending fiber reactivates.
-        registry.register(&ctx, FooPlugin, ()).expect("provider back");
-        reflect.notify_with_ctx(TypeId::of::<FooService>(), &ctx).await;
+        registry
+            .register(&ctx, FooPlugin, ())
+            .expect("provider back");
+        reflect
+            .notify_with_ctx(TypeId::of::<FooService>(), &ctx)
+            .await;
         assert!(
             matches!(fiber.state(), FiberState::Active { .. }),
             "reactivation after prune-pass, got {:?}",
@@ -1443,15 +1443,11 @@ mod tests {
         let combined = with_readiness([
             {
                 let flag = a_open.clone();
-                ReadinessBarrier::new(move |_ctx| {
-                    flag.load(std::sync::atomic::Ordering::Acquire)
-                })
+                ReadinessBarrier::new(move |_ctx| flag.load(std::sync::atomic::Ordering::Acquire))
             },
             {
                 let flag = b_open.clone();
-                ReadinessBarrier::new(move |_ctx| {
-                    flag.load(std::sync::atomic::Ordering::Acquire)
-                })
+                ReadinessBarrier::new(move |_ctx| flag.load(std::sync::atomic::Ordering::Acquire))
             },
         ]);
         // Direct evaluation first: both closed / one open / both open.
@@ -1533,15 +1529,15 @@ mod tests {
         assert!(dep_fid > 0);
         ctx.provide(Dependency);
         if let Some(reflect) = ctx.get::<crate::ReflectService>() {
-            reflect.notify_with_ctx(TypeId::of::<Dependency>(), &ctx).await;
+            reflect
+                .notify_with_ctx(TypeId::of::<Dependency>(), &ctx)
+                .await;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         match fiber.state() {
             FiberState::Active { .. } => {}
-            other => panic!(
-                "external re-kick must reactivate the waiting fiber, got {other:?}"
-            ),
+            other => panic!("external re-kick must reactivate the waiting fiber, got {other:?}"),
         }
         assert!(ctx.get::<ReadinessProbe>().is_some());
 
@@ -1550,7 +1546,9 @@ mod tests {
         // complementarity with loud predicate failures.
         let _removed = ctx.remove::<Dependency>();
         if let Some(reflect) = ctx.get::<crate::ReflectService>() {
-            reflect.notify_with_ctx(TypeId::of::<Dependency>(), &ctx).await;
+            reflect
+                .notify_with_ctx(TypeId::of::<Dependency>(), &ctx)
+                .await;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert!(
@@ -1603,11 +1601,7 @@ mod config_waterfall_tests {
 
         let registry = RegistryService::new();
         let fid = registry
-            .register(
-                &ctx,
-                CapturePlugin,
-                serde_json::json!({ "model": "base" }),
-            )
+            .register(&ctx, CapturePlugin, serde_json::json!({ "model": "base" }))
             .expect("registration with an intercept-config listener");
         assert!(matches!(
             registry.get_fiber(fid).unwrap().state(),

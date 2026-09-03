@@ -101,14 +101,12 @@ pub mod llamacpp;
 pub use capabilities::{
     CapabilityRequirements, CapabilityRequirementsBuilder, ModelCapabilities, ModelWithCapabilities,
 };
+#[cfg(feature = "genai")]
+pub use client::GenaiProvider;
 pub use client::{
     CacheControl, GenerationHints, LLMClient, LLMClientFactory, LLMResponse, LlmStreamEvent,
     Provider, TokenUsage,
 };
-#[cfg(feature = "genai")]
-pub use client::GenaiProvider;
-#[cfg(feature = "genai")]
-pub use genai::adapter::AdapterKind;
 pub use compact::{
     CompactConfig, CompactEvent, CompactionSnapshot, CompactionState, Compactor, TurnEntry,
 };
@@ -117,6 +115,8 @@ pub use coordinator::{
     ToolCallingConfig, ToolCoordinator,
 };
 pub use exporter::{ExporterRouter, LogExporter, RecordLevel, TracingExporter};
+#[cfg(feature = "genai")]
+pub use genai::adapter::AdapterKind;
 pub use governor::{GovernorConfig, ProviderGovernor};
 pub use llm_service::{Breaker, Llm, ModelOverride, TenantModelPolicy};
 pub use micro::{MicroCacheConfig, MicroEngine, MicroOutcome, MicroTask};

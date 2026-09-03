@@ -343,9 +343,7 @@ fn assert_quiescent(fibers: &[(String, Arc<Fiber>)], ctx: &Arc<Context>) -> Resu
             // Failed is terminal-rest (former delta #2); Pending is
             // reactive-rest — effects disposed, waiting for dependencies
             // without being disposed. Both are legal resting states.
-            FiberState::Failed { .. }
-            | FiberState::Inactive { .. }
-            | FiberState::Pending => {}
+            FiberState::Failed { .. } | FiberState::Inactive { .. } | FiberState::Pending => {}
             FiberState::Active { .. } => {
                 for tid in fiber.injected_type_ids() {
                     if !ctx.is_available(tid) {

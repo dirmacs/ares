@@ -1,11 +1,14 @@
-pub mod types;
 pub mod models;
+pub mod types;
 pub use models::{ApiKey, QuotaExceeded, Tenant, TenantContext, TenantQuota, TenantTier};
 pub use types::{AppError, ErrorCode, Result};
 
 #[cfg(test)]
 mod tests {
-    use super::{ApiKey, AppError, ErrorCode, QuotaExceeded, Result, Tenant, TenantContext, TenantQuota, TenantTier};
+    use super::{
+        ApiKey, AppError, ErrorCode, QuotaExceeded, Result, Tenant, TenantContext, TenantQuota,
+        TenantTier,
+    };
 
     #[test]
     fn test_public_reexports_are_usable() {
@@ -25,6 +28,9 @@ mod tests {
         let result: Result<()> = Err(err);
         assert!(result.is_err());
         assert_eq!(ctx.quota.requests_per_month, quota.requests_per_month);
-        assert_eq!(QuotaExceeded::Monthly.message(), "Monthly request quota exceeded");
+        assert_eq!(
+            QuotaExceeded::Monthly.message(),
+            "Monthly request quota exceeded"
+        );
     }
 }

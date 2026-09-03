@@ -50,7 +50,9 @@ pub fn resolve_from_candidates(
             AgentSource::System,
         ));
     }
-    Err(AppError::NotFound(format!("Agent '{agent_name}' not found")))
+    Err(AppError::NotFound(format!(
+        "Agent '{agent_name}' not found"
+    )))
 }
 
 /// Tenant identifier for per-tenant scoping (`ctx.isolate` label).
@@ -59,8 +61,8 @@ pub type TenantId = String;
 use std::future::Future;
 use std::sync::Arc;
 
-use cordis::{CordisError, Service};
 use ares_store::TenantDb;
+use cordis::{CordisError, Service};
 
 use crate::registry::AgentRegistry;
 
@@ -165,7 +167,14 @@ impl Service for Resolver {
     fn init(
         &self,
         ctx: &Arc<cordis::Context>,
-    ) -> std::pin::Pin<Box<dyn Future<Output = std::result::Result<Option<Box<dyn cordis::Disposable>>, CordisError>> + Send + '_>> {
+    ) -> std::pin::Pin<
+        Box<
+            dyn Future<
+                    Output = std::result::Result<Option<Box<dyn cordis::Disposable>>, CordisError>,
+                > + Send
+                + '_,
+        >,
+    > {
         let ctx = ctx.clone();
         Box::pin(async move {
             let _ = ctx.inject::<crate::registry::AgentRegistry>().await;
@@ -196,9 +205,7 @@ pub async fn resolve_agent(
     user_id: &str,
     agent_name: String,
 ) -> Result<(UserAgent, String)> {
-    let user_agent = db
-        .get_user_agent_by_name(user_id, &agent_name)
-        .await?;
+    let user_agent = db.get_user_agent_by_name(user_id, &agent_name).await?;
     let public_agent = db.get_public_agent_by_name(&agent_name).await?;
     let system_config = config.get(&agent_name);
 
@@ -256,9 +263,12 @@ mod tests {
             extra: HashMap::new(),
             compaction_enabled: None,
         }
-}
+    }
 
-    fn minimal_overlay_config(agent_name: &str, cfg: AgentConfig) -> std::collections::HashMap<String, AgentConfig> {
+    fn minimal_overlay_config(
+        agent_name: &str,
+        cfg: AgentConfig,
+    ) -> std::collections::HashMap<String, AgentConfig> {
         let mut config = std::collections::HashMap::new();
         config.insert(agent_name.to_string(), cfg);
         config
@@ -271,14 +281,9 @@ mod tests {
         let u = user_agent("router", "u1");
         let c = user_agent("router", "");
         let cfg = agent_config();
-        let (got, src) = resolve_from_candidates(
-            Some(u.clone()),
-            Some(c),
-            Some(&cfg),
-            "router",
-            FIXED_NOW,
-        )
-        .unwrap();
+        let (got, src) =
+            resolve_from_candidates(Some(u.clone()), Some(c), Some(&cfg), "router", FIXED_NOW)
+                .unwrap();
         assert_eq!(src, AgentSource::User);
         assert_eq!(got.id, u.id);
     }
@@ -287,8 +292,9 @@ mod tests {
     fn resolve_prefers_community_over_system() {
         let c = user_agent("router", "");
         let cfg = agent_config();
-        let (got, src) = resolve_from_candidates(None, Some(c.clone()), Some(&cfg), "router", FIXED_NOW)
-            .unwrap();
+        let (got, src) =
+            resolve_from_candidates(None, Some(c.clone()), Some(&cfg), "router", FIXED_NOW)
+                .unwrap();
         assert_eq!(src, AgentSource::Community);
         assert_eq!(got.id, c.id);
     }
@@ -404,13 +410,7 @@ mod tests {
 
     #[async_trait]
     impl DatabaseClient for MockDb {
-        async fn create_user(
-            &self,
-            _: &str,
-            _: &str,
-            _: &str,
-            _: &str,
-        ) -> Result<()> {
+        async fn create_user(&self, _: &str, _: &str, _: &str, _: &str) -> Result<()> {
             Ok(())
         }
         async fn get_user_by_email(&self, _: &str) -> Result<Option<ares_store::traits::User>> {
@@ -440,10 +440,7 @@ mod tests {
         async fn get_user_conversations(&self, _: &str) -> Result<Vec<ConversationSummary>> {
             Ok(vec![])
         }
-        async fn get_conversation(
-            &self,
-            _: &str,
-        ) -> Result<ares_store::postgres::Conversation> {
+        async fn get_conversation(&self, _: &str) -> Result<ares_store::postgres::Conversation> {
             Err(AppError::NotFound("conversation".into()))
         }
         async fn delete_conversation(&self, _: &str) -> Result<()> {
@@ -473,19 +470,10 @@ mod tests {
         async fn get_user_preferences(&self, _: &str) -> Result<Vec<Preference>> {
             Ok(vec![])
         }
-        async fn get_preference(
-            &self,
-            _: &str,
-            _: &str,
-            _: &str,
-        ) -> Result<Option<Preference>> {
+        async fn get_preference(&self, _: &str, _: &str, _: &str) -> Result<Option<Preference>> {
             Ok(None)
         }
-        async fn get_user_agent_by_name(
-            &self,
-            _: &str,
-            _: &str,
-        ) -> Result<Option<UserAgent>> {
+        async fn get_user_agent_by_name(&self, _: &str, _: &str) -> Result<Option<UserAgent>> {
             Ok(self.user.clone())
         }
         async fn get_public_agent_by_name(&self, _: &str) -> Result<Option<UserAgent>> {

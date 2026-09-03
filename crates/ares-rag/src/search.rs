@@ -341,7 +341,10 @@ fn validate_collection_name(name: &str) -> std::result::Result<(), SearchError> 
     Ok(())
 }
 
-fn collection_table_name(prefix: &str, collection: &str) -> std::result::Result<String, SearchError> {
+fn collection_table_name(
+    prefix: &str,
+    collection: &str,
+) -> std::result::Result<String, SearchError> {
     validate_collection_name(collection)?;
     if prefix.is_empty() {
         return Err(SearchError::InvalidVector(
@@ -487,7 +490,6 @@ pub fn chunks_to_search_results(chunks: &[ChunkWithScore]) -> Vec<SearchResult> 
         })
         .collect()
 }
-
 
 // ============================================================================
 // BM25 Implementation
@@ -1795,10 +1797,7 @@ mod tests {
     // Filtering logic
     // ========================================================================
 
-    fn doc_matches_filters(
-        doc: &Document,
-        filters: &[ares_types::types::SearchFilter],
-    ) -> bool {
+    fn doc_matches_filters(doc: &Document, filters: &[ares_types::types::SearchFilter]) -> bool {
         filters.iter().all(|f| match f.field.as_str() {
             "tags" => doc.metadata.tags.iter().any(|t| t == &f.value),
             "source" => doc.metadata.source == f.value,
@@ -2171,8 +2170,7 @@ mod tests {
     #[test]
     fn test_distance_to_similarity_inner_product() {
         assert!(
-            (distance_to_similarity(VectorMetric::InnerProduct, -0.95) - 0.95).abs()
-                < f32::EPSILON
+            (distance_to_similarity(VectorMetric::InnerProduct, -0.95) - 0.95).abs() < f32::EPSILON
         );
     }
 
@@ -2597,6 +2595,4 @@ mod tests {
         assert_eq!(results[0].id, "a");
         assert!((results[0].score - 0.95).abs() < f32::EPSILON);
     }
-
 }
-

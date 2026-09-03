@@ -47,50 +47,50 @@ pub trait ToonAgents: Send + Sync {
     fn names(&self) -> Vec<String>;
 }
 
+pub mod admit;
+/// Checkpoint/crash recovery — serialize agent state, restore on restart.
+pub mod checkpoint;
 pub mod configurable;
 /// External context injection trait (OSS: NoOp, Managed: Eruka/custom).
 pub mod context_provider;
+pub mod emergency_stop;
+pub mod execution;
+pub mod external_context;
 /// Loop detection for agent outputs — prevents repetitive/stuck agents.
 pub mod loop_detector;
 /// Long-running iteration mode — agents that run on a fixed interval.
 pub mod loop_mode;
-/// Checkpoint/crash recovery — serialize agent state, restore on restart.
-pub mod checkpoint;
+pub mod memory;
 /// Multi-agent orchestration for complex tasks.
 pub mod orchestrator;
+pub mod plugins;
 pub mod registry;
+pub mod research;
+#[cfg(feature = "postgres")]
+pub(crate) mod resolver;
 /// Request routing to specialized agents.
 pub mod router;
 /// Per-tenant agent creation from DB-stored configs.
 #[cfg(feature = "postgres")]
 pub mod tenant_agent;
-pub mod memory;
-pub mod research;
-#[cfg(feature = "postgres")]
-pub(crate) mod resolver;
-pub mod external_context;
-pub mod execution;
-pub mod plugins;
-pub mod admit;
-pub mod emergency_stop;
 pub use emergency_stop::EmergencyStop;
-#[cfg(feature = "scheduler")]
-pub mod scheduler;
 #[cfg(feature = "pipeline")]
 pub mod pipeline;
-#[cfg(feature = "trigger")]
-pub mod trigger;
+#[cfg(feature = "scheduler")]
+pub mod scheduler;
 #[cfg(any(feature = "postgres", feature = "skills"))]
 pub mod skills;
+#[cfg(feature = "trigger")]
+pub mod trigger;
 #[cfg(feature = "workflows")]
 pub mod workflows;
+pub use admit::admit;
 pub use execution::{
     request_tenant_ctx, request_user_scope, tenant_scope, user_id_from_ctx, AgentRequest,
     AgentSource, Execute, ExecutionResult, RunTracker,
 };
-pub use admit::admit;
-pub use plugins::register_plugins;
 pub use external_context::ExternalContext;
+pub use plugins::register_plugins;
 
 use ares_llm::client::TokenUsage;
 use ares_types::types::{AgentContext, AgentType, Result};

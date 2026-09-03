@@ -102,9 +102,8 @@ fn apply_llm_scores(
     top_k: usize,
 ) -> Result<Vec<RerankedResult>> {
     let json = json_object_slice(raw)?;
-    let parsed: LlmScoreResponse = serde_json::from_str(json).map_err(|e| {
-        AppError::Internal(format!("remote rerank: failed to parse scores: {e}"))
-    })?;
+    let parsed: LlmScoreResponse = serde_json::from_str(json)
+        .map_err(|e| AppError::Internal(format!("remote rerank: failed to parse scores: {e}")))?;
     let scores: HashMap<String, f32> = parsed
         .scores
         .into_iter()

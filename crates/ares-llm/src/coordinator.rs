@@ -33,12 +33,12 @@
 //! ```
 
 use crate::capabilities::{CapabilityRequirements, ModelCapabilities};
+use crate::client::CacheControl;
 use crate::client::{LLMClient, TokenUsage};
 #[cfg(test)]
 use ares_tools::Tool;
 use ares_tools::Tools;
 use ares_types::types::{ContentPart, Result, ToolCall};
-use crate::client::CacheControl;
 use cordis::Context;
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
@@ -1680,11 +1680,9 @@ mod tests {
                 reason: "first fallback".into(),
             }],
         };
-        assert!(
-            select_fallback(&config, &plan, "ollama", &[])
-                .unwrap()
-                .is_none()
-        );
+        assert!(select_fallback(&config, &plan, "ollama", &[])
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -1971,11 +1969,9 @@ mod tests {
             },
             fallbacks: vec![],
         };
-        assert!(
-            select_fallback(&config, &plan, "openai", &[])
-                .unwrap()
-                .is_none()
-        );
+        assert!(select_fallback(&config, &plan, "openai", &[])
+            .unwrap()
+            .is_none());
     }
     #[test]
     fn test_message_to_role_content() {

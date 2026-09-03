@@ -267,9 +267,9 @@ impl Fiber {
             observers.iter().map(|o| o.callback.clone()).collect()
         };
         for callback in callbacks {
-            if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                callback(state)
-            })) {
+            if let Err(payload) =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(state)))
+            {
                 let message = payload
                     .downcast_ref::<&str>()
                     .map(|s| s.to_string())
@@ -607,9 +607,7 @@ impl Fiber {
             // epoch cannot have moved while unserved, so skip without
             // rewriting state. An OPEN gate falls through to one full pass
             // (… → Loading → Active).
-            if matches!(previous, FiberState::Pending)
-                && !self.readiness_open(&reload_ctx)
-            {
+            if matches!(previous, FiberState::Pending) && !self.readiness_open(&reload_ctx) {
                 return;
             }
             // The epoch fast-path must also confirm the C2 readiness gate:
@@ -632,8 +630,7 @@ impl Fiber {
             // running one full cascade wave per concurrent patch. Absent a
             // RegistryService (library deployments) this probe is always
             // false and the legacy behavior is preserved byte-for-byte.
-            let inject_tids: Vec<TypeId> =
-                self.injects.read().keys().copied().collect();
+            let inject_tids: Vec<TypeId> = self.injects.read().keys().copied().collect();
             if self.ever_activated.load(Ordering::Acquire)
                 && !inject_tids.is_empty()
                 && crate::loader::Loader::cascade_defer_needed(&inject_tids, &reload_ctx)
@@ -655,9 +652,8 @@ impl Fiber {
             // here — availability predicates (`Service::check`) remain the
             // LOUD complement that rests `Failed{error}`.
             if !self.readiness_open(&reload_ctx) {
-                let was_serving =
-                    matches!(previous, FiberState::Active { .. })
-                        && self.ever_activated.load(Ordering::Acquire);
+                let was_serving = matches!(previous, FiberState::Active { .. })
+                    && self.ever_activated.load(Ordering::Acquire);
                 if was_serving {
                     self.set_state(FiberState::Unloading { error: None });
                     self.undo_effects();
@@ -683,9 +679,11 @@ impl Fiber {
             // runs; a live provider carries its provided semantic version,
             // so the guard cleanly separates "absent/inactive" from
             // "present but refused by constraint".)
-            let deps_unavailable = self.injects.read().keys().any(|tid| {
-                !ctx.is_available(*tid) && ctx.provider_version(*tid) == 0
-            });
+            let deps_unavailable = self
+                .injects
+                .read()
+                .keys()
+                .any(|tid| !ctx.is_available(*tid) && ctx.provider_version(*tid) == 0);
             let reactive_loss = !satisfied
                 && deps_unavailable
                 && has_runner
@@ -716,8 +714,7 @@ impl Fiber {
             // Re-entry from Pending (first-ever activation included, since
             // fresh fibers start `Inactive`): the apply runs under `Loading`
             // so observers see … → Pending → Loading → Active, matching C2.
-            if has_runner && matches!(previous, FiberState::Pending | FiberState::Inactive { .. })
-            {
+            if has_runner && matches!(previous, FiberState::Pending | FiberState::Inactive { .. }) {
                 self.set_state(FiberState::Loading);
             }
 
@@ -1023,8 +1020,8 @@ impl Default for Fiber {
 mod tests {
     use super::*;
     use crate::ReflectService;
-    use std::sync::atomic::AtomicUsize;
     use parking_lot::Mutex as ParkingMutex;
+    use std::sync::atomic::AtomicUsize;
 
     #[derive(Debug)]
     struct LateProbe(pub i32);
@@ -1449,8 +1446,10 @@ mod tests {
             other => panic!("expected reactive Pending after dep loss, got {other:?}"),
         }
         assert!(!fiber.is_disposed(), "Pending fibers are NOT disposed");
-        assert!(!effect_live.load(Ordering::SeqCst),
-            "Unloading pass must have disposed effects LIFO");
+        assert!(
+            !effect_live.load(Ordering::SeqCst),
+            "Unloading pass must have disposed effects LIFO"
+        );
         assert!(ctx.get::<C2Prov>().is_none());
         // Registry prune predicate keeps Pending fibers alive.
         assert!(!fiber.is_disposed(), "prune predicate must skip Pending");
@@ -1588,10 +1587,7 @@ mod tests {
     }
 
     fn idx_rev(events: &[String], needle: &str) -> usize {
-        events
-            .iter()
-            .rposition(|e| e.contains(needle))
-            .unwrap_or(0)
+        events.iter().rposition(|e| e.contains(needle)).unwrap_or(0)
     }
 }
 
@@ -1637,7 +1633,10 @@ mod update_error_tests {
             ))
         });
 
-        let err = fiber.update(&ctx).await.expect_err("chain error must propagate");
+        let err = fiber
+            .update(&ctx)
+            .await
+            .expect_err("chain error must propagate");
         assert!(
             err.to_string().contains("maintenance window"),
             "unexpected error: {err}"
@@ -1663,7 +1662,10 @@ mod update_error_tests {
         );
 
         // After the failing listener goes away, updates flow again.
-        fiber.update(&ctx).await.expect("pass-through update after disposal");
+        fiber
+            .update(&ctx)
+            .await
+            .expect("pass-through update after disposal");
     }
 
     /// Contrast case for the same rider: a VETO stores the proposed config in

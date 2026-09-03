@@ -791,9 +791,7 @@ impl DynamicConfigManager {
     ///
     /// This uses the paths defined in `config.config` (DynamicConfigPaths)
     /// to initialize the manager.
-    pub fn from_config(
-        config: &crate::overlay::AresConfig,
-    ) -> Result<Self, ToonConfigError> {
+    pub fn from_config(config: &crate::overlay::AresConfig) -> Result<Self, ToonConfigError> {
         let agents_dir = PathBuf::from(&config.config.agents_dir);
         let models_dir = PathBuf::from(&config.config.models_dir);
         let tools_dir = PathBuf::from(&config.config.tools_dir);
@@ -1115,12 +1113,16 @@ impl DynamicConfigManager {
 }
 
 impl cordis::Service for DynamicConfigManager {
-    fn name(&self) -> &'static str { "dynamic_config_manager" }
+    fn name(&self) -> &'static str {
+        "dynamic_config_manager"
+    }
     fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         // Overlay::watch_cordis owns the single watch_many_with for TOON dirs.
         Box::pin(async { Ok(None) })
     }
-    fn check(&self) -> bool { true }
+    fn check(&self) -> bool {
+        true
+    }
 }
 
 /// Notify Tools and Execute TypeIds after a TOON reload.
@@ -1548,10 +1550,7 @@ description: Performs arithmetic"#;
         assert_eq!(tool.name, "calculator");
         assert!(tool.enabled);
         assert_eq!(tool.timeout_secs, 15);
-        assert_eq!(
-            tool.description.as_deref(),
-            Some("Performs arithmetic")
-        );
+        assert_eq!(tool.description.as_deref(), Some("Performs arithmetic"));
     }
 
     #[test]
@@ -1656,7 +1655,6 @@ model: fast
         assert!(paths.hot_reload);
     }
 
-
     #[test]
     fn test_dynamic_config_load_from_directories() {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -1667,7 +1665,13 @@ model: fast
         let tools_dir = root.join("tools");
         let workflows_dir = root.join("workflows");
         let mcps_dir = root.join("mcps");
-        for dir in [&agents_dir, &models_dir, &tools_dir, &workflows_dir, &mcps_dir] {
+        for dir in [
+            &agents_dir,
+            &models_dir,
+            &tools_dir,
+            &workflows_dir,
+            &mcps_dir,
+        ] {
             fs::create_dir_all(dir).expect("Failed to create config dir");
         }
 
@@ -1731,7 +1735,10 @@ model: fast
         assert_eq!(config.get_agent("router").unwrap().name, "router");
         assert_eq!(config.get_model("fast").unwrap().provider, "ollama");
         assert_eq!(config.get_tool("calc").unwrap().name, "calc");
-        assert_eq!(config.get_workflow("default").unwrap().entry_agent, "router");
+        assert_eq!(
+            config.get_workflow("default").unwrap().entry_agent,
+            "router"
+        );
         assert_eq!(config.get_mcp("fs").unwrap().name, "fs");
         assert!(config.get_agent("missing").is_none());
 
@@ -1831,5 +1838,4 @@ model: fast
             "TOON notify must signal TypeId::of::<Execute>()"
         );
     }
-
 }

@@ -21,15 +21,15 @@
 //! ```
 
 use crate::capabilities::{CapabilityRequirements, ModelCapabilities, ModelWithCapabilities};
-use crate::client::{LLMClient, ModelParams, Provider};
 #[cfg(feature = "genai")]
 use crate::client::GenaiProvider;
-#[cfg(feature = "genai")]
-use genai::adapter::AdapterKind;
+use crate::client::{LLMClient, ModelParams, Provider};
 use crate::config::{ModelConfig, ProviderConfig};
 use crate::nvidia_catalog::{NvidiaCatalogCache, NvidiaConfig};
 use arc_swap::ArcSwap;
 use ares_types::types::{AppError, Result};
+#[cfg(feature = "genai")]
+use genai::adapter::AdapterKind;
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -1639,7 +1639,10 @@ mod tests {
         match provider {
             Provider::Genai(g) => {
                 assert_eq!(g.api_key.as_deref(), Some("resolved-runtime-key"));
-                assert_eq!(g.endpoint.as_deref(), Some("https://runtime.example.com/v1"));
+                assert_eq!(
+                    g.endpoint.as_deref(),
+                    Some("https://runtime.example.com/v1")
+                );
                 assert_eq!(g.model, "runtime-model");
                 assert_eq!(
                     g.headers.get("X-Test-Header").map(String::as_str),
@@ -1705,16 +1708,12 @@ mod tests {
         assert!(!registry.has_provider("tenant-runtime"));
         assert!(registry.has_provider_for_tenant("tenant-runtime", Some("tenant-a")));
         assert!(!registry.has_provider_for_tenant("tenant-runtime", Some("tenant-b")));
-        assert!(
-            registry
-                .provider_for_tenant("tenant-runtime", Some("tenant-a"))
-                .is_some()
-        );
-        assert!(
-            registry
-                .provider_for_tenant("tenant-runtime", Some("tenant-b"))
-                .is_none()
-        );
+        assert!(registry
+            .provider_for_tenant("tenant-runtime", Some("tenant-a"))
+            .is_some());
+        assert!(registry
+            .provider_for_tenant("tenant-runtime", Some("tenant-b"))
+            .is_none());
         assert_eq!(
             registry.provider_names(),
             vec!["global-runtime".to_string()]

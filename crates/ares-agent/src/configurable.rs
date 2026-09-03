@@ -11,19 +11,19 @@
 
 use crate::AgentConfig;
 use crate::{Agent, AgentResponse, ExecutionMetadata};
-use ares_llm::coordinator::ConversationMessage;
-use ares_llm::observability::{LlmCallRecord, ObservabilitySink, ToolCallRecord};
+use ares_llm::compact::Compactor;
 #[cfg(feature = "postgres")]
 use ares_llm::compact::{CompactConfig, CompactionState, TurnEntry};
-use ares_llm::compact::Compactor;
+use ares_llm::coordinator::ConversationMessage;
+use ares_llm::observability::{LlmCallRecord, ObservabilitySink, ToolCallRecord};
 use ares_llm::{LLMClient, LLMResponse, LlmStreamEvent};
 use ares_tools::Tools;
 use ares_types::types::{AgentContext, AgentType, AppError, ContentPart, Result, ToolDefinition};
 use async_trait::async_trait;
 use cordis::{Context, CordisError, EventsService};
+use futures::StreamExt;
 use std::future::Future;
 use std::sync::Arc;
-use futures::StreamExt;
 
 // cordis Phase6: runtime postgres availability via Service::check() — replaces compile-time #[cfg(feature="postgres")] branching
 // Previously: `#[cfg(feature = "postgres")] token_budget_pool: Option<PgPool>`
@@ -56,9 +56,7 @@ struct LlmAttemptResponse {
 }
 
 enum OpenedLlmStream {
-    Events(
-        Box<dyn futures::Stream<Item = Result<LlmStreamEvent>> + Send + Unpin>,
-    ),
+    Events(Box<dyn futures::Stream<Item = Result<LlmStreamEvent>> + Send + Unpin>),
     Plain(Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>),
 }
 
@@ -137,11 +135,17 @@ impl SessionCompactors {
         llm: &ares_llm::Llm,
         ctx: &Arc<Context>,
     ) -> Option<Arc<Compactor>> {
-        if let Some(existing) = self.lock().get(&(tenant_id.to_string(), session_id.to_string())) {
+        if let Some(existing) = self
+            .lock()
+            .get(&(tenant_id.to_string(), session_id.to_string()))
+        {
             return Some(Arc::clone(existing));
         }
 
-        let client = llm.get_client(ctx, ares_llm::CapabilityRequirements::default()).await.ok()?;
+        let client = llm
+            .get_client(ctx, ares_llm::CapabilityRequirements::default())
+            .await
+            .ok()?;
         let mut state = CompactionState::default();
         if let Some(db) = ctx.get::<ares_store::TenantDb>() {
             let store = ares_store::postgres::PostgresClient {
@@ -167,11 +171,7 @@ impl SessionCompactors {
             }
         }
 
-        let compactor = Arc::new(Compactor::hydrate(
-            CompactConfig::default(),
-            client,
-            state,
-        ));
+        let compactor = Arc::new(Compactor::hydrate(CompactConfig::default(), client, state));
         let mut map = self.lock();
         if map.len() >= SESSION_COMPACTOR_CAP {
             // Crude eviction: drop everything (see SESSION_COMPACTOR_CAP).
@@ -193,10 +193,16 @@ impl SessionCompactors {
         llm: &ares_llm::Llm,
         ctx: &Arc<Context>,
     ) -> Option<Arc<Compactor>> {
-        if let Some(existing) = self.lock().get(&(tenant_id.to_string(), session_id.to_string())) {
+        if let Some(existing) = self
+            .lock()
+            .get(&(tenant_id.to_string(), session_id.to_string()))
+        {
             return Some(Arc::clone(existing));
         }
-        let client = llm.get_client(ctx, ares_llm::CapabilityRequirements::default()).await.ok()?;
+        let client = llm
+            .get_client(ctx, ares_llm::CapabilityRequirements::default())
+            .await
+            .ok()?;
         let compactor = Arc::new(Compactor::with_client(client));
         let mut map = self.lock();
         if map.len() >= SESSION_COMPACTOR_CAP {
@@ -211,10 +217,8 @@ impl SessionCompactors {
 
     fn lock(
         &self,
-    ) -> parking_lot::MutexGuard<
-        '_,
-        std::collections::HashMap<(String, String), Arc<Compactor>>,
-    > {
+    ) -> parking_lot::MutexGuard<'_, std::collections::HashMap<(String, String), Arc<Compactor>>>
+    {
         self.inner.lock()
     }
 }
@@ -1340,7 +1344,11 @@ When referencing facts above, cite [E1], [E2] etc.",
         #[cfg(feature = "postgres")]
         let tenant_key: Option<String> = self.cordis_ctx.as_ref().and_then(|ctx| {
             let key = tenant_key_for_compaction(ctx, &context.user_id);
-            if key.is_empty() { None } else { Some(key) }
+            if key.is_empty() {
+                None
+            } else {
+                Some(key)
+            }
         });
         #[cfg(not(feature = "postgres"))]
         let _ = &context;
@@ -1675,7 +1683,11 @@ When referencing facts above, cite [E1], [E2] etc.",
         input: &str,
     ) -> Result<OpenedLlmStream> {
         let empty = tools.is_empty() && self.user_parts.is_empty();
-        match self.llm.stream_with_tools_and_history(messages, tools).await {
+        match self
+            .llm
+            .stream_with_tools_and_history(messages, tools)
+            .await
+        {
             Ok(s) => Ok(OpenedLlmStream::Events(s)),
             Err(e) => {
                 let disabled = matches!(e, AppError::FeatureDisabled(_));
@@ -1906,7 +1918,11 @@ impl Agent for ConfigurableAgent {
         #[cfg(feature = "postgres")]
         let tenant_key: Option<String> = self.cordis_ctx.as_ref().and_then(|ctx| {
             let key = tenant_key_for_compaction(ctx, &context.user_id);
-            if key.is_empty() { None } else { Some(key) }
+            if key.is_empty() {
+                None
+            } else {
+                Some(key)
+            }
         });
         #[cfg(not(feature = "postgres"))]
         let _ = &context;

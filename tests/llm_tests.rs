@@ -281,10 +281,8 @@ fn test_tool_call_structure() {
 
 #[test]
 fn test_llm_client_factory_creation() {
-    let factory = LLMClientFactory::new(ollama_provider(
-        "http://localhost:11434",
-        "ministral-3:3b",
-    ));
+    let factory =
+        LLMClientFactory::new(ollama_provider("http://localhost:11434", "ministral-3:3b"));
     assert_eq!(factory.default_provider().name(), "ollama");
     assert!(std::mem::size_of_val(&factory) > 0);
 }

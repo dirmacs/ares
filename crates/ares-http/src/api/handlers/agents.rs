@@ -1,10 +1,10 @@
 //! Built-in agent listing handler.
 
-use crate::{types::AgentType};
-use std::sync::Arc;
-use cordis::Context;
+use crate::types::AgentType;
 use axum::{extract::State, Json};
+use cordis::Context;
 use serde::Serialize;
+use std::sync::Arc;
 
 /// Static catalog of built-in agent types exposed by the API.
 pub(crate) fn builtin_agent_catalog() -> Vec<AgentInfo> {

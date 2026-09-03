@@ -1,14 +1,14 @@
-use ares_types::types::{AppError};
-use crate::Result;
 use crate::HttpError;
+use crate::Result;
+use ares_types::types::AppError;
 use axum::{
     extract::{Path, State},
     Json,
 };
+use cordis::Context;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use cordis::Context;
 use tokio::sync::RwLock;
 
 // ---------------------------------------------------------------------------
@@ -69,11 +69,15 @@ impl std::ops::Deref for DeployRegistry {
 }
 
 impl cordis::Service for DeployRegistry {
-    fn name(&self) -> &'static str { "deploy_registry" }
+    fn name(&self) -> &'static str {
+        "deploy_registry"
+    }
     fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
-    fn check(&self) -> bool { true }
+    fn check(&self) -> bool {
+        true
+    }
 }
 
 pub fn new_deploy_registry() -> DeployRegistry {
@@ -99,11 +103,14 @@ pub async fn trigger_deploy(
 ) -> Result<Json<DeployResponse>> {
     let target = req.target.to_lowercase();
     if !VALID_TARGETS.contains(&target.as_str()) {
-        return Err(HttpError::from(AppError::InvalidInput(format!(
-            "Invalid target '{}'. Valid: {}",
-            target,
-            VALID_TARGETS.join(", ")
-        ).into())));
+        return Err(HttpError::from(AppError::InvalidInput(
+            format!(
+                "Invalid target '{}'. Valid: {}",
+                target,
+                VALID_TARGETS.join(", ")
+            )
+            .into(),
+        )));
     }
 
     let registry = ctx.get::<DeployRegistry>().expect("not provided");
@@ -113,10 +120,13 @@ pub async fn trigger_deploy(
         let deploys = registry.read().await;
         for deploy in deploys.values() {
             if deploy.target == target && deploy.status == DeployState::Running {
-                return Err(HttpError::from(AppError::InvalidInput(format!(
-                    "Deploy already running for '{}' (id: {})",
-                    target, deploy.id
-                ).into())));
+                return Err(HttpError::from(AppError::InvalidInput(
+                    format!(
+                        "Deploy already running for '{}' (id: {})",
+                        target, deploy.id
+                    )
+                    .into(),
+                )));
             }
         }
     }
@@ -200,11 +210,12 @@ pub async fn get_deploy_status(
 ) -> Result<Json<DeployStatus>> {
     let registry = ctx.get::<DeployRegistry>().expect("not provided");
     let deploys = registry.read().await;
-    deploys
-        .get(&deploy_id)
-        .cloned()
-        .map(Json)
-        .ok_or_else(|| HttpError::from(AppError::NotFound(format!("Deploy '{}' not found", deploy_id))))
+    deploys.get(&deploy_id).cloned().map(Json).ok_or_else(|| {
+        HttpError::from(AppError::NotFound(format!(
+            "Deploy '{}' not found",
+            deploy_id
+        )))
+    })
 }
 
 /// GET /api/admin/deploys — list recent deploys
@@ -256,10 +267,9 @@ pub async fn get_services_health() -> Result<Json<HashMap<String, ServiceHealth>
 /// GET /api/admin/services/{service_name}/logs — recent journalctl logs for a service
 pub async fn get_service_logs(Path(service_name): Path<String>) -> Result<Json<serde_json::Value>> {
     if !["ares", "eruka", "caddy", "postgresql"].contains(&service_name.as_str()) {
-        return Err(HttpError::from(AppError::InvalidInput(format!(
-            "Unknown service: {}",
-            service_name
-        ).into())));
+        return Err(HttpError::from(AppError::InvalidInput(
+            format!("Unknown service: {}", service_name).into(),
+        )));
     }
 
     let output = tokio::process::Command::new("journalctl")
@@ -338,21 +348,21 @@ mod tests {
     #[cfg(test)]
     mod handler_tests {
         use super::*;
-        use ares_agent::context_provider::NoOpContextProvider;
         use crate::auth::jwt::AuthService;
-        use ares_store::{PostgresClient, TenantDb};
+        use crate::config::{AuthConfig, ServerConfig};
         use crate::overlay::{
             AgentConfig, AresConfig, BillingConfig, DatabaseConfig, DynamicConfigPaths,
             ModelConfig, ProviderConfig, RagConfig,
         };
-        use crate::config::{AuthConfig, ServerConfig};
+        use crate::{AresConfigManager, DynamicConfigManager};
+        use ares_agent::context_provider::NoOpContextProvider;
         use ares_agent::AgentRegistry;
         use ares_llm::ProviderRegistry;
-        use crate::{AresConfigManager, DynamicConfigManager};
+        use ares_store::{PostgresClient, TenantDb};
+        use cordis::Context;
         use std::collections::HashMap;
         use std::sync::atomic::AtomicBool;
         use std::sync::Arc;
-use cordis::Context;
 
         fn minimal_config() -> AresConfig {
             let mut providers = HashMap::new();
@@ -378,15 +388,15 @@ use cordis::Context;
             agents.insert(
                 "a".into(),
                 AgentConfig {
-                                model: "default".into(),
-                                system_prompt: None,
-                                tools: vec![],
-                                allowed_tools: None,
-                                max_tool_iterations: 1,
-                                parallel_tools: false,
-                                extra: HashMap::new(),
-                                compaction_enabled: None,
-                            },
+                    model: "default".into(),
+                    system_prompt: None,
+                    tools: vec![],
+                    allowed_tools: None,
+                    max_tool_iterations: 1,
+                    parallel_tools: false,
+                    extra: HashMap::new(),
+                    compaction_enabled: None,
+                },
             );
             AresConfig {
                 server: ServerConfig::default(),
@@ -591,9 +601,7 @@ use cordis::Context;
 
         #[tokio::test]
         async fn get_service_logs_rejects_unknown_service() {
-            let err = get_service_logs(Path("unknown".into()))
-                .await
-                .unwrap_err();
+            let err = get_service_logs(Path("unknown".into())).await.unwrap_err();
             assert!(matches!(err.0, AppError::InvalidInput(_)));
         }
 

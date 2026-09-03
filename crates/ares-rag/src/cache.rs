@@ -708,8 +708,8 @@ mod tests {
             default_ttl: Some(Duration::from_secs(60)),
             enabled: true,
         };
-        let parsed: CacheConfig = serde_json::from_str(&serde_json::to_string(&config).unwrap())
-            .unwrap();
+        let parsed: CacheConfig =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
         assert_eq!(parsed.max_size_bytes, 1024);
         assert!(parsed.enabled);
         assert_eq!(parsed.default_ttl, Some(Duration::from_secs(60)));
@@ -784,10 +784,7 @@ mod tests {
         assert_eq!(cache.compute_key("", ""), cache.compute_key("", ""));
         assert_ne!(cache.compute_key("", ""), cache.compute_key("", "x"));
         // Pipe separator is ambiguous when text or model contain '|'.
-        assert_eq!(
-            cache.compute_key("a|b", "c"),
-            cache.compute_key("a", "b|c")
-        );
+        assert_eq!(cache.compute_key("a|b", "c"), cache.compute_key("a", "b|c"));
         assert_ne!(
             cache.compute_key("hello", "model-a"),
             cache.compute_key("hello", "model-b")
@@ -926,7 +923,4 @@ mod tests {
         exercise_embedding_cache(cache.as_ref());
         assert!(cache.is_enabled());
     }
-
-
 }
-

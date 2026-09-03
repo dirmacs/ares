@@ -279,7 +279,10 @@ mod tests {
     #[test]
     fn compute_effective_tokens_uses_actual_when_higher() {
         assert_eq!(compute_effective_tokens(42, McpOperation::ListAgents), 42);
-        assert_eq!(compute_effective_tokens(1_500, McpOperation::RunAgent), 1_500);
+        assert_eq!(
+            compute_effective_tokens(1_500, McpOperation::RunAgent),
+            1_500
+        );
         assert_eq!(compute_effective_tokens(7, McpOperation::ErukaWrite), 7);
     }
 
@@ -308,7 +311,10 @@ mod tests {
 
     #[test]
     fn aggregate_effective_tokens_large_llm_run() {
-        let events = [(50_000, McpOperation::RunAgent), (0, McpOperation::DeployAgent)];
+        let events = [
+            (50_000, McpOperation::RunAgent),
+            (0, McpOperation::DeployAgent),
+        ];
         assert_eq!(aggregate_effective_tokens(&events), 50_005);
     }
 
@@ -466,5 +472,4 @@ mod tests {
             }
         }
     }
-
 }

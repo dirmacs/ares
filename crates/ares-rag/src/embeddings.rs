@@ -35,8 +35,8 @@ use std::fmt::Display;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
 // Note: Arc is now used both for MODEL_INIT_LOCKS and for wrapping the embedding models
-use tokio::task::spawn_blocking;
 use sha2::{Digest, Sha256};
+use tokio::task::spawn_blocking;
 
 // Re-export fastembed types for convenience
 pub use fastembed::{EmbeddingModel as FastEmbedModel, InitOptions, SparseModel, TextEmbedding};
@@ -69,7 +69,10 @@ pub(crate) fn pre_download_model(
     // Build HF cache directory structure
     let folder_name = format!("models--{}", repo_id.replace('/', "--"));
     let snapshot_hash = "lancor-prefetch"; // deterministic hash for our downloads
-    let snapshot_dir = cache_dir.join(&folder_name).join("snapshots").join(snapshot_hash);
+    let snapshot_dir = cache_dir
+        .join(&folder_name)
+        .join("snapshots")
+        .join(snapshot_hash);
     let refs_dir = cache_dir.join(&folder_name).join("refs");
 
     std::fs::create_dir_all(&snapshot_dir).ok();
@@ -87,7 +90,11 @@ pub(crate) fn pre_download_model(
     let rt = tokio::runtime::Handle::current();
     for filename in files {
         let target = snapshot_dir.join(filename);
-        if target.exists() && std::fs::metadata(&target).map(|m| m.len() > 0).unwrap_or(false) {
+        if target.exists()
+            && std::fs::metadata(&target)
+                .map(|m| m.len() > 0)
+                .unwrap_or(false)
+        {
             tracing::debug!("Already cached: {}/{}", repo_id, filename);
             continue;
         }
@@ -97,16 +104,18 @@ pub(crate) fn pre_download_model(
             std::fs::create_dir_all(parent).ok();
         }
 
-        match tokio::task::block_in_place(|| {
-            rt.block_on(hub.download(repo_id, filename, None))
-        }) {
+        match tokio::task::block_in_place(|| rt.block_on(hub.download(repo_id, filename, None))) {
             Ok(downloaded_path) => {
                 // Copy from lancor's cache to HF cache format
                 if downloaded_path != target {
                     std::fs::copy(&downloaded_path, &target).ok();
                 }
-                tracing::info!("Pre-downloaded {}/{} ({} bytes)", repo_id, filename,
-                    std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0));
+                tracing::info!(
+                    "Pre-downloaded {}/{} ({} bytes)",
+                    repo_id,
+                    filename,
+                    std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0)
+                );
             }
             Err(e) => {
                 tracing::warn!("Could not pre-download {}/{}: {}", repo_id, filename, e);
@@ -410,7 +419,9 @@ impl EmbeddingModelType {
         match self {
             Self::BgeSmallEnV15 | Self::BgeSmallEnV15Q => "Xenova/bge-small-en-v1.5",
             Self::AllMiniLmL6V2 | Self::AllMiniLmL6V2Q => "sentence-transformers/all-MiniLM-L6-v2",
-            Self::AllMiniLmL12V2 | Self::AllMiniLmL12V2Q => "sentence-transformers/all-MiniLM-L12-v2",
+            Self::AllMiniLmL12V2 | Self::AllMiniLmL12V2Q => {
+                "sentence-transformers/all-MiniLM-L12-v2"
+            }
             _ => "Xenova/bge-small-en-v1.5", // fallback to default
         }
     }
@@ -810,7 +821,11 @@ impl EmbeddingService {
         // Pre-download ONNX model via lancor's hub client (handles CDN redirects
         // that fastembed's ureq-based hf_hub client fails on)
         let model_repo = config.model.hf_repo_id();
-        pre_download_model(model_repo, &["onnx/model.onnx", "tokenizer.json", "config.json"], &cache_dir)?;
+        pre_download_model(
+            model_repo,
+            &["onnx/model.onnx", "tokenizer.json", "config.json"],
+            &cache_dir,
+        )?;
 
         // Try loading from local cache first to bypass hf-hub's broken ureq xethub client.
         // Uses UserDefinedEmbeddingModel with raw ONNX bytes when cache exists.
@@ -818,21 +833,31 @@ impl EmbeddingService {
         let model_base = cache_dir.join(&folder_name).join("snapshots");
         let snapshot_dir = if model_base.exists() {
             std::fs::read_dir(&model_base).ok().and_then(|entries| {
-                entries.filter_map(|e| e.ok()).find(|e| {
-                    let p = e.path();
-                    p.join("onnx").join("model.onnx").exists()
-                        && p.join("tokenizer.json").exists()
-                        && p.join("config.json").exists()
-                        && p.join("special_tokens_map.json").exists()
-                }).map(|e| e.path())
+                entries
+                    .filter_map(|e| e.ok())
+                    .find(|e| {
+                        let p = e.path();
+                        p.join("onnx").join("model.onnx").exists()
+                            && p.join("tokenizer.json").exists()
+                            && p.join("config.json").exists()
+                            && p.join("special_tokens_map.json").exists()
+                    })
+                    .map(|e| e.path())
             })
         } else {
             let native = cache_dir.join(model_repo.replace('/', "--"));
-            if native.join("onnx").join("model.onnx").exists() { Some(native) } else { None }
+            if native.join("onnx").join("model.onnx").exists() {
+                Some(native)
+            } else {
+                None
+            }
         };
 
         let model = if let Some(ref snap) = snapshot_dir {
-            tracing::info!("Loading embedding model from local cache: {}", snap.display());
+            tracing::info!(
+                "Loading embedding model from local cache: {}",
+                snap.display()
+            );
             let onnx_bytes = std::fs::read(snap.join("onnx").join("model.onnx"))
                 .map_err(|e| AppError::Internal(format!("Failed to read ONNX: {}", e)))?;
             let tokenizer_file = std::fs::read(snap.join("tokenizer.json"))
@@ -840,9 +865,13 @@ impl EmbeddingService {
             let config_file = std::fs::read(snap.join("config.json"))
                 .map_err(|e| AppError::Internal(format!("Failed to read config.json: {}", e)))?;
             let special_tokens_map_file = std::fs::read(snap.join("special_tokens_map.json"))
-                .map_err(|e| AppError::Internal(format!("Failed to read special_tokens_map.json: {}", e)))?;
-            let tokenizer_config_file = std::fs::read(snap.join("tokenizer_config.json"))
-                .map_err(|e| AppError::Internal(format!("Failed to read tokenizer_config.json: {}", e)))?;
+                .map_err(|e| {
+                    AppError::Internal(format!("Failed to read special_tokens_map.json: {}", e))
+                })?;
+            let tokenizer_config_file =
+                std::fs::read(snap.join("tokenizer_config.json")).map_err(|e| {
+                    AppError::Internal(format!("Failed to read tokenizer_config.json: {}", e))
+                })?;
 
             let tokenizer_files = fastembed::TokenizerFiles {
                 tokenizer_file,
@@ -852,8 +881,11 @@ impl EmbeddingService {
             };
 
             let user_model = fastembed::UserDefinedEmbeddingModel::new(onnx_bytes, tokenizer_files);
-            TextEmbedding::try_new_from_user_defined(user_model, fastembed::InitOptionsUserDefined::new())
-                .map_err(|e| AppError::Internal(format!("Failed to load local model: {}", e)))?
+            TextEmbedding::try_new_from_user_defined(
+                user_model,
+                fastembed::InitOptionsUserDefined::new(),
+            )
+            .map_err(|e| AppError::Internal(format!("Failed to load local model: {}", e)))?
         } else {
             tracing::warn!("No local ONNX cache, attempting HF download (may fail on xethub)");
             TextEmbedding::try_new(
@@ -950,8 +982,11 @@ impl EmbeddingService {
         // to every duplicate. The seen-set is per-call, keeping memory bounded.
         let plan = DedupPlan::plan(texts);
         // Owned strings so the blocking task does not borrow the caller's slice
-        let unique: Vec<String> =
-            plan.unique_indices.iter().map(|&i| texts[i].as_ref().to_string()).collect();
+        let unique: Vec<String> = plan
+            .unique_indices
+            .iter()
+            .map(|&i| texts[i].as_ref().to_string())
+            .collect();
         let batch_size = self.config.batch_size;
 
         // Clone the Arc to move into the blocking task
@@ -1008,11 +1043,15 @@ impl EmbeddingService {
 }
 
 impl cordis::Service for EmbeddingService {
-    fn name(&self) -> &'static str { "embedding_service" }
+    fn name(&self) -> &'static str {
+        "embedding_service"
+    }
     fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
-    fn check(&self) -> bool { true }
+    fn check(&self) -> bool {
+        true
+    }
 }
 
 // ============================================================================
@@ -1233,7 +1272,6 @@ pub enum AccelerationBackend {
     Vulkan,
 }
 
-
 // ============================================================================
 // Remote HTTP Embedding API (OpenAI-compatible)
 // ============================================================================
@@ -1359,13 +1397,19 @@ impl DedupPlan {
                 }
             }
         }
-        Self { unique_indices, sources }
+        Self {
+            unique_indices,
+            sources,
+        }
     }
 
     /// Fan backend vectors for the unique texts back out over all original
     /// inputs: `result[i] == vectors[sources[i]]`.
     pub fn fan_out(&self, vectors: &[Vec<f32>]) -> Vec<Vec<f32>> {
-        self.sources.iter().map(|&slot| vectors[slot].clone()).collect()
+        self.sources
+            .iter()
+            .map(|&slot| vectors[slot].clone())
+            .collect()
     }
 }
 
@@ -1381,7 +1425,12 @@ pub fn build_embedding_request(
     } else {
         EmbeddingInput::Batch(inputs.iter().map(|s| s.as_ref().to_string()).collect())
     };
-    EmbeddingRequest { model: model.into(), input, dimensions, encoding_format }
+    EmbeddingRequest {
+        model: model.into(),
+        input,
+        dimensions,
+        encoding_format,
+    }
 }
 
 /// Parse an embedding HTTP response body into ordered dense vectors.
@@ -1389,7 +1438,9 @@ pub fn parse_embedding_response(body: &str, expected_dims: Option<usize>) -> Res
     let response: EmbeddingResponse = serde_json::from_str(body)
         .map_err(|e| AppError::InvalidInput(format!("Invalid embedding response JSON: {e}")))?;
     if response.data.is_empty() {
-        return Err(AppError::InvalidInput("Embedding response contained no data".into()));
+        return Err(AppError::InvalidInput(
+            "Embedding response contained no data".into(),
+        ));
     }
     let mut indexed = Vec::with_capacity(response.data.len());
     for item in response.data {
@@ -1412,16 +1463,27 @@ pub fn decode_embedding_vector(vector: &EmbeddingVector) -> Result<Vec<f32>> {
 
 pub fn decode_base64_embedding(encoded: &str) -> Result<Vec<f32>> {
     use base64::Engine;
-    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded.trim())
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
         .map_err(|e| AppError::InvalidInput(format!("Invalid base64 embedding: {e}")))?;
     if !bytes.len().is_multiple_of(4) {
-        return Err(AppError::InvalidInput(format!("Base64 embedding byte length {} is not a multiple of 4", bytes.len())));
+        return Err(AppError::InvalidInput(format!(
+            "Base64 embedding byte length {} is not a multiple of 4",
+            bytes.len()
+        )));
     }
-    Ok(bytes.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect())
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .collect())
 }
 
 pub fn map_embedding_http_error(status: u16, body: &str) -> AppError {
-    let detail = if body.trim().is_empty() { format!("HTTP {status}") } else { format!("HTTP {status}: {body}") };
+    let detail = if body.trim().is_empty() {
+        format!("HTTP {status}")
+    } else {
+        format!("HTTP {status}: {body}")
+    };
     match status {
         401 | 403 => AppError::Auth(detail),
         404 => AppError::NotFound(detail),
@@ -1450,24 +1512,49 @@ pub struct HttpEmbeddingClient {
 
 impl HttpEmbeddingClient {
     pub fn new(base_url: impl Into<String>) -> Result<Self> {
-        let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).build()
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
             .map_err(|e| AppError::Configuration(format!("Failed to build HTTP client: {e}")))?;
-        Ok(Self { http, base_url: base_url.into().trim_end_matches('/').to_string(), api_key: None })
+        Ok(Self {
+            http,
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            api_key: None,
+        })
     }
-    pub fn with_api_key(mut self, api_key: impl Into<String>) -> Self { self.api_key = Some(api_key.into()); self }
+    pub fn with_api_key(mut self, api_key: impl Into<String>) -> Self {
+        self.api_key = Some(api_key.into());
+        self
+    }
     pub async fn embed(&self, request: &EmbeddingRequest) -> Result<Vec<Vec<f32>>> {
         let url = format!("{}/v1/embeddings", self.base_url);
         let expected_dims = request.dimensions.map(|d| d as usize);
         let mut req = self.http.post(&url).json(request);
-        if let Some(key) = &self.api_key { req = req.bearer_auth(key); }
-        let response = req.send().await.map_err(|e| map_embedding_transport_error(&e))?;
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key);
+        }
+        let response = req
+            .send()
+            .await
+            .map_err(|e| map_embedding_transport_error(&e))?;
         let status = response.status().as_u16();
-        let body = response.text().await.map_err(|e| map_embedding_transport_error(&e))?;
-        if !(200..300).contains(&status) { return Err(map_embedding_http_error(status, &body)); }
+        let body = response
+            .text()
+            .await
+            .map_err(|e| map_embedding_transport_error(&e))?;
+        if !(200..300).contains(&status) {
+            return Err(map_embedding_http_error(status, &body));
+        }
         parse_embedding_response(&body, expected_dims)
     }
-    pub async fn embed_texts_batched(&self, model: &str, texts: &[impl AsRef<str>], batch_size: usize,
-        encoding_format: Option<EmbeddingEncodingFormat>, dimensions: Option<u32>) -> Result<Vec<Vec<f32>>> {
+    pub async fn embed_texts_batched(
+        &self,
+        model: &str,
+        texts: &[impl AsRef<str>],
+        batch_size: usize,
+        encoding_format: Option<EmbeddingEncodingFormat>,
+        dimensions: Option<u32>,
+    ) -> Result<Vec<Vec<f32>>> {
         // Deduplicate identical inputs (whitespace-normalized content hash) so
         // each distinct text costs exactly one backend call; vectors are then
         // fanned back out to every duplicate. The seen-set is per-request.
@@ -1475,7 +1562,11 @@ impl HttpEmbeddingClient {
         if plan.unique_indices.is_empty() {
             return Ok(vec![]);
         }
-        let unique: Vec<&str> = plan.unique_indices.iter().map(|&i| texts[i].as_ref()).collect();
+        let unique: Vec<&str> = plan
+            .unique_indices
+            .iter()
+            .map(|&i| texts[i].as_ref())
+            .collect();
         let mut all = Vec::with_capacity(unique.len());
         for batch in batch_chunks(&unique, batch_size) {
             let request = build_embedding_request(model, &batch, encoding_format, dimensions);
@@ -1489,7 +1580,6 @@ impl HttpEmbeddingClient {
 // ============================================================================
 // Tests
 // ============================================================================
-
 
 #[cfg(all(test, feature = "local-embeddings"))]
 mod tests {
@@ -1564,7 +1654,10 @@ mod tests {
         for model in EmbeddingModelType::all() {
             let display = model.to_string();
             let parsed: EmbeddingModelType = display.parse().unwrap_or_else(|_| {
-                panic!("Display→FromStr roundtrip failed for {:?} ('{}')", model, display)
+                panic!(
+                    "Display→FromStr roundtrip failed for {:?} ('{}')",
+                    model, display
+                )
             });
             assert_eq!(parsed, model, "Roundtrip mismatch for {}", display);
         }
@@ -1592,9 +1685,9 @@ mod tests {
             ("snowflake-l", EmbeddingModelType::SnowflakeArcticEmbedL),
         ];
         for (alias, expected) in aliases {
-            let parsed: EmbeddingModelType = alias.parse().unwrap_or_else(|_| {
-                panic!("Alias '{}' should parse", alias)
-            });
+            let parsed: EmbeddingModelType = alias
+                .parse()
+                .unwrap_or_else(|_| panic!("Alias '{}' should parse", alias));
             assert_eq!(parsed, expected, "Alias '{}' mismatch", alias);
         }
     }
@@ -1614,14 +1707,27 @@ mod tests {
         let err = result.unwrap_err();
         assert!(matches!(err, AppError::Internal(_)));
         let msg = err.to_string();
-        assert!(msg.contains("Unknown embedding model"), "Error should mention 'Unknown': {}", msg);
+        assert!(
+            msg.contains("Unknown embedding model"),
+            "Error should mention 'Unknown': {}",
+            msg
+        );
     }
 
     #[test]
     fn test_hf_repo_id_known_models() {
-        assert_eq!(EmbeddingModelType::BgeSmallEnV15.hf_repo_id(), "Xenova/bge-small-en-v1.5");
-        assert_eq!(EmbeddingModelType::AllMiniLmL6V2.hf_repo_id(), "sentence-transformers/all-MiniLM-L6-v2");
-        assert_eq!(EmbeddingModelType::AllMiniLmL12V2.hf_repo_id(), "sentence-transformers/all-MiniLM-L12-v2");
+        assert_eq!(
+            EmbeddingModelType::BgeSmallEnV15.hf_repo_id(),
+            "Xenova/bge-small-en-v1.5"
+        );
+        assert_eq!(
+            EmbeddingModelType::AllMiniLmL6V2.hf_repo_id(),
+            "sentence-transformers/all-MiniLM-L6-v2"
+        );
+        assert_eq!(
+            EmbeddingModelType::AllMiniLmL12V2.hf_repo_id(),
+            "sentence-transformers/all-MiniLM-L12-v2"
+        );
     }
 
     #[test]
@@ -1708,18 +1814,15 @@ mod tests {
         let cache_dir = tmp.path().to_path_buf();
 
         // This will fail on download (fake repo) but should create dir structure
-        let _ = pre_download_model(
-            "fake-org/fake-model",
-            &["onnx/model.onnx"],
-            &cache_dir,
-        );
+        let _ = pre_download_model("fake-org/fake-model", &["onnx/model.onnx"], &cache_dir);
 
         // Verify HF cache structure was created
         let folder = cache_dir.join("models--fake-org--fake-model");
-        assert!(folder.join("snapshots").join("lancor-prefetch").exists(),
-            "snapshot dir should be created");
-        assert!(folder.join("refs").exists(),
-            "refs dir should be created");
+        assert!(
+            folder.join("snapshots").join("lancor-prefetch").exists(),
+            "snapshot dir should be created"
+        );
+        assert!(folder.join("refs").exists(), "refs dir should be created");
         let ref_main = folder.join("refs").join("main");
         if ref_main.exists() {
             let content = std::fs::read_to_string(&ref_main).unwrap();
@@ -1732,10 +1835,16 @@ mod tests {
         // get_model_lock should return same Arc for same model
         let lock1 = get_model_lock("test-model");
         let lock2 = get_model_lock("test-model");
-        assert!(Arc::ptr_eq(&lock1, &lock2), "Same model should return same lock");
+        assert!(
+            Arc::ptr_eq(&lock1, &lock2),
+            "Same model should return same lock"
+        );
 
         let lock3 = get_model_lock("other-model");
-        assert!(!Arc::ptr_eq(&lock1, &lock3), "Different models should have different locks");
+        assert!(
+            !Arc::ptr_eq(&lock1, &lock3),
+            "Different models should have different locks"
+        );
     }
 
     #[test]
@@ -1757,7 +1866,10 @@ mod tests {
         for model in EmbeddingModelType::all() {
             let name = model.to_string();
             let parsed: EmbeddingModelType = name.parse().unwrap_or_else(|_| {
-                panic!("Canonical display name '{}' should parse for {:?}", name, model)
+                panic!(
+                    "Canonical display name '{}' should parse for {:?}",
+                    name, model
+                )
             });
             assert_eq!(parsed, model);
         }
@@ -1779,12 +1891,15 @@ mod tests {
             ("gemma-300m", EmbeddingModelType::EmbeddingGemma300M),
             ("BGE-SMALL-EN-V1.5-Q", EmbeddingModelType::BgeSmallEnV15Q),
             ("ALL-MINILM-L12-V2-Q", EmbeddingModelType::AllMiniLmL12V2Q),
-            ("SNOWFLAKE-ARCTIC-EMBED-M-LONG-Q", EmbeddingModelType::SnowflakeArcticEmbedMLongQ),
+            (
+                "SNOWFLAKE-ARCTIC-EMBED-M-LONG-Q",
+                EmbeddingModelType::SnowflakeArcticEmbedMLongQ,
+            ),
         ];
         for (alias, expected) in aliases {
-            let parsed: EmbeddingModelType = alias.parse().unwrap_or_else(|_| {
-                panic!("Alias '{}' should parse", alias)
-            });
+            let parsed: EmbeddingModelType = alias
+                .parse()
+                .unwrap_or_else(|_| panic!("Alias '{}' should parse", alias));
             assert_eq!(parsed, expected, "Alias '{}' mismatch", alias);
         }
     }
@@ -1797,16 +1912,40 @@ mod tests {
             ("all-minilm-l12-v2-q", EmbeddingModelType::AllMiniLmL12V2Q),
             ("bge-base-en-v1.5-q", EmbeddingModelType::BgeBaseEnV15Q),
             ("bge-large-en-v1.5-q", EmbeddingModelType::BgeLargeEnV15Q),
-            ("paraphrase-minilm-l12-v2-q", EmbeddingModelType::ParaphraseMiniLmL12V2Q),
-            ("nomic-embed-text-v1.5-q", EmbeddingModelType::NomicEmbedTextV15Q),
-            ("mxbai-embed-large-v1-q", EmbeddingModelType::MxbaiEmbedLargeV1Q),
+            (
+                "paraphrase-minilm-l12-v2-q",
+                EmbeddingModelType::ParaphraseMiniLmL12V2Q,
+            ),
+            (
+                "nomic-embed-text-v1.5-q",
+                EmbeddingModelType::NomicEmbedTextV15Q,
+            ),
+            (
+                "mxbai-embed-large-v1-q",
+                EmbeddingModelType::MxbaiEmbedLargeV1Q,
+            ),
             ("gte-base-en-v1.5-q", EmbeddingModelType::GteBaseEnV15Q),
             ("gte-large-en-v1.5-q", EmbeddingModelType::GteLargeEnV15Q),
-            ("snowflake-arctic-embed-xs-q", EmbeddingModelType::SnowflakeArcticEmbedXsQ),
-            ("snowflake-arctic-embed-s-q", EmbeddingModelType::SnowflakeArcticEmbedSQ),
-            ("snowflake-arctic-embed-m-q", EmbeddingModelType::SnowflakeArcticEmbedMQ),
-            ("snowflake-arctic-embed-m-long-q", EmbeddingModelType::SnowflakeArcticEmbedMLongQ),
-            ("snowflake-arctic-embed-l-q", EmbeddingModelType::SnowflakeArcticEmbedLQ),
+            (
+                "snowflake-arctic-embed-xs-q",
+                EmbeddingModelType::SnowflakeArcticEmbedXsQ,
+            ),
+            (
+                "snowflake-arctic-embed-s-q",
+                EmbeddingModelType::SnowflakeArcticEmbedSQ,
+            ),
+            (
+                "snowflake-arctic-embed-m-q",
+                EmbeddingModelType::SnowflakeArcticEmbedMQ,
+            ),
+            (
+                "snowflake-arctic-embed-m-long-q",
+                EmbeddingModelType::SnowflakeArcticEmbedMLongQ,
+            ),
+            (
+                "snowflake-arctic-embed-l-q",
+                EmbeddingModelType::SnowflakeArcticEmbedLQ,
+            ),
         ];
         for (name, expected) in quantized {
             let parsed: EmbeddingModelType = name.parse().unwrap();
@@ -1836,15 +1975,36 @@ mod tests {
             (EmbeddingModelType::BgeSmallEnV15, "bge-small-en-v1.5"),
             (EmbeddingModelType::AllMiniLmL6V2, "all-minilm-l6-v2"),
             (EmbeddingModelType::AllMpnetBaseV2, "all-mpnet-base-v2"),
-            (EmbeddingModelType::MultilingualE5Large, "multilingual-e5-large"),
+            (
+                EmbeddingModelType::MultilingualE5Large,
+                "multilingual-e5-large",
+            ),
             (EmbeddingModelType::BgeSmallZhV15, "bge-small-zh-v1.5"),
-            (EmbeddingModelType::NomicEmbedTextV15, "nomic-embed-text-v1.5"),
-            (EmbeddingModelType::MxbaiEmbedLargeV1, "mxbai-embed-large-v1"),
+            (
+                EmbeddingModelType::NomicEmbedTextV15,
+                "nomic-embed-text-v1.5",
+            ),
+            (
+                EmbeddingModelType::MxbaiEmbedLargeV1,
+                "mxbai-embed-large-v1",
+            ),
             (EmbeddingModelType::ClipVitB32, "clip-vit-b-32"),
-            (EmbeddingModelType::JinaEmbeddingsV2BaseCode, "jina-embeddings-v2-base-code"),
-            (EmbeddingModelType::EmbeddingGemma300M, "embedding-gemma-300m"),
-            (EmbeddingModelType::ModernBertEmbedLarge, "modernbert-embed-large"),
-            (EmbeddingModelType::SnowflakeArcticEmbedL, "snowflake-arctic-embed-l"),
+            (
+                EmbeddingModelType::JinaEmbeddingsV2BaseCode,
+                "jina-embeddings-v2-base-code",
+            ),
+            (
+                EmbeddingModelType::EmbeddingGemma300M,
+                "embedding-gemma-300m",
+            ),
+            (
+                EmbeddingModelType::ModernBertEmbedLarge,
+                "modernbert-embed-large",
+            ),
+            (
+                EmbeddingModelType::SnowflakeArcticEmbedL,
+                "snowflake-arctic-embed-l",
+            ),
         ];
         for (model, expected) in expected_names {
             assert_eq!(model.to_string(), expected);
@@ -1939,7 +2099,12 @@ mod tests {
         for model in EmbeddingModelType::all() {
             let repo = model.hf_repo_id();
             assert!(!repo.is_empty(), "{:?} has empty hf_repo_id", model);
-            assert!(repo.contains('/'), "{:?} hf_repo_id '{}' missing '/'", model, repo);
+            assert!(
+                repo.contains('/'),
+                "{:?} hf_repo_id '{}' missing '/'",
+                model,
+                repo
+            );
         }
     }
 
@@ -1970,21 +2135,66 @@ mod tests {
     #[test]
     fn test_quantized_base_same_dimensions() {
         let pairs = [
-            (EmbeddingModelType::BgeSmallEnV15, EmbeddingModelType::BgeSmallEnV15Q),
-            (EmbeddingModelType::AllMiniLmL6V2, EmbeddingModelType::AllMiniLmL6V2Q),
-            (EmbeddingModelType::AllMiniLmL12V2, EmbeddingModelType::AllMiniLmL12V2Q),
-            (EmbeddingModelType::BgeBaseEnV15, EmbeddingModelType::BgeBaseEnV15Q),
-            (EmbeddingModelType::BgeLargeEnV15, EmbeddingModelType::BgeLargeEnV15Q),
-            (EmbeddingModelType::ParaphraseMiniLmL12V2, EmbeddingModelType::ParaphraseMiniLmL12V2Q),
-            (EmbeddingModelType::NomicEmbedTextV15, EmbeddingModelType::NomicEmbedTextV15Q),
-            (EmbeddingModelType::MxbaiEmbedLargeV1, EmbeddingModelType::MxbaiEmbedLargeV1Q),
-            (EmbeddingModelType::GteBaseEnV15, EmbeddingModelType::GteBaseEnV15Q),
-            (EmbeddingModelType::GteLargeEnV15, EmbeddingModelType::GteLargeEnV15Q),
-            (EmbeddingModelType::SnowflakeArcticEmbedXs, EmbeddingModelType::SnowflakeArcticEmbedXsQ),
-            (EmbeddingModelType::SnowflakeArcticEmbedS, EmbeddingModelType::SnowflakeArcticEmbedSQ),
-            (EmbeddingModelType::SnowflakeArcticEmbedM, EmbeddingModelType::SnowflakeArcticEmbedMQ),
-            (EmbeddingModelType::SnowflakeArcticEmbedMLong, EmbeddingModelType::SnowflakeArcticEmbedMLongQ),
-            (EmbeddingModelType::SnowflakeArcticEmbedL, EmbeddingModelType::SnowflakeArcticEmbedLQ),
+            (
+                EmbeddingModelType::BgeSmallEnV15,
+                EmbeddingModelType::BgeSmallEnV15Q,
+            ),
+            (
+                EmbeddingModelType::AllMiniLmL6V2,
+                EmbeddingModelType::AllMiniLmL6V2Q,
+            ),
+            (
+                EmbeddingModelType::AllMiniLmL12V2,
+                EmbeddingModelType::AllMiniLmL12V2Q,
+            ),
+            (
+                EmbeddingModelType::BgeBaseEnV15,
+                EmbeddingModelType::BgeBaseEnV15Q,
+            ),
+            (
+                EmbeddingModelType::BgeLargeEnV15,
+                EmbeddingModelType::BgeLargeEnV15Q,
+            ),
+            (
+                EmbeddingModelType::ParaphraseMiniLmL12V2,
+                EmbeddingModelType::ParaphraseMiniLmL12V2Q,
+            ),
+            (
+                EmbeddingModelType::NomicEmbedTextV15,
+                EmbeddingModelType::NomicEmbedTextV15Q,
+            ),
+            (
+                EmbeddingModelType::MxbaiEmbedLargeV1,
+                EmbeddingModelType::MxbaiEmbedLargeV1Q,
+            ),
+            (
+                EmbeddingModelType::GteBaseEnV15,
+                EmbeddingModelType::GteBaseEnV15Q,
+            ),
+            (
+                EmbeddingModelType::GteLargeEnV15,
+                EmbeddingModelType::GteLargeEnV15Q,
+            ),
+            (
+                EmbeddingModelType::SnowflakeArcticEmbedXs,
+                EmbeddingModelType::SnowflakeArcticEmbedXsQ,
+            ),
+            (
+                EmbeddingModelType::SnowflakeArcticEmbedS,
+                EmbeddingModelType::SnowflakeArcticEmbedSQ,
+            ),
+            (
+                EmbeddingModelType::SnowflakeArcticEmbedM,
+                EmbeddingModelType::SnowflakeArcticEmbedMQ,
+            ),
+            (
+                EmbeddingModelType::SnowflakeArcticEmbedMLong,
+                EmbeddingModelType::SnowflakeArcticEmbedMLongQ,
+            ),
+            (
+                EmbeddingModelType::SnowflakeArcticEmbedL,
+                EmbeddingModelType::SnowflakeArcticEmbedLQ,
+            ),
         ];
         for (base, quantized) in &pairs {
             assert_eq!(
@@ -2002,9 +2212,18 @@ mod tests {
     #[test]
     fn test_quantized_base_same_hf_repo() {
         let pairs = [
-            (EmbeddingModelType::BgeSmallEnV15, EmbeddingModelType::BgeSmallEnV15Q),
-            (EmbeddingModelType::AllMiniLmL6V2, EmbeddingModelType::AllMiniLmL6V2Q),
-            (EmbeddingModelType::AllMiniLmL12V2, EmbeddingModelType::AllMiniLmL12V2Q),
+            (
+                EmbeddingModelType::BgeSmallEnV15,
+                EmbeddingModelType::BgeSmallEnV15Q,
+            ),
+            (
+                EmbeddingModelType::AllMiniLmL6V2,
+                EmbeddingModelType::AllMiniLmL6V2Q,
+            ),
+            (
+                EmbeddingModelType::AllMiniLmL12V2,
+                EmbeddingModelType::AllMiniLmL12V2Q,
+            ),
         ];
         for (base, quantized) in &pairs {
             assert_eq!(
@@ -2046,7 +2265,11 @@ mod tests {
             EmbeddingModelType::SnowflakeArcticEmbedL,
         ];
         for model in &english_only {
-            assert!(!model.is_multilingual(), "{:?} should NOT be multilingual", model);
+            assert!(
+                !model.is_multilingual(),
+                "{:?} should NOT be multilingual",
+                model
+            );
         }
     }
 
@@ -2221,16 +2444,17 @@ mod tests {
     #[test]
     fn test_embedding_config_serde_override_model() {
         // Use serde variant name (kebab-case), not FromStr alias
-        let config: EmbeddingConfig = serde_json::from_str(r#"{"model": "nomic-embed-text-v15"}"#).unwrap();
+        let config: EmbeddingConfig =
+            serde_json::from_str(r#"{"model": "nomic-embed-text-v15"}"#).unwrap();
         assert_eq!(config.model, EmbeddingModelType::NomicEmbedTextV15);
     }
 
     #[test]
     fn test_embedding_config_serde_sparse_model_field() {
         // serde uses full variant name, not FromStr alias "splade"
-        let config: EmbeddingConfig = serde_json::from_str(
-            r#"{"sparse_enabled": true, "sparse_model": "splade-pp-v1"}"#
-        ).unwrap();
+        let config: EmbeddingConfig =
+            serde_json::from_str(r#"{"sparse_enabled": true, "sparse_model": "splade-pp-v1"}"#)
+                .unwrap();
         assert!(config.sparse_enabled);
         assert_eq!(config.sparse_model, SparseModelType::SpladePpV1);
     }
@@ -2496,8 +2720,16 @@ mod tests {
         let a = [1_000.0f32, 2_000.0, 3_000.0];
         let b = [2_000.0, 4_000.0, 6_000.0];
         let sim = cosine_similarity(&a, &b);
-        assert!((sim - 1.0).abs() < 1e-5, "parallel vectors should score ~1.0, got {}", sim);
-        assert!((-1.0..=1.0).contains(&sim), "similarity should stay in [-1, 1]: {}", sim);
+        assert!(
+            (sim - 1.0).abs() < 1e-5,
+            "parallel vectors should score ~1.0, got {}",
+            sim
+        );
+        assert!(
+            (-1.0..=1.0).contains(&sim),
+            "similarity should stay in [-1, 1]: {}",
+            sim
+        );
     }
 
     #[test]
@@ -2539,11 +2771,7 @@ mod tests {
     async fn test_pre_download_creates_nested_file_parent_dirs() {
         let tmp = tempfile::TempDir::new().unwrap();
         let cache_dir = tmp.path().to_path_buf();
-        let _ = pre_download_model(
-            "fake-org/nested-model",
-            &["onnx/model.onnx"],
-            &cache_dir,
-        );
+        let _ = pre_download_model("fake-org/nested-model", &["onnx/model.onnx"], &cache_dir);
         let nested = cache_dir
             .join("models--fake-org--nested-model")
             .join("snapshots")
@@ -2564,135 +2792,336 @@ mod tests {
         let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
         base64::engine::general_purpose::STANDARD.encode(bytes)
     }
-    #[test] fn http_embedding_request_single_input_serde_roundtrip() {
+    #[test]
+    fn http_embedding_request_single_input_serde_roundtrip() {
         let req = build_embedding_request("m", &["hello"], None, None);
-        let parsed: EmbeddingRequest = serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
+        let parsed: EmbeddingRequest =
+            serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
         assert_eq!(parsed.model, "m");
         assert_eq!(parsed.input, EmbeddingInput::Single("hello".into()));
     }
-    #[test] fn http_embedding_request_batch_input_serde_roundtrip() {
-        let req = build_embedding_request("m", &["a", "b"], Some(EmbeddingEncodingFormat::Float), Some(384));
-        let parsed: EmbeddingRequest = serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
-        assert_eq!(parsed.input, EmbeddingInput::Batch(vec!["a".into(), "b".into()]));
+    #[test]
+    fn http_embedding_request_batch_input_serde_roundtrip() {
+        let req = build_embedding_request(
+            "m",
+            &["a", "b"],
+            Some(EmbeddingEncodingFormat::Float),
+            Some(384),
+        );
+        let parsed: EmbeddingRequest =
+            serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
+        assert_eq!(
+            parsed.input,
+            EmbeddingInput::Batch(vec!["a".into(), "b".into()])
+        );
         assert_eq!(parsed.dimensions, Some(384));
     }
-    #[test] fn http_embedding_request_base64_encoding_format_roundtrip() {
+    #[test]
+    fn http_embedding_request_base64_encoding_format_roundtrip() {
         let req = build_embedding_request("m", &["x"], Some(EmbeddingEncodingFormat::Base64), None);
-        let parsed: EmbeddingRequest = serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
-        assert_eq!(parsed.encoding_format, Some(EmbeddingEncodingFormat::Base64));
+        let parsed: EmbeddingRequest =
+            serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
+        assert_eq!(
+            parsed.encoding_format,
+            Some(EmbeddingEncodingFormat::Base64)
+        );
     }
-    #[test] fn http_embedding_response_float_serde_roundtrip() {
-        let parsed: EmbeddingResponse = serde_json::from_str(&sample_float_response_json(&[vec![0.1, 0.2, 0.3]])).unwrap();
-        assert_eq!(parsed.data[0].embedding, EmbeddingVector::Float(vec![0.1, 0.2, 0.3]));
+    #[test]
+    fn http_embedding_response_float_serde_roundtrip() {
+        let parsed: EmbeddingResponse =
+            serde_json::from_str(&sample_float_response_json(&[vec![0.1, 0.2, 0.3]])).unwrap();
+        assert_eq!(
+            parsed.data[0].embedding,
+            EmbeddingVector::Float(vec![0.1, 0.2, 0.3])
+        );
     }
-    #[test] fn http_embedding_response_base64_roundtrip_and_decode() {
+    #[test]
+    fn http_embedding_response_base64_roundtrip_and_decode() {
         let values = vec![1.0f32, -2.5, 3.25];
-        let item = EmbeddingDataItem { object: "embedding".into(), index: 0, embedding: EmbeddingVector::Base64(encode_f32_le_base64(&values)) };
+        let item = EmbeddingDataItem {
+            object: "embedding".into(),
+            index: 0,
+            embedding: EmbeddingVector::Base64(encode_f32_le_base64(&values)),
+        };
         assert_eq!(decode_embedding_vector(&item.embedding).unwrap(), values);
     }
-    #[test] fn model_dimensions_matches_embedding_model_type_for_all_models() {
-        for model in EmbeddingModelType::all() { assert_eq!(model_dimensions(model), model.dimensions()); }
+    #[test]
+    fn model_dimensions_matches_embedding_model_type_for_all_models() {
+        for model in EmbeddingModelType::all() {
+            assert_eq!(model_dimensions(model), model.dimensions());
+        }
     }
-    #[test] fn model_dimensions_quantized_matches_base_precision() {
-        let pairs = [(EmbeddingModelType::BgeSmallEnV15, EmbeddingModelType::BgeSmallEnV15Q), (EmbeddingModelType::AllMiniLmL6V2, EmbeddingModelType::AllMiniLmL6V2Q), (EmbeddingModelType::BgeBaseEnV15, EmbeddingModelType::BgeBaseEnV15Q), (EmbeddingModelType::BgeLargeEnV15, EmbeddingModelType::BgeLargeEnV15Q)];
-        for (full, q) in pairs { assert_eq!(model_dimensions(full), model_dimensions(q)); assert!(!full.is_quantized()); assert!(q.is_quantized()); }
+    #[test]
+    fn model_dimensions_quantized_matches_base_precision() {
+        let pairs = [
+            (
+                EmbeddingModelType::BgeSmallEnV15,
+                EmbeddingModelType::BgeSmallEnV15Q,
+            ),
+            (
+                EmbeddingModelType::AllMiniLmL6V2,
+                EmbeddingModelType::AllMiniLmL6V2Q,
+            ),
+            (
+                EmbeddingModelType::BgeBaseEnV15,
+                EmbeddingModelType::BgeBaseEnV15Q,
+            ),
+            (
+                EmbeddingModelType::BgeLargeEnV15,
+                EmbeddingModelType::BgeLargeEnV15Q,
+            ),
+        ];
+        for (full, q) in pairs {
+            assert_eq!(model_dimensions(full), model_dimensions(q));
+            assert!(!full.is_quantized());
+            assert!(q.is_quantized());
+        }
     }
-    #[test] fn batch_chunks_empty_input() { assert!(batch_chunks(&[] as &[i32], 4).is_empty()); }
-    #[test] fn batch_chunks_single_batch_when_under_limit() { assert_eq!(batch_chunks(&["a","b","c"], 10), vec![vec!["a","b","c"]]); }
-    #[test] fn batch_chunks_splits_preserving_order() {
+    #[test]
+    fn batch_chunks_empty_input() {
+        assert!(batch_chunks(&[] as &[i32], 4).is_empty());
+    }
+    #[test]
+    fn batch_chunks_single_batch_when_under_limit() {
+        assert_eq!(
+            batch_chunks(&["a", "b", "c"], 10),
+            vec![vec!["a", "b", "c"]]
+        );
+    }
+    #[test]
+    fn batch_chunks_splits_preserving_order() {
         let items: Vec<i32> = (0..7).collect();
-        assert_eq!(batch_chunks(&items, 3), vec![vec![0,1,2], vec![3,4,5], vec![6]]);
+        assert_eq!(
+            batch_chunks(&items, 3),
+            vec![vec![0, 1, 2], vec![3, 4, 5], vec![6]]
+        );
         let flat: Vec<i32> = batch_chunks(&items, 3).into_iter().flatten().collect();
         assert_eq!(flat, items);
     }
-    #[test] fn batch_chunks_zero_batch_size_treated_as_one() { assert_eq!(batch_chunks(&[1,2,3], 0), vec![vec![1], vec![2], vec![3]]); }
-    #[test] fn build_embedding_request_single_vs_batch_shape() {
-        assert!(matches!(build_embedding_request("m", &["only"], None, None).input, EmbeddingInput::Single(_)));
-        assert!(matches!(build_embedding_request("m", &["a","b"], None, None).input, EmbeddingInput::Batch(_)));
+    #[test]
+    fn batch_chunks_zero_batch_size_treated_as_one() {
+        assert_eq!(batch_chunks(&[1, 2, 3], 0), vec![vec![1], vec![2], vec![3]]);
     }
-    #[test] fn parse_embedding_response_sorts_by_index() {
+    #[test]
+    fn build_embedding_request_single_vs_batch_shape() {
+        assert!(matches!(
+            build_embedding_request("m", &["only"], None, None).input,
+            EmbeddingInput::Single(_)
+        ));
+        assert!(matches!(
+            build_embedding_request("m", &["a", "b"], None, None).input,
+            EmbeddingInput::Batch(_)
+        ));
+    }
+    #[test]
+    fn parse_embedding_response_sorts_by_index() {
         let body = serde_json::json!({"object":"list","model":"m","data":[{"object":"embedding","index":2,"embedding":[3.0]},{"object":"embedding","index":0,"embedding":[1.0]},{"object":"embedding","index":1,"embedding":[2.0]}]}).to_string();
-        assert_eq!(parse_embedding_response(&body, None).unwrap(), vec![vec![1.0], vec![2.0], vec![3.0]]);
+        assert_eq!(
+            parse_embedding_response(&body, None).unwrap(),
+            vec![vec![1.0], vec![2.0], vec![3.0]]
+        );
     }
-    #[test] fn parse_embedding_response_validates_expected_dimensions() {
-        assert!(matches!(parse_embedding_response(&sample_float_response_json(&[vec![1.0,2.0]]), Some(3)), Err(AppError::InvalidInput(_))));
+    #[test]
+    fn parse_embedding_response_validates_expected_dimensions() {
+        assert!(matches!(
+            parse_embedding_response(&sample_float_response_json(&[vec![1.0, 2.0]]), Some(3)),
+            Err(AppError::InvalidInput(_))
+        ));
     }
-    #[test] fn parse_embedding_response_rejects_invalid_json() {
-        assert!(matches!(parse_embedding_response("not-json", None), Err(AppError::InvalidInput(_))));
+    #[test]
+    fn parse_embedding_response_rejects_invalid_json() {
+        assert!(matches!(
+            parse_embedding_response("not-json", None),
+            Err(AppError::InvalidInput(_))
+        ));
     }
-    #[test] fn parse_embedding_response_rejects_empty_data() {
-        assert!(matches!(parse_embedding_response(r#"{"object":"list","data":[],"model":"m"}"#, None), Err(AppError::InvalidInput(_))));
+    #[test]
+    fn parse_embedding_response_rejects_empty_data() {
+        assert!(matches!(
+            parse_embedding_response(r#"{"object":"list","data":[],"model":"m"}"#, None),
+            Err(AppError::InvalidInput(_))
+        ));
     }
-    #[test] fn parse_embedding_response_decodes_base64_vectors() {
+    #[test]
+    fn parse_embedding_response_decodes_base64_vectors() {
         let values = vec![0.5f32, -1.25, 2.0];
         let body = serde_json::json!({"object":"list","model":"m","data":[{"object":"embedding","index":0,"embedding":encode_f32_le_base64(&values)}]}).to_string();
         assert_eq!(parse_embedding_response(&body, None).unwrap(), vec![values]);
     }
-    #[test] fn map_embedding_http_error_auth_for_401() { assert!(matches!(map_embedding_http_error(401, "bad"), AppError::Auth(_))); }
-    #[test] fn map_embedding_http_error_rate_limited_for_429() { assert!(matches!(map_embedding_http_error(429, "slow"), AppError::RateLimited(_))); }
-    #[test] fn map_embedding_http_error_external_for_500() { assert!(matches!(map_embedding_http_error(500, "boom"), AppError::External(_))); }
-    #[test] fn map_embedding_http_error_invalid_input_for_400() { assert!(matches!(map_embedding_http_error(400, "bad"), AppError::InvalidInput(_))); }
-    #[test] fn decode_base64_embedding_rejects_bad_length() {
+    #[test]
+    fn map_embedding_http_error_auth_for_401() {
+        assert!(matches!(
+            map_embedding_http_error(401, "bad"),
+            AppError::Auth(_)
+        ));
+    }
+    #[test]
+    fn map_embedding_http_error_rate_limited_for_429() {
+        assert!(matches!(
+            map_embedding_http_error(429, "slow"),
+            AppError::RateLimited(_)
+        ));
+    }
+    #[test]
+    fn map_embedding_http_error_external_for_500() {
+        assert!(matches!(
+            map_embedding_http_error(500, "boom"),
+            AppError::External(_)
+        ));
+    }
+    #[test]
+    fn map_embedding_http_error_invalid_input_for_400() {
+        assert!(matches!(
+            map_embedding_http_error(400, "bad"),
+            AppError::InvalidInput(_)
+        ));
+    }
+    #[test]
+    fn decode_base64_embedding_rejects_bad_length() {
         use base64::Engine;
-        let bad = base64::engine::general_purpose::STANDARD.encode([1u8,2,3]);
-        assert!(matches!(decode_base64_embedding(&bad), Err(AppError::InvalidInput(_))));
+        let bad = base64::engine::general_purpose::STANDARD.encode([1u8, 2, 3]);
+        assert!(matches!(
+            decode_base64_embedding(&bad),
+            Err(AppError::InvalidInput(_))
+        ));
     }
-    #[tokio::test] async fn wiremock_http_embedding_success() {
-        use wiremock::matchers::{method, path}; use wiremock::{Mock, MockServer, ResponseTemplate};
+    #[tokio::test]
+    async fn wiremock_http_embedding_success() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
         let server = MockServer::start().await;
-        let body = sample_float_response_json(&[vec![0.1,0.2,0.3], vec![0.4,0.5,0.6]]);
-        Mock::given(method("POST")).and(path("/v1/embeddings")).respond_with(ResponseTemplate::new(200).set_body_raw(body, "application/json")).mount(&server).await;
+        let body = sample_float_response_json(&[vec![0.1, 0.2, 0.3], vec![0.4, 0.5, 0.6]]);
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(body, "application/json"))
+            .mount(&server)
+            .await;
         let client = HttpEmbeddingClient::new(server.uri()).unwrap();
-        let vectors = client.embed(&build_embedding_request("test-model", &["a","b"], None, None)).await.unwrap();
-        assert_eq!(vectors.len(), 2); assert_eq!(vectors[0].len(), 3);
+        let vectors = client
+            .embed(&build_embedding_request(
+                "test-model",
+                &["a", "b"],
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(vectors.len(), 2);
+        assert_eq!(vectors[0].len(), 3);
     }
-    #[tokio::test] async fn wiremock_http_embedding_maps_401_to_auth() {
-        use wiremock::matchers::{method, path}; use wiremock::{Mock, MockServer, ResponseTemplate};
+    #[tokio::test]
+    async fn wiremock_http_embedding_maps_401_to_auth() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
         let server = MockServer::start().await;
-        Mock::given(method("POST")).and(path("/v1/embeddings")).respond_with(ResponseTemplate::new(401).set_body_string("unauthorized")).mount(&server).await;
-        let err = HttpEmbeddingClient::new(server.uri()).unwrap().embed(&build_embedding_request("m", &["x"], None, None)).await.unwrap_err();
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("unauthorized"))
+            .mount(&server)
+            .await;
+        let err = HttpEmbeddingClient::new(server.uri())
+            .unwrap()
+            .embed(&build_embedding_request("m", &["x"], None, None))
+            .await
+            .unwrap_err();
         assert!(matches!(err, AppError::Auth(_)));
     }
-    #[tokio::test] async fn wiremock_http_embedding_maps_500_to_external() {
-        use wiremock::matchers::{method, path}; use wiremock::{Mock, MockServer, ResponseTemplate};
+    #[tokio::test]
+    async fn wiremock_http_embedding_maps_500_to_external() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
         let server = MockServer::start().await;
-        Mock::given(method("POST")).and(path("/v1/embeddings")).respond_with(ResponseTemplate::new(500).set_body_string("err")).mount(&server).await;
-        let err = HttpEmbeddingClient::new(server.uri()).unwrap().embed(&build_embedding_request("m", &["x"], None, None)).await.unwrap_err();
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("err"))
+            .mount(&server)
+            .await;
+        let err = HttpEmbeddingClient::new(server.uri())
+            .unwrap()
+            .embed(&build_embedding_request("m", &["x"], None, None))
+            .await
+            .unwrap_err();
         assert!(matches!(err, AppError::External(_)));
     }
-    #[tokio::test] async fn wiremock_http_embedding_invalid_json_maps_to_invalid_input() {
-        use wiremock::matchers::{method, path}; use wiremock::{Mock, MockServer, ResponseTemplate};
+    #[tokio::test]
+    async fn wiremock_http_embedding_invalid_json_maps_to_invalid_input() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
         let server = MockServer::start().await;
-        Mock::given(method("POST")).and(path("/v1/embeddings")).respond_with(ResponseTemplate::new(200).set_body_string("{bad")).mount(&server).await;
-        let err = HttpEmbeddingClient::new(server.uri()).unwrap().embed(&build_embedding_request("m", &["x"], None, None)).await.unwrap_err();
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{bad"))
+            .mount(&server)
+            .await;
+        let err = HttpEmbeddingClient::new(server.uri())
+            .unwrap()
+            .embed(&build_embedding_request("m", &["x"], None, None))
+            .await
+            .unwrap_err();
         assert!(matches!(err, AppError::InvalidInput(_)));
     }
-    #[tokio::test] async fn wiremock_http_embedding_batched_preserves_order() {
-        use wiremock::matchers::{method, path}; use wiremock::{Mock, MockServer, ResponseTemplate};
+    #[tokio::test]
+    async fn wiremock_http_embedding_batched_preserves_order() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
         let server = MockServer::start().await;
-        Mock::given(method("POST")).and(path("/v1/embeddings")).respond_with(|req: &wiremock::Request| {
-            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
-            let inputs: Vec<String> = match &body["input"] { serde_json::Value::String(s) => vec![s.clone()], serde_json::Value::Array(a) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(), _ => panic!() };
-            let vectors: Vec<Vec<f32>> = inputs.iter().map(|l| vec![l.trim_start_matches('t').parse::<f32>().unwrap() + 1.0]).collect();
-            ResponseTemplate::new(200).set_body_json(serde_json::from_str::<serde_json::Value>(&sample_float_response_json(&vectors)).unwrap())
-        }).mount(&server).await;
-        let vectors = HttpEmbeddingClient::new(server.uri()).unwrap().embed_texts_batched("m", &["t0","t1","t2","t3","t4"], 2, None, None).await.unwrap();
-        assert_eq!(vectors.len(), 5); assert_eq!(vectors[0], vec![1.0]); assert_eq!(vectors[4], vec![5.0]);
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .respond_with(|req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                let inputs: Vec<String> = match &body["input"] {
+                    serde_json::Value::String(s) => vec![s.clone()],
+                    serde_json::Value::Array(a) => a
+                        .iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect(),
+                    _ => panic!(),
+                };
+                let vectors: Vec<Vec<f32>> = inputs
+                    .iter()
+                    .map(|l| vec![l.trim_start_matches('t').parse::<f32>().unwrap() + 1.0])
+                    .collect();
+                ResponseTemplate::new(200).set_body_json(
+                    serde_json::from_str::<serde_json::Value>(&sample_float_response_json(
+                        &vectors,
+                    ))
+                    .unwrap(),
+                )
+            })
+            .mount(&server)
+            .await;
+        let vectors = HttpEmbeddingClient::new(server.uri())
+            .unwrap()
+            .embed_texts_batched("m", &["t0", "t1", "t2", "t3", "t4"], 2, None, None)
+            .await
+            .unwrap();
+        assert_eq!(vectors.len(), 5);
+        assert_eq!(vectors[0], vec![1.0]);
+        assert_eq!(vectors[4], vec![5.0]);
     }
 
     // ---- content-hash dedup ----
 
     #[test]
     fn normalize_for_dedup_collapses_whitespace() {
-        assert_eq!(normalize_for_dedup("  hello   world \n\t again "), "hello world again");
+        assert_eq!(
+            normalize_for_dedup("  hello   world \n\t again "),
+            "hello world again"
+        );
         assert_eq!(normalize_for_dedup(""), "");
         assert_eq!(normalize_for_dedup("a"), "a");
     }
 
     #[test]
     fn content_hash_hex_ignores_whitespace_differences_only() {
-        assert_eq!(content_hash_hex("hello world"), content_hash_hex("  hello\tworld\n"));
-        assert_ne!(content_hash_hex("hello world"), content_hash_hex("helloworld"));
+        assert_eq!(
+            content_hash_hex("hello world"),
+            content_hash_hex("  hello\tworld\n")
+        );
+        assert_ne!(
+            content_hash_hex("hello world"),
+            content_hash_hex("helloworld")
+        );
         assert_ne!(content_hash_hex("a b"), content_hash_hex("b a"));
     }
 
@@ -2705,7 +3134,14 @@ mod tests {
         let vectors = vec![vec![0.0], vec![1.0], vec![2.0]];
         assert_eq!(
             plan.fan_out(&vectors),
-            vec![vec![0.0], vec![1.0], vec![0.0], vec![0.0], vec![2.0], vec![1.0]]
+            vec![
+                vec![0.0],
+                vec![1.0],
+                vec![0.0],
+                vec![0.0],
+                vec![2.0],
+                vec![1.0]
+            ]
         );
         let empty: [&str; 0] = [];
         assert_eq!(DedupPlan::plan(&empty).unique_indices, Vec::<usize>::new());
@@ -2716,18 +3152,17 @@ mod tests {
             let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
             let inputs: Vec<String> = match &body["input"] {
                 serde_json::Value::String(s) => vec![s.clone()],
-                serde_json::Value::Array(a) => {
-                    a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()
-                }
+                serde_json::Value::Array(a) => a
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect(),
                 _ => panic!("unexpected input payload"),
             };
-            let vectors: Vec<Vec<f32>> =
-                inputs.iter().map(|s| vec![s.len() as f32]).collect();
-            wiremock::ResponseTemplate::new(200)
-                .set_body_json(serde_json::from_str::<serde_json::Value>(
-                    &sample_float_response_json(&vectors),
-                )
-                .unwrap())
+            let vectors: Vec<Vec<f32>> = inputs.iter().map(|s| vec![s.len() as f32]).collect();
+            wiremock::ResponseTemplate::new(200).set_body_json(
+                serde_json::from_str::<serde_json::Value>(&sample_float_response_json(&vectors))
+                    .unwrap(),
+            )
         }
     }
 
@@ -2751,15 +3186,16 @@ mod tests {
 
         // Exactly one backend request carrying only the unique texts.
         let received = server.received_requests().await.unwrap();
-        assert_eq!(received.len(), 1, "duplicates must not trigger extra backend calls");
+        assert_eq!(
+            received.len(),
+            1,
+            "duplicates must not trigger extra backend calls"
+        );
         let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
         assert_eq!(body["input"], serde_json::json!(["alpha", "beta"]));
 
         // Vectors fanned back out to every original position.
-        assert_eq!(
-            vectors,
-            vec![vec![5.0], vec![4.0], vec![5.0], vec![4.0]]
-        );
+        assert_eq!(vectors, vec![vec![5.0], vec![4.0], vec![5.0], vec![4.0]]);
     }
 
     #[tokio::test]
@@ -2776,13 +3212,7 @@ mod tests {
 
         let client = HttpEmbeddingClient::new(server.uri()).unwrap();
         let vectors = client
-            .embed_texts_batched(
-                "m",
-                &["one", "two", "three", "four", "five"],
-                2,
-                None,
-                None,
-            )
+            .embed_texts_batched("m", &["one", "two", "three", "four", "five"], 2, None, None)
             .await
             .unwrap();
 
@@ -2803,30 +3233,60 @@ mod tests {
         assert_eq!(sent, vec!["one", "two", "three", "four", "five"]);
         assert_eq!(
             vectors,
-            vec![
-                vec![3.0],
-                vec![3.0],
-                vec![5.0],
-                vec![4.0],
-                vec![4.0]
-            ]
+            vec![vec![3.0], vec![3.0], vec![5.0], vec![4.0], vec![4.0]]
         );
     }
-    #[tokio::test] async fn wiremock_http_embedding_base64_response_path() {
-        use wiremock::matchers::{method, path}; use wiremock::{Mock, MockServer, ResponseTemplate};
+    #[tokio::test]
+    async fn wiremock_http_embedding_base64_response_path() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
         let values = vec![1.0f32, 2.0, 3.0];
         let body = serde_json::json!({"object":"list","model":"m","data":[{"object":"embedding","index":0,"embedding":encode_f32_le_base64(&values)}]}).to_string();
         let server = MockServer::start().await;
-        Mock::given(method("POST")).and(path("/v1/embeddings")).respond_with(ResponseTemplate::new(200).set_body_raw(body, "application/json")).mount(&server).await;
-        let vectors = HttpEmbeddingClient::new(server.uri()).unwrap().embed(&build_embedding_request("m", &["x"], Some(EmbeddingEncodingFormat::Base64), None)).await.unwrap();
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(body, "application/json"))
+            .mount(&server)
+            .await;
+        let vectors = HttpEmbeddingClient::new(server.uri())
+            .unwrap()
+            .embed(&build_embedding_request(
+                "m",
+                &["x"],
+                Some(EmbeddingEncodingFormat::Base64),
+                None,
+            ))
+            .await
+            .unwrap();
         assert_eq!(vectors[0], values);
     }
-    #[tokio::test] async fn wiremock_http_embedding_timeout_maps_to_unavailable() {
-        use std::time::Duration; use wiremock::matchers::{method, path}; use wiremock::{Mock, MockServer, ResponseTemplate};
+    #[tokio::test]
+    async fn wiremock_http_embedding_timeout_maps_to_unavailable() {
+        use std::time::Duration;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
         let server = MockServer::start().await;
-        Mock::given(method("POST")).and(path("/v1/embeddings")).respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(2)).set_body_string("{}")).mount(&server).await;
-        let client = HttpEmbeddingClient { http: reqwest::Client::builder().timeout(Duration::from_millis(200)).build().unwrap(), base_url: server.uri(), api_key: None };
-        let err = client.embed(&build_embedding_request("m", &["x"], None, None)).await.unwrap_err();
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_secs(2))
+                    .set_body_string("{}"),
+            )
+            .mount(&server)
+            .await;
+        let client = HttpEmbeddingClient {
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_millis(200))
+                .build()
+                .unwrap(),
+            base_url: server.uri(),
+            api_key: None,
+        };
+        let err = client
+            .embed(&build_embedding_request("m", &["x"], None, None))
+            .await
+            .unwrap_err();
         assert!(matches!(err, AppError::Unavailable(_)));
     }
 
@@ -3079,10 +3539,18 @@ mod tests {
             EmbeddingModelType::SnowflakeArcticEmbedLQ,
         ];
         for model in &multilingual {
-            assert!(model.is_multilingual(), "{:?} should be multilingual", model);
+            assert!(
+                model.is_multilingual(),
+                "{:?} should be multilingual",
+                model
+            );
         }
         for model in &not_multilingual {
-            assert!(!model.is_multilingual(), "{:?} should NOT be multilingual", model);
+            assert!(
+                !model.is_multilingual(),
+                "{:?} should NOT be multilingual",
+                model
+            );
         }
     }
 
@@ -3094,49 +3562,166 @@ mod tests {
     fn test_hf_repo_id_exhaustive_per_variant() {
         let cases: &[(EmbeddingModelType, &'static str)] = &[
             // Explicit mapped repos
-            (EmbeddingModelType::BgeSmallEnV15, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::BgeSmallEnV15Q, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::AllMiniLmL6V2, "sentence-transformers/all-MiniLM-L6-v2"),
-            (EmbeddingModelType::AllMiniLmL6V2Q, "sentence-transformers/all-MiniLM-L6-v2"),
-            (EmbeddingModelType::AllMiniLmL12V2, "sentence-transformers/all-MiniLM-L12-v2"),
-            (EmbeddingModelType::AllMiniLmL12V2Q, "sentence-transformers/all-MiniLM-L12-v2"),
+            (
+                EmbeddingModelType::BgeSmallEnV15,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::BgeSmallEnV15Q,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::AllMiniLmL6V2,
+                "sentence-transformers/all-MiniLM-L6-v2",
+            ),
+            (
+                EmbeddingModelType::AllMiniLmL6V2Q,
+                "sentence-transformers/all-MiniLM-L6-v2",
+            ),
+            (
+                EmbeddingModelType::AllMiniLmL12V2,
+                "sentence-transformers/all-MiniLM-L12-v2",
+            ),
+            (
+                EmbeddingModelType::AllMiniLmL12V2Q,
+                "sentence-transformers/all-MiniLM-L12-v2",
+            ),
             // Fallback repos
-            (EmbeddingModelType::AllMpnetBaseV2, "Xenova/bge-small-en-v1.5"),
+            (
+                EmbeddingModelType::AllMpnetBaseV2,
+                "Xenova/bge-small-en-v1.5",
+            ),
             (EmbeddingModelType::BgeBaseEnV15, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::BgeBaseEnV15Q, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::BgeLargeEnV15, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::BgeLargeEnV15Q, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::MultilingualE5Small, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::MultilingualE5Base, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::MultilingualE5Large, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::ParaphraseMiniLmL12V2, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::ParaphraseMiniLmL12V2Q, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::ParaphraseMultilingualMpnetBaseV2, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::BgeSmallZhV15, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::BgeLargeZhV15, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::NomicEmbedTextV1, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::NomicEmbedTextV15, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::NomicEmbedTextV15Q, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::MxbaiEmbedLargeV1, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::MxbaiEmbedLargeV1Q, "Xenova/bge-small-en-v1.5"),
+            (
+                EmbeddingModelType::BgeBaseEnV15Q,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::BgeLargeEnV15,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::BgeLargeEnV15Q,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::MultilingualE5Small,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::MultilingualE5Base,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::MultilingualE5Large,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::ParaphraseMiniLmL12V2,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::ParaphraseMiniLmL12V2Q,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::ParaphraseMultilingualMpnetBaseV2,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::BgeSmallZhV15,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::BgeLargeZhV15,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::NomicEmbedTextV1,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::NomicEmbedTextV15,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::NomicEmbedTextV15Q,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::MxbaiEmbedLargeV1,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::MxbaiEmbedLargeV1Q,
+                "Xenova/bge-small-en-v1.5",
+            ),
             (EmbeddingModelType::GteBaseEnV15, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::GteBaseEnV15Q, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::GteLargeEnV15, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::GteLargeEnV15Q, "Xenova/bge-small-en-v1.5"),
+            (
+                EmbeddingModelType::GteBaseEnV15Q,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::GteLargeEnV15,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::GteLargeEnV15Q,
+                "Xenova/bge-small-en-v1.5",
+            ),
             (EmbeddingModelType::ClipVitB32, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::JinaEmbeddingsV2BaseCode, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::EmbeddingGemma300M, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::ModernBertEmbedLarge, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::SnowflakeArcticEmbedXs, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::SnowflakeArcticEmbedXsQ, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::SnowflakeArcticEmbedS, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::SnowflakeArcticEmbedSQ, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::SnowflakeArcticEmbedM, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::SnowflakeArcticEmbedMQ, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::SnowflakeArcticEmbedMLong, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::SnowflakeArcticEmbedMLongQ, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::SnowflakeArcticEmbedL, "Xenova/bge-small-en-v1.5"),
-            (EmbeddingModelType::SnowflakeArcticEmbedLQ, "Xenova/bge-small-en-v1.5"),
+            (
+                EmbeddingModelType::JinaEmbeddingsV2BaseCode,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::EmbeddingGemma300M,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::ModernBertEmbedLarge,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::SnowflakeArcticEmbedXs,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::SnowflakeArcticEmbedXsQ,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::SnowflakeArcticEmbedS,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::SnowflakeArcticEmbedSQ,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::SnowflakeArcticEmbedM,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::SnowflakeArcticEmbedMQ,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::SnowflakeArcticEmbedMLong,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::SnowflakeArcticEmbedMLongQ,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::SnowflakeArcticEmbedL,
+                "Xenova/bge-small-en-v1.5",
+            ),
+            (
+                EmbeddingModelType::SnowflakeArcticEmbedLQ,
+                "Xenova/bge-small-en-v1.5",
+            ),
         ];
         for (model, expected_repo) in cases {
             assert_eq!(
@@ -3155,21 +3740,66 @@ mod tests {
     #[test]
     fn test_quantized_base_same_hf_repo_exhaustive() {
         let pairs = [
-            (EmbeddingModelType::BgeSmallEnV15, EmbeddingModelType::BgeSmallEnV15Q),
-            (EmbeddingModelType::AllMiniLmL6V2, EmbeddingModelType::AllMiniLmL6V2Q),
-            (EmbeddingModelType::AllMiniLmL12V2, EmbeddingModelType::AllMiniLmL12V2Q),
-            (EmbeddingModelType::BgeBaseEnV15, EmbeddingModelType::BgeBaseEnV15Q),
-            (EmbeddingModelType::BgeLargeEnV15, EmbeddingModelType::BgeLargeEnV15Q),
-            (EmbeddingModelType::ParaphraseMiniLmL12V2, EmbeddingModelType::ParaphraseMiniLmL12V2Q),
-            (EmbeddingModelType::NomicEmbedTextV15, EmbeddingModelType::NomicEmbedTextV15Q),
-            (EmbeddingModelType::MxbaiEmbedLargeV1, EmbeddingModelType::MxbaiEmbedLargeV1Q),
-            (EmbeddingModelType::GteBaseEnV15, EmbeddingModelType::GteBaseEnV15Q),
-            (EmbeddingModelType::GteLargeEnV15, EmbeddingModelType::GteLargeEnV15Q),
-            (EmbeddingModelType::SnowflakeArcticEmbedXs, EmbeddingModelType::SnowflakeArcticEmbedXsQ),
-            (EmbeddingModelType::SnowflakeArcticEmbedS, EmbeddingModelType::SnowflakeArcticEmbedSQ),
-            (EmbeddingModelType::SnowflakeArcticEmbedM, EmbeddingModelType::SnowflakeArcticEmbedMQ),
-            (EmbeddingModelType::SnowflakeArcticEmbedMLong, EmbeddingModelType::SnowflakeArcticEmbedMLongQ),
-            (EmbeddingModelType::SnowflakeArcticEmbedL, EmbeddingModelType::SnowflakeArcticEmbedLQ),
+            (
+                EmbeddingModelType::BgeSmallEnV15,
+                EmbeddingModelType::BgeSmallEnV15Q,
+            ),
+            (
+                EmbeddingModelType::AllMiniLmL6V2,
+                EmbeddingModelType::AllMiniLmL6V2Q,
+            ),
+            (
+                EmbeddingModelType::AllMiniLmL12V2,
+                EmbeddingModelType::AllMiniLmL12V2Q,
+            ),
+            (
+                EmbeddingModelType::BgeBaseEnV15,
+                EmbeddingModelType::BgeBaseEnV15Q,
+            ),
+            (
+                EmbeddingModelType::BgeLargeEnV15,
+                EmbeddingModelType::BgeLargeEnV15Q,
+            ),
+            (
+                EmbeddingModelType::ParaphraseMiniLmL12V2,
+                EmbeddingModelType::ParaphraseMiniLmL12V2Q,
+            ),
+            (
+                EmbeddingModelType::NomicEmbedTextV15,
+                EmbeddingModelType::NomicEmbedTextV15Q,
+            ),
+            (
+                EmbeddingModelType::MxbaiEmbedLargeV1,
+                EmbeddingModelType::MxbaiEmbedLargeV1Q,
+            ),
+            (
+                EmbeddingModelType::GteBaseEnV15,
+                EmbeddingModelType::GteBaseEnV15Q,
+            ),
+            (
+                EmbeddingModelType::GteLargeEnV15,
+                EmbeddingModelType::GteLargeEnV15Q,
+            ),
+            (
+                EmbeddingModelType::SnowflakeArcticEmbedXs,
+                EmbeddingModelType::SnowflakeArcticEmbedXsQ,
+            ),
+            (
+                EmbeddingModelType::SnowflakeArcticEmbedS,
+                EmbeddingModelType::SnowflakeArcticEmbedSQ,
+            ),
+            (
+                EmbeddingModelType::SnowflakeArcticEmbedM,
+                EmbeddingModelType::SnowflakeArcticEmbedMQ,
+            ),
+            (
+                EmbeddingModelType::SnowflakeArcticEmbedMLong,
+                EmbeddingModelType::SnowflakeArcticEmbedMLongQ,
+            ),
+            (
+                EmbeddingModelType::SnowflakeArcticEmbedL,
+                EmbeddingModelType::SnowflakeArcticEmbedLQ,
+            ),
         ];
         for (base, quantized) in &pairs {
             assert_eq!(
@@ -3207,7 +3837,10 @@ mod tests {
         let parsed: EmbeddingConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.model, original.model);
         assert_eq!(parsed.batch_size, original.batch_size);
-        assert_eq!(parsed.show_download_progress, original.show_download_progress);
+        assert_eq!(
+            parsed.show_download_progress,
+            original.show_download_progress
+        );
         assert_eq!(parsed.sparse_enabled, original.sparse_enabled);
         assert_eq!(parsed.sparse_model, original.sparse_model);
     }
@@ -3221,7 +3854,11 @@ mod tests {
         for variant in [SparseModelType::SpladePpV1] {
             let display = variant.to_string();
             let parsed: SparseModelType = display.parse().unwrap();
-            assert_eq!(parsed, variant, "SparseModelType roundtrip failed for {:?}", variant);
+            assert_eq!(
+                parsed, variant,
+                "SparseModelType roundtrip failed for {:?}",
+                variant
+            );
         }
     }
 
@@ -3273,7 +3910,10 @@ mod tests {
     fn test_batch_chunks_non_copy_type() {
         let items = vec!["hello".to_string(), "world".to_string()];
         let batches = batch_chunks(&items, 1);
-        assert_eq!(batches, vec![vec!["hello".to_string()], vec!["world".to_string()]]);
+        assert_eq!(
+            batches,
+            vec![vec!["hello".to_string()], vec!["world".to_string()]]
+        );
     }
 
     // ============================================================================
@@ -3486,7 +4126,11 @@ mod tests {
         // text1 should have been evicted, causing a miss
         let _ = cached.embed_text(text1).await.unwrap();
         let stats = cached.cache_stats();
-        assert!(stats.evictions > 0 || stats.misses >= 2, "Expected eviction or miss, got stats={:?}", stats);
+        assert!(
+            stats.evictions > 0 || stats.misses >= 2,
+            "Expected eviction or miss, got stats={:?}",
+            stats
+        );
     }
 
     // ============================================================================
@@ -3499,11 +4143,24 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
         let server = MockServer::start().await;
-        Mock::given(method("POST")).and(path("/v1/embeddings"))
-            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(2)).set_body_string("{}"))
-            .mount(&server).await;
-        let http = reqwest::Client::builder().timeout(Duration::from_millis(100)).build().unwrap();
-        let err = http.post(format!("{}/v1/embeddings", server.uri())).send().await.unwrap_err();
+        Mock::given(method("POST"))
+            .and(path("/v1/embeddings"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_secs(2))
+                    .set_body_string("{}"),
+            )
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_millis(100))
+            .build()
+            .unwrap();
+        let err = http
+            .post(format!("{}/v1/embeddings", server.uri()))
+            .send()
+            .await
+            .unwrap_err();
         let mapped = map_embedding_transport_error(&err);
         assert!(matches!(mapped, AppError::Unavailable(_)));
         assert!(mapped.to_string().contains("timed out"));
@@ -3585,6 +4242,4 @@ mod tests {
         let req = build_embedding_request("m", &["hello"], None, Some(512));
         assert_eq!(req.dimensions, Some(512));
     }
-
 }
-

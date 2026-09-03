@@ -1,12 +1,10 @@
-use crate::Result;
+use crate::types::{AppError, LoginRequest, RegisterRequest, TokenResponse};
 use crate::HttpError;
-use crate::{
-    types::{AppError, LoginRequest, RegisterRequest, TokenResponse},
-};
-use std::sync::Arc;
-use cordis::Context;
+use crate::Result;
 use axum::{extract::State, Json};
+use cordis::Context;
 use serde::Deserialize;
+use std::sync::Arc;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -17,15 +15,16 @@ pub struct RefreshTokenRequest {
     pub refresh_token: String,
 }
 
-const REGISTER_VALIDATION_MSG: &str =
-    "Email required and password must be at least 8 characters";
+const REGISTER_VALIDATION_MSG: &str = "Email required and password must be at least 8 characters";
 const LOGIN_VALIDATION_MSG: &str = "Email and password are required";
 const LOGOUT_SUCCESS_MESSAGE: &str = "Logged out successfully";
 
 /// Validates registration email and password before hitting the database.
 fn validate_register_input(email: &str, password: &str) -> Result<()> {
     if email.is_empty() || !password_meets_minimum_length(password) {
-        return Err(HttpError::from(AppError::InvalidInput(REGISTER_VALIDATION_MSG.to_string().into())));
+        return Err(HttpError::from(AppError::InvalidInput(
+            REGISTER_VALIDATION_MSG.to_string().into(),
+        )));
     }
     Ok(())
 }
@@ -37,7 +36,9 @@ fn password_meets_minimum_length(password: &str) -> bool {
 /// Validates login email and password before hitting the database.
 fn validate_login_input(email: &str, password: &str) -> Result<()> {
     if email.is_empty() || password.is_empty() {
-        return Err(HttpError::from(AppError::InvalidInput(LOGIN_VALIDATION_MSG.to_string().into())));
+        return Err(HttpError::from(AppError::InvalidInput(
+            LOGIN_VALIDATION_MSG.to_string().into(),
+        )));
     }
     Ok(())
 }
@@ -72,7 +73,9 @@ fn refresh_token_from_request(payload: &RefreshTokenRequest) -> &str {
 /// Ensures the refresh-token session user matches JWT subject claims.
 fn validate_token_user_match(session_user_id: &str, claims_sub: &str) -> Result<()> {
     if session_user_id != claims_sub {
-        return Err(HttpError::from(AppError::Auth("Token mismatch".to_string().into())));
+        return Err(HttpError::from(AppError::Auth(
+            "Token mismatch".to_string().into(),
+        )));
     }
     Ok(())
 }
@@ -85,27 +88,43 @@ pub async fn register(
     validate_register_input(&payload.email, &payload.password)?;
 
     // Check if user exists
-    if ctx.get::<ares_store::PostgresClient>().expect("not provided").get_user_by_email(&payload.email).await?.is_some() {
+    if ctx
+        .get::<ares_store::PostgresClient>()
+        .expect("not provided")
+        .get_user_by_email(&payload.email)
+        .await?
+        .is_some()
+    {
         return Err(HttpError::from(user_already_exists_error()));
     }
 
     // Hash password
-    let password_hash = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided").hash_password(&payload.password)?;
+    let password_hash = ctx
+        .get::<crate::auth::jwt::AuthService>()
+        .expect("not provided")
+        .hash_password(&payload.password)?;
 
     // Create user
     let user_id = Uuid::new_v4().to_string();
-    ctx.get::<ares_store::PostgresClient>().expect("not provided")
+    ctx.get::<ares_store::PostgresClient>()
+        .expect("not provided")
         .create_user(&user_id, &payload.email, &password_hash, &payload.name)
         .await?;
 
     // Generate tokens
-    let tokens = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided")
+    let tokens = ctx
+        .get::<crate::auth::jwt::AuthService>()
+        .expect("not provided")
         .generate_tokens(&user_id, &payload.email)?;
 
     // Store refresh token
-    let token_hash = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided").hash_token(&tokens.refresh_token);
+    let token_hash = ctx
+        .get::<crate::auth::jwt::AuthService>()
+        .expect("not provided")
+        .hash_token(&tokens.refresh_token);
     let session_id = Uuid::new_v4().to_string();
-    ctx.get::<ares_store::PostgresClient>().expect("not provided")
+    ctx.get::<ares_store::PostgresClient>()
+        .expect("not provided")
         .create_session(
             &session_id,
             &user_id,
@@ -125,25 +144,36 @@ pub async fn login(
     validate_login_input(&payload.email, &payload.password)?;
 
     // Get user
-    let user = ctx.get::<ares_store::PostgresClient>().expect("not provided")
+    let user = ctx
+        .get::<ares_store::PostgresClient>()
+        .expect("not provided")
         .get_user_by_email(&payload.email)
         .await?
         .ok_or_else(invalid_credentials_error)?;
 
     // Verify password
-    if !ctx.get::<crate::auth::jwt::AuthService>().expect("not provided")
+    if !ctx
+        .get::<crate::auth::jwt::AuthService>()
+        .expect("not provided")
         .verify_password(&payload.password, &user.password_hash)?
     {
         return Err(HttpError::from(invalid_credentials_error()));
     }
 
     // Generate tokens
-    let tokens = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided").generate_tokens(&user.id, &user.email)?;
+    let tokens = ctx
+        .get::<crate::auth::jwt::AuthService>()
+        .expect("not provided")
+        .generate_tokens(&user.id, &user.email)?;
 
     // Store refresh token
-    let token_hash = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided").hash_token(&tokens.refresh_token);
+    let token_hash = ctx
+        .get::<crate::auth::jwt::AuthService>()
+        .expect("not provided")
+        .hash_token(&tokens.refresh_token);
     let session_id = Uuid::new_v4().to_string();
-    ctx.get::<ares_store::PostgresClient>().expect("not provided")
+    ctx.get::<ares_store::PostgresClient>()
+        .expect("not provided")
         .create_session(
             &session_id,
             &user.id,
@@ -175,11 +205,17 @@ pub async fn logout(
     Json(payload): Json<LogoutRequest>,
 ) -> Result<Json<LogoutResponse>> {
     // Hash the refresh token and delete the session
-    let token_hash = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided").hash_token(&payload.refresh_token);
+    let token_hash = ctx
+        .get::<crate::auth::jwt::AuthService>()
+        .expect("not provided")
+        .hash_token(&payload.refresh_token);
 
     // Attempt to delete the session - we don't error if it doesn't exist
     // (token may already be expired/revoked, which is fine for logout)
-    ctx.get::<ares_store::PostgresClient>().expect("not provided").delete_session_by_token_hash(&token_hash).await?;
+    ctx.get::<ares_store::PostgresClient>()
+        .expect("not provided")
+        .delete_session_by_token_hash(&token_hash)
+        .await?;
 
     Ok(Json(build_logout_response()))
 }
@@ -192,11 +228,19 @@ pub async fn refresh_token(
     let refresh_token = refresh_token_from_request(&payload);
 
     // Verify refresh token JWT signature and expiry
-    let claims = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided").verify_token(refresh_token)?;
+    let claims = ctx
+        .get::<crate::auth::jwt::AuthService>()
+        .expect("not provided")
+        .verify_token(refresh_token)?;
 
     // Hash the refresh token and validate it exists in the database
-    let token_hash = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided").hash_token(refresh_token);
-    let user_id = ctx.get::<ares_store::PostgresClient>().expect("not provided")
+    let token_hash = ctx
+        .get::<crate::auth::jwt::AuthService>()
+        .expect("not provided")
+        .hash_token(refresh_token);
+    let user_id = ctx
+        .get::<ares_store::PostgresClient>()
+        .expect("not provided")
         .validate_session(&token_hash)
         .await?
         .ok_or_else(revoked_refresh_token_error)?;
@@ -204,16 +248,25 @@ pub async fn refresh_token(
     validate_token_user_match(&user_id, &claims.sub)?;
 
     // Invalidate the old refresh token (one-time use)
-    ctx.get::<ares_store::PostgresClient>().expect("not provided").delete_session_by_token_hash(&token_hash).await?;
+    ctx.get::<ares_store::PostgresClient>()
+        .expect("not provided")
+        .delete_session_by_token_hash(&token_hash)
+        .await?;
 
     // Generate new tokens
-    let tokens = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided")
+    let tokens = ctx
+        .get::<crate::auth::jwt::AuthService>()
+        .expect("not provided")
         .generate_tokens(&claims.sub, &claims.email)?;
 
     // Store the new refresh token in a new session
-    let new_token_hash = ctx.get::<crate::auth::jwt::AuthService>().expect("not provided").hash_token(&tokens.refresh_token);
+    let new_token_hash = ctx
+        .get::<crate::auth::jwt::AuthService>()
+        .expect("not provided")
+        .hash_token(&tokens.refresh_token);
     let session_id = Uuid::new_v4().to_string();
-    ctx.get::<ares_store::PostgresClient>().expect("not provided")
+    ctx.get::<ares_store::PostgresClient>()
+        .expect("not provided")
         .create_session(
             &session_id,
             &claims.sub,
@@ -263,10 +316,9 @@ mod tests {
     fn validate_register_input_rejects_empty_email() {
         let err = validate_register_input("", "longpassword").unwrap_err();
         assert!(matches!(err.0, AppError::InvalidInput(_)));
-        assert!(
-            err.to_string()
-                .contains("Email required and password must be at least 8 characters")
-        );
+        assert!(err
+            .to_string()
+            .contains("Email required and password must be at least 8 characters"));
     }
 
     #[test]
@@ -313,7 +365,8 @@ mod tests {
     #[test]
     fn register_request_deserializes_email_and_password() {
         let req: RegisterRequest =
-            serde_json::from_str(r#"{"email":"a@b.co","password":"secret123","name":"Alice"}"#).unwrap();
+            serde_json::from_str(r#"{"email":"a@b.co","password":"secret123","name":"Alice"}"#)
+                .unwrap();
         assert_eq!(req.email, "a@b.co");
         assert_eq!(req.password, "secret123");
         assert_eq!(req.name, "Alice");
@@ -441,10 +494,9 @@ mod tests {
 
     #[test]
     fn register_request_rejects_missing_email() {
-        let err = serde_json::from_str::<RegisterRequest>(
-            r#"{"password":"secret123","name":"Alice"}"#,
-        )
-        .unwrap_err();
+        let err =
+            serde_json::from_str::<RegisterRequest>(r#"{"password":"secret123","name":"Alice"}"#)
+                .unwrap_err();
         assert!(err.to_string().contains("email"));
     }
 
@@ -502,5 +554,4 @@ mod tests {
     fn register_validation_message_constant_matches_error() {
         assert!(REGISTER_VALIDATION_MSG.contains("8 characters"));
     }
-
 }

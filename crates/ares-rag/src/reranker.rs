@@ -192,10 +192,17 @@ impl Reranker {
                         .map(std::path::PathBuf::from)
                         .unwrap_or_else(|_| {
                             let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-                            std::path::PathBuf::from(home).join(".cache").join("fastembed")
+                            std::path::PathBuf::from(home)
+                                .join(".cache")
+                                .join("fastembed")
                         });
-                    if let Err(e) = super::embeddings::pre_download_model(repo_id, onnx_files, &cache_dir) {
-                        tracing::warn!("Reranker pre-download failed (may already be cached): {}", e);
+                    if let Err(e) =
+                        super::embeddings::pre_download_model(repo_id, onnx_files, &cache_dir)
+                    {
+                        tracing::warn!(
+                            "Reranker pre-download failed (may already be cached): {}",
+                            e
+                        );
                     }
 
                     let init_options = RerankInitOptions::new(config.model.to_fastembed_model())
@@ -499,7 +506,10 @@ mod tests {
         for model in RerankerModelType::all() {
             let display = model.to_string();
             let parsed: RerankerModelType = display.parse().unwrap_or_else(|_| {
-                panic!("Display→FromStr roundtrip failed for {:?} ('{}')", model, display)
+                panic!(
+                    "Display→FromStr roundtrip failed for {:?} ('{}')",
+                    model, display
+                )
             });
             assert_eq!(parsed, model);
         }
@@ -511,7 +521,10 @@ mod tests {
             ("bge-base", RerankerModelType::BgeRerankerBase),
             ("bge-m3", RerankerModelType::BgeRerankerV2M3),
             ("jina-turbo", RerankerModelType::JinaRerankerV1TurboEn),
-            ("jina-multilingual", RerankerModelType::JinaRerankerV2BaseMultilingual),
+            (
+                "jina-multilingual",
+                RerankerModelType::JinaRerankerV2BaseMultilingual,
+            ),
         ];
         for (alias, expected) in aliases {
             let parsed: RerankerModelType = alias.parse().unwrap();
@@ -538,7 +551,12 @@ mod tests {
         for model in RerankerModelType::all() {
             let repo = model.hf_repo_id();
             assert!(!repo.is_empty(), "{:?} has empty repo ID", model);
-            assert!(repo.contains('/'), "{:?} repo '{}' should have org/model format", model, repo);
+            assert!(
+                repo.contains('/'),
+                "{:?} repo '{}' should have org/model format",
+                model,
+                repo
+            );
         }
     }
 
@@ -579,7 +597,8 @@ mod tests {
 
     #[test]
     fn test_reranker_model_type_serde_kebab_case() {
-        let json = serde_json::to_string(&RerankerModelType::JinaRerankerV2BaseMultilingual).unwrap();
+        let json =
+            serde_json::to_string(&RerankerModelType::JinaRerankerV2BaseMultilingual).unwrap();
         assert_eq!(json, "\"jina-reranker-v2-base-multilingual\"");
 
         let parsed: RerankerModelType = serde_json::from_str(&json).unwrap();
@@ -731,8 +750,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(idx, (id, retrieval_score, rerank_score))| {
-                let normalized =
-                    normalize_retrieval_score(*retrieval_score, min_r, max_r);
+                let normalized = normalize_retrieval_score(*retrieval_score, min_r, max_r);
                 let final_score =
                     compute_hybrid_final_score(normalized, *rerank_score, rerank_weight);
                 RerankedResult {
@@ -782,5 +800,4 @@ mod tests {
         assert_eq!(ranked[0].id, "first");
         assert_eq!(ranked[1].id, "second");
     }
-
 }

@@ -354,9 +354,7 @@ mod tests {
             .await
             .unwrap();
 
-        let loaded = load_collection(base_path, "metadata_only")
-            .await
-            .unwrap();
+        let loaded = load_collection(base_path, "metadata_only").await.unwrap();
         assert_eq!(loaded.name(), "metadata_only");
         assert_eq!(loaded.len(), 0);
     }
@@ -534,11 +532,7 @@ mod tests {
             assert_eq!(loaded[0].id, "v1");
             assert_eq!(loaded[1].id, "v2");
             assert_eq!(
-                loaded[1]
-                    .metadata
-                    .as_ref()
-                    .unwrap()
-                    .get_string("tag"),
+                loaded[1].metadata.as_ref().unwrap().get_string("tag"),
                 Some("rust")
             );
         }

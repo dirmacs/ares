@@ -893,77 +893,77 @@ You are {}.",
                             }
                         }
                     } else {
-                    let config = ares_llm::coordinator::ToolCallingConfig::default();
-                    let coordinator = ares_llm::coordinator::ToolCoordinator::new(
-                        client,
-                        Arc::clone(&tools),
-                        config,
-                    );
-                    match coordinator
-                        .execute(Some(&system_prompt), &req.message, ctx)
-                        .await
-                    {
-                        Ok(coord_result) => {
-                            if let Some(_db) = tenant_db(ctx) {
-                                tracing::debug!(
-                                    content_len = coord_result.content.len(),
-                                    "observability sink run_history/agent_runs via TenantDb"
-                                );
-                                let _ = _db;
-                            }
-                            let usage = coord_result.total_usage.clone();
-                            if let Some(tdb) = tenant_db(ctx) {
-                                let _pool = tdb.pool();
-                                tracing::debug!(
-                                    tenant = ?tenant,
-                                    prompt = usage.prompt_tokens,
-                                    completion = usage.completion_tokens,
-                                    total = usage.total_tokens,
-                                    "token budget check via TenantDb and usage aggregation"
-                                );
-                                let _ = _pool;
-                            }
-                            self.emit_observability_typed::<cordis::AgentUsageEvent>(
-                                ctx,
-                                &cordis::AgentUsagePayload {
-                                    tenant: tenant.clone(),
-                                    prompt: usage.prompt_tokens as i64,
-                                    completion: usage.completion_tokens as i64,
-                                    total: usage.total_tokens as i64,
-                                },
-                            )
-                            .await;
-                            let mut detector = crate::loop_detector::LoopDetector::new();
-                            match detector.check(&coord_result.content) {
-                                crate::loop_detector::LoopStatus::LoopDetected {
-                                    repeats,
-                                    action,
-                                    kind,
-                                } => {
-                                    tracing::warn!(
-                                        repeats,
-                                        ?action,
-                                        ?kind,
-                                        "loop_detector triggered in Execute"
+                        let config = ares_llm::coordinator::ToolCallingConfig::default();
+                        let coordinator = ares_llm::coordinator::ToolCoordinator::new(
+                            client,
+                            Arc::clone(&tools),
+                            config,
+                        );
+                        match coordinator
+                            .execute(Some(&system_prompt), &req.message, ctx)
+                            .await
+                        {
+                            Ok(coord_result) => {
+                                if let Some(_db) = tenant_db(ctx) {
+                                    tracing::debug!(
+                                        content_len = coord_result.content.len(),
+                                        "observability sink run_history/agent_runs via TenantDb"
                                     );
+                                    let _ = _db;
                                 }
-                                crate::loop_detector::LoopStatus::Ok => {}
+                                let usage = coord_result.total_usage.clone();
+                                if let Some(tdb) = tenant_db(ctx) {
+                                    let _pool = tdb.pool();
+                                    tracing::debug!(
+                                        tenant = ?tenant,
+                                        prompt = usage.prompt_tokens,
+                                        completion = usage.completion_tokens,
+                                        total = usage.total_tokens,
+                                        "token budget check via TenantDb and usage aggregation"
+                                    );
+                                    let _ = _pool;
+                                }
+                                self.emit_observability_typed::<cordis::AgentUsageEvent>(
+                                    ctx,
+                                    &cordis::AgentUsagePayload {
+                                        tenant: tenant.clone(),
+                                        prompt: usage.prompt_tokens as i64,
+                                        completion: usage.completion_tokens as i64,
+                                        total: usage.total_tokens as i64,
+                                    },
+                                )
+                                .await;
+                                let mut detector = crate::loop_detector::LoopDetector::new();
+                                match detector.check(&coord_result.content) {
+                                    crate::loop_detector::LoopStatus::LoopDetected {
+                                        repeats,
+                                        action,
+                                        kind,
+                                    } => {
+                                        tracing::warn!(
+                                            repeats,
+                                            ?action,
+                                            ?kind,
+                                            "loop_detector triggered in Execute"
+                                        );
+                                    }
+                                    crate::loop_detector::LoopStatus::Ok => {}
+                                }
+                                return Ok(AgentResponse {
+                                    content: coord_result.content,
+                                    usage: Some(usage),
+                                    metadata: None,
+                                });
                             }
-                            return Ok(AgentResponse {
-                                content: coord_result.content,
-                                usage: Some(usage),
-                                metadata: None,
-                            });
-                        }
-                        Err(e) => {
-                            if self.strict_fallbacks {
-                                return Err(AppError::Unavailable(format!(
-                                    "strict_fallbacks: ToolCoordinator::execute failed: {e}"
-                                )));
+                            Err(e) => {
+                                if self.strict_fallbacks {
+                                    return Err(AppError::Unavailable(format!(
+                                        "strict_fallbacks: ToolCoordinator::execute failed: {e}"
+                                    )));
+                                }
+                                tracing::warn!(error = %e, "ToolCoordinator loop failed, trying fallback LLM chain");
                             }
-                            tracing::warn!(error = %e, "ToolCoordinator loop failed, trying fallback LLM chain");
                         }
-                    }
                     }
                 }
                 Err(e) => {
@@ -1869,9 +1869,7 @@ mod tests {
         let req = AgentRequest {
             agent_name: "echo".into(),
             message: "caption".into(),
-            parts: vec![ContentPart::Text {
-                text: "img".into(),
-            }],
+            parts: vec![ContentPart::Text { text: "img".into() }],
             ..Default::default()
         };
         let mut stream = svc.run_stream(&req, &ctx).await.expect("stream");

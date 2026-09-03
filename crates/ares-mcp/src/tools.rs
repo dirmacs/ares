@@ -176,7 +176,6 @@ pub struct UsageQuota {
     pub utilization: f64,
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,7 +186,10 @@ mod tests {
         let input = ListAgentsInput::default();
         let json = serde_json::to_string(&input).unwrap();
         let restored: ListAgentsInput = serde_json::from_str(&json).unwrap();
-        assert_eq!(format!("{:?}", restored), format!("{:?}", ListAgentsInput::default()));
+        assert_eq!(
+            format!("{:?}", restored),
+            format!("{:?}", ListAgentsInput::default())
+        );
     }
 
     #[test]
@@ -274,13 +276,11 @@ mod tests {
             response: "Hello!".into(),
             agent: "chatbot".into(),
             context_id: "ctx-42".into(),
-            sources: Some(vec![
-                SourceRef {
-                    title: "Doc 1".into(),
-                    url: Some("https://example.com".into()),
-                    snippet: Some("excerpt".into()),
-                },
-            ]),
+            sources: Some(vec![SourceRef {
+                title: "Doc 1".into(),
+                url: Some("https://example.com".into()),
+                snippet: Some("excerpt".into()),
+            }]),
         };
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["response"], "Hello!");
@@ -620,13 +620,11 @@ mod tests {
             response: "done".into(),
             agent: "search".into(),
             context_id: "ctx-x".into(),
-            sources: Some(vec![
-                SourceRef {
-                    title: "doc".into(),
-                    url: None,
-                    snippet: None,
-                },
-            ]),
+            sources: Some(vec![SourceRef {
+                title: "doc".into(),
+                url: None,
+                snippet: None,
+            }]),
         };
         let json = serde_json::to_value(&output).unwrap();
         let source = &json["sources"][0];
@@ -650,7 +648,9 @@ mod tests {
         };
         assert!(format!("{:?}", run).contains("RunAgentInput"));
 
-        let status = GetStatusInput { context_id: "c".into() };
+        let status = GetStatusInput {
+            context_id: "c".into(),
+        };
         assert!(format!("{:?}", status).contains("GetStatusInput"));
 
         let deploy = DeployAgentInput {
@@ -701,15 +701,13 @@ mod tests {
     #[test]
     fn list_agents_output_total_independent_of_vec_len() {
         let output = ListAgentsOutput {
-            agents: vec![
-                AgentSummary {
-                    name: "a1".into(),
-                    description: "d1".into(),
-                    agent_type: "chat".into(),
-                    active: true,
-                    deployed_at: "2026-01-01".into(),
-                },
-            ],
+            agents: vec![AgentSummary {
+                name: "a1".into(),
+                description: "d1".into(),
+                agent_type: "chat".into(),
+                active: true,
+                deployed_at: "2026-01-01".into(),
+            }],
             total: 50, // total can exceed vec length (paginated)
         };
         let json = serde_json::to_value(&output).unwrap();
@@ -739,7 +737,10 @@ mod tests {
         let tool = tools.iter().find(|t| t.name == "ares_list_agents").unwrap();
         assert_eq!(tool.input_schema["type"], "object");
         let required = tool.input_schema["required"].as_array().unwrap();
-        assert!(required.is_empty(), "list_agents should have no required fields");
+        assert!(
+            required.is_empty(),
+            "list_agents should have no required fields"
+        );
     }
 
     #[test]
@@ -755,7 +756,10 @@ mod tests {
             .collect();
         assert!(required.contains(&"agent_name"));
         assert!(required.contains(&"message"));
-        assert!(!required.contains(&"context_id"), "context_id should be optional");
+        assert!(
+            !required.contains(&"context_id"),
+            "context_id should be optional"
+        );
         // Verify properties exist in schema
         assert!(tool.input_schema["properties"]["agent_name"].is_object());
         assert!(tool.input_schema["properties"]["message"].is_object());
@@ -776,7 +780,10 @@ mod tests {
     #[test]
     fn deploy_agent_schema_requires_toon_config() {
         let tools = builtin_ares_tools();
-        let tool = tools.iter().find(|t| t.name == "ares_deploy_agent").unwrap();
+        let tool = tools
+            .iter()
+            .find(|t| t.name == "ares_deploy_agent")
+            .unwrap();
         assert_eq!(tool.input_schema["type"], "object");
         let required = tool.input_schema["required"].as_array().unwrap();
         assert_eq!(required.len(), 1);
@@ -791,7 +798,10 @@ mod tests {
         let tool = tools.iter().find(|t| t.name == "ares_get_usage").unwrap();
         assert_eq!(tool.input_schema["type"], "object");
         let required = tool.input_schema["required"].as_array().unwrap();
-        assert!(required.is_empty(), "get_usage should have no required fields");
+        assert!(
+            required.is_empty(),
+            "get_usage should have no required fields"
+        );
         assert!(tool.input_schema["properties"]["from_date"].is_object());
         assert!(tool.input_schema["properties"]["to_date"].is_object());
     }
@@ -800,7 +810,10 @@ mod tests {
     fn all_builtin_tools_have_non_empty_description() {
         for tool in builtin_ares_tools() {
             assert!(
-                tool.description.as_ref().map(|d| !d.is_empty()).unwrap_or(false),
+                tool.description
+                    .as_ref()
+                    .map(|d| !d.is_empty())
+                    .unwrap_or(false),
                 "{} should have a non-empty description",
                 tool.name
             );
@@ -814,7 +827,10 @@ mod tests {
     #[test]
     fn list_agents_input_ignores_extra_fields() {
         let input: ListAgentsInput = serde_json::from_str(r#"{"foo":"bar"}"#).unwrap();
-        assert_eq!(format!("{:?}", input), format!("{:?}", ListAgentsInput::default()));
+        assert_eq!(
+            format!("{:?}", input),
+            format!("{:?}", ListAgentsInput::default())
+        );
     }
 
     #[test]
@@ -836,9 +852,8 @@ mod tests {
 
     #[test]
     fn run_agent_input_rejects_array_for_agent_name() {
-        let result = serde_json::from_str::<RunAgentInput>(
-            r#"{"agent_name":["bot"],"message":"hi"}"#,
-        );
+        let result =
+            serde_json::from_str::<RunAgentInput>(r#"{"agent_name":["bot"],"message":"hi"}"#);
         assert!(result.is_err());
     }
 
@@ -870,9 +885,7 @@ mod tests {
 
     #[test]
     fn deploy_agent_input_rejects_null_name_override_with_missing_toon_config() {
-        let result = serde_json::from_str::<DeployAgentInput>(
-            r#"{"name_override":null}"#,
-        );
+        let result = serde_json::from_str::<DeployAgentInput>(r#"{"name_override":null}"#);
         assert!(result.is_err());
     }
 

@@ -1,20 +1,20 @@
 //! Admin schedules domain — cordis Phase6
 //! Bodies moved from `admin.rs` (190KB/5946 lines).
 
-use std::sync::Arc;
+use crate::HttpError;
+use crate::Result;
 use ::cordis::Context;
 use ares_store::audit_log;
 use ares_store::schedules as db_schedules;
-use ares_types::types::{AppError};
-use crate::Result;
-use crate::HttpError;
+use ares_types::types::AppError;
 use axum::{
-    Json,
     extract::{Path, Query, State},
     http::StatusCode,
+    Json,
 };
 use sha2::Digest;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub async fn list_schedules(
     State(ctx): State<Arc<Context>>,
@@ -23,10 +23,14 @@ pub async fn list_schedules(
     let tenant_id = params.get("tenant_id").map(|s| s.as_str()).unwrap_or("");
     if tenant_id.is_empty() {
         return Err(HttpError::from(AppError::InvalidInput(
-            "tenant_id query param is required".into()
+            "tenant_id query param is required".into(),
         )));
     }
-    let __pool_1 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_1 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = db_schedules::ScheduleStore::new(&__pool_1);
     let schedules = store.list_schedules(tenant_id).await?;
     Ok(Json(schedules))
@@ -42,7 +46,11 @@ pub async fn list_schedule_missed_runs(
         .and_then(|value| value.parse::<i32>().ok())
         .unwrap_or(10)
         .clamp(1, 100);
-    let __pool_2 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_2 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = db_schedules::ScheduleStore::new(&__pool_2);
     let audits = store
         .list_missed_runs_for_tenant(&tenant_id, &schedule_id, limit)
@@ -54,11 +62,19 @@ pub async fn create_schedule(
     State(ctx): State<Arc<Context>>,
     Json(req): Json<db_schedules::CreateScheduleRequest>,
 ) -> Result<Json<db_schedules::AgentSchedule>> {
-    let __pool_3 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_3 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = db_schedules::ScheduleStore::new(&__pool_3);
     let schedule = store.create_schedule(&req).await?;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let t_id = schedule.tenant_id.clone();
     let a_name = schedule.agent_name.clone();
     tokio::spawn(async move {
@@ -81,14 +97,22 @@ pub async fn update_schedule(
     Path(id): Path<String>,
     Json(req): Json<db_schedules::CreateScheduleRequest>,
 ) -> Result<Json<db_schedules::AgentSchedule>> {
-    let __pool_4 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_4 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = db_schedules::ScheduleStore::new(&__pool_4);
     let schedule = store
         .update_schedule(&id, &req)
         .await?
         .ok_or_else(|| HttpError::from(AppError::NotFound(format!("schedule {id} not found"))))?;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let t_id = schedule.tenant_id.clone();
     let a_name = schedule.agent_name.clone();
     tokio::spawn(async move {
@@ -110,14 +134,24 @@ pub async fn delete_schedule(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    let __pool_5 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_5 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = db_schedules::ScheduleStore::new(&__pool_5);
     let rows = store.delete_schedule(&id).await?;
     if rows == 0 {
-        return Err(HttpError::from(AppError::NotFound(format!("schedule {id} not found").into())));
+        return Err(HttpError::from(AppError::NotFound(
+            format!("schedule {id} not found").into(),
+        )));
     }
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let sid = id.clone();
     tokio::spawn(async move {
         let _ = audit_log::log_admin_action(
@@ -147,16 +181,24 @@ pub async fn delete_tenant_schedule(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, id)): Path<(String, String)>,
 ) -> Result<StatusCode> {
-    let __pool_6 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_6 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = db_schedules::ScheduleStore::new(&__pool_6);
     let rows = store.delete_schedule_for_tenant(&tenant_id, &id).await?;
     if rows == 0 {
-        return Err(HttpError::from(AppError::NotFound(format!(
-            "schedule {id} not found for tenant {tenant_id}"
-        ).into())));
+        return Err(HttpError::from(AppError::NotFound(
+            format!("schedule {id} not found for tenant {tenant_id}").into(),
+        )));
     }
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let sid = id.clone();
     let t_id = tenant_id.clone();
     tokio::spawn(async move {
@@ -178,12 +220,21 @@ pub fn routes() -> axum::Router<Arc<Context>> {
     use axum::routing::{delete, get, post, put};
     axum::Router::new()
         .route("/schedules/list_schedules", get(list_schedules))
-        .route("/schedules/list_schedule_missed_runs", get(list_schedule_missed_runs))
+        .route(
+            "/schedules/list_schedule_missed_runs",
+            get(list_schedule_missed_runs),
+        )
         .route("/schedules/create_schedule", post(create_schedule))
         .route("/schedules/update_schedule", put(update_schedule))
         .route("/schedules/delete_schedule", delete(delete_schedule))
-        .route("/schedules/update_tenant_schedule", put(update_tenant_schedule))
-        .route("/schedules/delete_tenant_schedule", delete(delete_tenant_schedule))
+        .route(
+            "/schedules/update_tenant_schedule",
+            put(update_tenant_schedule),
+        )
+        .route(
+            "/schedules/delete_tenant_schedule",
+            delete(delete_tenant_schedule),
+        )
 }
 
 // cordis Phase6: RouteSet Service — registered via build_routes(ctx)

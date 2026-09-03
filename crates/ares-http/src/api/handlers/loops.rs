@@ -6,20 +6,20 @@
 //! - `GET  /loops`         — list all registered loops with state summaries
 //! - `DELETE /loops/{id}`  — signal a running loop to stop
 
-use ares_agent::loop_mode::{LoopFinishReason, LoopModeConfig, LoopModeState, LoopRunner};
-use ares_types::types::{AppError};
-use crate::Result;
 use crate::HttpError;
+use crate::Result;
+use ares_agent::loop_mode::{LoopFinishReason, LoopModeConfig, LoopModeState, LoopRunner};
+use ares_types::types::AppError;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     Json,
 };
+use cordis::Context;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use cordis::Context;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -107,11 +107,15 @@ impl LoopRegistry {
 }
 
 impl cordis::Service for LoopRegistry {
-    fn name(&self) -> &'static str { "loop_registry" }
+    fn name(&self) -> &'static str {
+        "loop_registry"
+    }
     fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
-    fn check(&self) -> bool { true }
+    fn check(&self) -> bool {
+        true
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -177,7 +181,10 @@ pub async fn start_loop(
         finish_reason: None,
     };
 
-    ctx.get::<LoopRegistry>().expect("not provided").insert(entry).await;
+    ctx.get::<LoopRegistry>()
+        .expect("not provided")
+        .insert(entry)
+        .await;
 
     // Clone handles needed by the background task.
     let registry = ctx.get::<LoopRegistry>().expect("not provided").clone();
@@ -215,7 +222,12 @@ pub async fn start_loop(
 
 /// GET /loops — list all loops with their current state summaries.
 pub async fn list_loops(State(ctx): State<Arc<Context>>) -> Json<Vec<LoopSummary>> {
-    Json(ctx.get::<LoopRegistry>().expect("not provided").list().await)
+    Json(
+        ctx.get::<LoopRegistry>()
+            .expect("not provided")
+            .list()
+            .await,
+    )
 }
 
 /// DELETE /loops/{id} — set the stop flag; the runner will halt after the current tick.
@@ -223,10 +235,17 @@ pub async fn stop_loop(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    if ctx.get::<LoopRegistry>().expect("not provided").stop(&id).await {
+    if ctx
+        .get::<LoopRegistry>()
+        .expect("not provided")
+        .stop(&id)
+        .await
+    {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err(HttpError::from(AppError::NotFound(format!("Loop '{}' not found", id).into())))
+        Err(HttpError::from(AppError::NotFound(
+            format!("Loop '{}' not found", id).into(),
+        )))
     }
 }
 

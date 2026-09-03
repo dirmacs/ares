@@ -174,7 +174,9 @@ impl From<serde_json::Value> for LogArg {
 }
 
 /// ANSI16 foreground palette: `30..=37` plus bright `90..=97`.
-const ANSI16: [u8; 16] = [30, 31, 32, 33, 34, 35, 36, 37, 90, 91, 92, 93, 94, 95, 96, 97];
+const ANSI16: [u8; 16] = [
+    30, 31, 32, 33, 34, 35, 36, 37, 90, 91, 92, 93, 94, 95, 96, 97,
+];
 
 /// FNV-1a 64-bit — stable across processes and platforms, so a given logger
 /// name always lands on the same palette slot.
@@ -290,8 +292,7 @@ impl Message {
                             // Bold variant: rewrite the intro sequence.
                             let body = &out[out.len() - text.len() - 5..out.len()];
                             let _ = body;
-                            let colored =
-                                format!("\x1b[{code};1m{text}\x1b[0m");
+                            let colored = format!("\x1b[{code};1m{text}\x1b[0m");
                             out.truncate(out.len() - text.len() - 5 - ("\x1b[0m".len()));
                             let _ = colored;
                             let _ = write!(out, "\x1b[{code};1m{text}\x1b[0m");
@@ -349,10 +350,7 @@ impl ExporterConfig {
 
     /// Threshold for one logger name; unlisted names pass unrestricted.
     pub fn threshold(&self, name: &str) -> LogLevel {
-        self.levels
-            .get(name)
-            .copied()
-            .unwrap_or(LogLevel::DEBUG)
+        self.levels.get(name).copied().unwrap_or(LogLevel::DEBUG)
     }
 
     /// Char-boundary-safe truncation to `max_length` characters.
@@ -812,11 +810,7 @@ mod tests {
         // Routing is observable in the buffer.
         logger.debug(&ctx, "loud", vec!["kept".into()]);
         logger.debug(&ctx, "still-quiet", vec!["dropped".into()]);
-        let names: Vec<String> = logger
-            .snapshot()
-            .iter()
-            .map(|m| m.name.clone())
-            .collect();
+        let names: Vec<String> = logger.snapshot().iter().map(|m| m.name.clone()).collect();
         assert_eq!(names, vec!["loud".to_string()]);
 
         // Raising the default flips previously-dropped names.
@@ -826,10 +820,7 @@ mod tests {
 
         // Clearing the pin falls back again.
         logger.clear_level("loud");
-        assert_eq!(
-            logger.effective_threshold(&ctx, "loud"),
-            LogLevel::DEBUG
-        );
+        assert_eq!(logger.effective_threshold(&ctx, "loud"), LogLevel::DEBUG);
     }
 
     #[test]

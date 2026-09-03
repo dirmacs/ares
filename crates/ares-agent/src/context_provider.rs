@@ -90,10 +90,7 @@ impl cordis::Service for ContextProviderHandle {
     fn name(&self) -> &'static str {
         "context_provider"
     }
-    fn init(
-        &self,
-        _ctx: &std::sync::Arc<cordis::Context>,
-    ) -> cordis::ServiceInitFuture<'_> {
+    fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
     fn check(&self) -> bool {
@@ -215,21 +212,21 @@ mod tests {
     async fn context_resolution_uses_runtime_metadata() {
         let provider = SelectiveContextProvider;
 
-        let mut runtime =
-            AgentRuntimeContext::new("tenant-a", "agent-x", "managed_platform");
+        let mut runtime = AgentRuntimeContext::new("tenant-a", "agent-x", "managed_platform");
         runtime.workspace_id = Some("ws-1".into());
 
         let resolved = provider.get_context_for_run(&runtime).await;
         assert_eq!(resolved.as_deref(), Some("workspace=\"ws-1\""));
 
-        let unknown =
-            AgentRuntimeContext::new("tenant-z", "agent-x", "managed_platform");
+        let unknown = AgentRuntimeContext::new("tenant-z", "agent-x", "managed_platform");
         assert!(provider.get_context_for_run(&unknown).await.is_none());
 
-        let tenant_default =
-            AgentRuntimeContext::new("tenant-b", "any-agent", "managed_platform");
+        let tenant_default = AgentRuntimeContext::new("tenant-b", "any-agent", "managed_platform");
         assert_eq!(
-            provider.get_context_for_run(&tenant_default).await.as_deref(),
+            provider
+                .get_context_for_run(&tenant_default)
+                .await
+                .as_deref(),
             Some("tenant-b default")
         );
     }

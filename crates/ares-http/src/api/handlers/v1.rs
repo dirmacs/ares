@@ -1,19 +1,24 @@
 // V1 API handlers — tenant-scoped, API-key auth
 //! Tenant endpoints via `Authorization: Bearer ares_xxx`.
 
-use std::sync::Arc;
 use cordis::Context;
+use std::sync::Arc;
 
-#[path = "v1/chat.rs"] pub mod chat;
-#[path = "v1/stream.rs"] pub mod stream;
-#[path = "v1/agents.rs"] pub mod agents;
-#[path = "v1/shared.rs"] pub mod shared;
-#[path = "v1/usage_ingest.rs"] pub mod usage_ingest;
+#[path = "v1/agents.rs"]
+pub mod agents;
+#[path = "v1/chat.rs"]
+pub mod chat;
+#[path = "v1/shared.rs"]
+pub mod shared;
+#[path = "v1/stream.rs"]
+pub mod stream;
+#[path = "v1/usage_ingest.rs"]
+pub mod usage_ingest;
 
-pub use shared::*;
-pub use chat::*;
-pub use stream::*;
 pub use agents::*;
+pub use chat::*;
+pub use shared::*;
+pub use stream::*;
 pub use usage_ingest::*;
 
 // =============================================================================

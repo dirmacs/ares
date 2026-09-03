@@ -4,17 +4,17 @@
 //! document-upload triggers for the tenant.
 
 use crate::HttpError;
-use ares_store::schedules as db_schedules;
 use ares_agent::trigger;
+use ares_store::schedules as db_schedules;
 use ares_types::types::AppError;
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
     Json,
 };
+use cordis::Context;
 use serde::Deserialize;
 use std::sync::Arc;
-use cordis::Context;
 
 /// Simulated S3 event payload.
 #[derive(Debug, Deserialize)]
@@ -65,7 +65,11 @@ pub async fn handle_document_upload(
         return Ok(StatusCode::OK);
     }
 
-    let __pool_1 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_1 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = db_schedules::EventTriggerStore::new(&__pool_1);
     let triggers = store
         .list_by_event_type(&payload.tenant_id, "document_upload")
@@ -87,9 +91,7 @@ pub async fn handle_document_upload(
             "signed_url": payload.signed_url,
         });
         let message = serde_json::to_string(&context).unwrap_or_default();
-        if let Err(e) =
-            trigger::execute_triggered_agent(&trigger, &message, &app_state).await
-        {
+        if let Err(e) = trigger::execute_triggered_agent(&trigger, &message, &app_state).await {
             tracing::warn!(
                 trigger_id = %trigger.id,
                 agent = %trigger.target_agent,
@@ -137,7 +139,9 @@ fn verify_webhook_secret(headers: &HeaderMap) -> crate::Result<()> {
     if provided == expected {
         Ok(())
     } else {
-        Err(HttpError::from(AppError::Auth("Invalid webhook secret".to_string())))
+        Err(HttpError::from(AppError::Auth(
+            "Invalid webhook secret".to_string(),
+        )))
     }
 }
 

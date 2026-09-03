@@ -42,17 +42,17 @@ fn setup_test_config_dirs() -> (TempDir, PathBuf, PathBuf, PathBuf, PathBuf, Pat
 
 #[test]
 fn test_toon_agent_roundtrip() {
-        let agent = ToonAgentConfig {
-            version: "1.0.0".to_string(),
-            name: "test-agent".to_string(),
-            model: "gpt-4".to_string(),
-            system_prompt: Some("You are a helpful assistant.".to_string()),
-            tools: vec!["calculator".to_string(), "web_search".to_string()],
-            allowed_tools: None,
-            max_tool_iterations: 10,
-            parallel_tools: true,
-            extra: std::collections::HashMap::new(),
-        };
+    let agent = ToonAgentConfig {
+        version: "1.0.0".to_string(),
+        name: "test-agent".to_string(),
+        model: "gpt-4".to_string(),
+        system_prompt: Some("You are a helpful assistant.".to_string()),
+        tools: vec!["calculator".to_string(), "web_search".to_string()],
+        allowed_tools: None,
+        max_tool_iterations: 10,
+        parallel_tools: true,
+        extra: std::collections::HashMap::new(),
+    };
 
     // Encode to TOON
     let toon = encode_default(&agent).expect("Failed to encode agent");
@@ -135,17 +135,17 @@ fn test_dynamic_config_manager_load_from_dirs() {
         setup_test_config_dirs();
 
     // Create a test agent TOON file
-        let agent = ToonAgentConfig {
-            version: "1.0.0".to_string(),
-            name: "test-agent".to_string(),
-            model: "test-model".to_string(),
-            system_prompt: Some("Test system prompt".to_string()),
-            tools: vec![],
-            allowed_tools: None,
-            max_tool_iterations: 5,
-            parallel_tools: false,
-            extra: std::collections::HashMap::new(),
-        };
+    let agent = ToonAgentConfig {
+        version: "1.0.0".to_string(),
+        name: "test-agent".to_string(),
+        model: "test-model".to_string(),
+        system_prompt: Some("Test system prompt".to_string()),
+        tools: vec![],
+        allowed_tools: None,
+        max_tool_iterations: 5,
+        parallel_tools: false,
+        extra: std::collections::HashMap::new(),
+    };
     let agent_toon = encode_default(&agent).expect("Failed to encode agent");
     std::fs::write(agents_dir.join("test-agent.toon"), agent_toon).unwrap();
 
@@ -194,17 +194,17 @@ fn test_dynamic_config_manager_list_methods() {
 
     // Create multiple agents
     for i in 1..=3 {
-            let agent = ToonAgentConfig {
-                version: "1.0.0".to_string(),
-                name: format!("agent-{}", i),
-                model: "model".to_string(),
-                system_prompt: None,
-                tools: vec![],
-                allowed_tools: None,
-                max_tool_iterations: 5,
-                parallel_tools: false,
-                extra: std::collections::HashMap::new(),
-            };
+        let agent = ToonAgentConfig {
+            version: "1.0.0".to_string(),
+            name: format!("agent-{}", i),
+            model: "model".to_string(),
+            system_prompt: None,
+            tools: vec![],
+            allowed_tools: None,
+            max_tool_iterations: 5,
+            parallel_tools: false,
+            extra: std::collections::HashMap::new(),
+        };
         let toon = encode_default(&agent).expect("Failed to encode");
         std::fs::write(agents_dir.join(format!("agent-{}.toon", i)), toon).unwrap();
     }
@@ -306,25 +306,25 @@ fn test_toon_mcp_roundtrip() {
 #[test]
 fn test_toon_config_with_extra_fields() {
     // Test that extra/unknown fields in TOON are preserved via serde flatten
-        let agent = ToonAgentConfig {
-            version: "1.0.0".to_string(),
-            name: "agent-with-extra".to_string(),
-            model: "test-model".to_string(),
-            system_prompt: Some("Test prompt".to_string()),
-            tools: vec![],
-            allowed_tools: None,
-            max_tool_iterations: 5,
-            parallel_tools: false,
-            extra: {
-                let mut extra = std::collections::HashMap::new();
-                extra.insert(
-                    "custom_field".to_string(),
-                    serde_json::json!("custom_value"),
-                );
-                extra.insert("custom_number".to_string(), serde_json::json!(42));
-                extra
-            },
-        };
+    let agent = ToonAgentConfig {
+        version: "1.0.0".to_string(),
+        name: "agent-with-extra".to_string(),
+        model: "test-model".to_string(),
+        system_prompt: Some("Test prompt".to_string()),
+        tools: vec![],
+        allowed_tools: None,
+        max_tool_iterations: 5,
+        parallel_tools: false,
+        extra: {
+            let mut extra = std::collections::HashMap::new();
+            extra.insert(
+                "custom_field".to_string(),
+                serde_json::json!("custom_value"),
+            );
+            extra.insert("custom_number".to_string(), serde_json::json!(42));
+            extra
+        },
+    };
 
     let toon = encode_default(&agent).expect("Failed to encode agent with extra fields");
     let decoded: ToonAgentConfig =
@@ -387,17 +387,17 @@ fn test_dynamic_config_validation_with_workflows() {
     .unwrap();
 
     // Create agent
-        let agent = ToonAgentConfig {
-            version: "1.0.0".to_string(),
-            name: "router".to_string(),
-            model: "test-model".to_string(),
-            system_prompt: Some("Router agent".to_string()),
-            tools: vec![],
-            allowed_tools: None,
-            max_tool_iterations: 5,
-            parallel_tools: false,
-            extra: std::collections::HashMap::new(),
-        };
+    let agent = ToonAgentConfig {
+        version: "1.0.0".to_string(),
+        name: "router".to_string(),
+        model: "test-model".to_string(),
+        system_prompt: Some("Router agent".to_string()),
+        tools: vec![],
+        allowed_tools: None,
+        max_tool_iterations: 5,
+        parallel_tools: false,
+        extra: std::collections::HashMap::new(),
+    };
     std::fs::write(
         agents_dir.join("router.toon"),
         encode_default(&agent).unwrap(),

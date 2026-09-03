@@ -12,6 +12,7 @@ fn unique_email(prefix: &str) -> String {
     format!("{}+{}@test.example.com", prefix, Uuid::new_v4())
 }
 
+use ares_agent::AgentRegistry;
 use ares_http::{
     auth::jwt::AuthService,
     config::{AuthConfig as TomlAuthConfig, ServerConfig as TomlServerConfig},
@@ -22,9 +23,8 @@ use ares_http::{
     AresConfigManager, DynamicConfigManager,
 };
 use ares_llm::{ConfigBasedLLMFactory, LLMClient, ProviderRegistry};
-use ares_types::types::{ToolCall, ToolDefinition};
-use ares_agent::AgentRegistry;
 use ares_tools::Tools;
+use ares_types::types::{ToolCall, ToolDefinition};
 use cordis::Context;
 use futures::StreamExt;
 
@@ -137,7 +137,11 @@ async fn create_test_app() -> Router {
     let config_manager = Arc::new(AresConfigManager::from_config(overlay_config));
 
     // Create provider registry from config
-    let provider_registry = Arc::new(ProviderRegistry::from_config(config_manager.config().providers.clone(), config_manager.config().models.clone(), config_manager.config().nvidia.as_ref()));
+    let provider_registry = Arc::new(ProviderRegistry::from_config(
+        config_manager.config().providers.clone(),
+        config_manager.config().models.clone(),
+        config_manager.config().nvidia.as_ref(),
+    ));
 
     // Create config-based LLM factory
     let llm_factory = Arc::new(ConfigBasedLLMFactory::new(
@@ -207,9 +211,11 @@ async fn create_test_app() -> Router {
     state.provide(ares_http::api::handlers::deploy::DeployRegistry::default());
     state.provide(ares_http::api::handlers::loops::LoopRegistry::new());
     state.provide(ares_agent::EmergencyStop::new(false));
-    state.provide(ares_agent::ContextProviderHandle::new(std::sync::Arc::new(ares_agent::context_provider::NoOpContextProvider)));
+    state.provide(ares_agent::ContextProviderHandle::new(std::sync::Arc::new(
+        ares_agent::context_provider::NoOpContextProvider,
+    )));
     state.provide(ares_store::FleetSecrets::new());
-        state.provide(ares_http::active_runs::ActiveRuns::new());
+    state.provide(ares_http::active_runs::ActiveRuns::new());
     state.provide_arc(skill_engine);
 
     // Build a minimal router for testing

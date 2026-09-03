@@ -2,11 +2,11 @@
 //!
 //! Handles HTTP requests for executing declarative workflows defined in ares.toml.
 
-use std::sync::Arc;
 use cordis::Context;
+use std::sync::Arc;
 
-use crate::Result;
 use crate::HttpError;
+use crate::Result;
 use crate::{
     auth::middleware::AuthUser,
     overlay::AresConfigManager,
@@ -37,10 +37,9 @@ pub async fn execute_workflow(
 
     // Check if workflow exists
     if !workflow_engine.has_workflow(&workflow_name) {
-        return Err(HttpError::from(ares_types::types::AppError::NotFound(format!(
-            "Workflow '{}' not found",
-            workflow_name
-        ))));
+        return Err(HttpError::from(ares_types::types::AppError::NotFound(
+            format!("Workflow '{}' not found", workflow_name),
+        )));
     }
 
     // Create agent context
@@ -66,7 +65,10 @@ pub async fn list_workflows(
     State(ctx): State<Arc<Context>>,
     AuthUser(_claims): AuthUser,
 ) -> Result<Json<Vec<WorkflowInfo>>> {
-    let config = ctx.get::<crate::overlay::AresConfigManager>().expect("not provided").config();
+    let config = ctx
+        .get::<crate::overlay::AresConfigManager>()
+        .expect("not provided")
+        .config();
 
     let workflows: Vec<WorkflowInfo> = config
         .workflows
@@ -145,4 +147,3 @@ mod tests {
         assert_eq!(back.context["locale"], "en-GB");
     }
 }
-

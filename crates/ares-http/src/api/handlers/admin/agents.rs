@@ -3,38 +3,42 @@
 
 use super::*;
 
+use crate::HttpError;
+use crate::Result;
+use ::cordis::Context;
 use ares_agent::context_provider::AgentRuntimeContext;
+use ares_agent::memory::estimate_tokens;
 use ares_agent::tenant_agent;
 use ares_store::agent_runs;
 use ares_store::agent_versions;
 use ares_store::audit_log;
 use ares_store::tenant_agents::{
-    AgentTemplate, AgentTemplateStore, CreateTemplateRequest, CreateTenantAgentRequest,
-    TenantAgent, UpdateTenantAgentRequest,
     create_tenant_agent as db_create_tenant_agent, delete_tenant_agent as db_delete_tenant_agent,
     get_tenant_agent as db_get_tenant_agent, list_agent_templates, list_tenant_agent_versions,
     list_tenant_agents as db_list_tenant_agents, record_tenant_agent_version,
-    rollback_tenant_agent_version, update_tenant_agent as db_update_tenant_agent,
+    rollback_tenant_agent_version, update_tenant_agent as db_update_tenant_agent, AgentTemplate,
+    AgentTemplateStore, CreateTemplateRequest, CreateTenantAgentRequest, TenantAgent,
+    UpdateTenantAgentRequest,
 };
-use ares_agent::memory::estimate_tokens;
 use ares_types::types::{AgentContext, AppError};
-use crate::Result;
-use crate::HttpError;
 use axum::{
-    Json,
     extract::{Path, Query, State},
     http::StatusCode,
+    Json,
 };
 use sha2::Digest;
 use std::collections::HashMap;
 use std::sync::Arc;
-use ::cordis::Context;
 
 pub async fn list_tenant_agents_handler(
     State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<Vec<TenantAgent>>> {
-    let __pool_1 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_1 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let agents = db_list_tenant_agents(&__pool_1, &tenant_id).await?;
     Ok(Json(agents))
 }
@@ -47,10 +51,18 @@ pub async fn create_tenant_agent_handler(
     let tools = ctx.get::<ares_tools::Tools>().expect("Tools not provided");
     validate_agent_config_tools(&req.config, tools.as_ref(), &ctx, &tenant_id)?;
 
-    let __pool_2 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_2 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let agent = db_create_tenant_agent(&__pool_2, &tenant_id, req).await?;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let aid = agent.id.clone();
     tokio::spawn(async move {
         let _ = audit_log::log_admin_action(&pool, "create_agent", "agent", &aid, None, None).await;
@@ -69,10 +81,18 @@ pub async fn update_tenant_agent_handler(
         validate_agent_config_tools(cfg, tools.as_ref(), &ctx, &tenant_id)?;
     }
 
-    let __pool_3 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_3 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let agent = db_update_tenant_agent(&__pool_3, &tenant_id, &agent_name, req).await?;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let aid = agent.id.clone();
     tokio::spawn(async move {
         let _ = audit_log::log_admin_action(&pool, "update_agent", "agent", &aid, None, None).await;
@@ -85,10 +105,18 @@ pub async fn delete_tenant_agent_handler(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name)): Path<(String, String)>,
 ) -> Result<StatusCode> {
-    let __pool_4 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_4 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     db_delete_tenant_agent(&__pool_4, &tenant_id, &agent_name).await?;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let resource_id = format!("{}:{}", tenant_id, agent_name);
     tokio::spawn(async move {
         let _ =
@@ -103,14 +131,30 @@ pub async fn list_tenant_agent_versions_handler(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name)): Path<(String, String)>,
 ) -> Result<Json<Vec<agent_versions::AgentVersionRecord>>> {
-    let __pool_5 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_5 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let agent = db_get_tenant_agent(&__pool_5, &tenant_id, &agent_name).await?;
-    let __pool_6 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_6 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let mut records = list_tenant_agent_versions(&__pool_6, &tenant_id, &agent_name, 50).await?;
     if records.is_empty() {
-        let __pool_7 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+        let __pool_7 = ctx
+            .get::<ares_store::TenantDb>()
+            .expect("not provided")
+            .pool()
+            .clone();
         record_tenant_agent_version(&__pool_7, &agent, "admin_seed").await?;
-        let __pool_8 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+        let __pool_8 = ctx
+            .get::<ares_store::TenantDb>()
+            .expect("not provided")
+            .pool()
+            .clone();
         records = list_tenant_agent_versions(&__pool_8, &tenant_id, &agent_name, 50).await?;
     }
     Ok(Json(records))
@@ -120,11 +164,18 @@ pub async fn rollback_tenant_agent_version_handler(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name, version)): Path<(String, String, String)>,
 ) -> Result<Json<TenantAgent>> {
-    let __pool_9 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
-    let agent = rollback_tenant_agent_version(&__pool_9, &tenant_id, &agent_name, &version)
-            .await?;
+    let __pool_9 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
+    let agent = rollback_tenant_agent_version(&__pool_9, &tenant_id, &agent_name, &version).await?;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let resource_id = format!("{}:{}", tenant_id, agent_name);
     let details = format!("Rolled back tenant agent to version {}", version);
     tokio::spawn(async move {
@@ -145,7 +196,11 @@ pub async fn rollback_tenant_agent_version_handler(
 pub async fn list_agents(
     State(ctx): State<Arc<Context>>,
 ) -> Result<Json<Vec<agent_runs::AllAgentsEntry>>> {
-    let __pool_10 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_10 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let agents = agent_runs::list_all_agents(&__pool_10).await?;
     Ok(Json(agents))
 }
@@ -154,7 +209,11 @@ pub async fn get_agent(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name)): Path<(String, String)>,
 ) -> Result<Json<TenantAgent>> {
-    let __pool_11 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_11 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let agent = db_get_tenant_agent(&__pool_11, &tenant_id, &agent_name).await?;
     Ok(Json(agent))
 }
@@ -164,12 +223,18 @@ pub async fn create_agent(
     Json(req): Json<CreateAgentRequest>,
 ) -> Result<Json<TenantAgent>> {
     let config = if let Some(tpl_id) = &req.template_id {
-        let __pool_12 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+        let __pool_12 = ctx
+            .get::<ares_store::TenantDb>()
+            .expect("not provided")
+            .pool()
+            .clone();
         let store = AgentTemplateStore::new(__pool_12);
-        let tpl = store
-            .get_template(tpl_id)
-            .await?
-            .ok_or_else(|| HttpError::from(AppError::InvalidInput(format!("Template '{}' not found", tpl_id))))?;
+        let tpl = store.get_template(tpl_id).await?.ok_or_else(|| {
+            HttpError::from(AppError::InvalidInput(format!(
+                "Template '{}' not found",
+                tpl_id
+            )))
+        })?;
         tpl.config
     } else {
         req.config
@@ -185,10 +250,18 @@ pub async fn create_agent(
         config,
     };
 
-    let __pool_13 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_13 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let agent = db_create_tenant_agent(&__pool_13, &req.tenant_id, db_req).await?;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let aid = agent.id.clone();
     tokio::spawn(async move {
         let _ = audit_log::log_admin_action(&pool, "create_agent", "agent", &aid, None, None).await;
@@ -213,10 +286,18 @@ pub async fn update_agent(
         config: req.config,
         enabled: req.enabled,
     };
-    let __pool_14 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_14 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let agent = db_update_tenant_agent(&__pool_14, &tenant_id, &agent_name, db_req).await?;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let aid = agent.id.clone();
     tokio::spawn(async move {
         let _ = audit_log::log_admin_action(&pool, "update_agent", "agent", &aid, None, None).await;
@@ -229,10 +310,18 @@ pub async fn delete_agent(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name)): Path<(String, String)>,
 ) -> Result<StatusCode> {
-    let __pool_15 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_15 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     db_delete_tenant_agent(&__pool_15, &tenant_id, &agent_name).await?;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let resource_id = format!("{}:{}", tenant_id, agent_name);
     tokio::spawn(async move {
         let _ =
@@ -247,14 +336,30 @@ pub async fn get_agent_versions(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name)): Path<(String, String)>,
 ) -> Result<Json<Vec<agent_versions::AgentVersionRecord>>> {
-    let __pool_16 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_16 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let agent = db_get_tenant_agent(&__pool_16, &tenant_id, &agent_name).await?;
-    let __pool_17 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_17 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let mut records = list_tenant_agent_versions(&__pool_17, &tenant_id, &agent_name, 50).await?;
     if records.is_empty() {
-        let __pool_18 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+        let __pool_18 = ctx
+            .get::<ares_store::TenantDb>()
+            .expect("not provided")
+            .pool()
+            .clone();
         record_tenant_agent_version(&__pool_18, &agent, "admin_seed").await?;
-        let __pool_19 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+        let __pool_19 = ctx
+            .get::<ares_store::TenantDb>()
+            .expect("not provided")
+            .pool()
+            .clone();
         records = list_tenant_agent_versions(&__pool_19, &tenant_id, &agent_name, 50).await?;
     }
     Ok(Json(records))
@@ -264,11 +369,19 @@ pub async fn rollback_agent(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name, version)): Path<(String, String, String)>,
 ) -> Result<Json<TenantAgent>> {
-    let __pool_20 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
-    let agent = rollback_tenant_agent_version(&__pool_20, &tenant_id, &agent_name, &version)
-            .await?;
+    let __pool_20 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
+    let agent =
+        rollback_tenant_agent_version(&__pool_20, &tenant_id, &agent_name, &version).await?;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let resource_id = format!("{}:{}", tenant_id, agent_name);
     let details = format!("Rolled back agent to version {}", version);
     tokio::spawn(async move {
@@ -290,11 +403,19 @@ pub async fn create_agent_template_handler(
     State(ctx): State<Arc<Context>>,
     Json(req): Json<CreateTemplateRequest>,
 ) -> Result<Json<AgentTemplate>> {
-    let __pool_21 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_21 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = AgentTemplateStore::new(__pool_21);
     let tpl = store.create_template(&req).await?;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let tid = tpl.id.clone();
     tokio::spawn(async move {
         let _ = audit_log::log_admin_action(
@@ -315,14 +436,24 @@ pub async fn delete_agent_template_handler(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    let __pool_22 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_22 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = AgentTemplateStore::new(__pool_22);
     let deleted = store.delete_template(&id).await?;
     if deleted == 0 {
-        return Err(HttpError::from(AppError::NotFound(format!("Template '{}' not found", id).into())));
+        return Err(HttpError::from(AppError::NotFound(
+            format!("Template '{}' not found", id).into(),
+        )));
     }
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     tokio::spawn(async move {
         let _ = audit_log::log_admin_action(
             &pool,
@@ -343,26 +474,38 @@ pub async fn test_tenant_agent_handler(
     Path((tenant_id, agent_name)): Path<(String, String)>,
     Json(req): Json<TestTenantAgentRequest>,
 ) -> Result<Json<TestTenantAgentResponse>> {
-    if ctx.get::<ares_agent::EmergencyStop>().expect("not provided")
+    if ctx
+        .get::<ares_agent::EmergencyStop>()
+        .expect("not provided")
         .is_active()
     {
         return Err(HttpError::from(AppError::Unavailable(
-            "All agents are currently under human review. Please try again later.".to_string()
+            "All agents are currently under human review. Please try again later.".to_string(),
         )));
     }
 
     let message = req.message.trim();
     if message.is_empty() {
         return Err(HttpError::from(AppError::InvalidInput(
-            "Test Agent requires a non-empty message".to_string()
+            "Test Agent requires a non-empty message".to_string(),
         )));
     }
 
-    let __pool_23 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_23 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     db_get_tenant_agent(&__pool_23, &tenant_id, &agent_name).await?;
     let agent_config = tenant_agent::agent_config_from_json(&req.config)?;
-    let __pool_24 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
-    let mut draft_agent = ctx.get::<ares_agent::AgentRegistry>().expect("AgentRegistry not provided")
+    let __pool_24 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
+    let mut draft_agent = ctx
+        .get::<ares_agent::AgentRegistry>()
+        .expect("AgentRegistry not provided")
         .create_agent_from_config_with_fallbacks(
             &agent_name,
             &agent_config,
@@ -374,7 +517,11 @@ pub async fn test_tenant_agent_handler(
 
     // Attach observability
     let run_id = uuid::Uuid::new_v4().to_string();
-    let __pool_25 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_25 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let obs = Arc::new(crate::observability::RunObservability {
         run_id: run_id.clone(),
         tenant_id: tenant_id.clone(),
@@ -389,23 +536,25 @@ pub async fn test_tenant_agent_handler(
     draft_agent.bind_request_ctx(ctx.clone());
     draft_agent.set_run_id(run_id.clone());
 
-    ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").start(crate::active_runs::ActiveRun {
-        run_id: run_id.clone(),
-        tenant_id: tenant_id.clone(),
-        agent_name: agent_name.clone(),
-        started_at: chrono::Utc::now().timestamp(),
-        status: "running".to_string(),
-        current_step: 0,
-        total_steps: 0,
-        last_update: chrono::Utc::now().timestamp(),
-        tool_name: None,
-        model: None,
-        is_catchup: false,
-        request_source: Some("admin_test_agent".to_string()),
-        pipeline_id: None,
-        schedule_id: None,
-        trigger_id: None,
-    });
+    ctx.get::<crate::active_runs::ActiveRuns>()
+        .expect("not provided")
+        .start(crate::active_runs::ActiveRun {
+            run_id: run_id.clone(),
+            tenant_id: tenant_id.clone(),
+            agent_name: agent_name.clone(),
+            started_at: chrono::Utc::now().timestamp(),
+            status: "running".to_string(),
+            current_step: 0,
+            total_steps: 0,
+            last_update: chrono::Utc::now().timestamp(),
+            tool_name: None,
+            model: None,
+            is_catchup: false,
+            request_source: Some("admin_test_agent".to_string()),
+            pipeline_id: None,
+            schedule_id: None,
+            trigger_id: None,
+        });
 
     let agent_context = AgentContext {
         user_id: tenant_id.clone(),
@@ -425,7 +574,9 @@ pub async fn test_tenant_agent_handler(
     runtime_context.session_id = Some(agent_context.session_id.clone());
 
     let eruka_context = if req.use_eruka_context {
-        ctx.get::<ares_agent::ContextProviderHandle>().expect("not provided").0
+        ctx.get::<ares_agent::ContextProviderHandle>()
+            .expect("not provided")
+            .0
             .get_context_for_run(&runtime_context)
             .await
     } else {
@@ -463,7 +614,9 @@ pub async fn test_tenant_agent_handler(
 
     match result {
         Ok(response) => {
-            ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").finish(&run_id, "completed");
+            ctx.get::<crate::active_runs::ActiveRuns>()
+                .expect("not provided")
+                .finish(&run_id, "completed");
             let (input_tokens, output_tokens) = if let Some(ref usage) = response.usage {
                 (usage.prompt_tokens as u64, usage.completion_tokens as u64)
             } else {
@@ -497,7 +650,9 @@ pub async fn test_tenant_agent_handler(
             }))
         }
         Err(error) => {
-            ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").finish(&run_id, "error");
+            ctx.get::<crate::active_runs::ActiveRuns>()
+                .expect("not provided")
+                .finish(&run_id, "error");
             Ok(Json(TestTenantAgentResponse {
                 status: "failed".to_string(),
                 response: None,
@@ -521,7 +676,11 @@ pub async fn list_agent_templates_handler(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<Vec<AgentTemplate>>> {
     let product_type = params.get("product_type").map(|s| s.as_str());
-    let __pool_26 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_26 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let templates = list_agent_templates(&__pool_26, product_type).await?;
     Ok(Json(templates))
 }
@@ -536,7 +695,8 @@ pub async fn get_emergency_stop_handler(
     State(ctx): State<Arc<Context>>,
 ) -> Result<Json<EmergencyStopStatus>> {
     Ok(Json(emergency_stop_status(
-        ctx.get::<ares_agent::EmergencyStop>().expect("not provided")
+        ctx.get::<ares_agent::EmergencyStop>()
+            .expect("not provided")
             .is_active(),
     )))
 }
@@ -548,7 +708,8 @@ pub async fn emergency_stop_handler(
     State(ctx): State<Arc<Context>>,
     Json(payload): Json<EmergencyStopRequest>,
 ) -> Result<Json<EmergencyStopStatus>> {
-    ctx.get::<ares_agent::EmergencyStop>().expect("not provided")
+    ctx.get::<ares_agent::EmergencyStop>()
+        .expect("not provided")
         .set_active(payload.active);
 
     let action = if payload.active {
@@ -558,7 +719,11 @@ pub async fn emergency_stop_handler(
     };
     tracing::warn!(active = payload.active, "Emergency stop toggled");
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     tokio::spawn(async move {
         let _ =
             audit_log::log_admin_action(&pool, action, "platform", "all_agents", None, None).await;
@@ -570,12 +735,30 @@ pub async fn emergency_stop_handler(
 pub fn routes() -> axum::Router<Arc<Context>> {
     use axum::routing::{delete, get, post, put};
     axum::Router::new()
-        .route("/agents/list_tenant_agents_handler", get(list_tenant_agents_handler))
-        .route("/agents/create_tenant_agent_handler", post(create_tenant_agent_handler))
-        .route("/agents/update_tenant_agent_handler", put(update_tenant_agent_handler))
-        .route("/agents/delete_tenant_agent_handler", delete(delete_tenant_agent_handler))
-        .route("/agents/list_tenant_agent_versions_handler", get(list_tenant_agent_versions_handler))
-        .route("/agents/rollback_tenant_agent_version_handler", post(rollback_tenant_agent_version_handler))
+        .route(
+            "/agents/list_tenant_agents_handler",
+            get(list_tenant_agents_handler),
+        )
+        .route(
+            "/agents/create_tenant_agent_handler",
+            post(create_tenant_agent_handler),
+        )
+        .route(
+            "/agents/update_tenant_agent_handler",
+            put(update_tenant_agent_handler),
+        )
+        .route(
+            "/agents/delete_tenant_agent_handler",
+            delete(delete_tenant_agent_handler),
+        )
+        .route(
+            "/agents/list_tenant_agent_versions_handler",
+            get(list_tenant_agent_versions_handler),
+        )
+        .route(
+            "/agents/rollback_tenant_agent_version_handler",
+            post(rollback_tenant_agent_version_handler),
+        )
         .route("/agents/list_agents", get(list_agents))
         .route("/agents/get_agent", get(get_agent))
         .route("/agents/create_agent", post(create_agent))
@@ -583,14 +766,38 @@ pub fn routes() -> axum::Router<Arc<Context>> {
         .route("/agents/delete_agent", delete(delete_agent))
         .route("/agents/get_agent_versions", get(get_agent_versions))
         .route("/agents/rollback_agent", post(rollback_agent))
-        .route("/agents/create_agent_template_handler", post(create_agent_template_handler))
-        .route("/agents/delete_agent_template_handler", delete(delete_agent_template_handler))
-        .route("/agents/test_tenant_agent_handler", post(test_tenant_agent_handler))
-        .route("/agents/list_agent_templates_handler", get(list_agent_templates_handler))
-        .route("/agents/list_agent_versions_handler", get(list_agent_versions_handler))
-        .route("/agents/rollback_agent_handler", post(rollback_agent_handler))
-        .route("/agents/get_emergency_stop_handler", get(get_emergency_stop_handler))
-        .route("/agents/emergency_stop_handler", post(emergency_stop_handler))
+        .route(
+            "/agents/create_agent_template_handler",
+            post(create_agent_template_handler),
+        )
+        .route(
+            "/agents/delete_agent_template_handler",
+            delete(delete_agent_template_handler),
+        )
+        .route(
+            "/agents/test_tenant_agent_handler",
+            post(test_tenant_agent_handler),
+        )
+        .route(
+            "/agents/list_agent_templates_handler",
+            get(list_agent_templates_handler),
+        )
+        .route(
+            "/agents/list_agent_versions_handler",
+            get(list_agent_versions_handler),
+        )
+        .route(
+            "/agents/rollback_agent_handler",
+            post(rollback_agent_handler),
+        )
+        .route(
+            "/agents/get_emergency_stop_handler",
+            get(get_emergency_stop_handler),
+        )
+        .route(
+            "/agents/emergency_stop_handler",
+            post(emergency_stop_handler),
+        )
 }
 
 // cordis Phase6: RouteSet Service — registered via build_routes(ctx)

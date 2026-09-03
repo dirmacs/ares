@@ -140,7 +140,9 @@ mod tests {
 
     impl RoutingLlm {
         fn new(label: impl Into<String>) -> Self {
-            Self { label: label.into() }
+            Self {
+                label: label.into(),
+            }
         }
     }
 
@@ -189,13 +191,23 @@ mod tests {
                 response_id: None,
             })
         }
-        async fn stream(&self, _: &str) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+        async fn stream(
+            &self,
+            _: &str,
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
             Ok(Box::new(futures::stream::empty()))
         }
-        async fn stream_with_system(&self, _: &str, _: &str) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+        async fn stream_with_system(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
             Ok(Box::new(futures::stream::empty()))
         }
-        async fn stream_with_history(&self, _: &[(String, String)]) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
+        async fn stream_with_history(
+            &self,
+            _: &[(String, String)],
+        ) -> Result<Box<dyn futures::Stream<Item = Result<String>> + Send + Unpin>> {
             Ok(Box::new(futures::stream::empty()))
         }
     }
@@ -211,8 +223,14 @@ mod tests {
 
     #[test]
     fn test_parse_routing_decision_exact_match() {
-        assert_eq!(RouterAgent::parse_routing_decision("product"), Some("product".to_string()));
-        assert_eq!(RouterAgent::parse_routing_decision("  SALES  "), Some("sales".to_string()));
+        assert_eq!(
+            RouterAgent::parse_routing_decision("product"),
+            Some("product".to_string())
+        );
+        assert_eq!(
+            RouterAgent::parse_routing_decision("  SALES  "),
+            Some("sales".to_string())
+        );
     }
 
     #[test]
@@ -221,8 +239,14 @@ mod tests {
             RouterAgent::parse_routing_decision("I would route this to product"),
             Some("product".to_string())
         );
-        assert_eq!(RouterAgent::parse_routing_decision("product agent"), Some("product".to_string()));
-        assert_eq!(RouterAgent::parse_routing_decision("Route: finance."), Some("finance".to_string()));
+        assert_eq!(
+            RouterAgent::parse_routing_decision("product agent"),
+            Some("product".to_string())
+        );
+        assert_eq!(
+            RouterAgent::parse_routing_decision("Route: finance."),
+            Some("finance".to_string())
+        );
     }
 
     #[test]
@@ -264,7 +288,10 @@ mod tests {
         let ctx = test_context();
         for label in ["orchestrator", "research"] {
             let router = RouterAgent::new(Box::new(RoutingLlm::new(label)));
-            assert_eq!(router.route("complex query", &ctx).await.expect("route"), AgentType::Orchestrator);
+            assert_eq!(
+                router.route("complex query", &ctx).await.expect("route"),
+                AgentType::Orchestrator
+            );
         }
     }
 
@@ -272,7 +299,10 @@ mod tests {
     async fn test_route_defaults_to_orchestrator_on_unparseable_output() {
         let router = RouterAgent::new(Box::new(RoutingLlm::new("definitely-not-an-agent")));
         assert_eq!(
-            router.route("anything", &test_context()).await.expect("route"),
+            router
+                .route("anything", &test_context())
+                .await
+                .expect("route"),
             AgentType::Orchestrator
         );
     }
@@ -284,20 +314,29 @@ mod tests {
             if *agent == "research" {
                 continue;
             }
-            assert!(prompt.contains(agent), "expected routing prompt to mention {agent}");
+            assert!(
+                prompt.contains(agent),
+                "expected routing prompt to mention {agent}"
+            );
         }
         assert!(prompt.contains("orchestrator"));
     }
 
     #[test]
     fn test_agent_type_is_router() {
-        assert_eq!(RouterAgent::new(Box::new(RoutingLlm::new("product"))).agent_type(), AgentType::Router);
+        assert_eq!(
+            RouterAgent::new(Box::new(RoutingLlm::new("product"))).agent_type(),
+            AgentType::Router
+        );
     }
 
     #[tokio::test]
     async fn test_execute_placeholder_response() {
         let router = RouterAgent::new(Box::new(RoutingLlm::new("product")));
-        let resp = router.execute("ignored", &test_context()).await.expect("execute");
+        let resp = router
+            .execute("ignored", &test_context())
+            .await
+            .expect("execute");
         assert_eq!(resp.content, "router");
     }
 }

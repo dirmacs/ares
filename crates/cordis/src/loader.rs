@@ -489,9 +489,7 @@ impl EntryTree {
         while let Some(front) = frontier.pop() {
             for e in &self.0 {
                 let linked = e.id.starts_with(&format!("{front}{}", Self::ID_SEP))
-                    || e.position
-                        .as_ref()
-                        .and_then(|p| p.parent.as_deref())
+                    || e.position.as_ref().and_then(|p| p.parent.as_deref())
                         == Some(front.as_str());
                 if linked && !out.contains(&e.id) && e.id != id {
                     out.push(e.id.clone());
@@ -530,9 +528,7 @@ impl EntryTree {
         }
         if let Some(t) = target {
             if t == id {
-                return Err(format!(
-                    "cannot move entry '{id}' under itself"
-                ));
+                return Err(format!("cannot move entry '{id}' under itself"));
             }
             if !self.0.iter().any(|e| e.id == t) {
                 return Err(format!("no such entry '{t}'"));
@@ -549,10 +545,13 @@ impl EntryTree {
             Some(t) => format!("{t}{}{}", Self::ID_SEP, Self::leaf_id(id)),
             None => Self::leaf_id(id).to_string(),
         };
-        let mut renames: Vec<(String, String)> =
-            vec![(id.to_string(), new_root.clone())];
+        let mut renames: Vec<(String, String)> = vec![(id.to_string(), new_root.clone())];
         for desc in self.subtree_ids(id) {
-            let new_id = desc.replacen(&format!("{id}{}", Self::ID_SEP), &format!("{new_root}{}", Self::ID_SEP), 1);
+            let new_id = desc.replacen(
+                &format!("{id}{}", Self::ID_SEP),
+                &format!("{new_root}{}", Self::ID_SEP),
+                1,
+            );
             renames.push((desc, new_id));
         }
 
@@ -568,8 +567,10 @@ impl EntryTree {
                 }
             }
         }
-        let map: HashMap<&str, &str> =
-            renames.iter().map(|(o, n)| (o.as_str(), n.as_str())).collect();
+        let map: HashMap<&str, &str> = renames
+            .iter()
+            .map(|(o, n)| (o.as_str(), n.as_str()))
+            .collect();
 
         // Apply renames + pointer remaps in one pass.
         for e in self.0.iter_mut() {
@@ -920,7 +921,11 @@ impl Loader {
             | Staged::Begin { id, .. }
             | Staged::RebuildFiber { id, .. } => id.clone(),
         };
-        staged.sort_by(|a, b| order_key(a).cmp(&order_key(b)).then(tie_key(a).cmp(&tie_key(b))));
+        staged.sort_by(|a, b| {
+            order_key(a)
+                .cmp(&order_key(b))
+                .then(tie_key(a).cmp(&tie_key(b)))
+        });
 
         // Phase 2 — APPLY in dependency order, rolling back every
         // already-applied step when one fails mid-batch. The loader window
@@ -956,7 +961,12 @@ impl Loader {
                     tracing::info!(id = %id, "Loader: retired entry");
                     (Ok(()), true)
                 }
-                Staged::UpdateConfig { ref id, ref new_config, fid, .. } => {
+                Staged::UpdateConfig {
+                    ref id,
+                    ref new_config,
+                    fid,
+                    ..
+                } => {
                     journal.update_config(id, new_config.clone(), None);
                     // Drive Fiber::update when a live fiber is known.
                     if let Some(fiber) = fid.and_then(|f| {
@@ -980,7 +990,8 @@ impl Loader {
                     ref entry,
                     ref plugin,
                 } => {
-                    match Self::rebuild_fiber_verified(ctx, id, plugin, entry.clone(), journal).await
+                    match Self::rebuild_fiber_verified(ctx, id, plugin, entry.clone(), journal)
+                        .await
                     {
                         Ok(v) => (Ok(()), v),
                         Err(e) => (Err(e), false),
@@ -1050,7 +1061,6 @@ impl Loader {
     // The ledger keys on fiber id and lives on the loader (process-wide),
     // mirroring the journal: absent loader paths degrade to today's
     // behavior because nothing ever registers an in-flight window.
-
 
     /// Mark `fid` as mid-provider-update (reentrant-safe via counting).
     fn cascade_begin(fid: u64) {
@@ -1131,7 +1141,10 @@ impl Loader {
         };
         let settled = Self::cascade_end(fid);
         if settled && fid != 0 {
-            tracing::debug!(fiber_id = fid, "Loader: provider update settled; cascade converges");
+            tracing::debug!(
+                fiber_id = fid,
+                "Loader: provider update settled; cascade converges"
+            );
         }
         outcome
     }
@@ -1916,7 +1929,7 @@ impl Loader {
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             },
         )
     }
@@ -2177,7 +2190,7 @@ mod tests {
             disabled: false,
             isolate: Some("tenant:acme".into()),
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         };
         let s = serde_json::to_string(&entry).unwrap();
         let back: Entry = serde_json::from_str(&s).unwrap();
@@ -2194,7 +2207,7 @@ mod tests {
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             },
             Entry {
                 id: "b".into(),
@@ -2203,7 +2216,7 @@ mod tests {
                 disabled: true,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             },
         ]);
         let s = serde_json::to_string(&tree).unwrap();
@@ -2223,7 +2236,7 @@ mod tests {
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         }]);
         let des = EntryTree(vec![Entry {
             id: "a".into(),
@@ -2232,7 +2245,7 @@ mod tests {
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         }]);
         let loader = Loader::new();
         let acts = loader.reconcile(&cur, &des);
@@ -2249,7 +2262,7 @@ mod tests {
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         }]);
         let des = EntryTree(vec![Entry {
             id: "a".into(),
@@ -2258,7 +2271,7 @@ mod tests {
             disabled: true,
             isolate: None,
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         }]);
         let loader = Loader::new();
         assert!(matches!(
@@ -2280,7 +2293,7 @@ mod tests {
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         }]);
         let des = EntryTree(vec![Entry {
             id: "a".into(),
@@ -2289,7 +2302,7 @@ mod tests {
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         }]);
         let loader = Loader::new();
         assert!(matches!(
@@ -2307,7 +2320,7 @@ mod tests {
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         }]);
         let des_isolate = EntryTree(vec![Entry {
             id: "a".into(),
@@ -2316,7 +2329,7 @@ mod tests {
             disabled: false,
             isolate: Some("tenant:acme".into()),
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         }]);
         let loader = Loader::new();
         assert!(matches!(
@@ -2333,7 +2346,7 @@ mod tests {
             disabled: false,
             isolate: None,
             intercept,
-                    position: None,
+            position: None,
         }]);
         assert!(matches!(
             loader.reconcile(&cur, &des_intercept)[0],
@@ -2603,7 +2616,7 @@ disabled = false
             disabled: false,
             isolate: Some("tenant:acme".into()),
             intercept,
-                    position: None,
+            position: None,
         };
         Loader::instantiate_entry(&ctx, &entry).expect("instantiate_entry");
 
@@ -2664,7 +2677,7 @@ disabled = false
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             },
             Entry {
                 id: "b:two".into(),
@@ -2673,7 +2686,7 @@ disabled = false
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             },
         ]);
         let mut current = EntryTree(vec![]);
@@ -2741,7 +2754,7 @@ disabled = false
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             },
             Entry {
                 id: "good:two".into(),
@@ -2750,7 +2763,7 @@ disabled = false
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             },
         ]);
         let mut current = EntryTree(vec![]);
@@ -2791,7 +2804,7 @@ disabled = false
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             },
             Entry {
                 id: "good:last".into(),
@@ -2800,7 +2813,7 @@ disabled = false
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             },
             Entry {
                 id: "good:never".into(),
@@ -2809,18 +2822,21 @@ disabled = false
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             },
         ]);
-        let actions =
-            Loader::apply(&ctx, &mut current, &desired_late, &journal).await;
+        let actions = Loader::apply(&ctx, &mut current, &desired_late, &journal).await;
         let failed = actions
             .iter()
             .find(|a| a.id == "good:last")
             .expect("mid-batch failure named");
         assert!(failed.status.is_err());
         assert!(
-            failed.status.as_ref().unwrap_err().contains("no factory registered"),
+            failed
+                .status
+                .as_ref()
+                .unwrap_err()
+                .contains("no factory registered"),
             "error names the cause: {:?}",
             failed.status
         );
@@ -2883,7 +2899,7 @@ disabled = false
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         }]);
         let mut current = EntryTree(vec![]);
         let actions = Loader::apply(&ctx, &mut current, &desired_a, &journal).await;
@@ -2903,7 +2919,7 @@ disabled = false
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         }]);
         let ctx_probe = ctx.clone();
         let prober = tokio::spawn(async move {
@@ -2972,7 +2988,7 @@ disabled = false
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         };
         let mut current = EntryTree(vec![]);
         Loader::apply(&ctx, &mut current, &EntryTree(vec![entry_ok]), &journal).await;
@@ -2992,7 +3008,7 @@ disabled = false
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         }]);
         let actions = Loader::apply(&ctx, &mut current, &desired_bad, &journal).await;
         assert_eq!(actions[0].action, "update-config");
@@ -3041,7 +3057,7 @@ disabled = false
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         }]);
         let actions = Loader::apply(&ctx, &mut current, &desired_good, &journal).await;
         assert_eq!(actions[0].action, "update-config");
@@ -3090,7 +3106,7 @@ disabled = false
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         }]);
         let mut current = EntryTree(vec![]);
         Loader::apply(&ctx, &mut current, &desired_ok, &journal).await;
@@ -3104,7 +3120,7 @@ disabled = false
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         }]);
         let actions = Loader::apply(&ctx, &mut current, &desired_bad, &journal).await;
         assert_eq!(actions[0].action, "rebuild-fiber");
@@ -3155,7 +3171,7 @@ disabled = false
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         }]);
         let mut current = EntryTree(vec![Entry {
             id: "fb".into(),
@@ -3164,7 +3180,7 @@ disabled = false
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         }]);
         let actions = Loader::apply(&ctx, &mut current, &desired, &journal).await;
         assert_eq!(actions[0].action, "rebuild-fiber");
@@ -3185,7 +3201,7 @@ disabled = false
                 disabled: true,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             },
             Entry {
                 id: "svc:acme".into(),
@@ -3194,7 +3210,7 @@ disabled = false
                 disabled: false,
                 isolate: Some("acme".into()),
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             },
         ]);
         tree.save_to_toml_file(&path).unwrap();
@@ -3213,7 +3229,7 @@ disabled = false
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         }]);
         // Two consecutive saves exercise both the create and rename-over
         // paths; neither may leave `.tmp-*` siblings behind.
@@ -3261,7 +3277,7 @@ plugin = "Bar"
             disabled: false,
             isolate: Some("acme".into()),
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         });
         tree.save_to_toml_file(&path).unwrap();
 
@@ -3303,7 +3319,7 @@ plugin = "Bar"
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         }]);
         // Parent directory does not exist yet — the save must create it.
         tree.save_to_file(path.to_str().unwrap()).unwrap();
@@ -3494,7 +3510,7 @@ plugin = "Bar"
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         };
         let mut entry_b = entry_a.clone();
         entry_b.id = "cyc:b".into();
@@ -3573,7 +3589,7 @@ plugin = "Bar"
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         };
         let mut current = EntryTree(vec![]);
         Loader::apply(&ctx, &mut current, &EntryTree(vec![entry_a]), &journal).await;
@@ -3667,7 +3683,7 @@ plugin = "Bar"
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         };
         let mut current = EntryTree(vec![]);
         Loader::apply(&ctx, &mut current, &EntryTree(vec![entry_ok]), &journal).await;
@@ -3733,7 +3749,7 @@ plugin = "Bar"
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         };
         let mut current = EntryTree(vec![]);
         Loader::apply(&ctx, &mut current, &EntryTree(vec![entry_a]), &journal).await;
@@ -3828,7 +3844,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             }]),
             &journal,
         )
@@ -3846,7 +3862,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             }]),
             &journal,
         )
@@ -3911,7 +3927,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             }]),
             &journal,
         )
@@ -3928,7 +3944,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             }]),
             &journal,
         )
@@ -3964,7 +3980,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             }]),
             &journal,
         )
@@ -4017,7 +4033,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             }]),
             &journal,
         )
@@ -4054,7 +4070,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             },
             Entry {
                 id: "t:new".into(),
@@ -4063,7 +4079,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             },
             // Distinct service type (own factory) so this step's only failure
             // mode is "the batch already aborted", not a provider clash with
@@ -4075,7 +4091,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             },
         ]);
         let actions = Loader::apply(&ctx, &mut current, &desired, &journal).await;
@@ -4086,12 +4102,18 @@ plugin = "Bar"
             .expect("failing entry named in results");
         assert!(failed.status.is_err());
         assert!(
-            failed.status.as_ref().unwrap_err().contains("intentional batch failure"),
+            failed
+                .status
+                .as_ref()
+                .unwrap_err()
+                .contains("intentional batch failure"),
             "{:?}",
             failed.status
         );
         assert!(
-            !actions.iter().any(|a| a.id == "t:never" && a.status.is_ok()),
+            !actions
+                .iter()
+                .any(|a| a.id == "t:never" && a.status.is_ok()),
             "#3 must never be applied"
         );
 
@@ -4161,7 +4183,7 @@ plugin = "Bar"
                     disabled: false,
                     isolate: None,
                     intercept: HashMap::new(),
-                                    position: None,
+                    position: None,
                 },
                 Entry {
                     id: "o:bye".into(),
@@ -4170,7 +4192,7 @@ plugin = "Bar"
                     disabled: false,
                     isolate: None,
                     intercept: HashMap::new(),
-                                    position: None,
+                    position: None,
                 },
             ]),
             &journal,
@@ -4188,7 +4210,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             },
             Entry {
                 id: "o:new".into(),
@@ -4197,7 +4219,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             },
         ]);
         let actions = Loader::apply(&ctx, &mut current, &desired, &journal).await;
@@ -4223,7 +4245,10 @@ plugin = "Bar"
         // Retired fiber disposed and gone from tracking.
         let registry = ctx.get::<crate::RegistryService>().unwrap();
         assert!(
-            registry.get_fiber(retire_fid).map(|f| f.is_disposed()).unwrap_or(true),
+            registry
+                .get_fiber(retire_fid)
+                .map(|f| f.is_disposed())
+                .unwrap_or(true),
             "retired fiber disposed (and pruned from tracking)"
         );
         assert_eq!(current.0.len(), 2, "tree advanced to desired");
@@ -4275,7 +4300,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             }]),
             &journal,
         )
@@ -4341,7 +4366,7 @@ plugin = "Bar"
                 disabled: false,
                 isolate: None,
                 intercept: HashMap::new(),
-                            position: None,
+                position: None,
             }]),
             &journal,
         )
@@ -4422,7 +4447,8 @@ plugin = "Bar"
         struct Dependent;
         impl Service for Dependent {}
 
-        let dep_fiber_holder = Arc::new(parking_lot::Mutex::<Option<std::sync::Arc<crate::Fiber>>>::new(None));
+        let dep_fiber_holder =
+            Arc::new(parking_lot::Mutex::<Option<std::sync::Arc<crate::Fiber>>>::new(None));
 
         let dependent_applies = Arc::new(std::sync::atomic::AtomicU64::new(0));
         {
@@ -4483,7 +4509,9 @@ plugin = "Bar"
         }
         let reflect = ctx.get::<crate::ReflectService>().unwrap();
         reflect.set_context(&ctx);
-        reflect.notify_with_ctx(TypeId::of::<CascadeProvider>(), &ctx).await;
+        reflect
+            .notify_with_ctx(TypeId::of::<CascadeProvider>(), &ctx)
+            .await;
         assert!(
             matches!(dep_fiber.state(), crate::FiberState::Active { .. }),
             "dependent must start Active, got {:?}",
@@ -4501,7 +4529,7 @@ plugin = "Bar"
             disabled: false,
             isolate: None,
             intercept: HashMap::new(),
-                    position: None,
+            position: None,
         }])));
         let mut handles = Vec::new();
         for round in 2..=6u32 {
@@ -4517,7 +4545,7 @@ plugin = "Bar"
                     disabled: false,
                     isolate: None,
                     intercept: HashMap::new(),
-                                    position: None,
+                    position: None,
                 }]);
                 Loader::apply(&ctx, &mut guard, &desired, &journal).await
             }));
@@ -4582,31 +4610,25 @@ plugin = "Bar"
     fn move_fixture(ctx: &Arc<Context>) {
         ctx.provide(crate::RegistryService::new());
         let plugins = ctx.provide(crate::PluginRegistry::new());
-        fn reg<T: Service>(
-            plugins: &crate::PluginRegistry,
-            label: &str,
-            mk: fn(u64) -> T,
-        ) {
+        fn reg<T: Service>(plugins: &crate::PluginRegistry, label: &str, mk: fn(u64) -> T) {
             plugins.register(
                 label,
                 Arc::new(move |ctx: &Arc<Context>, cfg| {
                     let v = cfg.get("v").and_then(|x| x.as_u64()).unwrap_or(0);
                     let fut = ctx.plugin(mk(v));
-                    tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(fut)
-                    })
+                    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
                 }),
             );
         }
-        reg(&plugins, "MoveFactory", |v| MoveProbe(
-            std::sync::atomic::AtomicU64::new(v),
-        ));
-        reg(&plugins, "MoveFactoryB", |v| MoveProbeB(
-            std::sync::atomic::AtomicU64::new(v),
-        ));
-        reg(&plugins, "MoveFactoryC", |v| MoveProbeC(
-            std::sync::atomic::AtomicU64::new(v),
-        ));
+        reg(&plugins, "MoveFactory", |v| {
+            MoveProbe(std::sync::atomic::AtomicU64::new(v))
+        });
+        reg(&plugins, "MoveFactoryB", |v| {
+            MoveProbeB(std::sync::atomic::AtomicU64::new(v))
+        });
+        reg(&plugins, "MoveFactoryC", |v| {
+            MoveProbeC(std::sync::atomic::AtomicU64::new(v))
+        });
     }
 
     fn move_entry_spec(id: &str, plugin: &str, v: u64, disabled: bool) -> Entry {
@@ -4646,7 +4668,10 @@ plugin = "Bar"
             .await
             .expect("move succeeds");
         assert!(out.noop, "pure structural move takes the noop path");
-        assert_eq!(out.renamed, vec![("svc".to_string(), "grp:svc".to_string())]);
+        assert_eq!(
+            out.renamed,
+            vec![("svc".to_string(), "grp:svc".to_string())]
+        );
 
         // Identity preserved: same fiber id, same handle, refreshed label.
         let rec = journal.get("grp:svc").expect("journal re-keyed");
@@ -4780,7 +4805,11 @@ plugin = "Bar"
             parent: Some("g".into()),
             position: 0,
         });
-        let desired = EntryTree(vec![move_entry_spec("other", "MoveFactory", 3, false), g, kid]);
+        let desired = EntryTree(vec![
+            move_entry_spec("other", "MoveFactory", 3, false),
+            g,
+            kid,
+        ]);
         let actions = Loader::apply(&ctx, &mut current, &desired, &journal).await;
         assert!(actions.iter().all(|a| a.status.is_ok()), "{actions:?}");
 

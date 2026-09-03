@@ -1,18 +1,18 @@
 //! Admin tenants domain — cordis Phase6
 //! Bodies moved from `admin.rs` (190KB/5946 lines).
 
-use std::sync::Arc;
-use ::cordis::Context;
 use super::*;
+use ::cordis::Context;
+use std::sync::Arc;
 
+use crate::HttpError;
+use crate::Result;
 use ares_store::audit_log;
 use ares_store::tenant_agents::clone_templates_for_tenant;
-use ares_types::types::{AppError};
-use crate::Result;
-use crate::HttpError;
+use ares_types::types::AppError;
 use axum::{
-    Json,
     extract::{Path, State},
+    Json,
 };
 use sha2::Digest;
 
@@ -22,9 +22,17 @@ pub async fn create_tenant(
 ) -> Result<Json<TenantResponse>> {
     let tier = parse_tenant_tier(&payload.tier)?;
 
-    let tenant = ctx.get::<ares_store::TenantDb>().expect("not provided").create_tenant(payload.name, tier).await?;
+    let tenant = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .create_tenant(payload.name, tier)
+        .await?;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let tid = tenant.id.clone();
     tokio::spawn(async move {
         let _ =
@@ -35,7 +43,11 @@ pub async fn create_tenant(
 }
 
 pub async fn list_tenants(State(ctx): State<Arc<Context>>) -> Result<Json<Vec<TenantResponse>>> {
-    let tenants = ctx.get::<ares_store::TenantDb>().expect("not provided").list_tenants().await?;
+    let tenants = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .list_tenants()
+        .await?;
     let response: Vec<TenantResponse> = tenants.into_iter().map(|t| t.into()).collect();
 
     Ok(Json(response))
@@ -45,7 +57,9 @@ pub async fn get_tenant(
     State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<TenantResponse>> {
-    let tenant = ctx.get::<ares_store::TenantDb>().expect("not provided")
+    let tenant = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
         .get_tenant(&tenant_id)
         .await?
         .ok_or_else(|| HttpError::from(AppError::NotFound("Tenant not found".to_string())))?;
@@ -58,11 +72,17 @@ pub async fn create_api_key(
     Path(tenant_id): Path<String>,
     Json(payload): Json<CreateApiKeyRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    let (api_key, raw_key) = ctx.get::<ares_store::TenantDb>().expect("not provided")
+    let (api_key, raw_key) = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
         .create_api_key(&tenant_id, payload.name)
         .await?;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let kid = api_key.id.clone();
     tokio::spawn(async move {
         let _ =
@@ -80,7 +100,11 @@ pub async fn list_api_keys(
     State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<Vec<ApiKeyResponse>>> {
-    let keys = ctx.get::<ares_store::TenantDb>().expect("not provided").list_api_keys(&tenant_id).await?;
+    let keys = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .list_api_keys(&tenant_id)
+        .await?;
     let response: Vec<ApiKeyResponse> = keys.into_iter().map(|k| k.into()).collect();
 
     Ok(Json(response))
@@ -90,12 +114,18 @@ pub async fn get_tenant_usage(
     State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<UsageResponse>> {
-    let _ = ctx.get::<ares_store::TenantDb>().expect("not provided")
+    let _ = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
         .get_tenant(&tenant_id)
         .await?
         .ok_or_else(|| HttpError::from(AppError::NotFound("Tenant not found".to_string())))?;
 
-    let usage = ctx.get::<ares_store::TenantDb>().expect("not provided").get_usage_summary(&tenant_id).await?;
+    let usage = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .get_usage_summary(&tenant_id)
+        .await?;
 
     Ok(Json(UsageResponse::from(usage)))
 }
@@ -107,16 +137,23 @@ pub async fn update_tenant_quota(
 ) -> Result<Json<TenantResponse>> {
     let tier = parse_tenant_tier(&payload.tier)?;
 
-    ctx.get::<ares_store::TenantDb>().expect("not provided")
+    ctx.get::<ares_store::TenantDb>()
+        .expect("not provided")
         .update_tenant_quota(&tenant_id, tier)
         .await?;
 
-    let tenant = ctx.get::<ares_store::TenantDb>().expect("not provided")
+    let tenant = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
         .get_tenant(&tenant_id)
         .await?
         .ok_or_else(|| HttpError::from(AppError::NotFound("Tenant not found".to_string())))?;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let tid = tenant_id.clone();
     let details = format!("{{\"new_tier\":\"{}\"}}", payload.tier);
     tokio::spawn(async move {
@@ -144,16 +181,33 @@ pub async fn provision_client(
     // It does NOT create product-specific DB tables — client domain data lives in the client's own backend.
     let product_type = req.product_type.to_lowercase();
 
-    let tenant = ctx.get::<ares_store::TenantDb>().expect("not provided").create_tenant(req.name, tier).await?;
+    let tenant = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .create_tenant(req.name, tier)
+        .await?;
 
-    let agents =
-        clone_templates_for_tenant(&ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone(), &tenant.id, &product_type).await?;
+    let agents = clone_templates_for_tenant(
+        &ctx.get::<ares_store::TenantDb>()
+            .expect("not provided")
+            .pool()
+            .clone(),
+        &tenant.id,
+        &product_type,
+    )
+    .await?;
 
-    let (api_key, raw_key) = ctx.get::<ares_store::TenantDb>().expect("not provided")
+    let (api_key, raw_key) = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
         .create_api_key(&tenant.id, req.api_key_name)
         .await?;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let tid = tenant.id.clone();
     let details = format!(
         "{{\"product_type\":\"{}\",\"tier\":\"{}\"}}",
@@ -197,7 +251,11 @@ pub async fn delete_tenant(
         .delete_tenant(&tenant_id)
         .await?;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let tid = tenant_id.clone();
     tokio::spawn(async move {
         let _ =

@@ -242,18 +242,18 @@ pub fn resolve_env_value(value: &str) -> Result<String, McpConfigError> {
         .strip_prefix("${")
         .and_then(|inner| inner.strip_suffix('}'))
     {
-        return std::env::var(name)
-            .map_err(|_| McpConfigError::MissingEnvVar(name.to_string()));
+        return std::env::var(name).map_err(|_| McpConfigError::MissingEnvVar(name.to_string()));
     }
     if let Some(name) = trimmed.strip_prefix('$').filter(|n| !n.is_empty()) {
-        return std::env::var(name)
-            .map_err(|_| McpConfigError::MissingEnvVar(name.to_string()));
+        return std::env::var(name).map_err(|_| McpConfigError::MissingEnvVar(name.to_string()));
     }
     Ok(trimmed.to_string())
 }
 
 /// Apply endpoint normalization and env-placeholder resolution to a parsed config.
-pub fn normalize_mcp_config(mut config: McpServerConfig) -> Result<McpServerConfig, McpConfigError> {
+pub fn normalize_mcp_config(
+    mut config: McpServerConfig,
+) -> Result<McpServerConfig, McpConfigError> {
     if let Some(endpoint) = config.endpoint.take() {
         config.endpoint = Some(normalize_endpoint_url(&endpoint)?);
     }
@@ -267,11 +267,13 @@ pub fn normalize_mcp_config(mut config: McpServerConfig) -> Result<McpServerConf
 pub fn parse_mcp_config(content: &str) -> Result<McpServerConfig, McpConfigError> {
     let config = match toml::from_str::<McpServerConfig>(content) {
         Ok(config) => config,
-        Err(toml_error) => toon_format::decode_default::<McpServerConfig>(content).map_err(|toon_error| {
-            McpConfigError::Parse(format!(
-                "failed to parse as TOML ({toml_error}) or TOON ({toon_error})"
-            ))
-        })?,
+        Err(toml_error) => {
+            toon_format::decode_default::<McpServerConfig>(content).map_err(|toon_error| {
+                McpConfigError::Parse(format!(
+                    "failed to parse as TOML ({toml_error}) or TOON ({toon_error})"
+                ))
+            })?
+        }
     };
     normalize_mcp_config(config)
 }
@@ -279,7 +281,9 @@ pub fn parse_mcp_config(content: &str) -> Result<McpServerConfig, McpConfigError
 impl McpClient {
     pub fn new(config: McpServerConfig) -> Self {
         let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(client_timeout_secs(config.timeout_secs)))
+            .timeout(Duration::from_secs(client_timeout_secs(
+                config.timeout_secs,
+            )))
             .build()
             .expect("Failed to create HTTP client");
 
@@ -406,8 +410,12 @@ impl McpClient {
                     let status = http_status_from_error(&err);
                     let transport_retryable =
                         matches!(&err, McpError::Http(e) if is_retryable_transport(e));
-                    if should_retry_request(attempt, DEFAULT_MAX_RETRIES, status, transport_retryable)
-                    {
+                    if should_retry_request(
+                        attempt,
+                        DEFAULT_MAX_RETRIES,
+                        status,
+                        transport_retryable,
+                    ) {
                         tokio::time::sleep(Duration::from_millis(retry_backoff_ms(attempt, 100)))
                             .await;
                         continue;
@@ -440,7 +448,11 @@ impl McpClient {
     }
 
     fn get_base_url(&self) -> Result<String, McpError> {
-        let endpoint = self.config.endpoint.as_deref().ok_or(McpError::NoEndpoint)?;
+        let endpoint = self
+            .config
+            .endpoint
+            .as_deref()
+            .ok_or(McpError::NoEndpoint)?;
         normalize_endpoint_url(endpoint).map_err(McpError::from)
     }
 }
@@ -451,10 +463,7 @@ impl McpClient {
         self.get_base_url()
     }
 
-    fn build_for_test(
-        &self,
-        request: &McpClientRequest,
-    ) -> Result<BuiltMcpHttpRequest, McpError> {
+    fn build_for_test(&self, request: &McpClientRequest) -> Result<BuiltMcpHttpRequest, McpError> {
         let base_url = self.get_base_url()?;
         build_client_request(&base_url, request, self.config.api_key.as_deref())
     }
@@ -642,10 +651,7 @@ timeout_secs: 30
 
     #[test]
     fn mcp_error_display_messages() {
-        assert_eq!(
-            McpError::NoEndpoint.to_string(),
-            "No endpoint configured"
-        );
+        assert_eq!(McpError::NoEndpoint.to_string(), "No endpoint configured");
         assert_eq!(
             McpError::ServerDisabled.to_string(),
             "MCP server is disabled"
@@ -743,7 +749,10 @@ timeout_secs: 30
     fn mcp_http_method_serde_uses_uppercase() {
         let method = serde_json::from_str::<McpHttpMethod>("\"POST\"").unwrap();
         assert_eq!(method, McpHttpMethod::Post);
-        assert_eq!(serde_json::to_string(&McpHttpMethod::Get).unwrap(), "\"GET\"");
+        assert_eq!(
+            serde_json::to_string(&McpHttpMethod::Get).unwrap(),
+            "\"GET\""
+        );
     }
 
     #[test]
@@ -930,7 +939,10 @@ timeout_secs: 30
             .and(path("/api/v1/context"))
             .and(query_param("path", "docs/readme"))
             .and(header("authorization", "Bearer test-key"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"path": "docs/readme"})))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"path": "docs/readme"})),
+            )
             .mount(&server)
             .await;
 
@@ -947,7 +959,9 @@ timeout_secs: 30
             .and(path("/api/v1/context"))
             .and(header("authorization", "Bearer test-key"))
             .and(body_json(expected.clone()))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"written": true})))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"written": true})),
+            )
             .mount(&server)
             .await;
 
@@ -983,7 +997,9 @@ timeout_secs: 30
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v1/completeness/docs"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"score": 0.9})))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"score": 0.9})),
+            )
             .mount(&server)
             .await;
 
@@ -1014,7 +1030,9 @@ timeout_secs: 30
         Mock::given(method("POST"))
             .and(path("/api/v1/gaps/detect"))
             .and(body_json(serde_json::json!({})))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"detected": 0})))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"detected": 0})),
+            )
             .mount(&server)
             .await;
 

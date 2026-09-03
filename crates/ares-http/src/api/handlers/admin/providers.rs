@@ -1,27 +1,35 @@
 //! Admin providers domain — cordis Phase6
 //! Bodies moved from `admin.rs` (190KB/5946 lines).
 
-use std::sync::Arc;
-use ::cordis::Context;
 use super::*;
+use ::cordis::Context;
+use std::sync::Arc;
 
-use ares_llm::provider_registry::{ModelInfo, RuntimeProviderEntry};
-use ares_types::types::{AppError};
-use crate::Result;
 use crate::HttpError;
+use crate::Result;
+use ares_llm::provider_registry::{ModelInfo, RuntimeProviderEntry};
+use ares_types::types::AppError;
 use axum::{
-    Json,
     extract::{Path, Query, State},
     http::StatusCode,
+    Json,
 };
 use sha2::Digest;
 
 pub async fn list_models_handler(State(ctx): State<Arc<Context>>) -> Result<Json<Vec<ModelInfo>>> {
-    Ok(Json(ctx.get::<ares_llm::Llm>().expect("not provided").list_models()))
+    Ok(Json(
+        ctx.get::<ares_llm::Llm>()
+            .expect("not provided")
+            .list_models(),
+    ))
 }
 
 pub async fn reload_runtime_provider_registry(ctx: &Arc<Context>) -> Result<()> {
-    let __pool_1 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_1 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = RuntimeProviderStore::new(&__pool_1);
     let providers = store.list_all().await?;
     let mut entries = Vec::with_capacity(providers.len());
@@ -45,9 +53,7 @@ pub async fn reload_runtime_provider_registry(ctx: &Arc<Context>) -> Result<()> 
     }
 
     let Some(llm) = ctx.get::<ares_llm::Llm>() else {
-        tracing::info!(
-            "Runtime providers preload skipped: no Llm service on this context"
-        );
+        tracing::info!("Runtime providers preload skipped: no Llm service on this context");
         return Ok(());
     };
     llm.reload_runtime_providers(entries, names);
@@ -58,7 +64,11 @@ pub async fn reload_runtime_provider_registry(ctx: &Arc<Context>) -> Result<()> 
 pub async fn list_runtime_providers(
     State(ctx): State<Arc<Context>>,
 ) -> Result<Json<Vec<RuntimeProviderResponse>>> {
-    let __pool_2 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_2 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = RuntimeProviderStore::new(&__pool_2);
     let providers = store.list_all().await?;
     let response: Vec<RuntimeProviderResponse> = providers.into_iter().map(|p| p.into()).collect();
@@ -72,12 +82,20 @@ pub async fn get_runtime_provider(
     Path(name): Path<String>,
     Query(query): Query<RuntimeProviderScopeQuery>,
 ) -> Result<Json<RuntimeProviderResponse>> {
-    let __pool_3 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_3 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = RuntimeProviderStore::new(&__pool_3);
     let provider = store
         .get_scoped(query.tenant_id.as_deref(), &name)
         .await?
-        .ok_or_else(|| HttpError::from(AppError::NotFound(format!("runtime provider {name} not found"))))?;
+        .ok_or_else(|| {
+            HttpError::from(AppError::NotFound(format!(
+                "runtime provider {name} not found"
+            )))
+        })?;
     tracing::info!("Retrieved runtime provider {}", name);
     Ok(Json(provider.into()))
 }
@@ -87,7 +105,11 @@ pub async fn upsert_runtime_provider(
     State(ctx): State<Arc<Context>>,
     Json(mut req): Json<CreateRuntimeProviderRequest>,
 ) -> Result<Json<RuntimeProviderResponse>> {
-    let __pool_4 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_4 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = RuntimeProviderStore::new(&__pool_4);
     preserve_redacted_runtime_provider_secret(&store, &mut req).await?;
     let provider = store.upsert(&req).await?;
@@ -102,15 +124,19 @@ pub async fn delete_runtime_provider(
     Path(name): Path<String>,
     Query(query): Query<RuntimeProviderScopeQuery>,
 ) -> Result<StatusCode> {
-    let __pool_5 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_5 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = RuntimeProviderStore::new(&__pool_5);
     let rows = store
         .delete_scoped(query.tenant_id.as_deref(), &name)
         .await?;
     if rows == 0 {
-        return Err(HttpError::from(AppError::NotFound(format!(
-            "runtime provider {name} not found"
-        ).into())));
+        return Err(HttpError::from(AppError::NotFound(
+            format!("runtime provider {name} not found").into(),
+        )));
     }
     reload_runtime_provider_registry(&ctx).await?;
     tracing::info!("Deleted runtime provider {}", name);
@@ -121,10 +147,19 @@ pub fn routes() -> axum::Router<Arc<Context>> {
     use axum::routing::{delete, get, post};
     axum::Router::new()
         .route("/providers/list_models_handler", get(list_models_handler))
-        .route("/providers/list_runtime_providers", get(list_runtime_providers))
+        .route(
+            "/providers/list_runtime_providers",
+            get(list_runtime_providers),
+        )
         .route("/providers/get_runtime_provider", get(get_runtime_provider))
-        .route("/providers/upsert_runtime_provider", post(upsert_runtime_provider))
-        .route("/providers/delete_runtime_provider", delete(delete_runtime_provider))
+        .route(
+            "/providers/upsert_runtime_provider",
+            post(upsert_runtime_provider),
+        )
+        .route(
+            "/providers/delete_runtime_provider",
+            delete(delete_runtime_provider),
+        )
 }
 
 // cordis Phase6: RouteSet Service — registered via build_routes(ctx)

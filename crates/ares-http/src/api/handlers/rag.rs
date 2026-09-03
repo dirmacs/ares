@@ -5,6 +5,11 @@
 //! - Multi-strategy search (semantic, BM25, fuzzy, hybrid)
 //! - Collection management
 
+#[cfg(feature = "local-embeddings")]
+use crate::rag::{
+    embeddings::{EmbeddingModelType, EmbeddingService},
+    reranker::{Reranker, RerankerConfig, RerankerModelType},
+};
 use crate::{
     auth::middleware::AuthUser,
     db::{tenant_allowlist as allowlist, AresVectorStore, VectorStore},
@@ -18,11 +23,6 @@ use crate::{
         RagSearchResponse, RagSearchResult,
     },
     HttpError, Result,
-};
-#[cfg(feature = "local-embeddings")]
-use crate::rag::{
-    embeddings::{EmbeddingModelType, EmbeddingService},
-    reranker::{Reranker, RerankerConfig, RerankerModelType},
 };
 use axum::{extract::State, Json};
 use chrono::Utc;

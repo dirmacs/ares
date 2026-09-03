@@ -747,10 +747,7 @@ mod tests {
 
         let chunker = TextChunker::default();
         let cloned_chunker = chunker.clone();
-        assert_eq!(
-            cloned_chunker.config().strategy,
-            chunker.config().strategy
-        );
+        assert_eq!(cloned_chunker.config().strategy, chunker.config().strategy);
 
         use std::collections::HashSet;
         let mut set = HashSet::new();

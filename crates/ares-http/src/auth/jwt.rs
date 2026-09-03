@@ -122,7 +122,11 @@ pub fn build_custom_claims(
 }
 
 /// Verify HS256 signature and decode standard claims.
-pub fn verify_signature(token: &str, secret: &[u8], leeway: u64) -> std::result::Result<Claims, JwtError> {
+pub fn verify_signature(
+    token: &str,
+    secret: &[u8],
+    leeway: u64,
+) -> std::result::Result<Claims, JwtError> {
     let header = decode_header(token).map_err(jwt_decode_error)?;
     if header.alg != Algorithm::HS256 {
         return Err(JwtError::InvalidClaims(format!(
@@ -134,13 +138,9 @@ pub fn verify_signature(token: &str, secret: &[u8], leeway: u64) -> std::result:
     let mut validation = Validation::new(Algorithm::HS256);
     validation.leeway = leeway;
 
-    decode::<Claims>(
-        token,
-        &DecodingKey::from_secret(secret),
-        &validation,
-    )
-    .map(|data| data.claims)
-    .map_err(jwt_decode_error)
+    decode::<Claims>(token, &DecodingKey::from_secret(secret), &validation)
+        .map(|data| data.claims)
+        .map_err(jwt_decode_error)
 }
 
 /// Return the subject (`sub`) when present and non-empty.
@@ -329,11 +329,15 @@ impl AuthService {
 }
 
 impl cordis::Service for AuthService {
-    fn name(&self) -> &'static str { "auth_service" }
+    fn name(&self) -> &'static str {
+        "auth_service"
+    }
     fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
-    fn check(&self) -> bool { true }
+    fn check(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
@@ -355,7 +359,6 @@ mod tests {
     fn now_ts() -> usize {
         Utc::now().timestamp() as usize
     }
-
 
     fn assert_claims_eq(actual: &Claims, expected: &Claims) {
         assert_eq!(actual.sub, expected.sub);
@@ -554,8 +557,7 @@ mod tests {
             Some("tenant-z".into()),
         );
         let token = sign_custom_claims(&custom, test_secret());
-        let decoded =
-            verify_signature(&token, test_secret(), 0).expect("verify custom token");
+        let decoded = verify_signature(&token, test_secret(), 0).expect("verify custom token");
         assert_eq!(decoded.sub, "u");
         validate_tenant(
             &CustomClaims {
@@ -571,7 +573,8 @@ mod tests {
     fn verify_signature_wrong_secret_is_invalid_signature() {
         let claims = build_claims("u", "e@x.com", now_ts(), 60, None);
         let token = sign_claims(&claims, test_secret()).expect("sign");
-        let err = verify_signature(&token, b"other-secret-at-least-32-bytes-long!!", 0).unwrap_err();
+        let err =
+            verify_signature(&token, b"other-secret-at-least-32-bytes-long!!", 0).unwrap_err();
         assert_eq!(err, JwtError::InvalidSignature);
     }
 
@@ -593,13 +596,7 @@ mod tests {
 
     #[test]
     fn verify_signature_expired_token() {
-        let claims = build_claims(
-            "expired",
-            "e@x.com",
-            now_ts() - 200,
-            -120,
-            None,
-        );
+        let claims = build_claims("expired", "e@x.com", now_ts() - 200, -120, None);
         let token = sign_claims(&claims, test_secret()).expect("sign");
         assert!(matches!(
             verify_signature(&token, test_secret(), 0),
@@ -638,10 +635,7 @@ mod tests {
 
     #[test]
     fn jwt_error_invalid_signature_display() {
-        assert_eq!(
-            JwtError::InvalidSignature.to_string(),
-            "invalid signature"
-        );
+        assert_eq!(JwtError::InvalidSignature.to_string(), "invalid signature");
     }
 
     #[test]
@@ -677,7 +671,6 @@ mod tests {
         assert_eq!(cloned.sub, "u");
         assert_eq!(cloned.jti, "j");
     }
-
 
     #[test]
     fn validate_expiration_boundary_exactly_at_leeway() {
@@ -724,9 +717,7 @@ mod tests {
     #[test]
     fn test_password_verification_failure() {
         let service = create_test_service();
-        let hash = service
-            .hash_password("correct_password")
-            .expect("hash");
+        let hash = service.hash_password("correct_password").expect("hash");
         assert!(!service
             .verify_password("wrong_password", &hash)
             .expect("verify"));
@@ -750,9 +741,7 @@ mod tests {
         let tokens = service
             .generate_tokens("user-456", "user@test.com")
             .expect("generate");
-        let claims = service
-            .verify_token(&tokens.access_token)
-            .expect("verify");
+        let claims = service.verify_token(&tokens.access_token).expect("verify");
         assert_eq!(claims.sub, "user-456");
         assert_eq!(claims.email, "user@test.com");
     }
@@ -799,8 +788,12 @@ mod tests {
             .generate_tokens("user-refresh-unique", "refresh@example.com")
             .expect("generate");
         assert_ne!(tokens1.refresh_token, tokens2.refresh_token);
-        let claims1 = service.verify_token(&tokens1.refresh_token).expect("verify");
-        let claims2 = service.verify_token(&tokens2.refresh_token).expect("verify");
+        let claims1 = service
+            .verify_token(&tokens1.refresh_token)
+            .expect("verify");
+        let claims2 = service
+            .verify_token(&tokens2.refresh_token)
+            .expect("verify");
         assert_ne!(claims1.jti, claims2.jti);
     }
 
@@ -825,7 +818,9 @@ mod tests {
             .generate_tokens("roundtrip-user", "roundtrip@example.com")
             .expect("generate");
         let access = service.verify_token(&tokens.access_token).expect("access");
-        let refresh = service.verify_token(&tokens.refresh_token).expect("refresh");
+        let refresh = service
+            .verify_token(&tokens.refresh_token)
+            .expect("refresh");
         assert_eq!(access.sub, "roundtrip-user");
         assert!(!refresh.jti.is_empty());
     }
@@ -894,11 +889,7 @@ mod tests {
 
     #[test]
     fn auth_service_reexport_is_constructible() {
-        let service = AuthService::new(
-            "test-secret-at-least-32-chars-long!!".into(),
-            3600,
-            86_400,
-        );
+        let service = AuthService::new("test-secret-at-least-32-chars-long!!".into(), 3600, 86_400);
         let hash = service.hash_password("hunter2").expect("hash");
         assert!(service.verify_password("hunter2", &hash).expect("verify"));
     }

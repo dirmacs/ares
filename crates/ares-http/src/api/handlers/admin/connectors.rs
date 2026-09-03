@@ -3,29 +3,33 @@
 
 use super::*;
 
+use crate::HttpError;
+use crate::Result;
+use ::cordis::Context;
 use ares_store::agent_runs;
 use ares_store::audit_log;
 use ares_store::skills as db_skills;
-use ares_types::types::{AppError};
-use crate::Result;
-use crate::HttpError;
+use ares_types::types::AppError;
 use axum::{
-    Json,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::Redirect,
+    Json,
 };
 use sha2::Digest;
 use std::collections::HashMap;
 use std::sync::Arc;
-use ::cordis::Context;
 
 pub async fn list_skills(
     State(ctx): State<Arc<Context>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<Vec<db_skills::Skill>>> {
     let tenant_id = required_skill_tenant_id(&params)?.to_string();
-    let __pool_1 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_1 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = db_skills::SkillStore::new(&__pool_1);
     let skills = store.list_skills(Some(&tenant_id)).await?;
     Ok(Json(skills))
@@ -37,7 +41,11 @@ pub async fn get_skill(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<db_skills::Skill>> {
     let tenant_id = required_skill_tenant_id(&params)?.to_string();
-    let __pool_2 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_2 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = db_skills::SkillStore::new(&__pool_2);
     let skill = store
         .get_skill_for_tenant(&id, &tenant_id)
@@ -50,11 +58,19 @@ pub async fn create_skill(
     State(ctx): State<Arc<Context>>,
     Json(req): Json<db_skills::CreateSkillRequest>,
 ) -> Result<Json<db_skills::Skill>> {
-    let __pool_3 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_3 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = db_skills::SkillStore::new(&__pool_3);
     let skill = store.create_skill(&req).await?;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let t_id = skill.tenant_id.clone();
     let s_name = skill.name.clone();
     tokio::spawn(async move {
@@ -72,14 +88,22 @@ pub async fn update_skill(
     Json(req): Json<db_skills::CreateSkillRequest>,
 ) -> Result<Json<db_skills::Skill>> {
     normalized_skill_tenant_id(&req.tenant_id)?;
-    let __pool_4 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_4 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = db_skills::SkillStore::new(&__pool_4);
     let skill = store
         .update_skill(&id, &req)
         .await?
         .ok_or_else(|| HttpError::from(AppError::NotFound(format!("skill {id} not found"))))?;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let t_id = skill.tenant_id.clone();
     let s_name = skill.name.clone();
     tokio::spawn(async move {
@@ -97,14 +121,24 @@ pub async fn delete_skill(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<StatusCode> {
     let tenant_id = required_skill_tenant_id(&params)?.to_string();
-    let __pool_5 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_5 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = db_skills::SkillStore::new(&__pool_5);
     let rows = store.delete_skill_for_tenant(&tenant_id, &id).await?;
     if rows == 0 {
-        return Err(HttpError::from(AppError::NotFound(format!("skill {id} not found"))));
+        return Err(HttpError::from(AppError::NotFound(format!(
+            "skill {id} not found"
+        ))));
     }
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let sid = id.clone();
     let t_id = tenant_id.clone();
     tokio::spawn(async move {
@@ -124,12 +158,18 @@ pub async fn run_skill(
     let tenant_id = normalized_run_skill_tenant_id(&req.tenant_id)?.to_string();
     let skill_id = req.skill_id;
     let agent_name = admin_skill_agent_name(&skill_id);
-    ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided")
+    ctx.get::<crate::active_runs::ActiveRuns>()
+        .expect("not provided")
         .start(admin_skill_active_run(&run_id, &tenant_id, &skill_id));
 
     let metadata = admin_skill_run_metadata(&run_id);
-    let __pool_6 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
-    agent_runs::insert_agent_run_with_id_and_metadata(&__pool_6,
+    let __pool_6 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
+    agent_runs::insert_agent_run_with_id_and_metadata(
+        &__pool_6,
         &run_id,
         &tenant_id,
         &agent_name,
@@ -146,7 +186,11 @@ pub async fn run_skill(
     )
     .await?;
 
-    let __pool_7 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_7 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let obs = Arc::new(crate::observability::RunObservability {
         run_id: run_id.clone(),
         tenant_id: tenant_id.clone(),
@@ -154,7 +198,9 @@ pub async fn run_skill(
         pool: __pool_7,
     });
     let start = std::time::Instant::now();
-    let result = ctx.get::<ares_agent::skills::SkillEngine>().expect("not provided")
+    let result = ctx
+        .get::<ares_agent::skills::SkillEngine>()
+        .expect("not provided")
         .execute_skill(&skill_id, &tenant_id, req.input, &run_id, &ctx)
         .await;
     let duration_ms = start.elapsed().as_millis() as i64;
@@ -164,7 +210,9 @@ pub async fn run_skill(
         "failed"
     };
     let active_status = if result.is_ok() { "completed" } else { "error" };
-    ctx.get::<crate::active_runs::ActiveRuns>().expect("not provided").finish(&run_id, active_status);
+    ctx.get::<crate::active_runs::ActiveRuns>()
+        .expect("not provided")
+        .finish(&run_id, active_status);
 
     let (input_tokens, output_tokens) = result
         .as_ref()
@@ -172,7 +220,11 @@ pub async fn run_skill(
         .unwrap_or((0, 0));
     let error_message = result.as_ref().err().cloned();
 
-    let __pool_8 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_8 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     sqlx::query(
         "UPDATE agent_runs
          SET status = $2, input_tokens = $3, output_tokens = $4,
@@ -210,7 +262,11 @@ pub async fn list_connectors(
             "tenant_id query param is required".into(),
         )));
     }
-    let __pool_9 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_9 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = db_skills::ConnectorStore::new(&__pool_9);
     let connectors = store.list_connectors(tenant_id).await?;
     Ok(Json(connectors))
@@ -220,11 +276,19 @@ pub async fn create_connector(
     State(ctx): State<Arc<Context>>,
     Json(req): Json<db_skills::CreateConnectorRequest>,
 ) -> Result<Json<db_skills::Connector>> {
-    let __pool_10 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_10 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = db_skills::ConnectorStore::new(&__pool_10);
     let connector = store.create_connector(&req).await?;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let t_id = connector.tenant_id.clone();
     let c_name = connector.name.clone();
     tokio::spawn(async move {
@@ -247,14 +311,22 @@ pub async fn update_connector(
     Path(id): Path<String>,
     Json(req): Json<db_skills::CreateConnectorRequest>,
 ) -> Result<Json<db_skills::Connector>> {
-    let __pool_11 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_11 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = db_skills::ConnectorStore::new(&__pool_11);
     let connector = store
         .update_connector(&id, &req)
         .await?
         .ok_or_else(|| HttpError::from(AppError::NotFound(format!("connector {id} not found"))))?;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let t_id = connector.tenant_id.clone();
     let c_name = connector.name.clone();
     tokio::spawn(async move {
@@ -276,14 +348,24 @@ pub async fn delete_connector(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    let __pool_12 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_12 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = db_skills::ConnectorStore::new(&__pool_12);
     let rows = store.delete_connector(&id).await?;
     if rows == 0 {
-        return Err(HttpError::from(AppError::NotFound(format!("connector {id} not found"))));
+        return Err(HttpError::from(AppError::NotFound(format!(
+            "connector {id} not found"
+        ))));
     }
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let cid = id.clone();
     tokio::spawn(async move {
         let _ =
@@ -298,7 +380,11 @@ pub async fn delete_tenant_connector(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, id)): Path<(String, String)>,
 ) -> Result<StatusCode> {
-    let __pool_13 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_13 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = db_skills::ConnectorStore::new(&__pool_13);
     let rows = store.delete_connector_for_tenant(&tenant_id, &id).await?;
     if rows == 0 {
@@ -307,7 +393,11 @@ pub async fn delete_tenant_connector(
         ))));
     }
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let cid = id.clone();
     let t_id = tenant_id.clone();
     tokio::spawn(async move {
@@ -337,7 +427,11 @@ pub async fn oauth_authorize(
     }
 
     let provider = oauth_provider_config(&query.connector_type)?;
-    let __pool_14 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_14 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = ares_store::oauth_credentials::OAuthCredentialStore::new(&__pool_14);
     let credential = store
         .get(&query.tenant_id, provider.provider, &query.connector_type)
@@ -370,12 +464,18 @@ pub async fn oauth_callback(
     Query(query): Query<OAuthCallbackQuery>,
 ) -> Result<Redirect> {
     if query.code.trim().is_empty() {
-        return Err(HttpError::from(AppError::InvalidInput("OAuth code is required".to_string())));
+        return Err(HttpError::from(AppError::InvalidInput(
+            "OAuth code is required".to_string(),
+        )));
     }
 
     let oauth_state = decode_oauth_state(&query.state)?;
     let provider = oauth_provider_config(&oauth_state.connector_type)?;
-    let __pool_15 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_15 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = ares_store::oauth_credentials::OAuthCredentialStore::new(&__pool_15);
     let credential = store
         .get(
@@ -391,8 +491,9 @@ pub async fn oauth_callback(
             ))
         })?;
 
-    let master = MasterKey::from_env()
-        .ok_or_else(|| HttpError::from(AppError::Configuration("FLEET_SECRETS_KEY not set".into())))?;
+    let master = MasterKey::from_env().ok_or_else(|| {
+        HttpError::from(AppError::Configuration("FLEET_SECRETS_KEY not set".into()))
+    })?;
     let client_secret = decrypt_api_key(&credential.client_secret, &master)
         .map_err(|e| AppError::Configuration(format!("decrypt failed: {e}")))?;
     let callback_url = oauth_callback_url(&headers);
@@ -405,7 +506,13 @@ pub async fn oauth_callback(
 
     let form_body = form
         .iter()
-        .map(|(key, value)| format!("{}={}", urlencoding::encode(key), urlencoding::encode(value)))
+        .map(|(key, value)| {
+            format!(
+                "{}={}",
+                urlencoding::encode(key),
+                urlencoding::encode(value)
+            )
+        })
         .collect::<Vec<_>>()
         .join("&");
     let response = reqwest::Client::new()
@@ -451,7 +558,11 @@ pub async fn list_oauth_credentials(
     State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<Vec<OAuthCredentialResponse>>> {
-    let __pool_16 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_16 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = ares_store::oauth_credentials::OAuthCredentialStore::new(&__pool_16);
     let credentials = store
         .list_by_tenant(&tenant_id)
@@ -468,11 +579,19 @@ pub async fn create_oauth_credential(
     Json(mut req): Json<ares_store::oauth_credentials::CreateOAuthCredentialRequest>,
 ) -> Result<Json<OAuthCredentialResponse>> {
     normalize_oauth_credential_request(tenant_id, &mut req)?;
-    let __pool_17 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_17 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = ares_store::oauth_credentials::OAuthCredentialStore::new(&__pool_17);
     let credential = store.create(&req).await?;
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let cred_id = credential.id.clone();
     let t_id = credential.tenant_id.clone();
     tokio::spawn(async move {
@@ -494,7 +613,11 @@ pub async fn delete_oauth_credential(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, id)): Path<(String, String)>,
 ) -> Result<StatusCode> {
-    let __pool_18 = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let __pool_18 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let store = ares_store::oauth_credentials::OAuthCredentialStore::new(&__pool_18);
     let rows = store.delete_for_tenant(&tenant_id, &id).await?;
     if rows == 0 {
@@ -503,7 +626,11 @@ pub async fn delete_oauth_credential(
         ))));
     }
 
-    let pool = ctx.get::<ares_store::TenantDb>().expect("not provided").pool().clone();
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     tokio::spawn(async move {
         let _ = audit_log::log_admin_action(
             &pool,
@@ -532,12 +659,24 @@ pub fn routes() -> axum::Router<Arc<Context>> {
         .route("/connectors/create_connector", post(create_connector))
         .route("/connectors/update_connector", put(update_connector))
         .route("/connectors/delete_connector", delete(delete_connector))
-        .route("/connectors/delete_tenant_connector", delete(delete_tenant_connector))
+        .route(
+            "/connectors/delete_tenant_connector",
+            delete(delete_tenant_connector),
+        )
         .route("/connectors/oauth_authorize", post(oauth_authorize))
         .route("/connectors/oauth_callback", post(oauth_callback))
-        .route("/connectors/list_oauth_credentials", get(list_oauth_credentials))
-        .route("/connectors/create_oauth_credential", post(create_oauth_credential))
-        .route("/connectors/delete_oauth_credential", delete(delete_oauth_credential))
+        .route(
+            "/connectors/list_oauth_credentials",
+            get(list_oauth_credentials),
+        )
+        .route(
+            "/connectors/create_oauth_credential",
+            post(create_oauth_credential),
+        )
+        .route(
+            "/connectors/delete_oauth_credential",
+            delete(delete_oauth_credential),
+        )
 }
 
 // cordis Phase6: RouteSet Service — registered via build_routes(ctx)

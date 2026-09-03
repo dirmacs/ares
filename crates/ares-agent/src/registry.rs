@@ -105,7 +105,10 @@ impl AgentRegistry {
 
     /// Get an agent configuration by name from TOML or TOON.
     pub fn get_config_any(&self, name: &str) -> Option<AgentConfig> {
-        self.configs.get(name).cloned().or_else(|| self.get_toon_config(name))
+        self.configs
+            .get(name)
+            .cloned()
+            .or_else(|| self.get_toon_config(name))
     }
 
     /// Get TOON agent config by name (already converted to AgentConfig)
@@ -189,13 +192,8 @@ impl AgentRegistry {
             .map(|model| model.provider.clone())
             .unwrap_or_else(|| config.model.clone());
 
-        let mut agent = ConfigurableAgent::new_with_provider(
-            name,
-            config,
-            llm,
-            None,
-            provider_name,
-        );
+        let mut agent =
+            ConfigurableAgent::new_with_provider(name, config, llm, None, provider_name);
         agent.set_tools(Arc::clone(&self.tools));
         Ok(agent)
     }
@@ -267,13 +265,8 @@ impl AgentRegistry {
             fallback_llms.push((fallback_provider_name, client));
         }
 
-        let mut agent = ConfigurableAgent::new_with_provider(
-            name,
-            config,
-            llm,
-            None,
-            primary_provider_name,
-        );
+        let mut agent =
+            ConfigurableAgent::new_with_provider(name, config, llm, None, primary_provider_name);
         agent.set_tools(Arc::clone(&self.tools));
         agent.set_fallback_llms_with_providers(fallback_llms);
 
@@ -398,7 +391,9 @@ impl AgentRegistryBuilder {
         })?;
 
         let tools = self.tools.unwrap_or_else(|| {
-            Arc::new(Tools::from_static(std::iter::empty::<Arc<dyn ares_tools::Tool>>()))
+            Arc::new(Tools::from_static(std::iter::empty::<
+                Arc<dyn ares_tools::Tool>,
+            >()))
         });
 
         Ok(AgentRegistry {
@@ -417,11 +412,15 @@ impl Default for AgentRegistryBuilder {
 }
 
 impl cordis::Service for AgentRegistry {
-    fn name(&self) -> &'static str { "agent_registry" }
+    fn name(&self) -> &'static str {
+        "agent_registry"
+    }
     fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
         Box::pin(async { Ok(None) })
     }
-    fn check(&self) -> bool { true }
+    fn check(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
@@ -1066,4 +1065,3 @@ mod tests {
         );
     }
 }
-

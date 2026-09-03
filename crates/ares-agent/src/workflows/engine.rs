@@ -135,19 +135,16 @@ impl WorkflowEngine {
         user_input: &str,
         context: &AgentContext,
     ) -> Result<WorkflowOutput> {
-        let workflow = self
-            .workflows
-            .get(workflow_name)
-            .cloned()
-            .ok_or_else(|| {
-                AppError::Configuration(format!(
-                    "Workflow '{workflow_name}' not found in configuration"
-                ))
-            })?;
-
-        let exec = self.ctx.get::<Execute>().ok_or_else(|| {
-            AppError::Configuration("Execute is not on context".into())
+        let workflow = self.workflows.get(workflow_name).cloned().ok_or_else(|| {
+            AppError::Configuration(format!(
+                "Workflow '{workflow_name}' not found in configuration"
+            ))
         })?;
+
+        let exec = self
+            .ctx
+            .get::<Execute>()
+            .ok_or_else(|| AppError::Configuration("Execute is not on context".into()))?;
         let scoped = crate::tenant_scope(&self.ctx, &context.user_id);
 
         let mut steps = Vec::new();

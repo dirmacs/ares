@@ -42,8 +42,8 @@ use async_trait::async_trait;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -1445,21 +1445,15 @@ mod tests {
 
     #[test]
     fn test_pool_error_display_variants() {
-        assert!(
-            PoolError::PoolExhausted { max: 2 }
-                .to_string()
-                .contains("pool exhausted")
-        );
-        assert!(
-            PoolError::Timeout { timeout_ms: 10 }
-                .to_string()
-                .contains("timeout")
-        );
-        assert!(
-            PoolError::InvalidClient { reason: "x".into() }
-                .to_string()
-                .contains("invalid")
-        );
+        assert!(PoolError::PoolExhausted { max: 2 }
+            .to_string()
+            .contains("pool exhausted"));
+        assert!(PoolError::Timeout { timeout_ms: 10 }
+            .to_string()
+            .contains("timeout"));
+        assert!(PoolError::InvalidClient { reason: "x".into() }
+            .to_string()
+            .contains("invalid"));
     }
 
     #[test]

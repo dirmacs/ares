@@ -262,10 +262,7 @@ pub fn watch_many_with(
             if let Some(graph) = ctx_clone.get::<crate::module_graph::ModuleGraph>() {
                 let keys: Vec<String> = changed
                     .iter()
-                    .filter_map(|p| {
-                        p.file_stem()
-                            .map(|s| s.to_string_lossy().into_owned())
-                    })
+                    .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
                     .collect();
                 if !keys.is_empty() {
                     let outcome = graph.change_many(&ctx_clone, &keys);

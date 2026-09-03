@@ -315,6 +315,9 @@ mod tests {
         assert_eq!(decoded.id, "vec-1");
         assert_eq!(decoded.internal_id, 0);
         assert_eq!(decoded.vector, vec![1.0, 2.0, 3.0]);
-        assert_eq!(decoded.metadata.as_ref().unwrap().get_string("k"), Some("v"));
+        assert_eq!(
+            decoded.metadata.as_ref().unwrap().get_string("k"),
+            Some("v")
+        );
     }
 }

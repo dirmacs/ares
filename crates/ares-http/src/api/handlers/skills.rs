@@ -2,14 +2,14 @@
 //!
 //! Requires the `skills` feature flag.
 
-use std::sync::Arc;
-use cordis::Context;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     Json,
 };
+use cordis::Context;
 use serde::Serialize;
+use std::sync::Arc;
 
 #[derive(Serialize)]
 pub struct SkillResponse {
@@ -35,9 +35,7 @@ pub struct SkillsListResponse {
 }
 
 /// GET /api/skills — list all discovered skills with scope-based priority.
-pub async fn list_skills(
-    State(ctx): State<Arc<Context>>,
-) -> Json<SkillsListResponse> {
+pub async fn list_skills(State(ctx): State<Arc<Context>>) -> Json<SkillsListResponse> {
     let config = skills_config_from_state(&ctx);
     let summaries = ares_agent::skills::list_skills(&config);
     let count = summaries.len();
@@ -64,7 +62,12 @@ pub async fn get_skill(
             let fqn = skill.qualified_name();
             Ok(Json(SkillDetailResponse {
                 name: fqn,
-                description: skill.file.frontmatter.description.clone().unwrap_or_default(),
+                description: skill
+                    .file
+                    .frontmatter
+                    .description
+                    .clone()
+                    .unwrap_or_default(),
                 scope: skill.scope.to_string(),
                 path: skill.file.path.to_string_lossy().to_string(),
                 content: skill.file.content.clone(),
@@ -76,7 +79,10 @@ pub async fn get_skill(
 
 /// Build SkillsConfig from Arc<Context> config manager.
 fn skills_config_from_state(ctx: &Arc<Context>) -> ares_agent::skills::SkillsConfig {
-    let config = ctx.get::<crate::overlay::AresConfigManager>().expect("not provided").config();
+    let config = ctx
+        .get::<crate::overlay::AresConfigManager>()
+        .expect("not provided")
+        .config();
     match &config.skills {
         Some(skills_toml) => ares_agent::skills::SkillsConfig {
             project_dir: skills_toml.project_dir.clone(),

@@ -10,14 +10,16 @@
 
 use std::sync::Arc;
 
-use ares_server::{AgentRequest, Context, Execute, EventsService, Tool, Tools};
+use ares_server::{AgentRequest, Context, EventsService, Execute, Tool, Tools};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Root context: the event bus plus a static tool set, nothing else.
     let ctx = Context::new_root();
     ctx.provide(EventsService::new());
-    ctx.provide(Tools::from_static([Arc::new(ares_server::Calculator) as Arc<dyn Tool>]));
+    ctx.provide(Tools::from_static([
+        Arc::new(ares_server::Calculator) as Arc<dyn Tool>
+    ]));
 
     // Tool call straight off the context.
     let tools = ctx.get::<Tools>().expect("tools on context");

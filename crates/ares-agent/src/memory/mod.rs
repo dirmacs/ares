@@ -201,7 +201,6 @@ pub fn filter_preferences_by_category(
         .collect()
 }
 
-
 // =============================================================================
 // In-memory session store (R43)
 // =============================================================================
@@ -264,10 +263,9 @@ impl fmt::Display for MemoryError {
             MemoryError::CapacityExceeded { max_sessions } => {
                 write!(f, "session store capacity exceeded (max {max_sessions})")
             }
-            MemoryError::InvalidTenant { expected, actual } => write!(
-                f,
-                "invalid tenant: expected '{expected}', got '{actual}'"
-            ),
+            MemoryError::InvalidTenant { expected, actual } => {
+                write!(f, "invalid tenant: expected '{expected}', got '{actual}'")
+            }
         }
     }
 }
@@ -954,7 +952,10 @@ mod tests {
         let key = session_key("tenant-a", "sess-1");
         assert!(key.contains("tenant-a"));
         assert!(key.contains("sess-1"));
-        assert_ne!(session_key("tenant-a", "sess-1"), session_key("tenant-b", "sess-1"));
+        assert_ne!(
+            session_key("tenant-a", "sess-1"),
+            session_key("tenant-b", "sess-1")
+        );
     }
 
     #[test]
@@ -1055,7 +1056,9 @@ mod tests {
             session_ttl_secs: 0,
         });
         let session = sample_session("tenant-a", "sess-1", 10);
-        store.put_for_tenant("tenant-a", session.clone(), 10).expect("put");
+        store
+            .put_for_tenant("tenant-a", session.clone(), 10)
+            .expect("put");
         let got = store.get("tenant-a", "sess-1", 10).expect("get");
         assert_eq!(got.session_id, "sess-1");
     }
@@ -1304,5 +1307,4 @@ mod tests {
         assert_eq!(MAX_FACTS_IN_PROMPT, 20);
         assert_eq!(MAX_PREFERENCES_IN_PROMPT, 10);
     }
-
 }

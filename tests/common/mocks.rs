@@ -5,10 +5,10 @@
 
 use ares_llm::client::{LLMClientFactoryTrait, Provider};
 use ares_llm::{AdapterKind, GenaiProvider, LLMClient, LLMResponse};
-use std::collections::HashMap;
 use ares_types::types::{AppError, Result, ToolCall, ToolDefinition};
 use async_trait::async_trait;
 use futures::stream::{self, StreamExt};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Mock LLM client for testing with configurable responses.

@@ -24,10 +24,7 @@ use cordis::Context;
 ///
 /// Returns [`AppError::Configuration`] if `Llm` is not provided on `ctx`.
 /// Other errors come from `Llm::embed` (client resolution / provider embed).
-pub async fn embed_with_llm(
-    ctx: &Arc<Context>,
-    inputs: &[String],
-) -> Result<Vec<Vec<f32>>> {
+pub async fn embed_with_llm(ctx: &Arc<Context>, inputs: &[String]) -> Result<Vec<Vec<f32>>> {
     let Some(llm) = ctx.get::<ares_llm::Llm>() else {
         return Err(AppError::Configuration(
             "Llm service is not provided for remote embeddings".into(),

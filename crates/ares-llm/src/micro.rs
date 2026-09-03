@@ -34,8 +34,8 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use parking_lot::Mutex;
 use futures::StreamExt;
+use parking_lot::Mutex;
 use serde_json::Value;
 
 use crate::client::LLMClient;
@@ -787,7 +787,10 @@ mod tests {
 
         engine.run(&task("ttl", "payload")).await.expect("run ok");
         let fresh = engine.run(&task("ttl", "payload")).await.expect("run ok");
-        assert!(fresh.cache_hit, "within the TTL the answer comes from cache");
+        assert!(
+            fresh.cache_hit,
+            "within the TTL the answer comes from cache"
+        );
         assert_eq!(client.call_count(), 1);
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -833,8 +836,7 @@ mod tests {
         let client = Arc::new(BehaviorClient::new(|_| {
             Ok("Sure! {\"score\": 4} — hope that helps.".to_string())
         }));
-        let engine =
-            MicroEngine::with_client(client.clone()).with_json_retries(0);
+        let engine = MicroEngine::with_client(client.clone()).with_json_retries(0);
 
         let first = engine
             .run(&task("salvage", "payload"))

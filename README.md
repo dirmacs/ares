@@ -4,7 +4,7 @@
 
 <p align="center">
 Agentic Runtime Extensible Server. Rust. A composable AI agent runtime built on the Cordis framework.<br>
-Multi-provider LLM. Tool calling. RAG. MCP. Run standalone or embed the library.
+ARES is a harness. ARES builds harnesses. Run standalone or embed the library.
 </p>
 
 <p align="center">

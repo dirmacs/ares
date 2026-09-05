@@ -40,7 +40,10 @@ impl GenaiClient {
             .no_proxy()
             .build()
             .map_err(|e| AppError::External(format!("failed to build reqwest client: {e}")))?;
-        let inner = Client::builder().with_reqwest(http).build();
+        let inner = Client::builder()
+            .with_reqwest(http)
+            .build()
+            .map_err(|e| AppError::External(format!("failed to build genai client: {e}")))?;
         Ok(Self {
             inner,
             provider,
@@ -712,7 +715,7 @@ fn default_endpoint(
 ) -> String {
     match kind {
         AdapterKind::OpenAI | AdapterKind::OpenAIResp => "https://api.openai.com/v1/".into(),
-        AdapterKind::Gemini => "https://generativelanguage.googleapis.com/v1beta/".into(),
+        AdapterKind::Gemini | AdapterKind::GeminiIx => "https://generativelanguage.googleapis.com/v1beta/".into(),
         AdapterKind::Anthropic => "https://api.anthropic.com/v1/".into(),
         AdapterKind::MiniMax => "https://api.minimax.io/anthropic/v1/".into(),
         AdapterKind::Ollama => "http://localhost:11434/".into(),

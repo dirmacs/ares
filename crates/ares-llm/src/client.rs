@@ -264,6 +264,15 @@ pub struct ModelParams {
     pub frequency_penalty: Option<f32>,
     /// Presence penalty (-2.0 to 2.0)
     pub presence_penalty: Option<f32>,
+    /// Reasoning effort keyword (`low|medium|high|zero|...`). Maps to the
+    /// native effort knob where the adapter has one (OpenAI, Gemini tiers,
+    /// Anthropic). Unknown keywords send nothing.
+    pub reasoning_effort: Option<String>,
+    /// Thinking token budget for adapters with a numeric knob (Anthropic
+    /// `thinking`, Gemini `thinkingBudget` via the `Budget` effort). Applies
+    /// only when no effort keyword parses. Adapters without the concept
+    /// ignore it.
+    pub reasoning_budget_tokens: Option<u32>,
 }
 
 impl ModelParams {
@@ -275,6 +284,8 @@ impl ModelParams {
             top_p: None,
             frequency_penalty: None,
             presence_penalty: None,
+            reasoning_effort: None,
+            reasoning_budget_tokens: None,
         }
     }
 }
@@ -1484,6 +1495,8 @@ mod tests {
             top_p: Some(0.95),
             frequency_penalty: Some(-0.5),
             presence_penalty: Some(0.3),
+            reasoning_effort: None,
+            reasoning_budget_tokens: None,
         };
         let cloned = params.clone();
         assert_eq!(params.temperature, cloned.temperature);

@@ -123,11 +123,29 @@ impl GenaiClient {
                 }
             }
         }
-        if let Some(effort) = hints
+        // Reasoning knobs: per-call hints win, provider params fill the
+        // gaps. An effort keyword maps natively where the adapter has the
+        // knob (OpenAI, Anthropic, Gemini tiers). A bare budget becomes a
+        // numeric Budget effort for the adapters with that concept. Unknown
+        // keywords send nothing.
+        let effort = hints
             .reasoning_effort
             .as_deref()
             .and_then(ReasoningEffort::from_keyword)
-        {
+            .or_else(|| {
+                self.provider
+                    .params
+                    .reasoning_effort
+                    .as_deref()
+                    .and_then(ReasoningEffort::from_keyword)
+            })
+            .or_else(|| {
+                self.provider
+                    .params
+                    .reasoning_budget_tokens
+                    .map(ReasoningEffort::Budget)
+            });
+        if let Some(effort) = effort {
             opts = opts.with_reasoning_effort(effort);
         }
         if let Some(key) = hints.prompt_cache_key.as_ref() {
@@ -816,6 +834,80 @@ mod tests {
         assert_eq!(
             rewrite_openai_kind(AdapterKind::OpenAI, "o3-mini"),
             AdapterKind::OpenAI
+        );
+    }
+
+    fn test_client(params: crate::client::ModelParams) -> GenaiClient {
+        let provider = crate::client::GenaiProvider {
+            kind: AdapterKind::OpenAI,
+            api_key: Some("test-key".into()),
+            endpoint: Some("http://localhost:1/".into()),
+            model: "test-model".into(),
+            params,
+            headers: std::collections::HashMap::new(),
+            region: None,
+            vertex_project: None,
+            vertex_location: None,
+            custom_index: None,
+        };
+        GenaiClient::new(provider).expect("test client builds")
+    }
+
+    #[test]
+    fn provider_params_effort_maps_to_reasoning_effort() {
+        let params = crate::client::ModelParams {
+            reasoning_effort: Some("high".into()),
+            ..crate::client::ModelParams::default()
+        };
+        let client = test_client(params);
+        let opts = client.chat_options(&GenerationHints::default(), false);
+        assert!(
+            matches!(opts.reasoning_effort, Some(ReasoningEffort::High)),
+            "effort keyword maps: {:?}",
+            opts.reasoning_effort
+        );
+    }
+
+    #[test]
+    fn provider_params_budget_maps_to_budget_effort() {
+        let params = crate::client::ModelParams {
+            reasoning_budget_tokens: Some(512),
+            ..crate::client::ModelParams::default()
+        };
+        let client = test_client(params);
+        let opts = client.chat_options(&GenerationHints::default(), false);
+        assert!(
+            matches!(opts.reasoning_effort, Some(ReasoningEffort::Budget(512))),
+            "budget maps: {:?}",
+            opts.reasoning_effort
+        );
+    }
+
+    #[test]
+    fn effort_keyword_beats_budget_and_garbage_sends_nothing() {
+        let params = crate::client::ModelParams {
+            reasoning_effort: Some("low".into()),
+            reasoning_budget_tokens: Some(512),
+            ..crate::client::ModelParams::default()
+        };
+        let client = test_client(params);
+        let opts = client.chat_options(&GenerationHints::default(), false);
+        assert!(
+            matches!(opts.reasoning_effort, Some(ReasoningEffort::Low)),
+            "keyword wins: {:?}",
+            opts.reasoning_effort
+        );
+
+        let params = crate::client::ModelParams {
+            reasoning_effort: Some("ultra".into()),
+            ..crate::client::ModelParams::default()
+        };
+        let client = test_client(params);
+        let opts = client.chat_options(&GenerationHints::default(), false);
+        assert!(
+            opts.reasoning_effort.is_none(),
+            "garbage sends nothing: {:?}",
+            opts.reasoning_effort
         );
     }
 

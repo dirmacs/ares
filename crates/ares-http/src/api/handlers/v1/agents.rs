@@ -8,6 +8,7 @@ use crate::HttpError;
 use crate::Result;
 use ares_agent::context_provider::AgentRuntimeContext;
 use ares_store::agent_runs;
+use ares_store::run_history::{redact_agent_run_error, tenant_no_retain};
 use ares_store::tenant_agents::{self};
 use ares_types::models::TenantContext;
 use ares_types::types::AgentContext;
@@ -30,6 +31,10 @@ struct RunCompletionGuard {
     pool: sqlx::PgPool,
     run_id: String,
     completed: bool,
+    /// No-retain flag resolved once at guard construction (async context).
+    /// `Drop` is sync and must not query; it reuses this bit to pick the
+    /// close-out error text. Flag-off tenants keep byte-identical behavior.
+    no_retain: bool,
 }
 
 impl RunCompletionGuard {
@@ -45,11 +50,17 @@ impl Drop for RunCompletionGuard {
         }
         let pool = self.pool.clone();
         let run_id = self.run_id.clone();
+        let no_retain = self.no_retain;
         tokio::spawn(async move {
+            // Infallible by construction: flag resolved at construction, the
+            // marker is a constant, and the query result is discarded.
+            // Flag off persists exactly 'cancelled' as before.
+            let error = redact_agent_run_error(no_retain, Some("cancelled")).unwrap_or_default();
             let _ = sqlx::query(
-                "UPDATE agent_runs SET status = 'failed', error = 'cancelled' WHERE id = $1 AND status = 'running'",
+                "UPDATE agent_runs SET status = 'failed', error = $2 WHERE id = $1 AND status = 'running'",
             )
             .bind(&run_id)
+            .bind(&error)
             .execute(&pool)
             .await;
         });
@@ -242,10 +253,14 @@ pub async fn run_agent(
             Some(&skill_metadata),
         )
         .await?;
+        // Resolve no-retain once per branch; the guard reuses it in Drop and
+        // the UPDATE below reuses it for the error close-out.
+        let no_retain = tenant_no_retain(&pool, &tc.tenant_id).await;
         let mut run_guard = RunCompletionGuard {
             pool: pool.clone(),
             run_id: run_id.clone(),
             completed: false,
+            no_retain,
         };
         let obs = Arc::new(RunObservability {
             run_id: run_id.clone(),
@@ -281,7 +296,8 @@ pub async fn run_agent(
                 .as_ref()
                 .map(ares_agent::skills::skill_result_token_counts)
                 .unwrap_or((0, 0));
-            let err_msg = skill_result.as_ref().err().cloned();
+            let err_msg =
+                redact_agent_run_error(no_retain, skill_result.as_ref().err().map(String::as_str));
             sqlx::query(
                 "UPDATE agent_runs SET status = $2, input_tokens = $3, output_tokens = $4, duration_ms = $5, error = $6 WHERE id = $1",
             )
@@ -466,10 +482,15 @@ pub async fn run_agent(
         Some(&llm_metadata),
     )
     .await?;
+    // Resolve no-retain once per branch; the guard reuses it in Drop and the
+    // failed UPDATE below reuses it for the error close-out. The completed
+    // UPDATE sets error = NULL and needs no change.
+    let no_retain = tenant_no_retain(&pool, &tc.tenant_id).await;
     let mut run_guard = RunCompletionGuard {
         pool: pool.clone(),
         run_id: run_id.clone(),
         completed: false,
+        no_retain,
     };
     let exec = state_ctx
         .get::<ares_agent::Execute>()
@@ -591,14 +612,15 @@ pub async fn run_agent(
                 .finish(&run_id, "error");
             // Exactly one row per run: UPDATE the pre-inserted parent.
             {
-                let err_msg = e.to_string();
+                let raw_err = e.to_string();
+                let err_msg = redact_agent_run_error(no_retain, Some(raw_err.as_str()));
                 let dur = duration_ms as i64;
                 sqlx::query(
                     "UPDATE agent_runs SET status = 'failed', input_tokens = 0, output_tokens = 0, duration_ms = $2, error = $3 WHERE id = $1",
                 )
                 .bind(&run_id)
                 .bind(dur)
-                .bind(&err_msg)
+                .bind(err_msg.as_deref())
                 .execute(&pool)
                 .await
                 .map_err(|e| HttpError::from(ares_types::types::AppError::Database(e.to_string())))?;

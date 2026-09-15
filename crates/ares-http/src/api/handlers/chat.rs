@@ -404,6 +404,7 @@ fn agent_request_from_payload(
         parts: payload.parts.clone().unwrap_or_default(),
         previous_response_id: payload.previous_response_id.clone(),
         web_search: payload.web_search == Some(true),
+        ..Default::default()
     }
 }
 

@@ -96,6 +96,14 @@ pub struct AgentRequest {
     pub previous_response_id: Option<String>,
     /// When true, enable the LLM provider's built-in web search.
     pub web_search: bool,
+    /// Optional run id for trace-row correlation. When `Some`, the resolved
+    /// and fallback execute paths reuse it instead of minting a fresh id so
+    /// pre-inserted `agent_runs` parents and per-step call rows share one id.
+    pub run_id: Option<String>,
+    /// Optional per-request observability sink. When `Some`, per-step LLM and
+    /// tool calls write `run_llm_calls`/`run_tool_calls` rows for `run_id`
+    /// through this sink (same `ObservabilitySink` trait the skill engine uses).
+    pub observability: Option<Arc<dyn ares_llm::observability::ObservabilitySink>>,
 }
 
 /// Internal marker for skill-triggered executions.
@@ -143,6 +151,14 @@ impl std::fmt::Debug for AgentRequest {
             .field("parts_len", &self.parts.len())
             .field("previous_response_id", &self.previous_response_id)
             .field("web_search", &self.web_search)
+            .field("run_id", &self.run_id)
+            .field(
+                "observability",
+                &self
+                    .observability
+                    .as_ref()
+                    .map(|_| "Some(ObservabilitySink)"),
+            )
             .finish()
     }
 }
@@ -501,7 +517,10 @@ impl Execute {
             response,
             source: AgentSource::System,
             agent_name: req.agent_name.clone(),
-            run_id: uuid::Uuid::new_v4().to_string(),
+            run_id: req
+                .run_id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
         })
     }
 
@@ -627,7 +646,17 @@ impl Execute {
             req.web_search,
         );
 
-        let run_id = uuid::Uuid::new_v4().to_string();
+        // Honor a caller-provided run id (v1 tenant path pre-inserts the
+        // `agent_runs` parent with this id). Fall back to minting only when
+        // the request carries none, preserving existing callers.
+        let run_id = req
+            .run_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        agent.set_run_id(run_id.clone());
+        if let Some(obs) = req.observability.clone() {
+            agent.set_observability(obs);
+        }
         if let Some(tracker) = &self.run_tracker {
             tracker.start_run(
                 &run_id,
@@ -869,11 +898,40 @@ You are {}.",
                         req.previous_response_id.clone(),
                     );
                     if !req.parts.is_empty() || req.previous_response_id.is_some() {
+                        let llm_start = std::time::Instant::now();
                         match client
                             .generate_with_tools_and_history(&base_messages, &tool_definitions)
                             .await
                         {
                             Ok(resp) => {
+                                if let Some(obs) = req.observability.clone() {
+                                    let llm_latency = llm_start.elapsed().as_millis() as i64;
+                                    let prompt_tok = resp
+                                        .usage
+                                        .as_ref()
+                                        .map(|u| u.prompt_tokens as i64)
+                                        .unwrap_or(0);
+                                    let completion_tok = resp
+                                        .usage
+                                        .as_ref()
+                                        .map(|u| u.completion_tokens as i64)
+                                        .unwrap_or(0);
+                                    let record = ares_llm::observability::LlmCallRecord {
+                                        step_index: 0,
+                                        provider: "unknown".to_string(),
+                                        model: client.model_name().to_string(),
+                                        prompt_tokens: prompt_tok,
+                                        completion_tokens: completion_tok,
+                                        latency_ms: llm_latency,
+                                        status: "success".to_string(),
+                                        cached_tokens: resp
+                                            .usage
+                                            .as_ref()
+                                            .and_then(|u| u.cached_tokens),
+                                        total_time_ms: Some(llm_latency),
+                                    };
+                                    let _ = obs.log_llm_call(record).await;
+                                }
                                 return Ok(AgentResponse {
                                     content: resp.content,
                                     usage: resp.usage,
@@ -894,11 +952,17 @@ You are {}.",
                         }
                     } else {
                         let config = ares_llm::coordinator::ToolCallingConfig::default();
-                        let coordinator = ares_llm::coordinator::ToolCoordinator::new(
+                        let mut coordinator = ares_llm::coordinator::ToolCoordinator::new(
                             client,
                             Arc::clone(&tools),
                             config,
                         );
+                        // Thread the caller-provided sink so each model/tool
+                        // step writes its row inline (awaited in the loop, so
+                        // partial progress survives error/timeout exits).
+                        if let Some(obs) = req.observability.clone() {
+                            coordinator = coordinator.with_observability(obs);
+                        }
                         match coordinator
                             .execute(Some(&system_prompt), &req.message, ctx)
                             .await

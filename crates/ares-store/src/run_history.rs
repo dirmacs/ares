@@ -290,8 +290,18 @@ impl<'a> RunHistoryStore<'a> {
     // -------------------------------------------------------------------------
 
     /// Insert a new LLM call record.
+    ///
+    /// When the tenant opted into no-retain (`tenants.no_retain`), content
+    /// fields (`error_message`, `request_payload`, `response_payload`) persist
+    /// the redaction marker instead of raw text. Ids, keying, token counts,
+    /// latency and status stay intact; default-off tenants are byte-identical
+    /// to before (the flag read adds no persisted bytes).
     pub async fn insert_llm_call(&self, req: &LogLlmCallRequest) -> Result<RunLlmCall> {
         validate_status(&req.status)?;
+        let no_retain = tenant_no_retain(self.pool, &req.tenant_id).await;
+        let error_message = redact_optional_text(no_retain, req.error_message.as_ref());
+        let request_payload = redact_optional_json(no_retain, req.request_payload.as_ref());
+        let response_payload = redact_optional_json(no_retain, req.response_payload.as_ref());
 
         let row = sqlx::query(
             "INSERT INTO run_llm_calls \
@@ -320,9 +330,9 @@ impl<'a> RunHistoryStore<'a> {
         .bind(req.cached_tokens)
         .bind(req.total_time_ms)
         .bind(&req.status)
-        .bind(&req.error_message)
-        .bind(&req.request_payload)
-        .bind(&req.response_payload)
+        .bind(&error_message)
+        .bind(&request_payload)
+        .bind(&response_payload)
         .bind(req.created_at)
         .fetch_one(self.pool)
         .await
@@ -416,9 +426,18 @@ impl<'a> RunHistoryStore<'a> {
     // -------------------------------------------------------------------------
 
     /// Insert a new tool call record.
+    ///
+    /// When the tenant opted into no-retain (`tenants.no_retain`), content
+    /// fields (`arguments`, `result`, `error_message`) persist the redaction
+    /// marker instead of raw text. Ids, keying, latency and status stay
+    /// intact; default-off tenants are byte-identical to before.
     pub async fn insert_tool_call(&self, req: &LogToolCallRequest) -> Result<RunToolCall> {
         validate_status(&req.status)?;
         validate_tool_type(&req.tool_type)?;
+        let no_retain = tenant_no_retain(self.pool, &req.tenant_id).await;
+        let arguments = redact_required_json(no_retain, &req.arguments);
+        let result = redact_optional_json(no_retain, req.result.as_ref());
+        let error_message = redact_optional_text(no_retain, req.error_message.as_ref());
 
         let row = sqlx::query(
             "INSERT INTO run_tool_calls \
@@ -435,11 +454,11 @@ impl<'a> RunHistoryStore<'a> {
         .bind(req.step_index)
         .bind(&req.tool_name)
         .bind(&req.tool_type)
-        .bind(&req.arguments)
-        .bind(&req.result)
+        .bind(&arguments)
+        .bind(&result)
         .bind(req.latency_ms)
         .bind(&req.status)
-        .bind(&req.error_message)
+        .bind(&error_message)
         .bind(req.created_at)
         .fetch_one(self.pool)
         .await
@@ -1151,6 +1170,86 @@ fn row_to_model_health(row: &sqlx::postgres::PgRow) -> Result<ModelHealthMetrics
         error_rate_pct: row.try_get("error_rate_pct").map_err(sqlx_err)?,
         created_at: row.try_get("created_at").map_err(sqlx_err)?,
     })
+}
+
+// =============================================================================
+// No-retain (per-tenant trace redaction, ST-3 / F-A11)
+// =============================================================================
+
+/// Marker persisted in place of raw trace content for tenants that opted
+/// into no-retain (migration 029, `tenants.no_retain`). Text columns keep
+/// this string; JSONB columns keep `{"redacted": "no-retain"}` from
+/// [`no_retain_redacted_json`]. Row ids, keying, token counts, latency and
+/// status are untouched so cost aggregation is unaffected.
+pub const NO_RETAIN_REDACTED_TEXT: &str = "[redacted: no-retain]";
+
+/// JSON marker for no-retain redaction (see [`NO_RETAIN_REDACTED_TEXT`]).
+pub fn no_retain_redacted_json() -> serde_json::Value {
+    serde_json::json!({"redacted": "no-retain"})
+}
+
+/// Returns true when `tenant_id` opted into no-retain.
+///
+/// Reads the additive column `tenants.no_retain` (migration 029, default
+/// false). Unknown tenants return false. Pre-migration databases without
+/// the column return false so existing tenants stay byte-identical; any
+/// other lookup failure fails closed to true (redact rather than leak).
+pub async fn tenant_no_retain(pool: &PgPool, tenant_id: &str) -> bool {
+    match sqlx::query_scalar::<_, bool>("SELECT no_retain FROM tenants WHERE id = $1")
+        .bind(tenant_id)
+        .fetch_optional(pool)
+        .await
+    {
+        Ok(Some(v)) => v,
+        Ok(None) => false,
+        Err(e) => {
+            let msg = e.to_string();
+            !(msg.contains("does not exist") || msg.contains("column"))
+        }
+    }
+}
+
+/// Redact an `agent_runs.error` value for a no-retain tenant.
+///
+/// `None` stays `None`; `Some` becomes the redaction marker when
+/// `no_retain` is true, otherwise the original text. Pure so the v1
+/// close-out paths (which live outside this file) share it without
+/// duplicating the marker. Wiring those `UPDATE agent_runs ... error = $N`
+/// sites to call this helper is the Main gate; this slice ships the helper
+/// plus its test.
+pub fn redact_agent_run_error(no_retain: bool, error: Option<&str>) -> Option<String> {
+    match error {
+        None => None,
+        Some(_) if no_retain => Some(NO_RETAIN_REDACTED_TEXT.to_string()),
+        Some(e) => Some(e.to_string()),
+    }
+}
+
+fn redact_optional_text(no_retain: bool, v: Option<&String>) -> Option<String> {
+    match v {
+        None => None,
+        Some(_) if no_retain => Some(NO_RETAIN_REDACTED_TEXT.to_string()),
+        Some(s) => Some(s.clone()),
+    }
+}
+
+fn redact_optional_json(
+    no_retain: bool,
+    v: Option<&serde_json::Value>,
+) -> Option<serde_json::Value> {
+    match v {
+        None => None,
+        Some(_) if no_retain => Some(no_retain_redacted_json()),
+        Some(s) => Some(s.clone()),
+    }
+}
+
+fn redact_required_json(no_retain: bool, v: &serde_json::Value) -> serde_json::Value {
+    if no_retain {
+        no_retain_redacted_json()
+    } else {
+        v.clone()
+    }
 }
 
 // =============================================================================
@@ -2054,5 +2153,312 @@ mod tests {
         )
         .execute(&pool)
         .await;
+    }
+
+    // -------------------------------------------------------------------------
+    // No-retain (ST-3 / F-A11): flag on redacts content but keeps keying and
+    // counts; flag off is byte-identical to today. Not run mid-flight; the
+    // final gate runs everything.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn no_retain_markers_have_expected_shape() {
+        assert_eq!(NO_RETAIN_REDACTED_TEXT, "[redacted: no-retain]");
+        assert_eq!(
+            no_retain_redacted_json(),
+            serde_json::json!({"redacted": "no-retain"})
+        );
+    }
+
+    #[test]
+    fn redact_agent_run_error_covers_close_out_path() {
+        // None stays None on both paths.
+        assert_eq!(redact_agent_run_error(false, None), None);
+        assert_eq!(redact_agent_run_error(true, None), None);
+        // Flag off preserves raw text.
+        assert_eq!(
+            redact_agent_run_error(false, Some("boom member-text")),
+            Some("boom member-text".to_string())
+        );
+        // Flag on replaces raw text with the marker.
+        assert_eq!(
+            redact_agent_run_error(true, Some("boom member-text")),
+            Some(NO_RETAIN_REDACTED_TEXT.to_string())
+        );
+    }
+
+    #[test]
+    fn redact_helpers_leave_none_untouched() {
+        assert_eq!(redact_optional_text(false, None), None);
+        assert_eq!(redact_optional_text(true, None), None);
+        assert_eq!(redact_optional_json(false, None), None);
+        assert_eq!(redact_optional_json(true, None), None);
+    }
+
+    #[test]
+    fn redact_helpers_are_identity_when_flag_off() {
+        let text = Some("raw member text".to_string());
+        assert_eq!(redact_optional_text(false, text.as_ref()), text);
+        let payload = Some(serde_json::json!({"messages": ["raw member text"]}));
+        assert_eq!(redact_optional_json(false, payload.as_ref()), payload);
+        let args = serde_json::json!({"input": "raw member text"});
+        assert_eq!(redact_required_json(false, &args), args);
+    }
+
+    #[test]
+    fn redact_helpers_redact_content_but_keep_shape_when_flag_on() {
+        let text = Some("raw member text".to_string());
+        assert_eq!(
+            redact_optional_text(true, text.as_ref()),
+            Some(NO_RETAIN_REDACTED_TEXT.to_string())
+        );
+        let payload = Some(serde_json::json!({"messages": ["raw member text"]}));
+        assert_eq!(
+            redact_optional_json(true, payload.as_ref()),
+            Some(no_retain_redacted_json())
+        );
+        let args = serde_json::json!({"input": "raw member text"});
+        assert_eq!(redact_required_json(true, &args), no_retain_redacted_json());
+    }
+
+    async fn seed_no_retain_parents(pool: &PgPool, tenant_id: &str, run_id: &str, no_retain: bool) {
+        let _ = sqlx::query(
+            "INSERT INTO tenants (id, name, tier, created_at, updated_at) VALUES ($1, $1, 'free', 1, 1) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(tenant_id)
+        .execute(pool)
+        .await;
+        let _ = sqlx::query("UPDATE tenants SET no_retain = $1 WHERE id = $2")
+            .bind(no_retain)
+            .bind(tenant_id)
+            .execute(pool)
+            .await;
+        let _ = sqlx::query(
+            "INSERT INTO agent_runs (id, tenant_id, agent_name, status, input_tokens, output_tokens, duration_ms, created_at) VALUES ($1, $2, 'integration-test-no-retain', 'running', 0, 0, 0, 1) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(run_id)
+        .bind(tenant_id)
+        .execute(pool)
+        .await;
+    }
+
+    #[tokio::test]
+    async fn integration_no_retain_tool_call_redacts_but_keeps_keying() {
+        let pool = try_test_pool().await;
+        let store = RunHistoryStore::new(&pool);
+        let tenant_id = format!("no-retain-tool-{}", uuid::Uuid::new_v4());
+        let run_id = format!("no-retain-run-{}", uuid::Uuid::new_v4());
+        seed_no_retain_parents(&pool, &tenant_id, &run_id, true).await;
+
+        let canary = "CANARY-NORETAIN-MEMBER-TEXT-7f3a";
+        let req = LogToolCallRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            run_id: run_id.clone(),
+            tenant_id: tenant_id.clone(),
+            agent_name: "integration-test-no-retain".into(),
+            step_index: 2,
+            tool_name: "http_get".into(),
+            tool_type: "http".into(),
+            arguments: serde_json::json!({"input": canary}),
+            result: Some(serde_json::json!({"output": canary})),
+            latency_ms: 123,
+            status: "error".into(),
+            error_message: Some(format!("boom {canary}")),
+            created_at: chrono::Utc::now().timestamp(),
+        };
+
+        let inserted = store
+            .insert_tool_call(&req)
+            .await
+            .expect("insert_tool_call");
+        // Keying and counts intact.
+        assert_eq!(inserted.id, req.id);
+        assert_eq!(inserted.run_id, run_id);
+        assert_eq!(inserted.tenant_id, tenant_id);
+        assert_eq!(inserted.agent_name, req.agent_name);
+        assert_eq!(inserted.step_index, 2);
+        assert_eq!(inserted.tool_name, "http_get");
+        assert_eq!(inserted.tool_type, "http");
+        assert_eq!(inserted.latency_ms, 123);
+        assert_eq!(inserted.status, "error");
+        // Content redacted; zero raw canary persists.
+        assert_eq!(inserted.arguments, no_retain_redacted_json());
+        assert_eq!(inserted.result, Some(no_retain_redacted_json()));
+        assert_eq!(
+            inserted.error_message,
+            Some(NO_RETAIN_REDACTED_TEXT.to_string())
+        );
+        assert!(!inserted.arguments.to_string().contains(canary));
+        assert!(!inserted
+            .result
+            .as_ref()
+            .expect("result")
+            .to_string()
+            .contains(canary));
+        assert!(!inserted
+            .error_message
+            .as_ref()
+            .expect("error")
+            .contains(canary));
+
+        // Read-back agrees with the RETURNING row.
+        let fetched = store
+            .get_tool_call(&inserted.id)
+            .await
+            .expect("get_tool_call")
+            .expect("row exists");
+        assert_eq!(fetched.arguments, no_retain_redacted_json());
+        assert_eq!(fetched.result, Some(no_retain_redacted_json()));
+        assert_eq!(
+            fetched.error_message,
+            Some(NO_RETAIN_REDACTED_TEXT.to_string())
+        );
+
+        let _ = sqlx::query("DELETE FROM run_tool_calls WHERE tenant_id = $1")
+            .bind(&tenant_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM agent_runs WHERE id = $1")
+            .bind(&run_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM tenants WHERE id = $1")
+            .bind(&tenant_id)
+            .execute(&pool)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn integration_no_retain_llm_call_redacts_but_keeps_keying() {
+        let pool = try_test_pool().await;
+        let store = RunHistoryStore::new(&pool);
+        let tenant_id = format!("no-retain-llm-{}", uuid::Uuid::new_v4());
+        let run_id = format!("no-retain-run-{}", uuid::Uuid::new_v4());
+        seed_no_retain_parents(&pool, &tenant_id, &run_id, true).await;
+
+        let canary = "CANARY-NORETAIN-MEMBER-TEXT-9c1e";
+        let req = LogLlmCallRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            run_id: run_id.clone(),
+            tenant_id: tenant_id.clone(),
+            agent_name: "integration-test-no-retain".into(),
+            step_index: 0,
+            provider: "openai".into(),
+            model: "gpt-4o".into(),
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            estimated_cost_usd: dec!(0.000250),
+            latency_ms: 420,
+            cached_tokens: Some(40),
+            total_time_ms: Some(430),
+            status: "error".into(),
+            error_message: Some(format!("boom {canary}")),
+            request_payload: Some(serde_json::json!({"messages": [canary]})),
+            response_payload: Some(serde_json::json!({"choices": [canary]})),
+            created_at: chrono::Utc::now().timestamp(),
+        };
+
+        let inserted = store.insert_llm_call(&req).await.expect("insert_llm_call");
+        // Keying, counts, latency and status intact so cost aggregation works.
+        assert_eq!(inserted.id, req.id);
+        assert_eq!(inserted.run_id, run_id);
+        assert_eq!(inserted.tenant_id, tenant_id);
+        assert_eq!(inserted.provider, "openai");
+        assert_eq!(inserted.model, "gpt-4o");
+        assert_eq!(inserted.prompt_tokens, 100);
+        assert_eq!(inserted.completion_tokens, 50);
+        assert_eq!(inserted.total_tokens, 150);
+        assert_eq!(inserted.estimated_cost_usd, dec!(0.000250));
+        assert_eq!(inserted.latency_ms, 420);
+        assert_eq!(inserted.cached_tokens, Some(40));
+        assert_eq!(inserted.total_time_ms, Some(430));
+        assert_eq!(inserted.status, "error");
+        // Content redacted; zero raw canary persists.
+        assert_eq!(inserted.request_payload, Some(no_retain_redacted_json()));
+        assert_eq!(inserted.response_payload, Some(no_retain_redacted_json()));
+        assert_eq!(
+            inserted.error_message,
+            Some(NO_RETAIN_REDACTED_TEXT.to_string())
+        );
+        assert!(!inserted
+            .request_payload
+            .as_ref()
+            .expect("req payload")
+            .to_string()
+            .contains(canary));
+        assert!(!inserted
+            .response_payload
+            .as_ref()
+            .expect("resp payload")
+            .to_string()
+            .contains(canary));
+        assert!(!inserted
+            .error_message
+            .as_ref()
+            .expect("error")
+            .contains(canary));
+
+        let _ = sqlx::query("DELETE FROM run_llm_calls WHERE tenant_id = $1")
+            .bind(&tenant_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM agent_runs WHERE id = $1")
+            .bind(&run_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM tenants WHERE id = $1")
+            .bind(&tenant_id)
+            .execute(&pool)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn integration_no_retain_flag_off_leaves_content_untouched() {
+        let pool = try_test_pool().await;
+        let store = RunHistoryStore::new(&pool);
+        let tenant_id = format!("no-retain-off-{}", uuid::Uuid::new_v4());
+        let run_id = format!("no-retain-run-{}", uuid::Uuid::new_v4());
+        seed_no_retain_parents(&pool, &tenant_id, &run_id, false).await;
+
+        let raw = "raw-member-text-stays-when-flag-off";
+        let req = LogToolCallRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            run_id: run_id.clone(),
+            tenant_id: tenant_id.clone(),
+            agent_name: "integration-test-no-retain".into(),
+            step_index: 0,
+            tool_name: "http_get".into(),
+            tool_type: "http".into(),
+            arguments: serde_json::json!({"input": raw}),
+            result: Some(serde_json::json!({"output": raw})),
+            latency_ms: 7,
+            status: "success".into(),
+            error_message: None,
+            created_at: chrono::Utc::now().timestamp(),
+        };
+
+        let inserted = store
+            .insert_tool_call(&req)
+            .await
+            .expect("insert_tool_call");
+        // Default-off tenants are byte-identical to today.
+        assert_eq!(inserted.arguments, req.arguments);
+        assert_eq!(inserted.result, req.result);
+        assert_eq!(inserted.error_message, None);
+        assert!(inserted.arguments.to_string().contains(raw));
+
+        let _ = sqlx::query("DELETE FROM run_tool_calls WHERE tenant_id = $1")
+            .bind(&tenant_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM agent_runs WHERE id = $1")
+            .bind(&run_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM tenants WHERE id = $1")
+            .bind(&tenant_id)
+            .execute(&pool)
+            .await;
     }
 }

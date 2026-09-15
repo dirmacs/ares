@@ -27,6 +27,30 @@ pub const GET_AGENT_RUN_STATS_SQL: &str = "SELECT
             COALESCE(SUM(output_tokens), 0)::BIGINT as total_output_tokens
          FROM agent_runs WHERE tenant_id = $1 AND agent_name = $2";
 
+/// Age after which a `running` agent_runs row is considered abandoned by a
+/// dead process and eligible for reap. 30 minutes (1800s).
+///
+/// Why 30m exceeds any legitimate live run: a single agent execution is a
+/// synchronous HTTP handler. Each tool call times out in 10-30s
+/// (`timeout_secs` default 30), an agent caps at `max_tool_iterations = 5`,
+/// and a workflow caps at `max_depth = 3` / `max_iterations = 5`, so even a
+/// worst-case sequential chain finishes in low minutes. The supervisor treats
+/// a 10m-lived worker as healthy cadence, and no HTTP caller waits 30m for
+/// one run. `agent_runs` only carries `created_at` (BIGINT unix seconds, no
+/// `updated_at`), so the age predicate keys on `created_at`. No boot
+/// configuration offers a run-timeout knob (ServerConfig only has host, port,
+/// log level, CORS, rate limiting), hence the fixed 30m default.
+pub const STALE_RUNNING_THRESHOLD_SECS: i64 = 30 * 60;
+
+/// Marker written into `error` when the boot sweeper reaps a stale row.
+/// Grep for `reaped:` to find swept rows.
+pub const STALE_RUN_REAP_ERROR: &str =
+    "reaped: stale running run abandoned by previous process (created_at older than 30m)";
+
+/// Exact UPDATE shape used by the boot sweeper. Kept as a const so unit
+/// tests pin the `status='failed'` + age-guard shape without a live DB.
+pub const REAP_STALE_RUNNING_SQL: &str = "UPDATE agent_runs SET status = 'failed', error = $1 WHERE status = 'running' AND created_at < $2";
+
 fn now_ts() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -360,6 +384,26 @@ pub async fn insert_agent_run_with_id_and_metadata(
     .map_err(|e| AppError::Database(e.to_string()))?;
 
     Ok(id.to_string())
+}
+
+/// Reap `running` rows older than `stale_after_secs` (seconds, compared
+/// against `created_at` unix seconds). Marks them `failed` with
+/// [`STALE_RUN_REAP_ERROR`].
+///
+/// Only touches rows no live process can still own: `status = 'running'`
+/// AND `created_at < now - stale_after_secs`. Already-`failed`/`completed`
+/// rows never match, so a second call reaps exactly zero (idempotent).
+/// No migration: uses the existing `created_at` BIGINT column and its
+/// `idx_agent_runs_created` index.
+pub async fn reap_stale_running_runs(pool: &PgPool, stale_after_secs: i64) -> Result<u64> {
+    let cutoff = now_ts().saturating_sub(stale_after_secs);
+    let res = sqlx::query(REAP_STALE_RUNNING_SQL)
+        .bind(STALE_RUN_REAP_ERROR)
+        .bind(cutoff)
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+    Ok(res.rows_affected())
 }
 
 pub async fn list_agent_runs(
@@ -1582,5 +1626,99 @@ mod tests {
             $26
          )";
         assert_eq!(count_bind_placeholders(sql), 26);
+    }
+
+    #[test]
+    fn reap_stale_sql_only_touches_old_running_rows() {
+        assert!(REAP_STALE_RUNNING_SQL.contains("SET status = 'failed'"));
+        assert!(REAP_STALE_RUNNING_SQL.contains("status = 'running'"));
+        assert!(REAP_STALE_RUNNING_SQL.contains("created_at < $2"));
+        assert_eq!(STALE_RUNNING_THRESHOLD_SECS, 30 * 60);
+        assert!(STALE_RUN_REAP_ERROR.starts_with("reaped:"));
+    }
+
+    #[tokio::test]
+    async fn integration_reap_stale_running_runs_only_flips_stale() {
+        let pool = try_test_pool().await;
+        let tenant_id = unique_tenant();
+        seed_tenant(&pool, &tenant_id).await;
+
+        let stale_id = insert_agent_run(
+            &pool,
+            &tenant_id,
+            "sweeper-agent",
+            None,
+            "running",
+            0,
+            0,
+            0,
+            None,
+            "m",
+            "p",
+            false,
+        )
+        .await
+        .expect("insert stale running");
+        let fresh_id = insert_agent_run(
+            &pool,
+            &tenant_id,
+            "sweeper-agent",
+            None,
+            "running",
+            0,
+            0,
+            0,
+            None,
+            "m",
+            "p",
+            false,
+        )
+        .await
+        .expect("insert fresh running");
+
+        // Backdate only the stale row well past the threshold.
+        let stale_created = now_ts() - STALE_RUNNING_THRESHOLD_SECS - 60;
+        sqlx::query("UPDATE agent_runs SET created_at = $1 WHERE id = $2")
+            .bind(stale_created)
+            .bind(&stale_id)
+            .execute(&pool)
+            .await
+            .expect("backdate stale row");
+
+        let reaped = reap_stale_running_runs(&pool, STALE_RUNNING_THRESHOLD_SECS)
+            .await
+            .expect("reap");
+        assert_eq!(reaped, 1);
+
+        let stale_status: String =
+            sqlx::query_scalar("SELECT status FROM agent_runs WHERE id = $1")
+                .bind(&stale_id)
+                .fetch_one(&pool)
+                .await
+                .expect("fetch stale status");
+        let stale_error: Option<String> =
+            sqlx::query_scalar("SELECT error FROM agent_runs WHERE id = $1")
+                .bind(&stale_id)
+                .fetch_one(&pool)
+                .await
+                .expect("fetch stale error");
+        assert_eq!(stale_status, "failed");
+        assert_eq!(stale_error.as_deref(), Some(STALE_RUN_REAP_ERROR));
+
+        let fresh_status: String =
+            sqlx::query_scalar("SELECT status FROM agent_runs WHERE id = $1")
+                .bind(&fresh_id)
+                .fetch_one(&pool)
+                .await
+                .expect("fetch fresh status");
+        assert_eq!(fresh_status, "running");
+
+        // Exactly once: a second sweep finds nothing to reap.
+        let reaped_again = reap_stale_running_runs(&pool, STALE_RUNNING_THRESHOLD_SECS)
+            .await
+            .expect("second reap");
+        assert_eq!(reaped_again, 0);
+
+        cleanup_test_tenant(&pool, &tenant_id).await;
     }
 }

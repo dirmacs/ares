@@ -947,6 +947,34 @@ async fn run_server(
     #[cfg(feature = "ui")]
     tracing::info!("Web UI available at http://{}/", addr);
 
+    // Reap `running` agent_runs rows abandoned by a previous process (crash /
+    // kill between pre-insert and terminal UPDATE). Fire-and-forget: a
+    // failure here must never fail boot. The 30m threshold is the guard —
+    // only rows with created_at older than 30m flip, so no live run is touched.
+    // Runs once at boot (first interval tick fires immediately), then every
+    // 600s so post-boot stuck rows clear without waiting for a restart.
+    {
+        let pool_opt = state
+            .get::<ares_store::TenantDb>()
+            .map(|db| db.pool().clone());
+        if let Some(pool) = pool_opt {
+            tokio::spawn(async move {
+                let threshold = ares_store::agent_runs::STALE_RUNNING_THRESHOLD_SECS;
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
+                loop {
+                    interval.tick().await;
+                    match ares_store::agent_runs::reap_stale_running_runs(&pool, threshold).await {
+                        Ok(0) => {}
+                        Ok(n) => tracing::info!(reaped = n, "Reaped stale running agent_runs"),
+                        Err(e) => tracing::warn!("Failed to reap stale running agent_runs: {}", e),
+                    }
+                }
+            });
+        } else {
+            tracing::warn!("Skipping stale-run reap: TenantDb not provided");
+        }
+    }
+
     // Use graceful shutdown with signal handling
     let server = axum::serve(
         listener,

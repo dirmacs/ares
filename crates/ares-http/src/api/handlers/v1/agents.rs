@@ -21,6 +21,41 @@ use chrono::{TimeZone, Utc};
 use cordis::Context;
 use std::sync::Arc;
 
+/// Best-effort guard so a pre-inserted `agent_runs` parent reaches a terminal
+/// state even if the handler future is dropped (client disconnect) or unwinds
+/// (panic). Normal paths `disarm` after their awaited UPDATE; `Drop` only
+/// fires on the abnormal paths and spawns a `failed` close-out without
+/// overwriting a terminal status.
+struct RunCompletionGuard {
+    pool: sqlx::PgPool,
+    run_id: String,
+    completed: bool,
+}
+
+impl RunCompletionGuard {
+    fn disarm(&mut self) {
+        self.completed = true;
+    }
+}
+
+impl Drop for RunCompletionGuard {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        let pool = self.pool.clone();
+        let run_id = self.run_id.clone();
+        tokio::spawn(async move {
+            let _ = sqlx::query(
+                "UPDATE agent_runs SET status = 'failed', error = 'cancelled' WHERE id = $1 AND status = 'running'",
+            )
+            .bind(&run_id)
+            .execute(&pool)
+            .await;
+        });
+    }
+}
+
 /// GET /v1/agents — list all agents for this tenant
 pub async fn list_agents(
     State(state_ctx): State<Arc<Context>>,
@@ -167,6 +202,57 @@ pub async fn run_agent(
                 schedule_id: None,
                 trigger_id: None,
             });
+        // Pre-insert the parent BEFORE any call row: FKs in
+        // 016_run_history_detailed.sql are immediate, so the skill engine's
+        // awaited insert_llm_call/insert_tool_call rows require this id first.
+        let skill_metadata = agent_runs::AgentRunMetadata {
+            workspace_id: runtime_workspace_id.clone(),
+            session_id: Some(agent_context.session_id.clone()),
+            request_source: Some("api_v1_agent_run".to_string()),
+            product: None,
+            agent_config_source: Some(config_source.to_string()),
+            agent_config_version: config_version.clone(),
+            eruka_binding_id: None,
+            eruka_context_hit: false,
+            eruka_read_count: 0,
+            eruka_write_count: 0,
+            pipeline_id: None,
+            schedule_id: None,
+            trigger_id: None,
+        };
+        let pool = state_ctx
+            .get::<ares_store::TenantDb>()
+            .expect("not provided")
+            .pool()
+            .clone();
+        agent_runs::insert_agent_run_with_id_and_metadata(
+            &pool,
+            &run_id,
+            &tc.tenant_id,
+            &name,
+            None,
+            "running",
+            0,
+            0,
+            0,
+            None,
+            "skill",
+            "skill",
+            false,
+            Some(&skill_metadata),
+        )
+        .await?;
+        let mut run_guard = RunCompletionGuard {
+            pool: pool.clone(),
+            run_id: run_id.clone(),
+            completed: false,
+        };
+        let obs = Arc::new(RunObservability {
+            run_id: run_id.clone(),
+            tenant_id: tc.tenant_id.clone(),
+            agent_name: name.clone(),
+            pool: pool.clone(),
+        });
         let skill_result = state_ctx
             .get::<ares_agent::skills::SkillEngine>()
             .expect("not provided")
@@ -183,31 +269,9 @@ pub async fn run_agent(
             .expect("not provided")
             .finish(&run_id, skill_status);
 
-        // Record agent run
+        // Exactly one row per run: UPDATE the pre-inserted parent.
         {
-            let pool = state_ctx
-                .get::<ares_store::TenantDb>()
-                .expect("not provided")
-                .pool()
-                .clone();
-            let tid = tc.tenant_id.clone();
-            let aname = name.clone();
             let dur = duration_ms as i64;
-            let metadata = agent_runs::AgentRunMetadata {
-                workspace_id: runtime_workspace_id.clone(),
-                session_id: Some(agent_context.session_id.clone()),
-                request_source: Some("api_v1_agent_run".to_string()),
-                product: None,
-                agent_config_source: Some(config_source.to_string()),
-                agent_config_version: config_version.clone(),
-                eruka_binding_id: None,
-                eruka_context_hit: false,
-                eruka_read_count: 0,
-                eruka_write_count: 0,
-                pipeline_id: None,
-                schedule_id: None,
-                trigger_id: None,
-            };
             let status = if skill_result.is_ok() {
                 "completed"
             } else {
@@ -218,25 +282,23 @@ pub async fn run_agent(
                 .map(ares_agent::skills::skill_result_token_counts)
                 .unwrap_or((0, 0));
             let err_msg = skill_result.as_ref().err().cloned();
-            let run_id_for_insert = run_id.clone();
+            sqlx::query(
+                "UPDATE agent_runs SET status = $2, input_tokens = $3, output_tokens = $4, duration_ms = $5, error = $6 WHERE id = $1",
+            )
+            .bind(&run_id)
+            .bind(status)
+            .bind(input_tokens)
+            .bind(output_tokens)
+            .bind(dur)
+            .bind(err_msg.as_deref())
+            .execute(&pool)
+            .await
+            .map_err(|e| HttpError::from(ares_types::types::AppError::Database(e.to_string())))?;
+            run_guard.disarm();
+            // Aggregate only after the parent exists; stays spawned, test polls.
+            let obs_for_spawn = obs.clone();
             tokio::spawn(async move {
-                let _ = agent_runs::insert_agent_run_with_id_and_metadata(
-                    &pool,
-                    &run_id_for_insert,
-                    &tid,
-                    &aname,
-                    None,
-                    status,
-                    input_tokens,
-                    output_tokens,
-                    dur,
-                    err_msg.as_deref(),
-                    "skill",
-                    "skill",
-                    false,
-                    Some(&metadata),
-                )
-                .await;
+                obs_for_spawn.aggregate_run_cost(dur).await;
             });
         }
 
@@ -311,17 +373,19 @@ pub async fn run_agent(
         return Ok(response);
     }
 
-    // Run observability
+    // Run observability: the sink writes run_llm_calls/run_tool_calls rows keyed
+    // by run_id, so the agent_runs parent must exist first (FKs immediate).
     let run_id = uuid::Uuid::new_v4().to_string();
+    let pool = state_ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
     let obs = Arc::new(RunObservability {
         run_id: run_id.clone(),
         tenant_id: tc.tenant_id.clone(),
         agent_name: name.clone(),
-        pool: state_ctx
-            .get::<ares_store::TenantDb>()
-            .expect("not provided")
-            .pool()
-            .clone(),
+        pool: pool.clone(),
     });
     let mut runtime_context =
         AgentRuntimeContext::new(tc.tenant_id.clone(), name.clone(), "api_v1_agent_run");
@@ -367,6 +431,46 @@ pub async fn run_agent(
             schedule_id: None,
             trigger_id: None,
         });
+    // Pre-insert the parent BEFORE exec.run: the LlmWire seam writes
+    // run_llm_calls/run_tool_calls rows for this run_id during execution,
+    // and those FKs are immediate. Awaited inline so no call row can race it.
+    let llm_metadata = agent_runs::AgentRunMetadata {
+        workspace_id: runtime_workspace_id.clone(),
+        session_id: Some(agent_context.session_id.clone()),
+        request_source: Some("api_v1_agent_run".to_string()),
+        product: None,
+        agent_config_source: Some(config_source.to_string()),
+        agent_config_version: config_version.clone(),
+        eruka_binding_id: None,
+        eruka_context_hit,
+        eruka_read_count: if eruka_context_hit { 1 } else { 0 },
+        eruka_write_count: 0,
+        pipeline_id: None,
+        schedule_id: None,
+        trigger_id: None,
+    };
+    agent_runs::insert_agent_run_with_id_and_metadata(
+        &pool,
+        &run_id,
+        &tc.tenant_id,
+        &name,
+        None,
+        "running",
+        0,
+        0,
+        0,
+        None,
+        "unknown",
+        "unknown",
+        false,
+        Some(&llm_metadata),
+    )
+    .await?;
+    let mut run_guard = RunCompletionGuard {
+        pool: pool.clone(),
+        run_id: run_id.clone(),
+        completed: false,
+    };
     let exec = state_ctx
         .get::<ares_agent::Execute>()
         .ok_or_else(|| ares_types::types::AppError::Unavailable("Execute not provided".into()))?;
@@ -375,6 +479,8 @@ pub async fn run_agent(
         message: effective_message.clone(),
         history: agent_context.conversation_history.clone(),
         ctx_provider: None,
+        run_id: Some(run_id.clone()),
+        observability: Some(obs.clone() as Arc<dyn ares_llm::observability::ObservabilitySink>),
         ..Default::default()
     };
     let result = exec
@@ -382,18 +488,6 @@ pub async fn run_agent(
         .await
         .map(|exec_result| exec_result.response);
     let duration_ms = start.elapsed().as_millis() as u64;
-
-    // Aggregate run costs (fire-and-forget)
-    let dur_i64 = duration_ms as i64;
-    let _pool_clone = state_ctx
-        .get::<ares_store::TenantDb>()
-        .expect("not provided")
-        .pool()
-        .clone();
-    let obs_for_spawn = obs.clone();
-    tokio::spawn(async move {
-        obs_for_spawn.aggregate_run_cost(dur_i64).await;
-    });
 
     match result {
         Ok(response) => {
@@ -422,54 +516,28 @@ pub async fn run_agent(
                 .expect("not provided")
                 .finish(&run_id, "completed");
 
-            // Record agent run
+            // Exactly one row per run: UPDATE the pre-inserted parent.
             {
-                let run_id_for_insert = run_id.clone();
-                let pool = state_ctx
-                    .get::<ares_store::TenantDb>()
-                    .expect("not provided")
-                    .pool()
-                    .clone();
-                let tid = tc.tenant_id.clone();
-                let aname = name.clone();
                 let itok = input_tokens as i64;
                 let otok = output_tokens as i64;
                 let dur = duration_ms as i64;
-                let mname = model_name.clone();
-                let pname = provider_name.clone();
-                let metadata = agent_runs::AgentRunMetadata {
-                    workspace_id: runtime_workspace_id.clone(),
-                    session_id: Some(agent_context.session_id.clone()),
-                    request_source: Some("api_v1_agent_run".to_string()),
-                    product: None,
-                    agent_config_source: Some(config_source.to_string()),
-                    agent_config_version: config_version.clone(),
-                    eruka_binding_id: None,
-                    eruka_context_hit,
-                    eruka_read_count: if eruka_context_hit { 1 } else { 0 },
-                    eruka_write_count: 0,
-                    pipeline_id: None,
-                    schedule_id: None,
-                    trigger_id: None,
-                };
+                sqlx::query(
+                    "UPDATE agent_runs SET status = 'completed', input_tokens = $2, output_tokens = $3, duration_ms = $4, error = NULL, model_name = $5, provider_name = $6 WHERE id = $1",
+                )
+                .bind(&run_id)
+                .bind(itok)
+                .bind(otok)
+                .bind(dur)
+                .bind(&model_name)
+                .bind(&provider_name)
+                .execute(&pool)
+                .await
+                .map_err(|e| HttpError::from(ares_types::types::AppError::Database(e.to_string())))?;
+                run_guard.disarm();
+                // Aggregate only after the parent exists; stays spawned, test polls.
+                let obs_for_spawn = obs.clone();
                 tokio::spawn(async move {
-                    let _ = agent_runs::insert_agent_run_with_id_and_metadata(
-                        &pool,
-                        &run_id_for_insert,
-                        &tid,
-                        &aname,
-                        None,
-                        "completed",
-                        itok,
-                        otok,
-                        dur,
-                        None,
-                        &mname,
-                        &pname,
-                        false,
-                        Some(&metadata),
-                    )
-                    .await;
+                    obs_for_spawn.aggregate_run_cost(dur).await;
                 });
             }
 
@@ -521,51 +589,24 @@ pub async fn run_agent(
                 .get::<crate::active_runs::ActiveRuns>()
                 .expect("not provided")
                 .finish(&run_id, "error");
-            // Record failed run
+            // Exactly one row per run: UPDATE the pre-inserted parent.
             {
-                let pool = state_ctx
-                    .get::<ares_store::TenantDb>()
-                    .expect("not provided")
-                    .pool()
-                    .clone();
-                let tid = tc.tenant_id.clone();
-                let aname = name.clone();
                 let err_msg = e.to_string();
                 let dur = duration_ms as i64;
-                let metadata = agent_runs::AgentRunMetadata {
-                    workspace_id: runtime_workspace_id.clone(),
-                    session_id: Some(agent_context.session_id.clone()),
-                    request_source: Some("api_v1_agent_run".to_string()),
-                    product: None,
-                    agent_config_source: Some(config_source.to_string()),
-                    agent_config_version: config_version.clone(),
-                    eruka_binding_id: None,
-                    eruka_context_hit,
-                    eruka_read_count: if eruka_context_hit { 1 } else { 0 },
-                    eruka_write_count: 0,
-                    pipeline_id: None,
-                    schedule_id: None,
-                    trigger_id: None,
-                };
-                let run_id_for_insert = run_id.clone();
+                sqlx::query(
+                    "UPDATE agent_runs SET status = 'failed', input_tokens = 0, output_tokens = 0, duration_ms = $2, error = $3 WHERE id = $1",
+                )
+                .bind(&run_id)
+                .bind(dur)
+                .bind(&err_msg)
+                .execute(&pool)
+                .await
+                .map_err(|e| HttpError::from(ares_types::types::AppError::Database(e.to_string())))?;
+                run_guard.disarm();
+                // Aggregate only after the parent exists; stays spawned, test polls.
+                let obs_for_spawn = obs.clone();
                 tokio::spawn(async move {
-                    let _ = agent_runs::insert_agent_run_with_id_and_metadata(
-                        &pool,
-                        &run_id_for_insert,
-                        &tid,
-                        &aname,
-                        None,
-                        "failed",
-                        0,
-                        0,
-                        dur,
-                        Some(&err_msg),
-                        "unknown",
-                        "unknown",
-                        false,
-                        Some(&metadata),
-                    )
-                    .await;
+                    obs_for_spawn.aggregate_run_cost(dur).await;
                 });
             }
 

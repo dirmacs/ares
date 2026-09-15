@@ -546,3 +546,93 @@ async fn test_v1_run_agent_executes_registry_config_via_execute() {
         "SYSTEM_PROMPT=registry-product-prompt"
     );
 }
+
+#[tokio::test]
+async fn test_v1_run_agent_persists_trace_rows() {
+    // Regression: the parent agent_runs row must exist before any call row keys
+    // to it, and the non-skill LLM branch must write call rows at all. Parent
+    // plus call rows are awaited inline by contract, so assert them directly
+    // after the response; only the cost aggregate stays spawned and needs
+    // deadline polling. Fails on current main with 0 run_llm_calls rows.
+    let (server, tenant_db) = create_v1_test_server().await;
+    let (tenant_id, api_key) = provision_tenant(&tenant_db, "run-trace").await;
+    insert_tenant_agent(&tenant_db, &tenant_id, "product", "run-trace-tenant-prompt").await;
+
+    let response = server
+        .post("/api/v1/agents/product/run")
+        .add_header("Authorization", format!("Bearer {}", api_key))
+        .json(&json!({
+            "message": "hello"
+        }))
+        .await;
+
+    assert_eq!(response.status_code(), 200);
+    let body: Value = response.json();
+    assert_eq!(body["agent_id"], "product");
+    assert_eq!(
+        body["output"]["response"],
+        "SYSTEM_PROMPT=registry-product-prompt"
+    );
+    let run_id = body["id"]
+        .as_str()
+        .expect("run response carries id")
+        .to_string();
+    assert!(!run_id.is_empty());
+
+    // Parent row exists at response time (awaited inline, not spawned).
+    {
+        use sqlx::Row;
+        let parent = sqlx::query("SELECT id, tenant_id, agent_name FROM agent_runs WHERE id = $1")
+            .bind(&run_id)
+            .fetch_optional(tenant_db.pool())
+            .await
+            .expect("query agent_runs");
+        let parent = parent.expect("agent_runs row must exist at response time");
+        assert_eq!(parent.get::<String, _>("tenant_id"), tenant_id);
+        assert_eq!(parent.get::<String, _>("agent_name"), "product");
+    }
+
+    // Call rows exist at response time (awaited inline).
+    let store = ares_store::run_history::RunHistoryStore::new(tenant_db.pool());
+    let llm_calls = store
+        .get_llm_calls_for_run(&run_id)
+        .await
+        .expect("query run_llm_calls");
+    assert!(
+        !llm_calls.is_empty(),
+        "expected at least one run_llm_calls row for {run_id}"
+    );
+    for call in &llm_calls {
+        assert_eq!(call.run_id, run_id);
+        assert_eq!(call.tenant_id, tenant_id);
+    }
+
+    // This fixture configures no tools, so no tool row is required; when a
+    // tool does fire, its row must key to the same run.
+    let tool_calls = store
+        .get_tool_calls_for_run(&run_id)
+        .await
+        .expect("query run_tool_calls");
+    for call in &tool_calls {
+        assert_eq!(call.run_id, run_id);
+        assert_eq!(call.tenant_id, tenant_id);
+    }
+
+    // Cost aggregate stays spawned: poll with a deadline.
+    let deadline = std::time::Duration::from_secs(10);
+    let started = std::time::Instant::now();
+    let cost = loop {
+        let cost = store.get_run_cost(&run_id).await.expect("query run_costs");
+        if cost.is_some() || started.elapsed() >= deadline {
+            break cost;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    let cost = cost.expect("run_costs row must appear before deadline");
+    assert_eq!(cost.run_id, run_id);
+    assert_eq!(cost.tenant_id, tenant_id);
+    assert!(
+        cost.total_llm_calls >= 1,
+        "expected run_costs to reflect llm calls"
+    );
+}

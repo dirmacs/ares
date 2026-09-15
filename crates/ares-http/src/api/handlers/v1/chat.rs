@@ -108,6 +108,7 @@ pub async fn v1_chat(
             parts: payload.parts.clone().unwrap_or_default(),
             previous_response_id: payload.previous_response_id.clone(),
             web_search: payload.web_search == Some(true),
+            ..Default::default()
         };
         // Cordis intercepts are request-local and composable: pin the model,
         // then attach the tenant's current allowlist without mutating root state.

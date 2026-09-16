@@ -81,6 +81,56 @@ fn panic_redacted(context: &str, err: impl std::fmt::Display) -> ! {
     panic!("{context}: {msg}{hint}");
 }
 
+/// Upstream NIM instability signature: an HTTP 5xx response, or the
+/// "service temporarily overloaded" payload NIM returns inside an otherwise
+/// healthy SSE stream. Only these failures are retried.
+fn is_upstream_overload(message: &str) -> bool {
+    let l = message.to_lowercase();
+    [
+        "http 500",
+        "http 502",
+        "http 503",
+        "http 504",
+        "temporarily overloaded",
+        "temporarily unavailable",
+        "overloaded",
+    ]
+    .iter()
+    .any(|needle| l.contains(needle))
+}
+
+/// Wrap one upstream failure for the retry classifier, redacting the key.
+fn upstream_err(context: &str, err: impl std::fmt::Display) -> String {
+    redact(&format!("{context}: {err}"))
+}
+
+/// Run a live test body up to THREE attempts total, retrying only
+/// upstream-overload failures with 5s then 15s backoff. Any other failure
+/// (assertion, timeout, auth) stops immediately.
+async fn with_overload_retries<F, Fut>(test: &str, mut once: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    const BACKOFF_SECS: [u64; 2] = [5, 15];
+    let mut attempt = 0usize;
+    loop {
+        match once().await {
+            Ok(()) => return,
+            Err(message) if attempt < BACKOFF_SECS.len() && is_upstream_overload(&message) => {
+                eprintln!(
+                    "{test}: upstream overload on attempt {}: {message}; retrying in {}s",
+                    attempt + 1,
+                    BACKOFF_SECS[attempt]
+                );
+                tokio::time::sleep(Duration::from_secs(BACKOFF_SECS[attempt])).await;
+                attempt += 1;
+            }
+            Err(message) => panic_redacted(test, message),
+        }
+    }
+}
+
 struct LiveStack {
     factory: ConfigBasedLLMFactory,
     nvidia: NvidiaConfig,
@@ -336,6 +386,10 @@ async fn live_complete() {
     if skip_without_key("live_complete") {
         return;
     }
+    with_overload_retries("live_complete", live_complete_once).await;
+}
+
+async fn live_complete_once() -> Result<(), String> {
     let stack = live_stack().await;
     let client = chat_client(&stack).await;
     let text = tokio::time::timeout(
@@ -344,7 +398,7 @@ async fn live_complete() {
     )
     .await
     .unwrap_or_else(|_| panic!("live_complete timed out"))
-    .unwrap_or_else(|e| panic_redacted("live_complete generate", e));
+    .map_err(|e| upstream_err("live_complete generate", e))?;
     eprintln!(
         "live_complete model={} chars={}",
         client.model_name(),
@@ -356,6 +410,7 @@ async fn live_complete() {
             client.model_name()
         );
     }
+    Ok(())
 }
 
 #[tokio::test]
@@ -364,6 +419,10 @@ async fn live_stream() {
     if skip_without_key("live_stream") {
         return;
     }
+    with_overload_retries("live_stream", live_stream_once).await;
+}
+
+async fn live_stream_once() -> Result<(), String> {
     let stack = live_stack().await;
     let client = chat_client(&stack).await;
     let mut stream = tokio::time::timeout(
@@ -372,20 +431,21 @@ async fn live_stream() {
     )
     .await
     .unwrap_or_else(|_| panic!("live_stream setup timed out"))
-    .unwrap_or_else(|e| panic_redacted("live_stream LLMClient::stream", e));
+    .map_err(|e| upstream_err("live_stream LLMClient::stream", e))?;
 
     let mut chunks = 0usize;
     let mut text = String::new();
     let collect = async {
         while let Some(item) = stream.next().await {
-            let piece = item.unwrap_or_else(|e| panic_redacted("live_stream chunk", e));
+            let piece = item.map_err(|e| upstream_err("live_stream chunk", e))?;
             chunks += 1;
             text.push_str(&piece);
         }
+        Ok::<(), String>(())
     };
     tokio::time::timeout(CALL_TIMEOUT, collect)
         .await
-        .unwrap_or_else(|_| panic!("live_stream collect timed out"));
+        .unwrap_or_else(|_| panic!("live_stream collect timed out"))?;
 
     eprintln!(
         "live_stream model={} chunks={} chars={}",
@@ -397,6 +457,7 @@ async fn live_stream() {
     if text.trim().is_empty() {
         panic!("live_stream: concatenated text was empty");
     }
+    Ok(())
 }
 
 #[tokio::test]
@@ -405,6 +466,10 @@ async fn live_tool_loop() {
     if skip_without_key("live_tool_loop") {
         return;
     }
+    with_overload_retries("live_tool_loop", live_tool_loop_once).await;
+}
+
+async fn live_tool_loop_once() -> Result<(), String> {
     let stack = live_stack().await;
     let client = chat_client(&stack).await;
     let tools = [weather_tool()];
@@ -444,11 +509,12 @@ async fn live_tool_loop() {
                 eprintln!(
                     "live_tool_loop: model tool-support variance (not a transport failure): {msg}"
                 );
-                return;
+                return Ok(());
             }
-            panic_redacted("live_tool_loop transport-level error", e);
+            return Err(upstream_err("live_tool_loop transport-level error", e));
         }
     }
+    Ok(())
 }
 
 #[tokio::test]
@@ -457,13 +523,17 @@ async fn live_embed() {
     if skip_without_key("live_embed") {
         return;
     }
+    with_overload_retries("live_embed", live_embed_once).await;
+}
+
+async fn live_embed_once() -> Result<(), String> {
     let stack = live_stack().await;
     let Some(embed_model) = discover_embed_model(&stack.nvidia).await else {
         eprintln!(
             "SKIPPED live_embed: no NVIDIA embed model discoverable via catalog at {}",
             stack.nvidia.models_url
         );
-        return;
+        return Ok(());
     };
     eprintln!("nvidia embed model: {embed_model}");
 
@@ -474,7 +544,7 @@ async fn live_embed() {
     )
     .await
     .unwrap_or_else(|_| panic!("live_embed timed out"))
-    .unwrap_or_else(|e| panic_redacted("live_embed", e));
+    .map_err(|e| upstream_err("live_embed", e))?;
 
     eprintln!(
         "live_embed model={} n_vectors={} dim={}",
@@ -488,6 +558,7 @@ async fn live_embed() {
     if vectors[0].is_empty() {
         panic!("live_embed: embedding vector was empty");
     }
+    Ok(())
 }
 
 #[tokio::test]
@@ -496,6 +567,14 @@ async fn live_stream_text_tools_api() {
     if skip_without_key("live_stream_text_tools_api") {
         return;
     }
+    with_overload_retries(
+        "live_stream_text_tools_api",
+        live_stream_text_tools_api_once,
+    )
+    .await;
+}
+
+async fn live_stream_text_tools_api_once() -> Result<(), String> {
     let stack = live_stack().await;
     let client = chat_client(&stack).await;
     let user = ConversationMessage::user("Reply with exactly one word: pong");
@@ -505,19 +584,20 @@ async fn live_stream_text_tools_api() {
     )
     .await
     .unwrap_or_else(|_| panic!("live_stream_text_tools_api setup timed out"))
-    .unwrap_or_else(|e| panic_redacted("live_stream_text_tools_api setup", e));
+    .map_err(|e| upstream_err("live_stream_text_tools_api setup", e))?;
     let mut text = String::new();
     let collect = async {
         while let Some(item) = stream.next().await {
-            match item.unwrap_or_else(|e| panic_redacted("live_stream_text_tools_api chunk", e)) {
+            match item.map_err(|e| upstream_err("live_stream_text_tools_api chunk", e))? {
                 ares_llm::LlmStreamEvent::Text(t) => text.push_str(&t),
                 ares_llm::LlmStreamEvent::ToolCalls(_) => {}
             }
         }
+        Ok::<(), String>(())
     };
     tokio::time::timeout(CALL_TIMEOUT, collect)
         .await
-        .unwrap_or_else(|_| panic!("live_stream_text_tools_api collect timed out"));
+        .unwrap_or_else(|_| panic!("live_stream_text_tools_api collect timed out"))?;
     eprintln!(
         "live_stream_text_tools_api model={} chars={}",
         client.model_name(),
@@ -527,6 +607,7 @@ async fn live_stream_text_tools_api() {
         !text.trim().is_empty(),
         "live_stream_text_tools_api: expected non-empty text"
     );
+    Ok(())
 }
 
 #[tokio::test]
@@ -535,6 +616,10 @@ async fn live_stream_with_tools() {
     if skip_without_key("live_stream_with_tools") {
         return;
     }
+    with_overload_retries("live_stream_with_tools", live_stream_with_tools_once).await;
+}
+
+async fn live_stream_with_tools_once() -> Result<(), String> {
     let stack = live_stack().await;
     let client = chat_client(&stack).await;
     let tools = [weather_tool()];
@@ -546,21 +631,22 @@ async fn live_stream_with_tools() {
     )
     .await
     .unwrap_or_else(|_| panic!("live_stream_with_tools setup timed out"))
-    .unwrap_or_else(|e| panic_redacted("live_stream_with_tools setup", e));
+    .map_err(|e| upstream_err("live_stream_with_tools setup", e))?;
 
     let mut text = String::new();
     let mut tool_calls: Vec<ares_types::types::ToolCall> = Vec::new();
     let collect = async {
         while let Some(item) = stream.next().await {
-            match item.unwrap_or_else(|e| panic_redacted("live_stream_with_tools chunk", e)) {
+            match item.map_err(|e| upstream_err("live_stream_with_tools chunk", e))? {
                 ares_llm::LlmStreamEvent::Text(t) => text.push_str(&t),
                 ares_llm::LlmStreamEvent::ToolCalls(calls) => tool_calls.extend(calls),
             }
         }
+        Ok::<(), String>(())
     };
     tokio::time::timeout(CALL_TIMEOUT, collect)
         .await
-        .unwrap_or_else(|_| panic!("live_stream_with_tools collect timed out"));
+        .unwrap_or_else(|_| panic!("live_stream_with_tools collect timed out"))?;
 
     eprintln!(
         "live_stream_with_tools model={} chars={} tool_calls={}",
@@ -575,7 +661,7 @@ async fn live_stream_with_tools() {
              variance, not a transport failure): {:?}",
             text.chars().take(200).collect::<String>()
         );
-        return;
+        return Ok(());
     }
 
     for call in &tool_calls {
@@ -602,6 +688,7 @@ async fn live_stream_with_tools() {
             call.name, call.arguments
         );
     }
+    Ok(())
 }
 
 /// 1x1 red PNG, base64-encoded. Small enough to send inline; enough for a
@@ -615,6 +702,10 @@ async fn live_vision_parts() {
     if skip_without_key("live_vision_parts") {
         return;
     }
+    with_overload_retries("live_vision_parts", live_vision_parts_once).await;
+}
+
+async fn live_vision_parts_once() -> Result<(), String> {
     let mut nvidia = NvidiaConfig::default();
     apply_base_override(&mut nvidia);
     let catalog = Arc::new(NvidiaCatalogCache::new(nvidia.clone()));
@@ -630,7 +721,7 @@ async fn live_vision_parts() {
             "SKIPPED live_vision_parts: no vision-capable model found in the NVIDIA catalog \
              (set NVIDIA_VISION_MODEL to force one)"
         );
-        return;
+        return Ok(());
     };
     eprintln!("nvidia vision model: {vision_model}");
 
@@ -649,7 +740,7 @@ async fn live_vision_parts() {
     let client = factory
         .create_default()
         .await
-        .unwrap_or_else(|e| panic_redacted("live_vision_parts create client", e));
+        .map_err(|e| upstream_err("live_vision_parts create client", e))?;
     client.set_hints(GenerationHints {
         max_tokens: Some(64),
         ..GenerationHints::default()
@@ -672,22 +763,23 @@ async fn live_vision_parts() {
     )
     .await
     .unwrap_or_else(|_| panic!("live_vision_parts setup timed out"))
-    .unwrap_or_else(|e| panic_redacted("live_vision_parts stream_with_tools_and_history", e));
+    .map_err(|e| upstream_err("live_vision_parts stream_with_tools_and_history", e))?;
 
     let mut text = String::new();
     let collect = async {
         while let Some(item) = stream.next().await {
-            match item.unwrap_or_else(|e| panic_redacted("live_vision_parts chunk", e)) {
+            match item.map_err(|e| upstream_err("live_vision_parts chunk", e))? {
                 ares_llm::LlmStreamEvent::Text(t) => text.push_str(&t),
                 ares_llm::LlmStreamEvent::ToolCalls(calls) => {
                     eprintln!("live_vision_parts: unexpected tool calls: {calls:?}")
                 }
             }
         }
+        Ok::<(), String>(())
     };
     tokio::time::timeout(CALL_TIMEOUT, collect)
         .await
-        .unwrap_or_else(|_| panic!("live_vision_parts collect timed out"));
+        .unwrap_or_else(|_| panic!("live_vision_parts collect timed out"))?;
 
     eprintln!(
         "live_vision_parts model={} chars={}",
@@ -700,4 +792,5 @@ async fn live_vision_parts() {
             client.model_name()
         );
     }
+    Ok(())
 }

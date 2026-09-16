@@ -23,7 +23,7 @@ const LOGOUT_SUCCESS_MESSAGE: &str = "Logged out successfully";
 fn validate_register_input(email: &str, password: &str) -> Result<()> {
     if email.is_empty() || !password_meets_minimum_length(password) {
         return Err(HttpError::from(AppError::InvalidInput(
-            REGISTER_VALIDATION_MSG.to_string().into(),
+            REGISTER_VALIDATION_MSG.to_string(),
         )));
     }
     Ok(())
@@ -37,7 +37,7 @@ fn password_meets_minimum_length(password: &str) -> bool {
 fn validate_login_input(email: &str, password: &str) -> Result<()> {
     if email.is_empty() || password.is_empty() {
         return Err(HttpError::from(AppError::InvalidInput(
-            LOGIN_VALIDATION_MSG.to_string().into(),
+            LOGIN_VALIDATION_MSG.to_string(),
         )));
     }
     Ok(())
@@ -74,7 +74,7 @@ fn refresh_token_from_request(payload: &RefreshTokenRequest) -> &str {
 fn validate_token_user_match(session_user_id: &str, claims_sub: &str) -> Result<()> {
     if session_user_id != claims_sub {
         return Err(HttpError::from(AppError::Auth(
-            "Token mismatch".to_string().into(),
+            "Token mismatch".to_string(),
         )));
     }
     Ok(())

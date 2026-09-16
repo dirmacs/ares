@@ -170,9 +170,9 @@ pub async fn delete_tenant_pipeline(
     let store = db_schedules::PipelineStore::new(&__pool_6);
     let rows = store.delete_pipeline_for_tenant(&tenant_id, &id).await?;
     if rows == 0 {
-        return Err(HttpError::from(AppError::NotFound(
-            format!("pipeline {id} not found for tenant {tenant_id}").into(),
-        )));
+        return Err(HttpError::from(AppError::NotFound(format!(
+            "pipeline {id} not found for tenant {tenant_id}"
+        ))));
     }
     let pool = ctx
         .get::<ares_store::TenantDb>()

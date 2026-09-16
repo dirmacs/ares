@@ -81,9 +81,9 @@ fn ensure_conversation_owner(
     action: &str,
 ) -> Result<()> {
     if conversation_user_id != claims_sub {
-        return Err(HttpError::from(AppError::Auth(
-            format!("Not authorized to {action} this conversation").into(),
-        )));
+        return Err(HttpError::from(AppError::Auth(format!(
+            "Not authorized to {action} this conversation"
+        ))));
     }
     Ok(())
 }

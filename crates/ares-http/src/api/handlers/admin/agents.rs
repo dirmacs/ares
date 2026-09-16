@@ -13,12 +13,12 @@ use ares_store::agent_runs;
 use ares_store::agent_versions;
 use ares_store::audit_log;
 use ares_store::tenant_agents::{
-    create_tenant_agent as db_create_tenant_agent, delete_tenant_agent as db_delete_tenant_agent,
-    get_tenant_agent as db_get_tenant_agent, list_agent_templates, list_tenant_agent_versions,
-    list_tenant_agents as db_list_tenant_agents, record_tenant_agent_version,
-    rollback_tenant_agent_version, update_tenant_agent as db_update_tenant_agent, AgentTemplate,
-    AgentTemplateStore, CreateTemplateRequest, CreateTenantAgentRequest, TenantAgent,
-    UpdateTenantAgentRequest,
+    create_tenant_agent as db_create_tenant_agent, deep_merge_config,
+    delete_tenant_agent as db_delete_tenant_agent, get_tenant_agent as db_get_tenant_agent,
+    list_agent_templates, list_tenant_agent_versions, list_tenant_agents as db_list_tenant_agents,
+    record_tenant_agent_version, rollback_tenant_agent_version,
+    update_tenant_agent as db_update_tenant_agent, AgentTemplate, AgentTemplateStore,
+    CreateTemplateRequest, CreateTenantAgentRequest, TenantAgent, UpdateTenantAgentRequest,
 };
 use ares_types::types::{AgentContext, AppError};
 use axum::{
@@ -71,21 +71,47 @@ pub async fn create_tenant_agent_handler(
     Ok(Json(agent))
 }
 
+/// Splits an incoming config patch into the merged config (for validation)
+/// and the forwarded patch (for the store update). Cleared keys (explicit
+/// nulls) are re-attached as nulls on the forwarded patch so the store-side
+/// re-merge preserves the clear instead of resurrecting the key via
+/// absent-keeps.
+fn split_merged_config_patch(
+    current: &serde_json::Value,
+    patch: serde_json::Value,
+) -> (serde_json::Value, serde_json::Value) {
+    let merged = deep_merge_config(current, &patch);
+    let mut forward = merged.clone();
+    if let (Some(cur_obj), Some(merged_obj)) = (current.as_object(), merged.as_object()) {
+        if let Some(fwd_obj) = forward.as_object_mut() {
+            for key in cur_obj.keys() {
+                if !merged_obj.contains_key(key) {
+                    fwd_obj.insert(key.clone(), serde_json::Value::Null);
+                }
+            }
+        }
+    }
+    (merged, forward)
+}
+
 pub async fn update_tenant_agent_handler(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name)): Path<(String, String)>,
-    Json(req): Json<UpdateTenantAgentRequest>,
+    Json(mut req): Json<UpdateTenantAgentRequest>,
 ) -> Result<Json<TenantAgent>> {
-    if let Some(cfg) = &req.config {
-        let tools = ctx.get::<ares_tools::Tools>().expect("Tools not provided");
-        validate_agent_config_tools(cfg, tools.as_ref(), &ctx, &tenant_id)?;
-    }
-
     let __pool_3 = ctx
         .get::<ares_store::TenantDb>()
         .expect("not provided")
         .pool()
         .clone();
+    if let Some(patch) = req.config.take() {
+        let current = db_get_tenant_agent(&__pool_3, &tenant_id, &agent_name).await?;
+        let (merged, forward) = split_merged_config_patch(&current.config, patch);
+        let tools = ctx.get::<ares_tools::Tools>().expect("Tools not provided");
+        validate_agent_config_tools(&merged, tools.as_ref(), &ctx, &tenant_id)?;
+        req.config = Some(forward);
+    }
+
     let agent = db_update_tenant_agent(&__pool_3, &tenant_id, &agent_name, req).await?;
 
     let pool = ctx
@@ -273,11 +299,19 @@ pub async fn create_agent(
 pub async fn update_agent(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name)): Path<(String, String)>,
-    Json(req): Json<UpdateAgentRequest>,
+    Json(mut req): Json<UpdateAgentRequest>,
 ) -> Result<Json<TenantAgent>> {
-    if let Some(cfg) = &req.config {
+    let __pool_14 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
+    if let Some(patch) = req.config.take() {
+        let current = db_get_tenant_agent(&__pool_14, &tenant_id, &agent_name).await?;
+        let (merged, forward) = split_merged_config_patch(&current.config, patch);
         let tools = ctx.get::<ares_tools::Tools>().expect("Tools not provided");
-        validate_agent_config_tools(cfg, tools.as_ref(), &ctx, &tenant_id)?;
+        validate_agent_config_tools(&merged, tools.as_ref(), &ctx, &tenant_id)?;
+        req.config = Some(forward);
     }
 
     let db_req = UpdateTenantAgentRequest {
@@ -286,11 +320,6 @@ pub async fn update_agent(
         config: req.config,
         enabled: req.enabled,
     };
-    let __pool_14 = ctx
-        .get::<ares_store::TenantDb>()
-        .expect("not provided")
-        .pool()
-        .clone();
     let agent = db_update_tenant_agent(&__pool_14, &tenant_id, &agent_name, db_req).await?;
 
     let pool = ctx

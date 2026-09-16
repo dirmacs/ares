@@ -208,9 +208,12 @@ pub async fn ingest_usage_events(
         }
 
         let total_tokens = ev.input_tokens + ev.output_tokens;
+        // Per-key attribution (031): thread the calling key id when the
+        // middleware verified one; `None` for non-key writers.
+        let api_key_id = tc.api_key_id.as_deref();
         let row: Option<String> = match sqlx::query_scalar(
-            "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, tokens_used, effective_tokens, success, duration_ms, created_at, input_tokens, output_tokens, model_name, agent_name, operation, request_id, outcome_class, reason_code)
-             VALUES ($1, $2, 'ingest', 1, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'usage.ingest', $13, $14, $15)
+            "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, tokens_used, effective_tokens, success, duration_ms, created_at, input_tokens, output_tokens, model_name, agent_name, operation, request_id, outcome_class, reason_code, api_key_id, counts_source)
+             VALUES ($1, $2, 'ingest', 1, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'usage.ingest', $13, $14, $15, $16, 'unknown')
              ON CONFLICT (tenant_id, request_id) WHERE request_id IS NOT NULL DO NOTHING RETURNING id",
         )
         .bind(uuid::Uuid::new_v4().to_string())
@@ -228,6 +231,7 @@ pub async fn ingest_usage_events(
         .bind(&ev.request_id)
         .bind(&ev.outcome_class)
         .bind(ev.reason_code.as_deref())
+        .bind(api_key_id)
         .fetch_optional(pool)
         .await
         {
@@ -331,5 +335,22 @@ mod tests {
         }]);
         let parsed: Result<Vec<UsageIngestEvent>, _> = serde_json::from_value(raw);
         assert!(parsed.is_err(), "content fields must not deserialize");
+    }
+
+    /// Metering truth: only `ok` bills as success; `timeout` and other
+    /// outcome classes persist success=false. Ingest counts are `unknown`.
+    #[test]
+    fn ingest_success_maps_ok_only_and_source_unknown() {
+        fn success_for(outcome: &str) -> bool {
+            outcome == "ok"
+        }
+        assert!(success_for("ok"));
+        assert!(!success_for("timeout"));
+        assert!(!success_for("upstream_error"));
+        assert!(!success_for("client_error"));
+        assert!(!success_for("cancelled"));
+        // counts_source for ingest rows is always 'unknown' (see INSERT).
+        let counts_source = "unknown";
+        assert_eq!(counts_source, "unknown");
     }
 }

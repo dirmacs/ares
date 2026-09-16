@@ -271,6 +271,25 @@ pub(crate) struct PipelineUsageRecord {
     pub(crate) model_name: Option<String>,
     pub(crate) agent_name: String,
     pub(crate) provider_name: Option<String>,
+    pub(crate) success: bool,
+    pub(crate) counts_source: Option<String>,
+}
+
+/// Maps a completion status to the `success` bind. Only `completed` bills as
+/// success; failed runs persist with `success=false` and zeroed counts.
+pub(crate) fn pipeline_usage_success(status: &str) -> bool {
+    status == "completed"
+}
+
+/// Labels token counts: provider-reported when LLM usage is present,
+/// locally estimated otherwise (covers estimate_tokens fallback and
+/// zeroed failure rows).
+pub(crate) fn pipeline_counts_source(usage: Option<&ares_llm::client::TokenUsage>) -> &'static str {
+    if usage.is_some() {
+        "reported"
+    } else {
+        "estimated"
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -363,6 +382,8 @@ pub(crate) fn pipeline_target_run_effects(
     output_tokens: i64,
     model_name: &str,
     provider_name: &str,
+    status: &str,
+    counts_source: Option<String>,
 ) -> PipelineTargetRunEffects {
     PipelineTargetRunEffects {
         metadata: AgentRunMetadata {
@@ -390,6 +411,8 @@ pub(crate) fn pipeline_target_run_effects(
             model_name: (model_name != "unknown").then(|| model_name.to_string()),
             agent_name: pipeline.target_agent.clone(),
             provider_name: (provider_name != "unknown").then(|| provider_name.to_string()),
+            success: pipeline_usage_success(status),
+            counts_source,
         },
     }
 }
@@ -631,50 +654,61 @@ async fn execute_target_agent(
         .map_err(|error| error.to_string());
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    let (status, error_msg, input_tokens, output_tokens, model_name, provider_name, output) =
-        match execution {
-            Ok(result) => {
-                let (input, output) = llm_token_counts_u64(
-                    result.response.usage.as_ref(),
-                    &effective_message,
-                    &result.response.content,
-                );
-                let model = result
-                    .response
-                    .metadata
-                    .as_ref()
-                    .map(|metadata| metadata.model_name.clone())
-                    .unwrap_or_else(|| "unknown".to_string());
-                let provider = result
-                    .response
-                    .metadata
-                    .as_ref()
-                    .map(|metadata| metadata.provider_name.clone())
-                    .unwrap_or_else(|| "unknown".to_string());
-                track_finish(app_state, &run_id, "completed");
-                (
-                    "completed",
-                    None,
-                    input as i64,
-                    output as i64,
-                    model,
-                    provider,
-                    result.response.content,
-                )
-            }
-            Err(error) => {
-                track_finish(app_state, &run_id, "error");
-                (
-                    "failed",
-                    Some(error),
-                    0,
-                    0,
-                    "unknown".to_string(),
-                    "unknown".to_string(),
-                    String::new(),
-                )
-            }
-        };
+    let (
+        status,
+        error_msg,
+        input_tokens,
+        output_tokens,
+        model_name,
+        provider_name,
+        output,
+        counts_source,
+    ) = match execution {
+        Ok(result) => {
+            let source = pipeline_counts_source(result.response.usage.as_ref()).to_string();
+            let (input, output) = llm_token_counts_u64(
+                result.response.usage.as_ref(),
+                &effective_message,
+                &result.response.content,
+            );
+            let model = result
+                .response
+                .metadata
+                .as_ref()
+                .map(|metadata| metadata.model_name.clone())
+                .unwrap_or_else(|| "unknown".to_string());
+            let provider = result
+                .response
+                .metadata
+                .as_ref()
+                .map(|metadata| metadata.provider_name.clone())
+                .unwrap_or_else(|| "unknown".to_string());
+            track_finish(app_state, &run_id, "completed");
+            (
+                "completed",
+                None,
+                input as i64,
+                output as i64,
+                model,
+                provider,
+                result.response.content,
+                source,
+            )
+        }
+        Err(error) => {
+            track_finish(app_state, &run_id, "error");
+            (
+                "failed",
+                Some(error),
+                0,
+                0,
+                "unknown".to_string(),
+                "unknown".to_string(),
+                String::new(),
+                "estimated".to_string(),
+            )
+        }
+    };
 
     emit_pipeline_step_finished(
         app_state,
@@ -698,6 +732,8 @@ async fn execute_target_agent(
         output_tokens,
         &model_name,
         &provider_name,
+        status,
+        Some(counts_source.clone()),
     );
     let metadata = effects.metadata;
     let usage = effects.usage;
@@ -729,7 +765,7 @@ async fn execute_target_agent(
     let usage_pool = pool.clone();
     tokio::spawn(async move {
         let _ = sqlx::query(
-            "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+            "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, success, counts_source, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(usage.tenant_id)
@@ -741,6 +777,8 @@ async fn execute_target_agent(
         .bind(usage.model_name)
         .bind(usage.agent_name)
         .bind(usage.provider_name)
+        .bind(usage.success)
+        .bind(usage.counts_source)
         .bind(chrono::Utc::now().timestamp())
         .execute(&usage_pool)
         .await;
@@ -889,12 +927,57 @@ mod tests {
             2,
             "model",
             "provider",
+            "completed",
+            Some("reported".to_string()),
         );
 
         assert_eq!(effects.metadata.request_source.as_deref(), Some("pipeline"));
         assert_eq!(effects.metadata.pipeline_id.as_deref(), Some("pipeline-1"));
         assert_eq!(effects.metadata.schedule_id.as_deref(), Some("schedule-1"));
         assert_eq!(effects.metadata.trigger_id, None);
+        assert!(effects.usage.success);
+        assert_eq!(effects.usage.counts_source.as_deref(), Some("reported"));
+    }
+
+    #[test]
+    fn pipeline_usage_success_maps_completed_only() {
+        assert!(pipeline_usage_success("completed"));
+        assert!(!pipeline_usage_success("failed"));
+        assert!(!pipeline_usage_success("error"));
+        assert!(!pipeline_usage_success("cancelled"));
+        assert_eq!(pipeline_counts_source(None), "estimated");
+    }
+
+    #[test]
+    fn pipeline_failed_effects_persist_zeroed_counts_as_failure() {
+        let pipeline = AgentPipeline {
+            id: "pipeline-1".to_string(),
+            tenant_id: "tenant-1".to_string(),
+            source_agent: "source".to_string(),
+            target_agent: "target".to_string(),
+            condition: None,
+            enabled: true,
+            created_at: 1,
+            updated_at: 1,
+        };
+        let effects = pipeline_target_run_effects(
+            &pipeline,
+            "tenant-1",
+            "run-1",
+            None,
+            Some("execute"),
+            None,
+            false,
+            0,
+            0,
+            "unknown",
+            "unknown",
+            "failed",
+            Some("estimated".to_string()),
+        );
+        assert!(!effects.usage.success);
+        assert_eq!(effects.usage.token_count, 0);
+        assert_eq!(effects.usage.counts_source.as_deref(), Some("estimated"));
     }
 
     #[test]
@@ -961,11 +1044,14 @@ mod tests {
             2,
             "model",
             "provider",
+            "completed",
+            Some("estimated".to_string()),
         );
 
         assert_eq!(effects.metadata.pipeline_id.as_deref(), Some("pipeline-1"));
         assert_eq!(effects.metadata.schedule_id, None);
         assert_eq!(effects.metadata.trigger_id.as_deref(), Some("trigger-1"));
+        assert!(effects.usage.success);
     }
 
     /// Phase 5 engine choreography: drive the REAL fan-out path and observe

@@ -185,6 +185,23 @@ pub fn usage_period_start(now: DateTime<Utc>) -> DateTime<Utc> {
         .and_utc()
 }
 
+/// Maps a completion status to the `success` bind. Only `completed` bills as
+/// success; failed runs persist with `success=false` and zeroed counts.
+pub fn metering_success(status: &str) -> bool {
+    status == "completed"
+}
+
+/// Labels token counts: provider-reported when LLM usage is present,
+/// locally estimated otherwise (estimate_tokens fallback and zeroed failures).
+/// Ingest callers pass `unknown` directly (no provider view).
+pub fn llm_counts_source(usage: Option<&ares_llm::client::TokenUsage>) -> &'static str {
+    if usage.is_some() {
+        "reported"
+    } else {
+        "estimated"
+    }
+}
+
 pub fn usage_response<T: Serialize>(
     payload: T,
     input_tokens: u64,
@@ -192,6 +209,8 @@ pub fn usage_response<T: Serialize>(
     model_name: &str,
     provider_name: &str,
     agent_name: &str,
+    success: bool,
+    counts_source: &str,
 ) -> Response {
     let mut response = Json(payload).into_response();
     let headers = response.headers_mut();
@@ -200,7 +219,35 @@ pub fn usage_response<T: Serialize>(
     set_header(headers, "x-model-name", model_name);
     set_header(headers, "x-provider-name", provider_name);
     set_header(headers, "x-agent-name", agent_name);
+    // Success is a boolean flag only; error text never goes in headers
+    // (bodies carry the redacted error via `redact_agent_run_error`).
+    set_header(headers, "x-success", success);
+    set_header(headers, "x-counts-source", counts_source);
     response
+}
+
+/// Builds a [`crate::middleware::usage::MeteringSnapshot`] for direct
+/// `UsageContext::record` calls. Headers and snapshot stay in sync: both
+/// carry success plus counts_source.
+pub(crate) fn metering_snapshot(
+    input_tokens: i64,
+    output_tokens: i64,
+    model_name: Option<String>,
+    agent_name: Option<String>,
+    provider_name: Option<String>,
+    success: bool,
+    counts_source: Option<String>,
+) -> crate::middleware::usage::MeteringSnapshot {
+    crate::middleware::usage::MeteringSnapshot {
+        input_tokens,
+        output_tokens,
+        token_count: input_tokens + output_tokens,
+        model_name,
+        agent_name,
+        provider_name,
+        success,
+        counts_source,
+    }
 }
 
 #[cfg(test)]
@@ -282,6 +329,8 @@ mod tests {
             "gpt-test",
             "openai",
             "router",
+            true,
+            "reported",
         );
 
         assert_eq!(
@@ -319,12 +368,66 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some("router")
         );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-success")
+                .and_then(|v| v.to_str().ok()),
+            Some("true")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-counts-source")
+                .and_then(|v| v.to_str().ok()),
+            Some("reported")
+        );
 
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("read body");
         let json: serde_json::Value = serde_json::from_slice(&body).expect("json body");
         assert_eq!(json["answer"], "ok");
+    }
+
+    #[test]
+    fn metering_success_only_completed_is_success() {
+        assert!(metering_success("completed"));
+        assert!(!metering_success("failed"));
+        assert!(!metering_success("error"));
+    }
+
+    #[test]
+    fn llm_counts_source_reported_only_with_usage() {
+        assert_eq!(llm_counts_source(None), "estimated");
+    }
+
+    #[test]
+    fn usage_response_failed_zeroed_carries_failure_flag() {
+        let response = usage_response(
+            serde_json::json!({"status": "failed"}),
+            0,
+            0,
+            "unknown",
+            "unknown",
+            "router",
+            false,
+            "estimated",
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-success")
+                .and_then(|v| v.to_str().ok()),
+            Some("false")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-counts-source")
+                .and_then(|v| v.to_str().ok()),
+            Some("estimated")
+        );
     }
 
     #[test]
@@ -397,6 +500,21 @@ mod tests {
             serde_json::from_str(r#"{"name":"ci-key","expires_in_days":30}"#).expect("deserialize");
         assert_eq!(req.name, "ci-key");
         assert_eq!(req.expires_in_days, Some(30));
+        assert!(req.scopes.is_none());
+    }
+
+    #[test]
+    fn create_api_key_request_deserializes_scopes() {
+        let req: CreateApiKeyRequest =
+            serde_json::from_str(r#"{"name":"ingest-key","scopes":"ingest"}"#)
+                .expect("deserialize");
+        assert_eq!(req.scopes.as_deref(), Some("ingest"));
+        let unknown: CreateApiKeyRequest =
+            serde_json::from_str(r#"{"name":"k","scopes":"weird"}"#).expect("deserialize");
+        assert_eq!(
+            ares_types::normalize_api_key_scope(unknown.scopes.as_deref()),
+            "full"
+        );
     }
 
     #[test]
@@ -470,6 +588,7 @@ mod tests {
             created_at: created,
             last_used: None,
             expires_at: Some(created + chrono::Duration::days(30)),
+            scopes: "full".into(),
         };
         let response = CreateApiKeyResponse {
             key,

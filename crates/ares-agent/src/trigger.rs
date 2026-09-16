@@ -28,6 +28,32 @@ fn llm_token_counts_u64(
     }
 }
 
+/// Maps a completion status to the `success` bind. Only `completed` bills as
+/// success; failed runs persist with `success=false` and zeroed counts.
+pub(crate) fn trigger_usage_success(status: &str) -> bool {
+    status == "completed"
+}
+
+/// Labels token counts: provider-reported when LLM usage is present,
+/// locally estimated otherwise (covers estimate fallback and zeroed failures).
+/// Skill-result counts aggregate nested reported usage, so a successful skill
+/// run is `reported`; a failed (zeroed) skill run is `estimated`.
+pub(crate) fn trigger_counts_source(usage: Option<&ares_llm::client::TokenUsage>) -> &'static str {
+    if usage.is_some() {
+        "reported"
+    } else {
+        "estimated"
+    }
+}
+
+pub(crate) fn trigger_skill_counts_source(is_ok: bool) -> &'static str {
+    if is_ok {
+        "reported"
+    } else {
+        "estimated"
+    }
+}
+
 fn ctx_tracker(
     ctx: &std::sync::Arc<cordis::Context>,
 ) -> Option<std::sync::Arc<dyn crate::RunTracker>> {
@@ -313,6 +339,12 @@ impl TriggerService {
     /// Common pathway: resolve tenant-agent, handle skill branch via
     /// `SkillEngine`, otherwise delegate to `Execute`,
     /// then propagate to downstream pipelines.
+    /// Metering note: this DI path does not write `usage_events` directly;
+    /// billing rows are written by the legacy `execute_triggered_agent_legacy`
+    /// paths below (skill + regular, both with explicit success/counts_source).
+    /// Adding a write here would double-bill dispatches that fan out through
+    /// the legacy close-out. Failed DI runs surface via the legacy failure
+    /// close-out with success=false.
     async fn execute_trigger(
         &self,
         trigger: &EventTrigger,
@@ -708,9 +740,12 @@ async fn execute_triggered_agent_legacy(
         let usage_tid = trigger.tenant_id.clone();
         let usage_agent = trigger.target_agent.clone();
         let token_count = input_tokens + output_tokens;
+        let usage_success = trigger_usage_success(status);
+        let usage_counts_source =
+            Some(trigger_skill_counts_source(skill_result.is_ok()).to_string());
         tokio::spawn(async move {
             let _ = sqlx::query(
-                "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, 'trigger', $3, $4, $5, $6, $7, $8, $9, $10)"
+                "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, success, counts_source, created_at) VALUES ($1, $2, 'trigger', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"
             )
             .bind(uuid::Uuid::new_v4().to_string())
             .bind(usage_tid)
@@ -721,6 +756,8 @@ async fn execute_triggered_agent_legacy(
             .bind(Some("skill".to_string()))
             .bind(usage_agent)
             .bind(Some("skill".to_string()))
+            .bind(usage_success)
+            .bind(usage_counts_source)
             .bind(chrono::Utc::now().timestamp())
             .execute(&usage_pool)
             .await;
@@ -832,10 +869,11 @@ async fn execute_triggered_agent_legacy(
         ),
     );
 
-    let (status, error_msg, input_tokens, output_tokens, model_name, provider_name);
+    let (status, error_msg, input_tokens, output_tokens, model_name, provider_name, counts_source);
 
     match result {
         Ok(response) => {
+            counts_source = trigger_counts_source(response.response.usage.as_ref()).to_string();
             status = "completed";
             error_msg = None;
             let (itok, otok) = llm_token_counts_u64(
@@ -876,6 +914,7 @@ async fn execute_triggered_agent_legacy(
             );
         }
         Err(e) => {
+            counts_source = "estimated".to_string();
             status = "failed";
             error_msg = Some(e.to_string());
             input_tokens = 0;
@@ -925,9 +964,11 @@ async fn execute_triggered_agent_legacy(
     let input_tok = input_tokens;
     let output_tok = output_tokens;
     let token_total = input_tokens + output_tokens;
+    let usage_success = trigger_usage_success(status);
+    let usage_counts_source = Some(counts_source.clone());
     tokio::spawn(async move {
         let _ = sqlx::query(
-            "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, 'trigger', $3, $4, $5, $6, $7, $8, $9, $10)"
+            "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, success, counts_source, created_at) VALUES ($1, $2, 'trigger', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(usage_tid)
@@ -938,6 +979,8 @@ async fn execute_triggered_agent_legacy(
         .bind(usage_model)
         .bind(usage_agent)
         .bind(usage_provider)
+        .bind(usage_success)
+        .bind(usage_counts_source)
         .bind(chrono::Utc::now().timestamp())
         .execute(&usage_pool)
         .await;
@@ -1008,6 +1051,16 @@ mod tests {
         assert_eq!(metadata.schedule_id, None);
         assert!(metadata.eruka_context_hit);
         assert_eq!(metadata.eruka_read_count, 1);
+    }
+
+    #[test]
+    fn trigger_usage_success_maps_completed_only() {
+        assert!(trigger_usage_success("completed"));
+        assert!(!trigger_usage_success("failed"));
+        assert!(!trigger_usage_success("error"));
+        assert_eq!(trigger_counts_source(None), "estimated");
+        assert!(trigger_skill_counts_source(true) == "reported");
+        assert!(trigger_skill_counts_source(false) == "estimated");
     }
 
     #[test]

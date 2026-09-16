@@ -1022,24 +1022,10 @@ impl AresMcpServer {
 
         let result = match dispatch {
             ToolDispatch::ListAgents => self.list_agents().await,
-            ToolDispatch::RunAgent(args) => match serde_json::from_value::<RunAgentInput>(args) {
-                Ok(input) => self.run_agent(input).await,
-                Err(e) => Err(format!("Invalid arguments: {}", e)),
-            },
-            ToolDispatch::GetStatus(args) => match serde_json::from_value::<GetStatusInput>(args) {
-                Ok(input) => self.get_status(input).await,
-                Err(e) => Err(format!("Invalid arguments: {}", e)),
-            },
-            ToolDispatch::DeployAgent(args) => {
-                match serde_json::from_value::<DeployAgentInput>(args) {
-                    Ok(input) => self.deploy_agent(input).await,
-                    Err(e) => Err(format!("Invalid arguments: {}", e)),
-                }
-            }
-            ToolDispatch::GetUsage(args) => match serde_json::from_value::<GetUsageInput>(args) {
-                Ok(input) => self.get_usage(input).await,
-                Err(e) => Err(format!("Invalid arguments: {}", e)),
-            },
+            ToolDispatch::RunAgent(args) => self.run_agent_arm(args).await,
+            ToolDispatch::GetStatus(args) => self.get_status_arm(args).await,
+            ToolDispatch::DeployAgent(args) => self.deploy_agent_arm(args).await,
+            ToolDispatch::GetUsage(args) => self.get_usage_arm(args).await,
             ToolDispatch::Extension { name, args } => {
                 let tenant_id = match self.get_session().await {
                     Ok(s) => s.tenant_id().to_string(),
@@ -1061,6 +1047,28 @@ impl AresMcpServer {
             Ok(call_result) => call_result,
             Err(e) => CallToolResult::error(vec![ContentBlock::text(e)]),
         }
+    }
+
+    /// Decode JSON arguments for a tool arm; the error text matches the
+    /// original inline arms.
+    fn decode_tool_args<T: serde::de::DeserializeOwned>(args: Value) -> Result<T, String> {
+        serde_json::from_value(args).map_err(|e| format!("Invalid arguments: {}", e))
+    }
+
+    async fn run_agent_arm(&self, args: Value) -> Result<CallToolResult, String> {
+        self.run_agent(Self::decode_tool_args(args)?).await
+    }
+
+    async fn get_status_arm(&self, args: Value) -> Result<CallToolResult, String> {
+        self.get_status(Self::decode_tool_args(args)?).await
+    }
+
+    async fn deploy_agent_arm(&self, args: Value) -> Result<CallToolResult, String> {
+        self.deploy_agent(Self::decode_tool_args(args)?).await
+    }
+
+    async fn get_usage_arm(&self, args: Value) -> Result<CallToolResult, String> {
+        self.get_usage(Self::decode_tool_args(args)?).await
     }
 }
 

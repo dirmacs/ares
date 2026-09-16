@@ -297,50 +297,65 @@ impl AresConfig {
 
     /// Validate the configuration for internal consistency and env var availability
     pub fn validate(&self) -> Result<(), ConfigError> {
-        // Validate auth env vars exist
+        self.validate_env_vars()
+            .and_then(|()| self.validate_provider_env_vars())
+            .and_then(|()| self.validate_model_references())
+            .and_then(|()| self.validate_agent_references())
+            .and_then(|()| self.validate_workflow_references())
+            .and_then(|()| self.detect_circular_references())
+    }
+
+    /// Validate that the auth and database env vars exist at boot.
+    fn validate_env_vars(&self) -> Result<(), ConfigError> {
         self.validate_env_var(&self.auth.jwt_secret_env)?;
         self.validate_env_var(&self.auth.api_key_env)?;
-
-        // Validate database env vars if specified
-        if let Some(ref qdrant) = self.database.qdrant {
-            if let Some(ref env) = qdrant.api_key_env {
-                self.validate_env_var(env)?;
-            }
+        if let Some(env) = self
+            .database
+            .qdrant
+            .as_ref()
+            .and_then(|qdrant| qdrant.api_key_env.as_deref())
+        {
+            self.validate_env_var(env)?;
         }
+        Ok(())
+    }
 
-        // Validate provider env vars
+    /// Validate that every provider env var resolved at boot exists.
+    fn validate_provider_env_vars(&self) -> Result<(), ConfigError> {
         for provider in self.providers.values() {
-            match provider {
-                ProviderConfig::OpenAI { api_key_env, .. } => {
-                    self.validate_env_var(api_key_env)?;
-                }
-                ProviderConfig::Azure {
-                    api_key_env,
-                    base_url_env,
-                    ..
-                } => {
-                    self.validate_env_var(api_key_env)?;
-                    self.validate_env_var(base_url_env)?;
-                }
-                ProviderConfig::Anthropic { api_key_env, .. } => {
-                    self.validate_env_var(api_key_env)?;
-                }
-                ProviderConfig::Bedrock {
-                    api_key_env,
-                    region_env,
-                    ..
-                } => {
-                    self.validate_env_var(api_key_env)?;
-                    self.validate_env_var(region_env)?;
-                }
-                ProviderConfig::Ollama { .. } => {
-                    // Ollama has no auth; nothing to validate.
-                }
-                _ => {}
+            for env_name in Self::provider_env_names(provider) {
+                self.validate_env_var(env_name)?;
             }
         }
+        Ok(())
+    }
 
-        // Validate model -> provider references
+    /// Env var names a provider needs at boot; empty for providers without
+    /// auth or for providers the original match skipped.
+    fn provider_env_names(provider: &ProviderConfig) -> Vec<&str> {
+        let mut names: Vec<&str> = Vec::new();
+        if let ProviderConfig::OpenAI { api_key_env, .. }
+        | ProviderConfig::Anthropic { api_key_env, .. }
+        | ProviderConfig::Azure { api_key_env, .. }
+        | ProviderConfig::Bedrock { api_key_env, .. } = provider
+        {
+            names.push(api_key_env.as_str());
+        }
+        names.extend(Self::auxiliary_env_names(provider));
+        names
+    }
+
+    /// Second env var name for providers that need two.
+    fn auxiliary_env_names(provider: &ProviderConfig) -> Vec<&str> {
+        match provider {
+            ProviderConfig::Azure { base_url_env, .. } => vec![base_url_env.as_str()],
+            ProviderConfig::Bedrock { region_env, .. } => vec![region_env.as_str()],
+            _ => Vec::new(),
+        }
+    }
+
+    /// Validate model -> provider references.
+    fn validate_model_references(&self) -> Result<(), ConfigError> {
         for (model_name, model_config) in &self.models {
             if !self.providers.contains_key(&model_config.provider) {
                 return Err(ConfigError::MissingProvider(
@@ -349,15 +364,17 @@ impl AresConfig {
                 ));
             }
         }
+        Ok(())
+    }
 
-        // Validate agent -> model and agent -> tools references
-        // NOTE: With the dynamic NVIDIA catalog, agents reference models by
-        // literal NVIDIA NIM id (e.g. "nvidia/nemotron-3-ultra-550b-a55b") which
-        // is resolved at runtime against the live catalog — NOT against a
-        // static [models] table. We therefore only WARN if a model name is
-        // suspicious rather than failing startup, so a model that gets
-        // rotated out of the live catalog doesn't prevent the server from
-        // booting (the affected agent just gets a runtime error on first use).
+    /// Validate agent -> model and agent -> tools references.
+    ///
+    /// With the dynamic NVIDIA catalog, agents reference models by literal
+    /// NVIDIA NIM id, which resolves at runtime against the live catalog and
+    /// not against the static `[models]` table. A model name absent from that
+    /// table only warns here, so a catalog rotation never stops the server
+    /// from booting (the affected agent gets a runtime error on first use).
+    fn validate_agent_references(&self) -> Result<(), ConfigError> {
         for (agent_name, agent_config) in &self.agents {
             if !self.models.contains_key(&agent_config.model) {
                 tracing::warn!(
@@ -369,17 +386,7 @@ impl AresConfig {
             }
 
             for tool_name in &agent_config.tools {
-                // Allow tools from registered tool configs OR MCP bridge tools
-                // MCP bridge tools follow the pattern: {mcp_client_name}_{operation}
-                let is_known_tool = self.tools.contains_key(tool_name);
-                let is_mcp_tool = tool_name.contains('_') && {
-                    // Check if any configured MCP client name is a prefix
-                    let mcp_names = self.mcp_client_names();
-                    mcp_names
-                        .iter()
-                        .any(|mcp_name| tool_name.starts_with(&format!("{}_", mcp_name)))
-                };
-                if !is_known_tool && !is_mcp_tool {
+                if self.tool_reference_missing(tool_name) {
                     return Err(ConfigError::MissingTool(
                         tool_name.clone(),
                         agent_name.clone(),
@@ -387,8 +394,11 @@ impl AresConfig {
                 }
             }
         }
+        Ok(())
+    }
 
-        // Validate workflow -> agent references
+    /// Validate workflow -> agent references.
+    fn validate_workflow_references(&self) -> Result<(), ConfigError> {
         for (workflow_name, workflow_config) in &self.workflows {
             if !self.agents.contains_key(&workflow_config.entry_agent) {
                 return Err(ConfigError::MissingAgent(
@@ -397,7 +407,7 @@ impl AresConfig {
                 ));
             }
 
-            if let Some(ref fallback) = workflow_config.fallback_agent {
+            if let Some(fallback) = &workflow_config.fallback_agent {
                 if !self.agents.contains_key(fallback) {
                     return Err(ConfigError::MissingAgent(
                         fallback.clone(),
@@ -406,11 +416,22 @@ impl AresConfig {
                 }
             }
         }
-
-        // Check for circular references in workflows (entry_agent -> fallback cycles)
-        self.detect_circular_references()?;
-
         Ok(())
+    }
+
+    /// True when an agent tool name matches neither a registered tool config
+    /// nor an MCP bridge tool (`{mcp_client_name}_{operation}`).
+    fn tool_reference_missing(&self, tool_name: &str) -> bool {
+        let is_known_tool = self.tools.contains_key(tool_name);
+        let is_mcp_tool = tool_name.contains('_') && self.is_mcp_bridge_tool(tool_name);
+        !is_known_tool && !is_mcp_tool
+    }
+
+    /// True when `tool_name` is prefixed by a configured MCP client name.
+    fn is_mcp_bridge_tool(&self, tool_name: &str) -> bool {
+        self.mcp_client_names()
+            .iter()
+            .any(|mcp_name| tool_name.starts_with(&format!("{}_", mcp_name)))
     }
 
     /// Detect circular references in workflow configurations

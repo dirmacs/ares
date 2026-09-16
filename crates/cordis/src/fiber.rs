@@ -564,17 +564,10 @@ impl Fiber {
             if self.disposed.load(Ordering::Acquire) {
                 return;
             }
-            // Terminal apply-error short-circuit (C2): a fiber that Failed
-            // because its plugin factory errored stays exactly there —
-            // reactive dependency churn never revives or reclassifies it.
-            // Recovery is explicit re-registration (fresh fiber id). This
-            // deliberately does NOT cover availability-predicate failures,
-            // where the runner succeeded and later refreshes must converge.
-            if matches!(&*self.state.read(), FiberState::Failed { .. })
-                && self.apply_failed.load(Ordering::Acquire)
-            {
+            if self.terminal_failure_short_circuit() {
                 return;
             }
+
             let reload_ctx = self
                 .reload_ctx
                 .lock()
@@ -582,114 +575,28 @@ impl Fiber {
                 .and_then(std::sync::Weak::upgrade)
                 .unwrap_or_else(|| ctx.clone());
 
-            // C1 `internal/config` veto point: resolve the EFFECTIVE config
-            // for this pass exactly once. The chain terminal IS the effective
-            // config; a chain error fails the activation (rest `Failed`).
-            if let Some(events) = reload_ctx.get::<crate::EventsService>() {
-                match self.resolve_effective_config(&events).await {
-                    Ok(()) => {}
-                    Err(error) => {
-                        self.apply_failed.store(true, Ordering::Release);
-                        self.set_state(FiberState::Failed {
-                            error: Some(error.to_string()),
-                        });
-                        return;
-                    }
-                }
+            if !self.resolve_pass_config(&reload_ctx).await {
+                return;
             }
 
             let new_epoch = self.compute_epoch(&reload_ctx);
             let old_epoch = self.epoch.read().clone();
             let previous = self.state();
             let satisfied = self.is_satisfied(&reload_ctx);
-            // C2 Pending fast-path: a re-kick on a gated fiber already
-            // resting `Pending` with a STILL-closed gate is a no-op — the
-            // epoch cannot have moved while unserved, so skip without
-            // rewriting state. An OPEN gate falls through to one full pass
-            // (… → Loading → Active).
-            if matches!(previous, FiberState::Pending) && !self.readiness_open(&reload_ctx) {
-                return;
-            }
-            // The epoch fast-path must also confirm the C2 readiness gate:
-            // register_with_readiness installs its gate AFTER registration
-            // already rested the fiber `Active`, so the re-entry pass would
-            // otherwise return here without ever consulting a closed gate.
-            if new_epoch == old_epoch
-                && satisfied
-                && matches!(previous, FiberState::Active { .. })
-                && self.readiness_open(&reload_ctx)
-                && !self.pending_declare.swap(false, Ordering::AcqRel)
-            {
-                return;
-            }
-
-            // C2 cascade batching: when a declared dependency's provider
-            // fiber is mid-config-update (loader in-flight ledger), DEFER —
-            // rest Pending quietly and let the loader's single post-settle
-            // re-kick converge every deferred dependent at once, instead of
-            // running one full cascade wave per concurrent patch. Absent a
-            // RegistryService (library deployments) this probe is always
-            // false and the legacy behavior is preserved byte-for-byte.
-            let inject_tids: Vec<TypeId> = self.injects.read().keys().copied().collect();
-            if self.ever_activated.load(Ordering::Acquire)
-                && !inject_tids.is_empty()
-                && crate::loader::Loader::cascade_defer_needed(&inject_tids, &reload_ctx)
-            {
-                if !matches!(previous, FiberState::Pending) {
-                    self.set_state(FiberState::Unloading { error: None });
-                    self.undo_effects();
-                    self.set_state(FiberState::Pending);
-                }
-                return;
-            }
-
-            // C2 readiness gate: a closed `ready_when` predicate is quiet
-            // waiting, NOT a failure. A never-activated gated fiber rests
-            // inspectable `Pending` without running its factory; a
-            // previously-activated one first disposes its effects (same
-            // LIFO shape as reactive dependency loss) so a half-ready
-            // configuration never keeps serving. Either way the pass ends
-            // here — availability predicates (`Service::check`) remain the
-            // LOUD complement that rests `Failed{error}`.
-            if !self.readiness_open(&reload_ctx) {
-                let was_serving = matches!(previous, FiberState::Active { .. })
-                    && self.ever_activated.load(Ordering::Acquire);
-                if was_serving {
-                    self.set_state(FiberState::Unloading { error: None });
-                    self.undo_effects();
-                }
-                self.set_state(FiberState::Pending);
-                tracing::debug!(
-                    state = ?self.state(),
-                    "Cordis fiber resting Pending behind closed readiness gate"
-                );
+            if self.pass_ends_before_runner(
+                &previous,
+                &new_epoch,
+                &old_epoch,
+                satisfied,
+                &reload_ctx,
+            ) {
                 return;
             }
 
             self.set_state(FiberState::Reloading);
             tokio::task::yield_now().await;
             let has_runner = self.reload_runner.lock().is_some();
-            // Reactive dependency loss (C2): a previously-working runner
-            // fiber whose dependencies VANISHED (genuinely unavailable)
-            // disposes its effects LIFO under `Unloading` and rests `Pending`
-            // (NOT Disposed). A peer-version CONSTRAINT refusal over an
-            // existing-but-incompatible provider is policy, not loss — the
-            // provider is still `is_available`, so those stay `Inactive`.
-            // (A withdrawn provider reads version 0 again after its undo
-            // runs; a live provider carries its provided semantic version,
-            // so the guard cleanly separates "absent/inactive" from
-            // "present but refused by constraint".)
-            let deps_unavailable = self
-                .injects
-                .read()
-                .keys()
-                .any(|tid| !ctx.is_available(*tid) && ctx.provider_version(*tid) == 0);
-            let reactive_loss = !satisfied
-                && deps_unavailable
-                && has_runner
-                && self.ever_activated.load(Ordering::Acquire)
-                && !matches!(previous, FiberState::Failed { .. });
-            if reactive_loss {
+            if self.reactive_dependency_loss(ctx, &previous, satisfied, has_runner) {
                 self.set_state(FiberState::Unloading { error: None });
                 self.undo_effects();
                 self.set_state(FiberState::Pending);
@@ -719,29 +626,181 @@ impl Fiber {
             }
 
             let result = self.run_runner(&reload_ctx);
-            match result {
-                Ok(true) => {
-                    self.mark_applied();
-                    self.set_epoch(new_epoch.clone());
-                    self.set_state(FiberState::Active { epoch: new_epoch });
-                }
-                Ok(false) => {
-                    self.set_state(FiberState::Inactive { error: None });
-                }
-                Err(error) => {
-                    // Apply errors are terminal (C2): record the marker so
-                    // reactive refreshes never resurrect this fiber.
-                    self.apply_failed.store(true, Ordering::Release);
-                    self.set_state(FiberState::Failed {
-                        error: Some(error.to_string()),
-                    });
-                }
-            }
+            self.apply_runner_result(result, &new_epoch);
             if previous != self.state() {
                 tracing::debug!(from=?previous, to=?self.state(), "Cordis fiber transition");
             }
             if !self.pending_declare.swap(false, Ordering::AcqRel) {
                 return;
+            }
+        }
+    }
+
+    /// Terminal apply-error short-circuit (C2): a fiber that Failed because
+    /// its plugin factory errored stays exactly there — reactive dependency
+    /// churn never revives or reclassifies it. Recovery is explicit
+    /// re-registration (fresh fiber id). This deliberately does NOT cover
+    /// availability-predicate failures, where the runner succeeded and later
+    /// refreshes must converge.
+    fn terminal_failure_short_circuit(&self) -> bool {
+        matches!(&*self.state.read(), FiberState::Failed { .. })
+            && self.apply_failed.load(Ordering::Acquire)
+    }
+
+    /// C1 `internal/config` veto point: resolve the EFFECTIVE config for this
+    /// pass exactly once. The chain terminal IS the effective config; a chain
+    /// error fails the activation (rest `Failed`) and returns `false`.
+    async fn resolve_pass_config(&self, reload_ctx: &Arc<Context>) -> bool {
+        if let Some(events) = reload_ctx.get::<crate::EventsService>() {
+            match self.resolve_effective_config(&events).await {
+                Ok(()) => {}
+                Err(error) => {
+                    self.apply_failed.store(true, Ordering::Release);
+                    self.set_state(FiberState::Failed {
+                        error: Some(error.to_string()),
+                    });
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// End-of-pass gates: the pass stops without running the runner when a
+    /// gated fiber is re-kicked with a still-closed gate, when nothing changed
+    /// (same epoch, satisfied, already `Active`, open gate, no raced
+    /// declaration), when a dependency's provider is mid-config-update
+    /// (cascade batching), or when the readiness gate is closed (rest
+    /// `Pending`, quiet waiting). Returns `true` when the pass must stop.
+    fn pass_ends_before_runner(
+        &self,
+        previous: &FiberState,
+        new_epoch: &str,
+        old_epoch: &str,
+        satisfied: bool,
+        reload_ctx: &Arc<Context>,
+    ) -> bool {
+        // C2 Pending fast-path: a re-kick on a gated fiber already
+        // resting `Pending` with a STILL-closed gate is a no-op — the
+        // epoch cannot have moved while unserved, so skip without
+        // rewriting state. An OPEN gate falls through to one full pass
+        // (… → Loading → Active).
+        if matches!(previous, FiberState::Pending) && !self.readiness_open(reload_ctx) {
+            return true;
+        }
+        // The epoch fast-path must also confirm the C2 readiness gate:
+        // register_with_readiness installs its gate AFTER registration
+        // already rested the fiber `Active`, so the re-entry pass would
+        // otherwise return here without ever consulting a closed gate.
+        if new_epoch == old_epoch
+            && satisfied
+            && matches!(previous, FiberState::Active { .. })
+            && self.readiness_open(reload_ctx)
+            && !self.pending_declare.swap(false, Ordering::AcqRel)
+        {
+            return true;
+        }
+
+        // C2 cascade batching: when a declared dependency's provider
+        // fiber is mid-config-update (loader in-flight ledger), DEFER —
+        // rest Pending quietly and let the loader's single post-settle
+        // re-kick converge every deferred dependent at once, instead of
+        // running one full cascade wave per concurrent patch. Absent a
+        // RegistryService (library deployments) this probe is always
+        // false and the legacy behavior is preserved byte-for-byte.
+        let inject_tids: Vec<TypeId> = self.injects.read().keys().copied().collect();
+        if self.ever_activated.load(Ordering::Acquire)
+            && !inject_tids.is_empty()
+            && crate::loader::Loader::cascade_defer_needed(&inject_tids, reload_ctx)
+        {
+            if !matches!(previous, FiberState::Pending) {
+                self.set_state(FiberState::Unloading { error: None });
+                self.undo_effects();
+                self.set_state(FiberState::Pending);
+            }
+            return true;
+        }
+
+        // C2 readiness gate: a closed `ready_when` predicate is quiet
+        // waiting, NOT a failure. A never-activated gated fiber rests
+        // inspectable `Pending` without running its factory; a
+        // previously-activated one first disposes its effects (same
+        // LIFO shape as reactive dependency loss) so a half-ready
+        // configuration never keeps serving. Either way the pass ends
+        // here — availability predicates (`Service::check`) remain the
+        // LOUD complement that rests `Failed{error}`.
+        if !self.readiness_open(reload_ctx) {
+            let was_serving = matches!(previous, FiberState::Active { .. })
+                && self.ever_activated.load(Ordering::Acquire);
+            if was_serving {
+                self.set_state(FiberState::Unloading { error: None });
+                self.undo_effects();
+            }
+            self.set_state(FiberState::Pending);
+            tracing::debug!(
+                state = ?self.state(),
+                "Cordis fiber resting Pending behind closed readiness gate"
+            );
+            return true;
+        }
+
+        false
+    }
+
+    /// True when one of this fiber's declared dependencies is genuinely
+    /// unavailable (absent or inactive, reading version 0) rather than
+    /// present-but-refused by a peer-version constraint.
+    fn dependencies_vanished(&self, ctx: &Arc<Context>) -> bool {
+        self.injects
+            .read()
+            .keys()
+            .any(|tid| !ctx.is_available(*tid) && ctx.provider_version(*tid) == 0)
+    }
+
+    /// Reactive dependency loss (C2): a previously-working runner fiber whose
+    /// dependencies VANISHED (genuinely unavailable) disposes its effects
+    /// LIFO under `Unloading` and rests `Pending` (NOT Disposed). A
+    /// peer-version CONSTRAINT refusal over an existing-but-incompatible
+    /// provider is policy, not loss — the provider is still `is_available`,
+    /// so those stay `Inactive`. (A withdrawn provider reads version 0 again
+    /// after its undo runs; a live provider carries its provided semantic
+    /// version, so the guard cleanly separates "absent/inactive" from
+    /// "present but refused by constraint".)
+    fn reactive_dependency_loss(
+        &self,
+        ctx: &Arc<Context>,
+        previous: &FiberState,
+        satisfied: bool,
+        has_runner: bool,
+    ) -> bool {
+        !satisfied
+            && self.dependencies_vanished(ctx)
+            && has_runner
+            && self.ever_activated.load(Ordering::Acquire)
+            && !matches!(previous, FiberState::Failed { .. })
+    }
+
+    /// Apply one runner outcome: success folds the new epoch and rests
+    /// `Active`, a declined apply rests `Inactive`, and an apply error is
+    /// terminal — record the marker so reactive refreshes never resurrect
+    /// this fiber, then rest `Failed`.
+    fn apply_runner_result(&self, result: ReloadResult, new_epoch: &str) {
+        match result {
+            Ok(true) => {
+                self.mark_applied();
+                self.set_epoch(new_epoch.to_string());
+                self.set_state(FiberState::Active {
+                    epoch: new_epoch.to_string(),
+                });
+            }
+            Ok(false) => {
+                self.set_state(FiberState::Inactive { error: None });
+            }
+            Err(error) => {
+                self.apply_failed.store(true, Ordering::Release);
+                self.set_state(FiberState::Failed {
+                    error: Some(error.to_string()),
+                });
             }
         }
     }

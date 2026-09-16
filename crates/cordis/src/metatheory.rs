@@ -423,50 +423,20 @@ pub async fn quiescence_after_every_op() -> Result<(), String> {
             3 => {
                 reflect.notify_with_ctx(TypeId::of::<MtI1>(), &ctx).await;
             }
-            4 => match reg.register(&ctx, MtIndepPlugin, ()) {
-                Ok(fid) => {
-                    let fiber = reg.get_fiber(fid).expect("registered fiber tracked");
-                    fibers.push((format!("indep-{fid}"), fiber));
-                    newest = Some(fibers.len() - 1);
-                }
-                Err(e) => {
-                    // Duplicate-provider refusals are the single-source
-                    // discipline working; anything else is a violation.
-                    if !e.to_string().contains("duplicate provider") {
-                        return Err(format!("step {step}: unexpected register error: {e}"));
-                    }
-                }
-            },
-            5 => match reg.register(&ctx, MtConsumerPlugin, ()) {
-                Ok(fid) => {
-                    let fiber = reg.get_fiber(fid).expect("registered fiber tracked");
-                    fiber.declare_inject::<MtI1>();
-                    fiber.declare_inject::<MtU1>();
-                    // Declarations on this freshly registered (Inactive)
-                    // fiber evaluate at its next transition; the explicit
-                    // refresh here reconciles immediately.
-                    fiber.refresh(&ctx).await;
-                    fibers.push((format!("consumer-{fid}"), fiber));
-                    newest = Some(fibers.len() - 1);
-                }
-                Err(e) => {
-                    if !e.to_string().contains("duplicate provider") {
-                        return Err(format!("step {step}: unexpected register error: {e}"));
-                    }
-                }
-            },
-            6 => match ctx.remove::<MtU1>() {
-                Ok(_) => {}
-                Err(e) => {
-                    if !e.to_string().contains("guarded withdrawal") {
-                        return Err(format!("step {step}: unexpected removal error: {e}"));
-                    }
-                }
-            },
+            4 => {
+                register_independent(&ctx, &reg, &mut fibers, &mut newest)
+                    .map_err(|e| format!("step {step}: {e}"))?;
+            }
+            5 => {
+                register_consumer(&ctx, &reg, &mut fibers, &mut newest)
+                    .await
+                    .map_err(|e| format!("step {step}: {e}"))?;
+            }
+            6 => {
+                remove_u1_unless_guarded(&ctx).map_err(|e| format!("step {step}: {e}"))?;
+            }
             _ => {
-                if let Some(idx) = newest.take() {
-                    let _ = fibers[idx].1.dispose().await;
-                }
+                dispose_newest(&fibers, &mut newest).await;
             }
         }
         drain_spawned().await;
@@ -476,9 +446,93 @@ pub async fn quiescence_after_every_op() -> Result<(), String> {
 
     // Forced convergence: guarantee providers exist, notify reactively, then
     // require the consumer to be Active, epoch-fresh, and store-consistent.
+    let consumer_idx = force_convergence(&ctx, &reg, &reflect, &mut fibers).await?;
+    assert_quiescent(&fibers, &ctx).map_err(|e| format!("final quiescence: {e}"))?;
+    let consumer = fibers[consumer_idx].1.clone();
+    assert_converged_consumer(&ctx, &consumer).await
+}
+
+/// Register the independent plugin unless the registry already provides it.
+/// A duplicate-provider refusal is the single-source discipline working.
+fn register_independent(
+    ctx: &Arc<Context>,
+    reg: &RegistryService,
+    fibers: &mut Vec<(String, Arc<Fiber>)>,
+    newest: &mut Option<usize>,
+) -> Result<(), String> {
+    match reg.register(ctx, MtIndepPlugin, ()) {
+        Ok(fid) => {
+            let fiber = reg.get_fiber(fid).expect("registered fiber tracked");
+            fibers.push((format!("indep-{fid}"), fiber));
+            *newest = Some(fibers.len() - 1);
+        }
+        Err(e) => {
+            if !e.to_string().contains("duplicate provider") {
+                return Err(format!("unexpected register error: {e}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Register the consumer plugin, declare both injects, and reconcile it
+/// immediately: declarations on a freshly registered fiber evaluate at its
+/// next transition, and the explicit refresh here applies them now.
+async fn register_consumer(
+    ctx: &Arc<Context>,
+    reg: &RegistryService,
+    fibers: &mut Vec<(String, Arc<Fiber>)>,
+    newest: &mut Option<usize>,
+) -> Result<(), String> {
+    match reg.register(ctx, MtConsumerPlugin, ()) {
+        Ok(fid) => {
+            let fiber = reg.get_fiber(fid).expect("registered fiber tracked");
+            fiber.declare_inject::<MtI1>();
+            fiber.declare_inject::<MtU1>();
+            fiber.refresh(ctx).await;
+            fibers.push((format!("consumer-{fid}"), fiber));
+            *newest = Some(fibers.len() - 1);
+        }
+        Err(e) => {
+            if !e.to_string().contains("duplicate provider") {
+                return Err(format!("unexpected register error: {e}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Remove `MtU1` unless an active consumer's guard refuses the withdrawal.
+fn remove_u1_unless_guarded(ctx: &Arc<Context>) -> Result<(), String> {
+    match ctx.remove::<MtU1>() {
+        Ok(_) => {}
+        Err(e) => {
+            if !e.to_string().contains("guarded withdrawal") {
+                return Err(format!("unexpected removal error: {e}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Dispose the most recently registered fiber, if any.
+async fn dispose_newest(fibers: &[(String, Arc<Fiber>)], newest: &mut Option<usize>) {
+    if let Some(idx) = newest.take() {
+        let _ = fibers[idx].1.dispose().await;
+    }
+}
+
+/// Force the schedule's convergence: ensure both providers and a consumer
+/// exist, notify reactively in both directions, and drain spawned work.
+async fn force_convergence(
+    ctx: &Arc<Context>,
+    reg: &RegistryService,
+    reflect: &ReflectService,
+    fibers: &mut Vec<(String, Arc<Fiber>)>,
+) -> Result<usize, String> {
     if ctx.get::<MtI1>().is_none() {
         let fid = reg
-            .register(&ctx, MtIndepPlugin, ())
+            .register(ctx, MtIndepPlugin, ())
             .map_err(|e| format!("convergence register failed: {e}"))?;
         fibers.push((format!("indep-{fid}"), reg.get_fiber(fid).unwrap()));
     }
@@ -486,12 +540,12 @@ pub async fn quiescence_after_every_op() -> Result<(), String> {
         Some(i) => i,
         None => {
             let fid = reg
-                .register(&ctx, MtConsumerPlugin, ())
+                .register(ctx, MtConsumerPlugin, ())
                 .map_err(|e| format!("convergence register failed: {e}"))?;
             let fiber = reg.get_fiber(fid).unwrap();
             fiber.declare_inject::<MtI1>();
             fiber.declare_inject::<MtU1>();
-            fiber.refresh(&ctx).await;
+            fiber.refresh(ctx).await;
             fibers.push((format!("consumer-{fid}"), fiber));
             fibers.len() - 1
         }
@@ -499,18 +553,24 @@ pub async fn quiescence_after_every_op() -> Result<(), String> {
     if ctx.get::<MtU1>().is_none() {
         ctx.provide(MtU1(4242));
     }
-    reflect.notify_with_ctx(TypeId::of::<MtI1>(), &ctx).await;
-    reflect.notify_with_ctx(TypeId::of::<MtU1>(), &ctx).await;
+    reflect.notify_with_ctx(TypeId::of::<MtI1>(), ctx).await;
+    reflect.notify_with_ctx(TypeId::of::<MtU1>(), ctx).await;
     drain_spawned().await;
-    assert_quiescent(&fibers, &ctx).map_err(|e| format!("final quiescence: {e}"))?;
+    Ok(consumer_idx)
+}
 
-    let consumer = fibers[consumer_idx].1.clone();
-    consumer.refresh(&ctx).await;
+/// Assert the converged consumer: `Active`, epoch-fresh, and consistent with
+/// the live store.
+async fn assert_converged_consumer(
+    ctx: &Arc<Context>,
+    consumer: &Arc<Fiber>,
+) -> Result<(), String> {
+    consumer.refresh(ctx).await;
     match consumer.state() {
         FiberState::Active { .. } => {}
         other => return Err(format!("consumer did not converge to Active: {other:?}")),
     }
-    let fresh = consumer.compute_epoch(&ctx);
+    let fresh = consumer.compute_epoch(ctx);
     if consumer.epoch() != fresh {
         return Err(format!(
             "stale epoch '{}' != freshly computed '{}'",
@@ -651,24 +711,40 @@ pub async fn order_confluence_of_registrations() -> Result<(), String> {
 /// documented deltas; see the module docs.
 pub async fn dependent_never_active_without_provider() -> Result<(), String> {
     let (ctx, reg, reflect) = base_root();
+    let (fid, dep) = registry_path_dependent_stays_inactive(&ctx, &reg).await?;
+    let raw = raw_fiber_tracks_missing_dependency(&ctx).await?;
+    provider_lifecycle_drives_dependent(&ctx, &reflect, &dep, &raw).await?;
+    let fail_fid = failed_factory_stays_inspectable(&ctx, &reg, &dep, fid)?;
+    let revived = revival_allocates_fresh_fiber_id(&ctx, &reg, fail_fid)?;
+    late_dependent_folds_satisfied_declaration(&ctx, &reg)?;
+    declaration_reconciliation_legs(&ctx, &revived)?;
+    Ok(())
+}
 
-    // Registry path: registered before the provider exists → Inactive.
+/// Registry path: registered before the provider exists → Inactive.
+async fn registry_path_dependent_stays_inactive(
+    ctx: &Arc<Context>,
+    reg: &RegistryService,
+) -> Result<(FiberId, Arc<Fiber>), String> {
     let fid = reg
-        .register(&ctx, MtDependentPlugin, ())
+        .register(ctx, MtDependentPlugin, ())
         .map_err(|e| format!("register dependent: {e}"))?;
     let dep = reg.get_fiber(fid).ok_or("dependent fiber not tracked")?;
     // Declare the dependency the factory reads at apply-time; declarations
     // land outside the state machine (delta #1), so reconcile eagerly. The
     // declaration also wires ReflectService::dependents for reactive driving.
     dep.declare_inject::<MtProv>();
-    dep.refresh(&ctx).await;
+    dep.refresh(ctx).await;
     match dep.state() {
         FiberState::Inactive { .. } => {}
         other => return Err(format!("pre-provider state should be Inactive: {other:?}")),
     }
+    Ok((fid, dep))
+}
 
-    // Raw-fiber path: declared inject, no refresh yet → pristine Inactive;
-    // after an explicit refresh → Inactive with the missing-dependency note.
+/// Raw-fiber path: declared inject, no refresh yet → pristine Inactive;
+/// after an explicit refresh → Inactive with the missing-dependency note.
+async fn raw_fiber_tracks_missing_dependency(ctx: &Arc<Context>) -> Result<Arc<Fiber>, String> {
     let raw = Arc::new(Fiber::new());
     raw.declare_inject::<MtProv>();
     match raw.state() {
@@ -679,7 +755,7 @@ pub async fn dependent_never_active_without_provider() -> Result<(), String> {
             ))
         }
     }
-    raw.refresh(&ctx).await;
+    raw.refresh(ctx).await;
     match raw.state() {
         FiberState::Inactive { error: Some(_) } => {}
         other => {
@@ -688,10 +764,18 @@ pub async fn dependent_never_active_without_provider() -> Result<(), String> {
             ))
         }
     }
+    Ok(raw)
+}
 
-    // Provide v1 → reactive activation of the registry-path dependent.
+/// Provide v1 → reactive activation of the registry-path dependent.
+async fn provider_lifecycle_drives_dependent(
+    ctx: &Arc<Context>,
+    reflect: &ReflectService,
+    dep: &Arc<Fiber>,
+    raw: &Arc<Fiber>,
+) -> Result<(), String> {
     ctx.provide(MtProv(1));
-    reflect.notify_with_ctx(TypeId::of::<MtProv>(), &ctx).await;
+    reflect.notify_with_ctx(TypeId::of::<MtProv>(), ctx).await;
     drain_spawned().await;
     match dep.state() {
         FiberState::Active { .. } => {}
@@ -702,7 +786,7 @@ pub async fn dependent_never_active_without_provider() -> Result<(), String> {
         return Err(format!("projection should see v1, got {}", d1.src));
     }
     let epoch_v1 = dep.epoch();
-    raw.refresh(&ctx).await;
+    raw.refresh(ctx).await;
     if !matches!(raw.state(), FiberState::Active { .. }) {
         return Err(format!("raw fiber should activate: {:?}", raw.state()));
     }
@@ -710,7 +794,7 @@ pub async fn dependent_never_active_without_provider() -> Result<(), String> {
     // Provider swap: same TypeId re-provided → version bump → new epoch and
     // the dependent's projection observes the new value.
     ctx.provide(MtProv(2));
-    reflect.notify_with_ctx(TypeId::of::<MtProv>(), &ctx).await;
+    reflect.notify_with_ctx(TypeId::of::<MtProv>(), ctx).await;
     drain_spawned().await;
     match dep.state() {
         FiberState::Active { .. } => {}
@@ -755,9 +839,9 @@ pub async fn dependent_never_active_without_provider() -> Result<(), String> {
     if removed.as_ref().map(|v| v.0) != Some(2) {
         return Err("removed provider should be the v2 instance".to_string());
     }
-    reflect.notify_with_ctx(TypeId::of::<MtProv>(), &ctx).await;
+    reflect.notify_with_ctx(TypeId::of::<MtProv>(), ctx).await;
     drain_spawned().await;
-    raw.refresh(&ctx).await;
+    raw.refresh(ctx).await;
     match raw.state() {
         FiberState::Inactive { .. } => {}
         other => {
@@ -766,16 +850,24 @@ pub async fn dependent_never_active_without_provider() -> Result<(), String> {
             ))
         }
     }
+    Ok(())
+}
 
-    // --- Leg D (former delta #2): failing factory is inspectable as Failed
-    // and its provider key loss is observed by dependents.
+/// --- Leg D (former delta #2): failing factory is inspectable as Failed
+/// and its provider key loss is observed by dependents.
+fn failed_factory_stays_inspectable(
+    ctx: &Arc<Context>,
+    reg: &RegistryService,
+    dep: &Arc<Fiber>,
+    prev_max: FiberId,
+) -> Result<FiberId, String> {
     let fail_err = reg
-        .register(&ctx, MtFailPlugin, ())
+        .register(ctx, MtFailPlugin, ())
         .expect_err("failing factory must be refused");
     if !fail_err.to_string().contains("factory exploded") {
         return Err(format!("unexpected failure reason: {fail_err}"));
     }
-    let fail_fid = next_fid_after(&reg, fid)?;
+    let fail_fid = next_fid_after(reg, prev_max)?;
     let failed = reg
         .get_fiber(fail_fid)
         .ok_or("failed fiber must stay inspectable via get_fiber")?;
@@ -801,11 +893,18 @@ pub async fn dependent_never_active_without_provider() -> Result<(), String> {
             ))
         }
     }
+    Ok(fail_fid)
+}
 
-    // --- Leg E: the provided slot stayed vacant — a duplicate registration
-    // of the SAME key is not refused.
+/// --- Leg E: the provided slot stayed vacant — a duplicate registration
+/// of the SAME key is not refused.
+fn revival_allocates_fresh_fiber_id(
+    ctx: &Arc<Context>,
+    reg: &RegistryService,
+    fail_fid: FiberId,
+) -> Result<Arc<Fiber>, String> {
     let revive_fid = reg
-        .register(&ctx, MtRevivePlugin, ())
+        .register(ctx, MtRevivePlugin, ())
         .map_err(|e| format!("re-register after failure must succeed: {e}"))?;
     if revive_fid == fail_fid {
         return Err("re-registration must allocate a fresh fiber id".to_string());
@@ -826,14 +925,20 @@ pub async fn dependent_never_active_without_provider() -> Result<(), String> {
     ) {
         return Err("failed fiber must remain terminal Failed".to_string());
     }
+    Ok(revived)
+}
 
-    // --- Leg F: the revived provider feeds a fresh dependent through the
-    // normal reactive path, and former delta #1 shows up twice: the healthy
-    // gated factory is Active the moment it registers, and the subsequent
-    // inject declaration reconciles EAGERLY, folding the provider into the
-    // epoch without any external refresh.
+/// --- Leg F: the revived provider feeds a fresh dependent through the
+/// normal reactive path, and former delta #1 shows up twice: the healthy
+/// gated factory is Active the moment it registers, and the subsequent
+/// inject declaration reconciles EAGERLY, folding the provider into the
+/// epoch without any external refresh.
+fn late_dependent_folds_satisfied_declaration(
+    ctx: &Arc<Context>,
+    reg: &RegistryService,
+) -> Result<(), String> {
     let late_fid = reg
-        .register(&ctx, MtDependentPlugin, ())
+        .register(ctx, MtDependentPlugin, ())
         .map_err(|e| format!("dependent registration on revived key failed: {e}"))?;
     let late = reg
         .get_fiber(late_fid)
@@ -871,10 +976,13 @@ pub async fn dependent_never_active_without_provider() -> Result<(), String> {
             d3.src
         ));
     }
+    Ok(())
+}
 
-    // --- Leg G (former delta #1): a satisfied declaration landing on this
-    // resting-Active fiber reconciles immediately — epoch folds the inject,
-    // no external refresh needed.
+/// --- Leg G (former delta #1): a satisfied declaration landing on this
+/// resting-Active fiber reconciles immediately — epoch folds the inject,
+/// no external refresh needed.
+fn declaration_reconciliation_legs(ctx: &Arc<Context>, revived: &Arc<Fiber>) -> Result<(), String> {
     let before = revived.epoch();
     revived.declare_inject::<MtProv>();
     let after = revived.epoch();

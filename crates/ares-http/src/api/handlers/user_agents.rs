@@ -208,6 +208,12 @@ mod tests {
             parallel_tools: true,
             extra: HashMap::new(),
             compaction_enabled: None,
+            temperature: None,
+            max_tokens: None,
+            stop: None,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
         }
     }
 

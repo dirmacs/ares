@@ -736,76 +736,123 @@ fn default_endpoint(
     vertex_location: Option<&str>,
     custom_index: Option<u8>,
 ) -> String {
-    match kind {
-        AdapterKind::OpenAI | AdapterKind::OpenAIResp => "https://api.openai.com/v1/".into(),
-        AdapterKind::Gemini | AdapterKind::GeminiIx => {
-            "https://generativelanguage.googleapis.com/v1beta/".into()
-        }
-        AdapterKind::Anthropic => "https://api.anthropic.com/v1/".into(),
-        AdapterKind::MiniMax => "https://api.minimax.io/anthropic/v1/".into(),
-        AdapterKind::Ollama => "http://localhost:11434/".into(),
-        AdapterKind::OllamaCloud => "https://ollama.com/".into(),
-        AdapterKind::Cohere => "https://api.cohere.com/v1/".into(),
-        AdapterKind::Fireworks => "https://api.fireworks.ai/inference/v1/".into(),
-        AdapterKind::Together => "https://api.together.xyz/v1/".into(),
-        AdapterKind::Groq => "https://api.groq.com/openai/v1/".into(),
-        AdapterKind::DeepSeek => "https://api.deepseek.com/v1/".into(),
-        AdapterKind::Xai => "https://api.x.ai/v1/".into(),
-        AdapterKind::Aihubmix => "https://aihubmix.com/v1/".into(),
-        AdapterKind::Kimi => "https://api.moonshot.ai/v1/".into(),
-        AdapterKind::Moonshot => "https://api.moonshot.cn/v1/".into(),
-        AdapterKind::Nebius => "https://api.studio.nebius.ai/v1/".into(),
-        AdapterKind::Mimo => "https://api.mimo.com/openai/v1/".into(),
-        AdapterKind::Zai => "https://api.z.ai/api/paas/v4/".into(),
-        AdapterKind::BigModel => "https://open.bigmodel.cn/api/paas/v4/".into(),
-        AdapterKind::Aliyun => "https://dashscope.aliyuncs.com/compatible-mode/v1/".into(),
-        AdapterKind::QwenCloud => "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/".into(),
-        AdapterKind::OpenRouter => "https://openrouter.ai/api/v1/".into(),
-        AdapterKind::AtlasCloud => "https://api.atlascloud.ai/v1/".into(),
-        AdapterKind::GithubCopilot => "https://models.github.ai/inference/".into(),
-        AdapterKind::OpenCodeGo => "https://opencode.ai/zen/go/v1/".into(),
-        AdapterKind::BedrockApi => {
-            let region = region
-                .map(str::to_string)
-                .or_else(|| std::env::var("AWS_REGION").ok())
-                .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok())
-                .unwrap_or_else(|| "us-east-1".into());
-            format!("https://bedrock-runtime.{region}.amazonaws.com/")
-        }
-        AdapterKind::Vertex => {
-            let project = vertex_project
-                .map(str::to_string)
-                .or_else(|| std::env::var("VERTEX_PROJECT_ID").ok())
-                .unwrap_or_default();
-            match vertex_location
-                .map(str::to_string)
-                .or_else(|| std::env::var("VERTEX_LOCATION").ok())
-            {
-                Some(loc) if !loc.is_empty() && loc != "global" => {
-                    format!(
-                        "https://{loc}-aiplatform.googleapis.com/v1/projects/{project}/locations/{loc}/"
-                    )
-                }
-                _ => format!(
-                    "https://aiplatform.googleapis.com/v1/projects/{project}/locations/global/"
-                ),
-            }
-        }
-        AdapterKind::Baidu => "https://qianfan.baidubce.com/v2/".into(),
-        AdapterKind::Omlx => std::env::var("OMLX_ENDPOINT")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(|s| ensure_trailing_slash(&s))
-            .unwrap_or_else(|| "http://127.0.0.1:8000/v1/".into()),
-        AdapterKind::Custom(n) => {
-            let idx = custom_index.unwrap_or(n);
-            std::env::var(format!("GENAI_{idx}_ENDPOINT"))
-                .ok()
-                .filter(|s| !s.is_empty())
-                .map(|s| ensure_trailing_slash(&s))
-                .unwrap_or_default()
-        }
+    if let Some(url) = openai_compatible_endpoint(kind) {
+        return url.to_string();
     }
+    if let Some(url) = aggregator_endpoint(kind) {
+        return url.to_string();
+    }
+    if let Some(url) = vendor_endpoint(kind) {
+        return url.to_string();
+    }
+    match kind {
+        AdapterKind::BedrockApi => bedrock_endpoint(region),
+        AdapterKind::Vertex => vertex_endpoint(vertex_project, vertex_location),
+        AdapterKind::Omlx => omlx_endpoint(),
+        AdapterKind::Custom(n) => custom_endpoint(custom_index, n),
+        // Unreachable: the three tables above cover every other kind.
+        _ => String::new(),
+    }
+}
+
+/// Static endpoint for OpenAI-compatible hosted gateways.
+fn openai_compatible_endpoint(kind: AdapterKind) -> Option<&'static str> {
+    match kind {
+        AdapterKind::OpenAI | AdapterKind::OpenAIResp => Some("https://api.openai.com/v1/"),
+        AdapterKind::Groq => Some("https://api.groq.com/openai/v1/"),
+        AdapterKind::DeepSeek => Some("https://api.deepseek.com/v1/"),
+        AdapterKind::Xai => Some("https://api.x.ai/v1/"),
+        AdapterKind::Aihubmix => Some("https://aihubmix.com/v1/"),
+        AdapterKind::Kimi => Some("https://api.moonshot.ai/v1/"),
+        AdapterKind::Moonshot => Some("https://api.moonshot.cn/v1/"),
+        AdapterKind::Nebius => Some("https://api.studio.nebius.ai/v1/"),
+        AdapterKind::Mimo => Some("https://api.mimo.com/openai/v1/"),
+        AdapterKind::Baidu => Some("https://qianfan.baidubce.com/v2/"),
+        _ => None,
+    }
+}
+
+/// Static endpoint for aggregator and multi-vendor gateways.
+fn aggregator_endpoint(kind: AdapterKind) -> Option<&'static str> {
+    match kind {
+        AdapterKind::OpenRouter => Some("https://openrouter.ai/api/v1/"),
+        AdapterKind::Together => Some("https://api.together.xyz/v1/"),
+        AdapterKind::Fireworks => Some("https://api.fireworks.ai/inference/v1/"),
+        AdapterKind::AtlasCloud => Some("https://api.atlascloud.ai/v1/"),
+        AdapterKind::GithubCopilot => Some("https://models.github.ai/inference/"),
+        AdapterKind::OpenCodeGo => Some("https://opencode.ai/zen/go/v1/"),
+        AdapterKind::Cohere => Some("https://api.cohere.com/v1/"),
+        _ => None,
+    }
+}
+
+/// Static endpoint for first-party vendor APIs and local servers.
+fn vendor_endpoint(kind: AdapterKind) -> Option<&'static str> {
+    match kind {
+        AdapterKind::Gemini | AdapterKind::GeminiIx => {
+            Some("https://generativelanguage.googleapis.com/v1beta/")
+        }
+        AdapterKind::Anthropic => Some("https://api.anthropic.com/v1/"),
+        AdapterKind::MiniMax => Some("https://api.minimax.io/anthropic/v1/"),
+        AdapterKind::Zai => Some("https://api.z.ai/api/paas/v4/"),
+        AdapterKind::BigModel => Some("https://open.bigmodel.cn/api/paas/v4/"),
+        AdapterKind::Aliyun => Some("https://dashscope.aliyuncs.com/compatible-mode/v1/"),
+        AdapterKind::QwenCloud => Some("https://dashscope-intl.aliyuncs.com/compatible-mode/v1/"),
+        AdapterKind::Ollama => Some("http://localhost:11434/"),
+        AdapterKind::OllamaCloud => Some("https://ollama.com/"),
+        _ => None,
+    }
+}
+
+/// Bedrock runtime endpoint for `region` (env fallbacks: `AWS_REGION`,
+/// `AWS_DEFAULT_REGION`, then `us-east-1`).
+fn bedrock_endpoint(region: Option<&str>) -> String {
+    let region = region
+        .map(str::to_string)
+        .or_else(|| std::env::var("AWS_REGION").ok())
+        .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok())
+        .unwrap_or_else(|| "us-east-1".into());
+    format!("https://bedrock-runtime.{region}.amazonaws.com/")
+}
+
+/// Vertex AI endpoint: a regional host for non-global locations, the
+/// global host otherwise (env fallbacks: `VERTEX_PROJECT_ID`,
+/// `VERTEX_LOCATION`).
+fn vertex_endpoint(vertex_project: Option<&str>, vertex_location: Option<&str>) -> String {
+    let project = vertex_project
+        .map(str::to_string)
+        .or_else(|| std::env::var("VERTEX_PROJECT_ID").ok())
+        .unwrap_or_default();
+    match vertex_location
+        .map(str::to_string)
+        .or_else(|| std::env::var("VERTEX_LOCATION").ok())
+    {
+        Some(loc) if !loc.is_empty() && loc != "global" => {
+            format!(
+                "https://{loc}-aiplatform.googleapis.com/v1/projects/{project}/locations/{loc}/"
+            )
+        }
+        _ => format!("https://aiplatform.googleapis.com/v1/projects/{project}/locations/global/"),
+    }
+}
+
+/// Local OMLX server endpoint (env override: `OMLX_ENDPOINT`).
+fn omlx_endpoint() -> String {
+    std::env::var("OMLX_ENDPOINT")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|s| ensure_trailing_slash(&s))
+        .unwrap_or_else(|| "http://127.0.0.1:8000/v1/".into())
+}
+
+/// Custom kind endpoint: `GENAI_{idx}_ENDPOINT`, empty when unset.
+fn custom_endpoint(custom_index: Option<u8>, n: u8) -> String {
+    let idx = custom_index.unwrap_or(n);
+    std::env::var(format!("GENAI_{idx}_ENDPOINT"))
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|s| ensure_trailing_slash(&s))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

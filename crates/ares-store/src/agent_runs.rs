@@ -16,7 +16,7 @@ const LIST_AGENT_RUNS_SELECT: &str =
                     COALESCE(eruka_context_hit, false) AS eruka_context_hit,
                     COALESCE(eruka_read_count, 0)::BIGINT AS eruka_read_count,
                     COALESCE(eruka_write_count, 0)::BIGINT AS eruka_write_count,
-                    pipeline_id, schedule_id, trigger_id";
+                    pipeline_id, schedule_id, trigger_id, updated_at";
 
 pub const GET_AGENT_RUN_STATS_SQL: &str = "SELECT
             COUNT(*) as total_runs,
@@ -36,8 +36,8 @@ pub const GET_AGENT_RUN_STATS_SQL: &str = "SELECT
 /// and a workflow caps at `max_depth = 3` / `max_iterations = 5`, so even a
 /// worst-case sequential chain finishes in low minutes. The supervisor treats
 /// a 10m-lived worker as healthy cadence, and no HTTP caller waits 30m for
-/// one run. `agent_runs` only carries `created_at` (BIGINT unix seconds, no
-/// `updated_at`), so the age predicate keys on `created_at`. No boot
+/// one run. `agent_runs` carries `created_at` plus `updated_at` (033, both
+/// BIGINT unix seconds); the age predicate keys on `created_at`. No boot
 /// configuration offers a run-timeout knob (ServerConfig only has host, port,
 /// log level, CORS, rate limiting), hence the fixed 30m default.
 pub const STALE_RUNNING_THRESHOLD_SECS: i64 = 30 * 60;
@@ -49,7 +49,8 @@ pub const STALE_RUN_REAP_ERROR: &str =
 
 /// Exact UPDATE shape used by the boot sweeper. Kept as a const so unit
 /// tests pin the `status='failed'` + age-guard shape without a live DB.
-pub const REAP_STALE_RUNNING_SQL: &str = "UPDATE agent_runs SET status = 'failed', error = $1 WHERE status = 'running' AND created_at < $2";
+/// Also heartbeats `updated_at` (033) to now via `$3`.
+pub const REAP_STALE_RUNNING_SQL: &str = "UPDATE agent_runs SET status = 'failed', error = $1, updated_at = $3 WHERE status = 'running' AND created_at < $2";
 
 fn now_ts() -> i64 {
     SystemTime::now()
@@ -166,6 +167,7 @@ pub fn agent_run_from_row(row: &sqlx::postgres::PgRow) -> Result<AgentRun> {
         pipeline_id: row.get("pipeline_id"),
         schedule_id: row.get("schedule_id"),
         trigger_id: row.get("trigger_id"),
+        updated_at: row.try_get("updated_at").unwrap_or(None),
     })
 }
 
@@ -197,6 +199,8 @@ pub struct AgentRun {
     pub pipeline_id: Option<String>,
     pub schedule_id: Option<String>,
     pub trigger_id: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -343,14 +347,14 @@ pub async fn insert_agent_run_with_id_and_metadata(
             model_name, provider_name, is_streaming, request_source, product,
             agent_config_source, agent_config_version, eruka_binding_id,
             eruka_context_hit, eruka_read_count, eruka_write_count, pipeline_id, schedule_id,
-            trigger_id
+            trigger_id, updated_at
          ) VALUES (
             $1, $2, $3, $4, $5, $6, $7,
             $8, $9, $10, $11, $12,
             $13, $14, $15, $16, $17,
             $18, $19, $20,
             $21, $22, $23, $24, $25,
-            $26
+            $26, $27
          )",
     )
     .bind(id)
@@ -379,6 +383,7 @@ pub async fn insert_agent_run_with_id_and_metadata(
     .bind(&metadata.pipeline_id)
     .bind(&metadata.schedule_id)
     .bind(&metadata.trigger_id)
+    .bind(now)
     .execute(pool)
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;
@@ -393,13 +398,16 @@ pub async fn insert_agent_run_with_id_and_metadata(
 /// Only touches rows no live process can still own: `status = 'running'`
 /// AND `created_at < now - stale_after_secs`. Already-`failed`/`completed`
 /// rows never match, so a second call reaps exactly zero (idempotent).
-/// No migration: uses the existing `created_at` BIGINT column and its
+/// Heartbeats `updated_at` (033) to now on reaped rows.
+/// Age guard uses the existing `created_at` BIGINT column and its
 /// `idx_agent_runs_created` index.
 pub async fn reap_stale_running_runs(pool: &PgPool, stale_after_secs: i64) -> Result<u64> {
-    let cutoff = now_ts().saturating_sub(stale_after_secs);
+    let now = now_ts();
+    let cutoff = now.saturating_sub(stale_after_secs);
     let res = sqlx::query(REAP_STALE_RUNNING_SQL)
         .bind(STALE_RUN_REAP_ERROR)
         .bind(cutoff)
+        .bind(now)
         .execute(pool)
         .await
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -678,6 +686,7 @@ mod tests {
             pipeline_id: None,
             schedule_id: None,
             trigger_id: None,
+            updated_at: None,
         };
         let back: AgentRun = serde_json::from_str(&serde_json::to_string(&run).unwrap()).unwrap();
         assert_eq!(back.error, Some("timeout".into()));
@@ -1002,6 +1011,7 @@ mod tests {
             pipeline_id: None,
             schedule_id: None,
             trigger_id: None,
+            updated_at: Some(1_700_000_000),
         }
     }
 
@@ -1609,23 +1619,23 @@ mod tests {
     }
 
     #[test]
-    fn insert_agent_run_has_26_placeholders() {
+    fn insert_agent_run_has_27_placeholders() {
         let sql = "INSERT INTO agent_runs (
             id, tenant_id, agent_name, user_id, workspace_id, session_id, status,
             input_tokens, output_tokens, duration_ms, error, created_at,
             model_name, provider_name, is_streaming, request_source, product,
             agent_config_source, agent_config_version, eruka_binding_id,
             eruka_context_hit, eruka_read_count, eruka_write_count, pipeline_id, schedule_id,
-            trigger_id
+            trigger_id, updated_at
          ) VALUES (
             $1, $2, $3, $4, $5, $6, $7,
             $8, $9, $10, $11, $12,
             $13, $14, $15, $16, $17,
             $18, $19, $20,
             $21, $22, $23, $24, $25,
-            $26
+            $26, $27
          )";
-        assert_eq!(count_bind_placeholders(sql), 26);
+        assert_eq!(count_bind_placeholders(sql), 27);
     }
 
     #[test]
@@ -1633,6 +1643,7 @@ mod tests {
         assert!(REAP_STALE_RUNNING_SQL.contains("SET status = 'failed'"));
         assert!(REAP_STALE_RUNNING_SQL.contains("status = 'running'"));
         assert!(REAP_STALE_RUNNING_SQL.contains("created_at < $2"));
+        assert!(REAP_STALE_RUNNING_SQL.contains("updated_at"));
         assert_eq!(STALE_RUNNING_THRESHOLD_SECS, 30 * 60);
         assert!(STALE_RUN_REAP_ERROR.starts_with("reaped:"));
     }
@@ -1718,6 +1729,183 @@ mod tests {
             .await
             .expect("second reap");
         assert_eq!(reaped_again, 0);
+
+        cleanup_test_tenant(&pool, &tenant_id).await;
+    }
+    // ── Integration: agent_runs.updated_at heartbeat (033) ──────────────
+
+    #[tokio::test]
+    async fn integration_insert_sets_updated_at_equal_created_at() {
+        let pool = try_test_pool().await;
+        let tenant_id = unique_tenant();
+        seed_tenant(&pool, &tenant_id).await;
+
+        let id = insert_agent_run(
+            &pool,
+            &tenant_id,
+            "heartbeat-agent",
+            Some("u-1"),
+            "completed",
+            10,
+            5,
+            100,
+            None,
+            "m",
+            "p",
+            false,
+        )
+        .await
+        .expect("insert");
+
+        // Via struct mapping.
+        let runs = list_agent_runs(&pool, &tenant_id, None, 10, 0)
+            .await
+            .expect("list");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].id, id);
+        assert!(runs[0].created_at > 0);
+        assert_eq!(
+            runs[0].updated_at,
+            Some(runs[0].created_at),
+            "insert must set updated_at equal to created_at"
+        );
+
+        // Via raw SQL.
+        let row: (i64, Option<i64>) =
+            sqlx::query_as("SELECT created_at, updated_at FROM agent_runs WHERE id = $1")
+                .bind(&id)
+                .fetch_one(&pool)
+                .await
+                .expect("fetch");
+        assert_eq!(row.1, Some(row.0));
+
+        cleanup_test_tenant(&pool, &tenant_id).await;
+    }
+
+    #[tokio::test]
+    async fn integration_status_update_advances_updated_at() {
+        let pool = try_test_pool().await;
+        let tenant_id = unique_tenant();
+        seed_tenant(&pool, &tenant_id).await;
+
+        let id = insert_agent_run(
+            &pool,
+            &tenant_id,
+            "heartbeat-agent",
+            None,
+            "running",
+            0,
+            0,
+            0,
+            None,
+            "m",
+            "p",
+            false,
+        )
+        .await
+        .expect("insert");
+
+        let initial: (i64, Option<i64>) =
+            sqlx::query_as("SELECT created_at, updated_at FROM agent_runs WHERE id = $1")
+                .bind(&id)
+                .fetch_one(&pool)
+                .await
+                .expect("fetch");
+        assert_eq!(initial.1, Some(initial.0));
+
+        // Backdate both so the heartbeat advance is unambiguous (no sleep).
+        let old = initial.0 - 3600;
+        sqlx::query("UPDATE agent_runs SET created_at = $1, updated_at = $1 WHERE id = $2")
+            .bind(old)
+            .bind(&id)
+            .execute(&pool)
+            .await
+            .expect("backdate");
+
+        // Representative status-transition UPDATE (same shape as v1 trace close-outs).
+        let now = now_ts();
+        sqlx::query("UPDATE agent_runs SET status = 'completed', updated_at = $1 WHERE id = $2")
+            .bind(now)
+            .bind(&id)
+            .execute(&pool)
+            .await
+            .expect("status update");
+
+        let after: (String, i64, Option<i64>) =
+            sqlx::query_as("SELECT status, created_at, updated_at FROM agent_runs WHERE id = $1")
+                .bind(&id)
+                .fetch_one(&pool)
+                .await
+                .expect("fetch after");
+        assert_eq!(after.0, "completed");
+        assert_eq!(after.1, old);
+        let updated = after.2.expect("updated_at set");
+        assert!(updated >= now, "updated {updated} < now {now}");
+        assert!(updated > old, "updated {updated} not > old {old}");
+
+        // Also visible via struct mapping.
+        let runs = list_agent_runs(&pool, &tenant_id, None, 10, 0)
+            .await
+            .expect("list");
+        assert_eq!(runs[0].updated_at, Some(updated));
+
+        cleanup_test_tenant(&pool, &tenant_id).await;
+    }
+
+    #[tokio::test]
+    async fn integration_reap_heartbeats_updated_at() {
+        let pool = try_test_pool().await;
+        let tenant_id = unique_tenant();
+        seed_tenant(&pool, &tenant_id).await;
+
+        let stale_id = insert_agent_run(
+            &pool,
+            &tenant_id,
+            "sweeper-agent",
+            None,
+            "running",
+            0,
+            0,
+            0,
+            None,
+            "m",
+            "p",
+            false,
+        )
+        .await
+        .expect("insert stale");
+
+        // Backdate both created_at and updated_at well past the threshold.
+        let old = now_ts() - STALE_RUNNING_THRESHOLD_SECS - 3600;
+        sqlx::query("UPDATE agent_runs SET created_at = $1, updated_at = $1 WHERE id = $2")
+            .bind(old)
+            .bind(&stale_id)
+            .execute(&pool)
+            .await
+            .expect("backdate");
+
+        let before_reap = now_ts();
+        let reaped = reap_stale_running_runs(&pool, STALE_RUNNING_THRESHOLD_SECS)
+            .await
+            .expect("reap");
+        assert_eq!(reaped, 1);
+
+        let row: (String, Option<String>, Option<i64>, i64) = sqlx::query_as(
+            "SELECT status, error, updated_at, created_at FROM agent_runs WHERE id = $1",
+        )
+        .bind(&stale_id)
+        .fetch_one(&pool)
+        .await
+        .expect("fetch");
+        assert_eq!(row.0, "failed");
+        assert_eq!(row.1.as_deref(), Some(STALE_RUN_REAP_ERROR));
+        let updated = row.2.expect("reap must set updated_at");
+        assert!(
+            updated >= before_reap,
+            "updated {updated} < before {before_reap}"
+        );
+        assert!(updated > old, "updated {updated} not > old {old}");
+        assert_eq!(row.3, old, "created_at untouched");
 
         cleanup_test_tenant(&pool, &tenant_id).await;
     }

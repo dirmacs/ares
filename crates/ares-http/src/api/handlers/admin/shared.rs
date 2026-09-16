@@ -468,6 +468,7 @@ mod tests {
             pipeline_id: None,
             schedule_id: None,
             trigger_id: None,
+            updated_at: Some(1_700_000_000),
         }
     }
 

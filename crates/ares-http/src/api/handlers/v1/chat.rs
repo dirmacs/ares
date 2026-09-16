@@ -599,6 +599,12 @@ mod tests {
             parallel_tools: false,
             extra: std::collections::HashMap::new(),
             compaction_enabled: None,
+            temperature: None,
+            max_tokens: None,
+            stop: None,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
         };
         let mut agent =
             ConfigurableAgent::new_with_tool_service("tenant-a", &config, Box::new(TestLlm), None);

@@ -1483,6 +1483,8 @@ mod tests {
             0,
             "unknown",
             "unknown",
+            "completed",
+            None,
         );
 
         assert!(run.is_catchup);

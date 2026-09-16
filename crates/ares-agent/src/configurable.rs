@@ -2269,6 +2269,12 @@ mod tests {
             max_tool_iterations: 5,
             parallel_tools: false,
             compaction_enabled: None,
+            temperature: None,
+            max_tokens: None,
+            stop: None,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
             extra: HashMap::new(),
         }
     }

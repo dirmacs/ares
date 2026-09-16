@@ -1737,6 +1737,8 @@ mod tests {
             tenant_id: "capped".into(),
             tier: ares_types::models::TenantTier::Free,
             quota,
+            api_key_id: None,
+            scopes: "full".to_string(),
         };
         let ctx = Context::new_root().with_intercept(tc);
         let _ = ctx.provide(cordis::EventsService::new());

@@ -1834,6 +1834,28 @@ mod tests {
     }
 
     #[test]
+    fn deep_merge_empty_tools_array_clears_and_unknown_keys_survive() {
+        let current = serde_json::json!({
+            "model": "fast",
+            "tools": ["a", "b"],
+            "custom_flag": true,
+        });
+
+        let cleared = deep_merge_config(&current, &serde_json::json!({"tools": []}));
+        assert_eq!(cleared["tools"], serde_json::json!([]));
+        assert_eq!(cleared["model"], "fast");
+
+        let extended =
+            deep_merge_config(&current, &serde_json::json!({"new_unknown": {"nested": 1}}));
+        assert_eq!(extended["custom_flag"], true);
+        assert_eq!(extended["new_unknown"]["nested"], 1);
+
+        let null_absent = deep_merge_config(&current, &serde_json::json!({"never_set": null}));
+        assert!(null_absent.get("never_set").is_none());
+        assert_eq!(null_absent["tools"], serde_json::json!(["a", "b"]));
+    }
+
+    #[test]
     fn deep_merge_merged_passes_validation_where_incoming_only_would_not() {
         let mut current = sample_agent();
         current.config = serde_json::json!({

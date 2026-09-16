@@ -503,6 +503,44 @@ async fn rotate_old_401_new_200() {
 }
 
 #[tokio::test]
+async fn rotation_preserves_ingest_scope() {
+    let (server, tenant_db) = create_v1_test_server().await;
+    let (tenant_id, full_key) = provision_tenant(&tenant_db, "rot-scope").await;
+    let (ingest_key, _ingest_raw) = tenant_db
+        .create_api_key(
+            &tenant_id,
+            "ingest-rotate".into(),
+            Some("ingest".into()),
+            None,
+        )
+        .await
+        .expect("create ingest key");
+
+    let resp = server
+        .post(&format!("/api/v1/api-keys/{}/rotate", ingest_key.id))
+        .add_header("Authorization", format!("Bearer {}", full_key))
+        .json(&json!({}))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body: Value = resp.json();
+    assert_eq!(
+        body["key"]["scopes"], "ingest",
+        "rotation must carry the old key's scope forward"
+    );
+    let new_secret = body["secret"]
+        .as_str()
+        .expect("once-only secret")
+        .to_string();
+
+    // The rotated key stays ingest-only: a full-surface route refuses it.
+    let denied = server
+        .get("/api/v1/agents")
+        .add_header("Authorization", format!("Bearer {}", new_secret))
+        .await;
+    assert_eq!(denied.status_code(), 403);
+}
+
+#[tokio::test]
 async fn admin_revoke_404_plus_audit() {
     let (server, tenant_db) = create_v1_test_server().await;
     let (tenant_id, _) = provision_tenant(&tenant_db, "admin-revoke").await;

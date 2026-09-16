@@ -2243,6 +2243,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn integration_no_retain_toggle_roundtrip_and_unknown_tenant() {
+        let pool = try_test_pool().await;
+        let store = RunHistoryStore::new(&pool);
+        let tenant_id = format!("no-retain-toggle-{}", uuid::Uuid::new_v4());
+        let run_id = format!("no-retain-toggle-run-{}", uuid::Uuid::new_v4());
+        let canary = "CANARY-TOGGLE-TEXT-9c2e";
+
+        // Unknown tenant reads as false (opt-in default).
+        assert!(!tenant_no_retain(&pool, "ghost-tenant-never-created").await);
+
+        // Flag on: content redacted.
+        seed_no_retain_parents(&pool, &tenant_id, &run_id, true).await;
+        assert!(tenant_no_retain(&pool, &tenant_id).await);
+        let req = LogToolCallRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            run_id: run_id.clone(),
+            tenant_id: tenant_id.clone(),
+            agent_name: "integration-test-no-retain".into(),
+            step_index: 0,
+            tool_name: "http_get".into(),
+            tool_type: "http".into(),
+            arguments: serde_json::json!({"input": canary}),
+            result: None,
+            latency_ms: 1,
+            status: "success".into(),
+            error_message: None,
+            created_at: chrono::Utc::now().timestamp(),
+        };
+        let redacted = store.insert_tool_call(&req).await.expect("insert redacted");
+        assert_eq!(redacted.arguments, no_retain_redacted_json());
+
+        // Flag off: same tenant stores raw content again.
+        seed_no_retain_parents(&pool, &tenant_id, &run_id, false).await;
+        assert!(!tenant_no_retain(&pool, &tenant_id).await);
+        let raw_req = LogToolCallRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            run_id: run_id.clone(),
+            tenant_id: tenant_id.clone(),
+            agent_name: "integration-test-no-retain".into(),
+            step_index: 0,
+            tool_name: "http_get".into(),
+            tool_type: "http".into(),
+            arguments: serde_json::json!({"input": canary}),
+            result: None,
+            latency_ms: 1,
+            status: "success".into(),
+            error_message: None,
+            created_at: chrono::Utc::now().timestamp(),
+        };
+        let raw = store.insert_tool_call(&raw_req).await.expect("insert raw");
+        assert!(
+            raw.arguments.to_string().contains(canary),
+            "flag off must store the raw payload"
+        );
+    }
+
+    #[tokio::test]
     async fn integration_no_retain_tool_call_redacts_but_keeps_keying() {
         let pool = try_test_pool().await;
         let store = RunHistoryStore::new(&pool);

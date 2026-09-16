@@ -148,7 +148,7 @@ impl TenantDb {
     /// for this tenant.
     pub async fn get_api_key(&self, tenant_id: &str, key_id: &str) -> Result<ApiKey> {
         let row = sqlx::query(
-            "SELECT id, tenant_id, key_hash, key_prefix, name, is_active, created_at, expires_at, COALESCE(scopes, 'full') FROM api_keys WHERE id = $1 AND tenant_id = $2"
+            "SELECT id, tenant_id, key_hash, key_prefix, name, is_active, created_at, expires_at, COALESCE(scopes, 'full'), last_used_at FROM api_keys WHERE id = $1 AND tenant_id = $2"
         )
         .bind(key_id)
         .bind(tenant_id)
@@ -171,12 +171,13 @@ impl TenantDb {
             created_at: row.get(6),
             expires_at: row.get(7),
             scopes: normalize_api_key_scope(Some(row.get::<String, _>(8).as_str())),
+            last_used_at: row.get(9),
         })
     }
 
     pub async fn list_api_keys(&self, tenant_id: &str) -> Result<Vec<ApiKey>> {
         let rows = sqlx::query(
-            "SELECT id, tenant_id, key_hash, key_prefix, name, is_active, created_at, expires_at, COALESCE(scopes, 'full') FROM api_keys WHERE tenant_id = $1 ORDER BY created_at DESC"
+            "SELECT id, tenant_id, key_hash, key_prefix, name, is_active, created_at, expires_at, COALESCE(scopes, 'full'), last_used_at FROM api_keys WHERE tenant_id = $1 ORDER BY created_at DESC"
         )
         .bind(tenant_id)
         .fetch_all(&self.postgres.pool)
@@ -187,6 +188,7 @@ impl TenantDb {
         for row in rows {
             let expires_at: Option<i64> = row.get(7);
             let scopes: String = row.get(8);
+            let last_used_at: Option<i64> = row.get(9);
             keys.push(ApiKey {
                 id: row.get(0),
                 tenant_id: row.get(1),
@@ -197,6 +199,7 @@ impl TenantDb {
                 created_at: row.get(6),
                 expires_at,
                 scopes: normalize_api_key_scope(Some(&scopes)),
+                last_used_at,
             });
         }
 
@@ -206,6 +209,7 @@ impl TenantDb {
     /// Verifies a raw key and returns the tenant context with key identity
     /// plus scopes. Expired/revoked/unknown keys yield `Ok(None)` (caller
     /// maps to 401). Unknown scope values normalize to `full`.
+    /// On success stamps `api_keys.last_used_at` (032) with now (unix seconds).
     pub async fn verify_api_key(&self, raw_key: &str) -> Result<Option<TenantContext>> {
         let Some(key_prefix) = api_key_prefix(raw_key) else {
             return Ok(None);
@@ -247,6 +251,19 @@ impl TenantDb {
             let tenant_id: String = row.get(1);
             let tier = TenantTier::from_str(&tier_str).unwrap_or(TenantTier::Free);
             let scopes = normalize_api_key_scope(Some(&scopes_raw));
+
+            // Heartbeat `last_used_at` (032) on every successful verify.
+            // Best-effort: a stamp failure (e.g. migration not yet applied)
+            // must never fail auth for a valid key.
+            let now = Utc::now().timestamp();
+            if let Err(e) = sqlx::query("UPDATE api_keys SET last_used_at = $1 WHERE id = $2")
+                .bind(now)
+                .bind(&key_id)
+                .execute(&self.postgres.pool)
+                .await
+            {
+                tracing::warn!(error = %e, "Failed to stamp API key last use");
+            }
 
             Ok(Some(TenantContext::with_key(
                 tenant_id, tier, key_id, scopes,
@@ -1152,6 +1169,7 @@ mod tests {
             created_at: 42,
             expires_at: Some(99),
             scopes: "full".to_string(),
+            last_used_at: None,
         };
         let restored: ApiKey = serde_json::from_str(&serde_json::to_string(&key).unwrap()).unwrap();
         assert_eq!(restored.id, key.id);
@@ -1227,5 +1245,76 @@ mod tests {
         assert_eq!(restored.monthly_requests, 0);
         assert_eq!(restored.monthly_tokens, 0);
         assert_eq!(restored.daily_requests, 0);
+    }
+    // ── Integration: api_keys.last_used_at heartbeat (032) ──────────────
+
+    async fn live_tenant_db() -> TenantDb {
+        let pool = ares_test_support::pool().await;
+        TenantDb::new(std::sync::Arc::new(crate::postgres::PostgresClient {
+            pool,
+        }))
+    }
+
+    #[tokio::test]
+    async fn integration_verify_stamps_last_used_at() {
+        let db = live_tenant_db().await;
+        let tenant = db
+            .create_tenant(
+                format!("tenant-last-used-{}", uuid::Uuid::new_v4()),
+                TenantTier::Free,
+            )
+            .await
+            .expect("create tenant");
+        let (key_meta, raw_key) = db
+            .create_api_key(&tenant.id, "test-key".into(), None, None)
+            .await
+            .expect("create key");
+        assert!(key_meta.last_used_at.is_none());
+
+        // NULL before first use via both getters.
+        let fetched = db.get_api_key(&tenant.id, &key_meta.id).await.expect("get");
+        assert!(fetched.last_used_at.is_none());
+        let listed = db.list_api_keys(&tenant.id).await.expect("list");
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].last_used_at.is_none());
+
+        let before = chrono::Utc::now().timestamp();
+        let ctx = db
+            .verify_api_key(&raw_key)
+            .await
+            .expect("verify")
+            .expect("must verify");
+        assert_eq!(ctx.tenant_id, tenant.id);
+        let after = chrono::Utc::now().timestamp();
+
+        let stamped = db
+            .get_api_key(&tenant.id, &key_meta.id)
+            .await
+            .expect("get after");
+        let ts = stamped.last_used_at.expect("last_used_at stamped");
+        assert!(
+            ts >= before && ts <= after + 1,
+            "ts {ts} not in [{before},{after}]"
+        );
+
+        let listed2 = db.list_api_keys(&tenant.id).await.expect("list after");
+        assert_eq!(listed2.len(), 1);
+        assert_eq!(listed2[0].last_used_at, Some(ts));
+
+        // Second verify heartbeats again (>= first).
+        let ctx2 = db
+            .verify_api_key(&raw_key)
+            .await
+            .expect("verify2")
+            .expect("must verify2");
+        assert_eq!(ctx2.tenant_id, tenant.id);
+        let stamped2 = db
+            .get_api_key(&tenant.id, &key_meta.id)
+            .await
+            .expect("get2");
+        let ts2 = stamped2.last_used_at.expect("second stamp");
+        assert!(ts2 >= ts, "second stamp {ts2} < first {ts}");
+
+        db.delete_tenant(&tenant.id).await.expect("cleanup");
     }
 }

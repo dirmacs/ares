@@ -39,6 +39,7 @@ Before you touch gated code, make sure that the relevant Cargo features are enab
 
 - All queries in `crates/ares-store/src/` use raw SQL through `sqlx::query().bind()`. The queries use no ORM and no query macros.
 - New tables need a migration file in `crates/ares-store/migrations/`. Number the migration files sequentially.
+- Never edit a migration file after any database applied it (not even a comment). An edit changes the checksum and crash-loops every server that applied the old bytes. Restore exact bytes and carry the change in a new migration.
 - Aggregate functions such as `SUM()` must cast results to explicit types (`::BIGINT`, `::TEXT`, and more).
 
 ## Key decisions

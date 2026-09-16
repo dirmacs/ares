@@ -1,0 +1,2 @@
+# Normalize line endings so checksums stay stable across platforms.
+*.sql text eol=lf

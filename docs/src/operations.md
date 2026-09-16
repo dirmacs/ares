@@ -226,3 +226,27 @@ Here \\(\mathrm{comp}(m)\\) is the function's cyclomatic complexity and \\(\math
 Two concrete scores, taken from the upstream tool's own example table: a function with complexity 12 and zero coverage scores \\(12^2 \times (1-0)^3 + 12 = 156\\). A function with complexity 4 at roughly 44% coverage scores \\(16 \times (1-0.444)^3 + 4 \approx 6.7\\).
 
 The gate fails when any workspace function exceeds the threshold of 30. Treat a red gate as work, not noise. Split the flagged function or raise its test coverage.
+
+## Per-Tenant No-Retain
+
+The `tenants` table carries a `no_retain` boolean column (migration 029). When true, the server redacts trace content for that tenant. The default is false; enable it with a direct SQL update:
+
+```sql
+UPDATE tenants SET no_retain = TRUE WHERE id = '<tenant-id>';
+```
+
+Redacted fields include message text, tool arguments, and tool results. The server replaces them with `{"redacted":"no-retain"}` for JSON fields and `[redacted: no-retain]` for plain text. Preserved fields include row ids, keying columns, token counts, cost, latency, and status.
+
+The implementation is fail-closed. If the `no_retain` column is missing (for example on a database that has not applied migration 029), the reader returns false. A true value in the column is the only path to redaction.
+
+There is no admin API to toggle the flag today. Enable it through the database and confirm with:
+
+```sql
+SELECT id, name, no_retain FROM tenants WHERE no_retain = TRUE;
+```
+
+## Boot Sweeper
+
+The server spawns a background task at startup that reaps stale `agent_runs` rows (`crates/ares-http/src/main.rs`). Any row with `status = 'running'` and `created_at` older than 30 minutes is marked `failed` with the error message `reaped by boot sweeper: exceeded healthy run duration`.
+
+The sweeper runs once at boot, then every 600 seconds. It is infallible: a database error logs a warning but never crashes the server. Each sweep updates `updated_at` on every reaped row, so the heartbeat column reflects the reap time.

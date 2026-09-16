@@ -22,26 +22,23 @@ pub async fn track_usage(mut req: Request, next: Next) -> Response {
 
     let response = next.run(req).await;
 
-    if should_record_usage(tenant_id.as_deref(), tenant_db.is_some()) {
-        // Snapshot path is authoritative (handlers record success explicitly).
-        // Header fallback revives the dead path for emitters that only set
-        // metering headers via `usage_response`: parse them when no snapshot
-        // was recorded. Failed runs persist with success=false, never skipped.
-        let snapshot = usage
-            .as_ref()
-            .and_then(|u| u.snapshot())
-            .or_else(|| parse_metering_headers(response.headers()));
-        if let Some(snapshot) = snapshot {
-            let tid = tenant_id.expect("checked above");
-            let db = tenant_db.expect("checked above");
-            let pool = db.pool().clone();
-            let tenant_id = usage.as_ref().map(|u| u.tenant_id.clone()).unwrap_or(tid);
-            let api_key_id = usage.as_ref().and_then(|u| u.api_key_id.clone());
-            tokio::spawn(async move {
-                let _ =
-                    record_usage_params(&tenant_id, api_key_id.as_deref(), &snapshot, &pool).await;
-            });
-        }
+    // Snapshot path is authoritative (handlers record success explicitly).
+    // Header fallback revives the dead path for emitters that only set
+    // metering headers via `usage_response`: parse them when no snapshot
+    // was recorded. Failed runs persist with success=false, never skipped.
+    // Recording needs both tenant context and the tenant DB; absent either,
+    // the request was unauthenticated or the middleware is not tenant-scoped.
+    let snapshot = usage
+        .as_ref()
+        .and_then(|u| u.snapshot())
+        .or_else(|| parse_metering_headers(response.headers()));
+    if let (Some(snapshot), Some(tid), Some(db)) = (snapshot, tenant_id, tenant_db) {
+        let pool = db.pool().clone();
+        let tenant_id = usage.as_ref().map(|u| u.tenant_id.clone()).unwrap_or(tid);
+        let api_key_id = usage.as_ref().and_then(|u| u.api_key_id.clone());
+        tokio::spawn(async move {
+            let _ = record_usage_params(&tenant_id, api_key_id.as_deref(), &snapshot, &pool).await;
+        });
     }
 
     response
@@ -133,11 +130,6 @@ pub(crate) struct UsageEventParams {
     pub success: bool,
     pub counts_source: Option<String>,
     pub api_key_id: Option<String>,
-}
-
-/// Returns true when tenant context and DB are both available for usage recording.
-pub(crate) fn should_record_usage(tenant_id: Option<&str>, has_tenant_db: bool) -> bool {
-    tenant_id.is_some() && has_tenant_db
 }
 
 /// Returns true when any metering header is present.
@@ -449,14 +441,6 @@ mod tests {
     #[test]
     fn extract_metering_from_response_none_without_headers() {
         assert_eq!(extract_metering_from_response(&HeaderMap::new()), None);
-    }
-
-    #[test]
-    fn should_record_usage_requires_tenant_and_db() {
-        assert!(should_record_usage(Some("tenant-1"), true));
-        assert!(!should_record_usage(None, true));
-        assert!(!should_record_usage(Some("tenant-1"), false));
-        assert!(!should_record_usage(None, false));
     }
 
     #[test]

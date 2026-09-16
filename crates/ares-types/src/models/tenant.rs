@@ -159,6 +159,8 @@ pub struct ApiKey {
     pub expires_at: Option<i64>,
     #[serde(default = "default_api_key_scope")]
     pub scopes: String,
+    #[serde(default)]
+    pub last_used_at: Option<i64>,
 }
 
 impl ApiKey {
@@ -179,6 +181,7 @@ impl ApiKey {
             created_at: chrono::Utc::now().timestamp(),
             expires_at: None,
             scopes: API_KEY_SCOPE_FULL.to_string(),
+            last_used_at: None,
         }
     }
 
@@ -201,6 +204,7 @@ impl ApiKey {
             created_at: chrono::Utc::now().timestamp(),
             expires_at,
             scopes: normalize_api_key_scope(Some(&scopes)),
+            last_used_at: None,
         }
     }
 
@@ -566,6 +570,7 @@ mod tests {
             created_at: 0,
             expires_at: Some(i64::MAX),
             scopes: "full".into(),
+            last_used_at: None,
         };
         let parsed: ApiKey = serde_json::from_str(&serde_json::to_string(&key).unwrap()).unwrap();
         assert!(!parsed.is_active);

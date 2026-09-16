@@ -111,6 +111,11 @@ impl GenaiClient {
         if let Some(top_p) = self.provider.params.top_p {
             opts = opts.with_top_p(f64::from(top_p));
         }
+        if let Some(stops) = self.provider.params.stop.as_ref() {
+            if !stops.is_empty() {
+                opts = opts.with_stop_sequences(stops.clone());
+            }
+        }
         if hints.json_mode {
             opts = opts.with_response_format(ChatResponseFormat::JsonMode);
         }
@@ -909,6 +914,65 @@ mod tests {
             "garbage sends nothing: {:?}",
             opts.reasoning_effort
         );
+    }
+
+    #[test]
+    fn tenant_gen_params_land_in_chat_options() {
+        let params = crate::client::ModelParams {
+            temperature: Some(1.5),
+            max_tokens: Some(1024),
+            stop: Some(vec!["END".to_string(), "STOP".to_string()]),
+            top_p: Some(0.9),
+            frequency_penalty: Some(0.5),
+            presence_penalty: Some(-0.5),
+            ..crate::client::ModelParams::default()
+        };
+        let client = test_client(params);
+        let opts = client.chat_options(&GenerationHints::default(), false);
+        assert_eq!(opts.temperature, Some(1.5));
+        assert_eq!(opts.max_tokens, Some(1024));
+        assert_eq!(
+            opts.stop_sequences,
+            vec!["END".to_string(), "STOP".to_string()]
+        );
+        assert_eq!(opts.top_p, Some(0.9));
+        let body = opts.extra_body.expect("penalties land in extra_body");
+        assert_eq!(
+            body.get("frequency_penalty").and_then(|v| v.as_f64()),
+            Some(0.5)
+        );
+        assert_eq!(
+            body.get("presence_penalty").and_then(|v| v.as_f64()),
+            Some(-0.5)
+        );
+    }
+
+    #[test]
+    fn hints_max_tokens_beats_tenant_params() {
+        let params = crate::client::ModelParams {
+            max_tokens: Some(1024),
+            temperature: Some(1.5),
+            ..crate::client::ModelParams::default()
+        };
+        let client = test_client(params);
+        let hints = GenerationHints {
+            max_tokens: Some(256),
+            ..GenerationHints::default()
+        };
+        let opts = client.chat_options(&hints, false);
+        assert_eq!(opts.max_tokens, Some(256));
+        assert_eq!(opts.temperature, Some(1.5));
+    }
+
+    #[test]
+    fn empty_stop_sends_no_stop_sequences() {
+        let params = crate::client::ModelParams {
+            stop: Some(vec![]),
+            ..crate::client::ModelParams::default()
+        };
+        let client = test_client(params);
+        let opts = client.chat_options(&GenerationHints::default(), false);
+        assert!(opts.stop_sequences.is_empty());
     }
 
     #[test]

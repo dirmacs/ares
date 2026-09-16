@@ -4,6 +4,33 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ---
 
+## 0.11.5 - 2026-09-16
+
+**Trace persistence, metering truth, key scopes, follow-up heartbeats.**
+
+### Fixed
+
+- Tenant run path pre-inserts the parent `agent_runs` row before executing, so per-call
+  trace rows persist on the v1 path; a completion guard marks crashed runs `failed`, and cost
+  aggregation waits for the parent. A boot sweeper reaps runs stuck `running` past 30 minutes.
+- Partial agent-config `PUT`s no longer wipe stored config: the server deep-merges the patch
+  (`null` clears, absent keeps, unknowns preserved) and validates the merged result.
+- Failed pipeline, scheduler, and trigger runs persist `success=false` with zeroed counts
+  instead of skipping rows; the dead HTTP metering path is revived on both v1 legs.
+- `POST /v1/agents/{name}/sandbox-run` removed: it served the system prompt and tool list to
+  any tenant key, unmetered, with zero callers.
+
+### Added
+
+- Per-agent generation parameters (`temperature`, `max_tokens`, `stop`, `top_p`,
+  `frequency`/`presence` penalties), schemaless, precedence hints over tenant over host.
+- API-key scopes (`full`/`ingest`, `031`) with TTL, double-mint rotation, admin revoke, and
+  per-key attribution on usage rows; metering `counts_source` (`030`).
+- Per-tenant `no_retain` (`029`) redacts trace content while keeping ids, cost, and latency.
+- `api_keys.last_used_at` (`032`, best-effort stamp) and `agent_runs.updated_at` (`033`,
+  advanced on every status UPDATE including sweeper reap).
+- `live_anthropic.rs` (`#[ignore]`): native Anthropic liveness through the genai adapter.
+
 ## 0.11.4 - 2026-09-02
 
 **Postgres transcript fix, remaining prompt-drop sites, full-stack live proof.**

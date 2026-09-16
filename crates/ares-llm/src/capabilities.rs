@@ -173,9 +173,51 @@ impl ModelCapabilities {
         let model_lower = model_lower.strip_prefix("bedrock/").unwrap_or(&model_lower);
         let model_lower = model_lower.strip_prefix("azure/").unwrap_or(model_lower);
 
-        // Claude models
+        if let Some(caps) = Self::claude_capabilities(model_lower) {
+            return caps;
+        }
+        if let Some(caps) = Self::openai_capabilities(model_lower) {
+            return caps;
+        }
+        if let Some(caps) = Self::deepseek_capabilities(model_lower) {
+            return caps;
+        }
+        if let Some(caps) = Self::llama_capabilities(model_lower) {
+            return caps;
+        }
+        if let Some(caps) = Self::mistral_capabilities(model_lower) {
+            return caps;
+        }
+        if let Some(caps) = Self::qwen_capabilities(model_lower) {
+            return caps;
+        }
+        if let Some(caps) = Self::kimi_capabilities(model_lower) {
+            return caps;
+        }
+        if let Some(caps) = Self::nemotron_capabilities(model_lower) {
+            return caps;
+        }
+        if let Some(caps) = Self::granite_capabilities(model_lower) {
+            return caps;
+        }
+        if let Some(caps) = Self::glm_capabilities(model_lower) {
+            return caps;
+        }
+        if let Some(caps) = Self::step_capabilities(model_lower) {
+            return caps;
+        }
+        if let Some(caps) = Self::phi_capabilities(model_lower) {
+            return caps;
+        }
+
+        // Default capabilities for unknown models (NVIDIA NIM defaults)
+        Self::default()
+    }
+
+    /// Claude 3.5/4 Sonnet, Opus, and Haiku defaults.
+    fn claude_capabilities(model_lower: &str) -> Option<Self> {
         if model_lower.contains("claude-3-5-sonnet") || model_lower.contains("claude-sonnet-4") {
-            return Self {
+            return Some(Self {
                 supports_tools: true,
                 supports_vision: true,
                 supports_json_mode: true,
@@ -190,11 +232,11 @@ impl ModelCapabilities {
                 family: Some("claude-3".to_string()),
                 production_ready: true,
                 ..Default::default()
-            };
+            });
         }
 
         if model_lower.contains("claude-3-opus") || model_lower.contains("claude-opus") {
-            return Self {
+            return Some(Self {
                 supports_tools: true,
                 supports_vision: true,
                 supports_json_mode: true,
@@ -209,11 +251,11 @@ impl ModelCapabilities {
                 family: Some("claude-3".to_string()),
                 production_ready: true,
                 ..Default::default()
-            };
+            });
         }
 
         if model_lower.contains("claude-3-haiku") || model_lower.contains("claude-haiku") {
-            return Self {
+            return Some(Self {
                 supports_tools: true,
                 supports_vision: true,
                 supports_json_mode: true,
@@ -228,28 +270,31 @@ impl ModelCapabilities {
                 family: Some("claude-3".to_string()),
                 production_ready: true,
                 ..Default::default()
-            };
+            });
         }
 
-        // OpenAI reasoning models
+        None
+    }
+
+    /// OpenAI reasoning models and the GPT family defaults.
+    fn openai_capabilities(model_lower: &str) -> Option<Self> {
         if is_openai_reasoning_model(model_lower) {
             let is_gpt5 = model_lower
                 .rsplit(['/', ':'])
                 .next()
                 .is_some_and(|model_id| has_model_prefix(model_id, "gpt-5"));
 
-            return Self {
+            return Some(Self {
                 supports_reasoning: true,
                 quality_tier: "premium".to_string(),
                 family: Some(if is_gpt5 { "gpt-5" } else { "openai-reasoning" }.to_string()),
                 production_ready: true,
                 ..Default::default()
-            };
+            });
         }
 
-        // GPT models
         if model_lower.contains("gpt-4o") {
-            return Self {
+            return Some(Self {
                 supports_tools: true,
                 supports_vision: true,
                 supports_audio: true,
@@ -265,11 +310,11 @@ impl ModelCapabilities {
                 family: Some("gpt-4".to_string()),
                 production_ready: true,
                 ..Default::default()
-            };
+            });
         }
 
         if model_lower.contains("gpt-4-turbo") || model_lower.contains("gpt-4-1106") {
-            return Self {
+            return Some(Self {
                 supports_tools: true,
                 supports_vision: true,
                 supports_json_mode: true,
@@ -284,11 +329,11 @@ impl ModelCapabilities {
                 family: Some("gpt-4".to_string()),
                 production_ready: true,
                 ..Default::default()
-            };
+            });
         }
 
         if model_lower.contains("gpt-4") && !model_lower.contains("gpt-4o") {
-            return Self {
+            return Some(Self {
                 supports_tools: true,
                 supports_vision: false,
                 supports_json_mode: true,
@@ -303,11 +348,11 @@ impl ModelCapabilities {
                 family: Some("gpt-4".to_string()),
                 production_ready: true,
                 ..Default::default()
-            };
+            });
         }
 
         if model_lower.contains("gpt-3.5") {
-            return Self {
+            return Some(Self {
                 supports_tools: true,
                 supports_vision: false,
                 supports_json_mode: true,
@@ -322,12 +367,16 @@ impl ModelCapabilities {
                 family: Some("gpt-3.5".to_string()),
                 production_ready: true,
                 ..Default::default()
-            };
+            });
         }
 
-        // DeepSeek models (Azure AI Foundry and OpenAI-compatible gateways)
+        None
+    }
+
+    /// DeepSeek defaults (Azure AI Foundry and compatible gateways).
+    fn deepseek_capabilities(model_lower: &str) -> Option<Self> {
         if model_lower.contains("deepseek") {
-            return Self {
+            return Some(Self {
                 supports_tools: true,
                 supports_vision: false,
                 supports_json_mode: true,
@@ -348,10 +397,14 @@ impl ModelCapabilities {
                 family: Some("deepseek".to_string()),
                 production_ready: true,
                 ..Default::default()
-            };
+            });
         }
 
-        // Llama models (NVIDIA NIM)
+        None
+    }
+
+    /// Llama 3.x defaults (NVIDIA NIM).
+    fn llama_capabilities(model_lower: &str) -> Option<Self> {
         if model_lower.contains("llama-3.3")
             || model_lower.contains("llama-3.1")
             || model_lower.contains("llama-3.2")
@@ -361,7 +414,7 @@ impl ModelCapabilities {
             } else {
                 131_072
             };
-            return Self {
+            return Some(Self {
                 supports_tools: true,
                 supports_vision: false,
                 supports_json_mode: true,
@@ -380,15 +433,19 @@ impl ModelCapabilities {
                 family: Some("llama-3".to_string()),
                 production_ready: true,
                 ..Default::default()
-            };
+            });
         }
 
-        // Mistral models (NVIDIA NIM)
+        None
+    }
+
+    /// Mistral family defaults (NVIDIA NIM).
+    fn mistral_capabilities(model_lower: &str) -> Option<Self> {
         if model_lower.contains("ministral")
             || model_lower.contains("mistral")
             || model_lower.contains("codestral")
         {
-            return Self {
+            return Some(Self {
                 supports_tools: true,
                 supports_vision: false,
                 supports_json_mode: true,
@@ -403,13 +460,17 @@ impl ModelCapabilities {
                 family: Some("mistral".to_string()),
                 production_ready: true,
                 ..Default::default()
-            };
+            });
         }
 
-        // Qwen models (NVIDIA NIM)
+        None
+    }
+
+    /// Qwen defaults (NVIDIA NIM).
+    fn qwen_capabilities(model_lower: &str) -> Option<Self> {
         if model_lower.contains("qwen") {
             let has_vl = model_lower.contains("-vl");
-            return Self {
+            return Some(Self {
                 supports_tools: true,
                 supports_vision: has_vl,
                 supports_json_mode: true,
@@ -424,12 +485,16 @@ impl ModelCapabilities {
                 family: Some("qwen".to_string()),
                 production_ready: true,
                 ..Default::default()
-            };
+            });
         }
 
-        // Kimi / Moonshot models (NVIDIA NIM)
+        None
+    }
+
+    /// Kimi / Moonshot defaults (NVIDIA NIM).
+    fn kimi_capabilities(model_lower: &str) -> Option<Self> {
         if model_lower.contains("kimi") || model_lower.contains("moonshotai") {
-            return Self {
+            return Some(Self {
                 supports_tools: true,
                 supports_vision: false,
                 supports_json_mode: true,
@@ -444,12 +509,16 @@ impl ModelCapabilities {
                 family: Some("kimi".to_string()),
                 production_ready: true,
                 ..Default::default()
-            };
+            });
         }
 
-        // NVIDIA Nemotron models
+        None
+    }
+
+    /// NVIDIA Nemotron defaults.
+    fn nemotron_capabilities(model_lower: &str) -> Option<Self> {
         if model_lower.contains("nemotron") {
-            return Self {
+            return Some(Self {
                 supports_tools: true,
                 supports_vision: false,
                 supports_json_mode: true,
@@ -464,12 +533,16 @@ impl ModelCapabilities {
                 family: Some("nemotron".to_string()),
                 production_ready: true,
                 ..Default::default()
-            };
+            });
         }
 
-        // IBM Granite models
+        None
+    }
+
+    /// IBM Granite defaults.
+    fn granite_capabilities(model_lower: &str) -> Option<Self> {
         if model_lower.contains("granite") || model_lower.contains("ibm") {
-            return Self {
+            return Some(Self {
                 supports_tools: true,
                 supports_vision: false,
                 supports_json_mode: true,
@@ -484,12 +557,16 @@ impl ModelCapabilities {
                 family: Some("granite".to_string()),
                 production_ready: true,
                 ..Default::default()
-            };
+            });
         }
 
-        // Zhipu GLM models
+        None
+    }
+
+    /// Zhipu GLM defaults.
+    fn glm_capabilities(model_lower: &str) -> Option<Self> {
         if model_lower.contains("glm") || model_lower.contains("z-ai") {
-            return Self {
+            return Some(Self {
                 supports_tools: true,
                 supports_vision: false,
                 supports_json_mode: true,
@@ -504,12 +581,16 @@ impl ModelCapabilities {
                 family: Some("glm".to_string()),
                 production_ready: true,
                 ..Default::default()
-            };
+            });
         }
 
-        // Step models
+        None
+    }
+
+    /// Step defaults.
+    fn step_capabilities(model_lower: &str) -> Option<Self> {
         if model_lower.contains("step") {
-            return Self {
+            return Some(Self {
                 supports_tools: true,
                 supports_vision: false,
                 supports_json_mode: true,
@@ -524,12 +605,16 @@ impl ModelCapabilities {
                 family: Some("step".to_string()),
                 production_ready: true,
                 ..Default::default()
-            };
+            });
         }
 
-        // Phi models
+        None
+    }
+
+    /// Phi defaults.
+    fn phi_capabilities(model_lower: &str) -> Option<Self> {
         if model_lower.contains("phi") {
-            return Self {
+            return Some(Self {
                 supports_tools: true,
                 supports_vision: false,
                 supports_json_mode: true,
@@ -544,11 +629,10 @@ impl ModelCapabilities {
                 family: Some("phi".to_string()),
                 production_ready: true,
                 ..Default::default()
-            };
+            });
         }
 
-        // Default capabilities for unknown models (NVIDIA NIM defaults)
-        Self::default()
+        None
     }
 
     /// Check if this model satisfies the given requirements.

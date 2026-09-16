@@ -103,14 +103,11 @@ pub async fn trigger_deploy(
 ) -> Result<Json<DeployResponse>> {
     let target = req.target.to_lowercase();
     if !VALID_TARGETS.contains(&target.as_str()) {
-        return Err(HttpError::from(AppError::InvalidInput(
-            format!(
-                "Invalid target '{}'. Valid: {}",
-                target,
-                VALID_TARGETS.join(", ")
-            )
-            .into(),
-        )));
+        return Err(HttpError::from(AppError::InvalidInput(format!(
+            "Invalid target '{}'. Valid: {}",
+            target,
+            VALID_TARGETS.join(", ")
+        ))));
     }
 
     let registry = ctx.get::<DeployRegistry>().expect("not provided");
@@ -120,13 +117,10 @@ pub async fn trigger_deploy(
         let deploys = registry.read().await;
         for deploy in deploys.values() {
             if deploy.target == target && deploy.status == DeployState::Running {
-                return Err(HttpError::from(AppError::InvalidInput(
-                    format!(
-                        "Deploy already running for '{}' (id: {})",
-                        target, deploy.id
-                    )
-                    .into(),
-                )));
+                return Err(HttpError::from(AppError::InvalidInput(format!(
+                    "Deploy already running for '{}' (id: {})",
+                    target, deploy.id
+                ))));
             }
         }
     }
@@ -223,7 +217,7 @@ pub async fn list_deploys(State(ctx): State<Arc<Context>>) -> Json<Vec<DeploySta
     let registry = ctx.get::<DeployRegistry>().expect("not provided");
     let deploys = registry.read().await;
     let mut list: Vec<DeployStatus> = deploys.values().cloned().collect();
-    list.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+    list.sort_by_key(|d| std::cmp::Reverse(d.started_at));
     list.truncate(20);
     Json(list)
 }
@@ -267,9 +261,10 @@ pub async fn get_services_health() -> Result<Json<HashMap<String, ServiceHealth>
 /// GET /api/admin/services/{service_name}/logs — recent journalctl logs for a service
 pub async fn get_service_logs(Path(service_name): Path<String>) -> Result<Json<serde_json::Value>> {
     if !["ares", "eruka", "caddy", "postgresql"].contains(&service_name.as_str()) {
-        return Err(HttpError::from(AppError::InvalidInput(
-            format!("Unknown service: {}", service_name).into(),
-        )));
+        return Err(HttpError::from(AppError::InvalidInput(format!(
+            "Unknown service: {}",
+            service_name
+        ))));
     }
 
     let output = tokio::process::Command::new("journalctl")

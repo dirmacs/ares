@@ -59,7 +59,7 @@ impl LoopRegistry {
     pub async fn list(&self) -> Vec<LoopSummary> {
         let entries = self.entries.lock().await;
         let mut list: Vec<LoopSummary> = entries.values().map(Self::entry_to_summary).collect();
-        list.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        list.sort_by_key(|l| std::cmp::Reverse(l.started_at));
         list
     }
 
@@ -243,9 +243,10 @@ pub async fn stop_loop(
     {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err(HttpError::from(AppError::NotFound(
-            format!("Loop '{}' not found", id).into(),
-        )))
+        Err(HttpError::from(AppError::NotFound(format!(
+            "Loop '{}' not found",
+            id
+        ))))
     }
 }
 

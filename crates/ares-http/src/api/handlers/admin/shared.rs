@@ -148,7 +148,7 @@ pub fn validate_agent_config_tools(
         return Err(HttpError::from(AppError::InvalidInput(format!(
             "Invalid tool name(s): {}. Available tools can be listed via GET /api/admin/runtime-tools",
             invalid.join(", ")
-        ).into())));
+        ))));
     }
 
     Ok(())
@@ -170,9 +170,9 @@ pub fn parse_agent_config_tool_names(
             })
             .collect(),
         serde_json::Value::Null => Ok(Vec::new()),
-        _ => Err(HttpError::from(AppError::InvalidInput(
-            format!("Agent config field '{field}' must be an array").into(),
-        ))),
+        _ => Err(HttpError::from(AppError::InvalidInput(format!(
+            "Agent config field '{field}' must be an array"
+        )))),
     }
 }
 
@@ -2464,7 +2464,7 @@ pub fn oauth_provider_config(connector_type: &str) -> Result<OAuthProviderConfig
         }),
         other => Err(HttpError::from(AppError::InvalidInput(format!(
             "unsupported OAuth connector_type: {other}"
-        ).into()))),
+        )))),
     }
 }
 
@@ -2823,9 +2823,9 @@ pub async fn receive_webhook(
     let trigger = store.get_trigger(&trigger_id).await?;
     if let Some(trigger) = trigger {
         if !webhook_trigger_matches(&trigger) {
-            return Err(HttpError::from(AppError::NotFound(
-                format!("Webhook trigger {trigger_id} not found").into(),
-            )));
+            return Err(HttpError::from(AppError::NotFound(format!(
+                "Webhook trigger {trigger_id} not found"
+            ))));
         }
         if trigger.enabled {
             tracing::info!(
@@ -2854,9 +2854,9 @@ pub async fn receive_webhook(
             ))
         }
     } else {
-        Err(HttpError::from(AppError::NotFound(
-            format!("Trigger {trigger_id} not found").into(),
-        )))
+        Err(HttpError::from(AppError::NotFound(format!(
+            "Trigger {trigger_id} not found"
+        ))))
     }
 }
 

@@ -255,9 +255,10 @@ pub async fn delete_tenant_allowed_tool(
     let store = allowlist::TenantAllowlistStore::new(&__pool_10);
     let rows = store.deny_tool(&tenant_id, &tool_name).await?;
     if rows == 0 {
-        return Err(HttpError::from(AppError::NotFound(
-            format!("tool {} not found for tenant {}", tool_name, tenant_id).into(),
-        )));
+        return Err(HttpError::from(AppError::NotFound(format!(
+            "tool {} not found for tenant {}",
+            tool_name, tenant_id
+        ))));
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -303,9 +304,10 @@ pub async fn delete_tenant_allowed_model(
     let store = allowlist::TenantAllowlistStore::new(&__pool_13);
     let rows = store.deny_model(&tenant_id, &model_id).await?;
     if rows == 0 {
-        return Err(HttpError::from(AppError::NotFound(
-            format!("model {} not found for tenant {}", model_id, tenant_id).into(),
-        )));
+        return Err(HttpError::from(AppError::NotFound(format!(
+            "model {} not found for tenant {}",
+            model_id, tenant_id
+        ))));
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -351,13 +353,10 @@ pub async fn delete_tenant_allowed_rag_source(
     let store = allowlist::TenantAllowlistStore::new(&__pool_16);
     let rows = store.deny_rag_source(&tenant_id, &rag_source).await?;
     if rows == 0 {
-        return Err(HttpError::from(AppError::NotFound(
-            format!(
-                "rag source {} not found for tenant {}",
-                rag_source, tenant_id
-            )
-            .into(),
-        )));
+        return Err(HttpError::from(AppError::NotFound(format!(
+            "rag source {} not found for tenant {}",
+            rag_source, tenant_id
+        ))));
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -398,8 +397,6 @@ pub async fn get_platform_stats(
     let stats = agent_runs::get_platform_stats(&__pool_19).await?;
     Ok(Json(stats))
 }
-
-/// POST /api/webhooks/{trigger_id}
 
 /// GET /api/admin/runs/live — SSE stream of active agent runs
 pub async fn stream_active_runs(

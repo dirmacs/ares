@@ -105,13 +105,10 @@ pub async fn set_tenant_model_tier(
         .expect("not provided")
         .has_provider_for_tenant(&req.provider_name, Some(&tenant_id))
     {
-        return Err(HttpError::from(AppError::InvalidInput(
-            format!(
-                "Provider '{}' not found in configuration",
-                req.provider_name
-            )
-            .into(),
-        )));
+        return Err(HttpError::from(AppError::InvalidInput(format!(
+            "Provider '{}' not found in configuration",
+            req.provider_name
+        ))));
     }
 
     let __pool_6 = ctx
@@ -156,9 +153,9 @@ pub async fn delete_tenant_model_tier(
     let store = db_tiers::TenantModelTierStore::new(&__pool_7);
     let rows = store.delete(&tenant_id, &tier_name).await?;
     if rows == 0 {
-        return Err(HttpError::from(AppError::NotFound(
-            format!("tier {tier_name} not found for tenant {tenant_id}").into(),
-        )));
+        return Err(HttpError::from(AppError::NotFound(format!(
+            "tier {tier_name} not found for tenant {tenant_id}"
+        ))));
     }
 
     let pool = ctx

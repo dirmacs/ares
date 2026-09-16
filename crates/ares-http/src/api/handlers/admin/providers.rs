@@ -134,9 +134,9 @@ pub async fn delete_runtime_provider(
         .delete_scoped(query.tenant_id.as_deref(), &name)
         .await?;
     if rows == 0 {
-        return Err(HttpError::from(AppError::NotFound(
-            format!("runtime provider {name} not found").into(),
-        )));
+        return Err(HttpError::from(AppError::NotFound(format!(
+            "runtime provider {name} not found"
+        ))));
     }
     reload_runtime_provider_registry(&ctx).await?;
     tracing::info!("Deleted runtime provider {}", name);

@@ -169,9 +169,9 @@ pub async fn delete_runtime_tool(
     let store = RuntimeToolStore::new(&__pool_5);
     let affected = store.delete(&id).await?;
     if affected == 0 {
-        return Err(HttpError::from(AppError::NotFound(
-            format!("runtime tool {id} not found").into(),
-        )));
+        return Err(HttpError::from(AppError::NotFound(format!(
+            "runtime tool {id} not found"
+        ))));
     }
 
     reload_runtime_tools(&ctx, "after delete").await;

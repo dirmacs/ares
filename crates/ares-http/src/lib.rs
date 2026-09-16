@@ -6,10 +6,6 @@
 #![allow(hidden_glob_reexports)]
 #![allow(ambiguous_glob_reexports)]
 #![allow(private_interfaces)]
-#![allow(clippy::useless_conversion)]
-#![allow(clippy::unnecessary_sort_by)]
-#![allow(clippy::empty_line_after_doc_comments)]
-#![allow(clippy::too_many_arguments)]
 
 use std::sync::Arc;
 

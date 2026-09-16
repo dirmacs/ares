@@ -124,9 +124,10 @@ pub async fn delete_fleet_provider(
     let store = fps::FleetProviderSecretsStore::new(&__pool_2);
     let affected = store.delete(&provider_name).await?;
     if affected == 0 {
-        return Err(HttpError::from(AppError::NotFound(
-            format!("Fleet provider '{}' not found", provider_name).into(),
-        )));
+        return Err(HttpError::from(AppError::NotFound(format!(
+            "Fleet provider '{}' not found",
+            provider_name
+        ))));
     }
 
     // Reload + atomically swap the in-memory map.

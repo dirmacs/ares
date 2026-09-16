@@ -130,9 +130,9 @@ pub(crate) fn resolve_from_candidates(
             "system".into(),
         ));
     }
-    Err(HttpError::from(AppError::NotFound(
-        format!("Agent '{agent_name}' not found").into(),
-    )))
+    Err(HttpError::from(AppError::NotFound(format!(
+        "Agent '{agent_name}' not found"
+    ))))
 }
 
 pub async fn resolve_agent(

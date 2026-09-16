@@ -142,9 +142,9 @@ pub async fn delete_schedule(
     let store = db_schedules::ScheduleStore::new(&__pool_5);
     let rows = store.delete_schedule(&id).await?;
     if rows == 0 {
-        return Err(HttpError::from(AppError::NotFound(
-            format!("schedule {id} not found").into(),
-        )));
+        return Err(HttpError::from(AppError::NotFound(format!(
+            "schedule {id} not found"
+        ))));
     }
 
     let pool = ctx
@@ -189,9 +189,9 @@ pub async fn delete_tenant_schedule(
     let store = db_schedules::ScheduleStore::new(&__pool_6);
     let rows = store.delete_schedule_for_tenant(&tenant_id, &id).await?;
     if rows == 0 {
-        return Err(HttpError::from(AppError::NotFound(
-            format!("schedule {id} not found for tenant {tenant_id}").into(),
-        )));
+        return Err(HttpError::from(AppError::NotFound(format!(
+            "schedule {id} not found for tenant {tenant_id}"
+        ))));
     }
 
     let pool = ctx

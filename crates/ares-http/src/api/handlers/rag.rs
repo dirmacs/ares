@@ -226,13 +226,10 @@ pub async fn ingest(
         .is_rag_source_allowed(&claims.sub, &payload.collection)
         .await?
     {
-        return Err(HttpError::from(AppError::Auth(
-            format!(
-                "RAG source '{}' is not allowed for this tenant",
-                payload.collection
-            )
-            .into(),
-        )));
+        return Err(HttpError::from(AppError::Auth(format!(
+            "RAG source '{}' is not allowed for this tenant",
+            payload.collection
+        ))));
     }
 
     // Scope collection to user for isolation
@@ -288,7 +285,7 @@ pub async fn ingest(
     let mut documents = Vec::with_capacity(chunks.len());
     let mut document_ids = Vec::with_capacity(chunks.len());
 
-    for (i, (chunk, embedding)) in chunks.iter().zip(embeddings.into_iter()).enumerate() {
+    for (i, (chunk, embedding)) in chunks.iter().zip(embeddings).enumerate() {
         let doc_id = format!("{}_{}", base_id, i);
         document_ids.push(doc_id.clone());
 
@@ -361,13 +358,10 @@ pub async fn search(
         .is_rag_source_allowed(&claims.sub, &payload.collection)
         .await?
     {
-        return Err(HttpError::from(AppError::Auth(
-            format!(
-                "RAG source '{}' is not allowed for this tenant",
-                payload.collection
-            )
-            .into(),
-        )));
+        return Err(HttpError::from(AppError::Auth(format!(
+            "RAG source '{}' is not allowed for this tenant",
+            payload.collection
+        ))));
     }
 
     // Validate input
@@ -384,9 +378,10 @@ pub async fn search(
 
     // Check collection exists
     if !vector_store.collection_exists(&scoped_collection).await? {
-        return Err(HttpError::from(AppError::NotFound(
-            format!("Collection '{}' not found", payload.collection).into(),
-        )));
+        return Err(HttpError::from(AppError::NotFound(format!(
+            "Collection '{}' not found",
+            payload.collection
+        ))));
     }
 
     // Parse search strategy
@@ -602,13 +597,10 @@ pub async fn delete_collection(
         .is_rag_source_allowed(&claims.sub, &payload.collection)
         .await?
     {
-        return Err(HttpError::from(AppError::Auth(
-            format!(
-                "RAG source '{}' is not allowed for this tenant",
-                payload.collection
-            )
-            .into(),
-        )));
+        return Err(HttpError::from(AppError::Auth(format!(
+            "RAG source '{}' is not allowed for this tenant",
+            payload.collection
+        ))));
     }
 
     // Scope collection to user for isolation
@@ -623,9 +615,10 @@ pub async fn delete_collection(
 
     // Check collection exists
     if !vector_store.collection_exists(&scoped_collection).await? {
-        return Err(HttpError::from(AppError::NotFound(
-            format!("Collection '{}' not found", payload.collection).into(),
-        )));
+        return Err(HttpError::from(AppError::NotFound(format!(
+            "Collection '{}' not found",
+            payload.collection
+        ))));
     }
 
     // Get document count before deletion

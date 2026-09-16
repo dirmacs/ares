@@ -5,13 +5,17 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 
 pub async fn track_usage(mut req: Request, next: Next) -> Response {
-    let tenant_id = req
+    let (tenant_id, api_key_id) = req
         .extensions()
         .get::<ares_types::models::TenantContext>()
-        .map(|c| c.tenant_id.clone());
+        .map(|c| (c.tenant_id.clone(), c.api_key_id.clone()))
+        .map(|(tid, kid)| (Some(tid), kid))
+        .unwrap_or((None, None));
     let tenant_db = req.extensions().get::<Arc<TenantDb>>().cloned();
 
-    let usage = tenant_id.as_ref().map(|tid| UsageContext::new(tid.clone()));
+    let usage = tenant_id
+        .as_ref()
+        .map(|tid| UsageContext::new(tid.clone()).with_api_key(api_key_id.clone()));
     if let Some(ref usage) = usage {
         req.extensions_mut().insert(usage.clone());
     }
@@ -19,13 +23,23 @@ pub async fn track_usage(mut req: Request, next: Next) -> Response {
     let response = next.run(req).await;
 
     if should_record_usage(tenant_id.as_deref(), tenant_db.is_some()) {
-        if let Some(snapshot) = usage.as_ref().and_then(|u| u.snapshot()) {
+        // Snapshot path is authoritative (handlers record success explicitly).
+        // Header fallback revives the dead path for emitters that only set
+        // metering headers via `usage_response`: parse them when no snapshot
+        // was recorded. Failed runs persist with success=false, never skipped.
+        let snapshot = usage
+            .as_ref()
+            .and_then(|u| u.snapshot())
+            .or_else(|| parse_metering_headers(response.headers()));
+        if let Some(snapshot) = snapshot {
             let tid = tenant_id.expect("checked above");
             let db = tenant_db.expect("checked above");
             let pool = db.pool().clone();
             let tenant_id = usage.as_ref().map(|u| u.tenant_id.clone()).unwrap_or(tid);
+            let api_key_id = usage.as_ref().and_then(|u| u.api_key_id.clone());
             tokio::spawn(async move {
-                let _ = record_usage_params(&tenant_id, &snapshot, &pool).await;
+                let _ =
+                    record_usage_params(&tenant_id, api_key_id.as_deref(), &snapshot, &pool).await;
             });
         }
     }
@@ -42,12 +56,19 @@ pub(crate) struct MeteringSnapshot {
     pub model_name: Option<String>,
     pub agent_name: Option<String>,
     pub provider_name: Option<String>,
+    pub success: bool,
+    pub counts_source: Option<String>,
 }
 
 /// Request-scoped usage metering, interceptable via Cordis `with_intercept`.
+///
+/// `api_key_id` threads per-key attribution from the verified API key
+/// (`TenantContext.api_key_id`) to the `usage_events.api_key_id` column.
+/// `None` for non-key writers (scheduler/trigger/pipeline leave it NULL).
 #[derive(Debug)]
 pub struct UsageContext {
     pub tenant_id: String,
+    pub api_key_id: Option<String>,
     snapshot: Arc<Mutex<Option<MeteringSnapshot>>>,
 }
 
@@ -55,6 +76,7 @@ impl Clone for UsageContext {
     fn clone(&self) -> Self {
         Self {
             tenant_id: self.tenant_id.clone(),
+            api_key_id: self.api_key_id.clone(),
             snapshot: Arc::clone(&self.snapshot),
         }
     }
@@ -64,8 +86,14 @@ impl UsageContext {
     pub fn new(tenant_id: impl Into<String>) -> Self {
         Self {
             tenant_id: tenant_id.into(),
+            api_key_id: None,
             snapshot: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub fn with_api_key(mut self, api_key_id: Option<String>) -> Self {
+        self.api_key_id = api_key_id;
+        self
     }
 
     pub fn record(&self, snapshot: MeteringSnapshot) {
@@ -102,6 +130,9 @@ pub(crate) struct UsageEventParams {
     pub model_name: Option<String>,
     pub agent_name: Option<String>,
     pub provider_name: Option<String>,
+    pub success: bool,
+    pub counts_source: Option<String>,
+    pub api_key_id: Option<String>,
 }
 
 /// Returns true when tenant context and DB are both available for usage recording.
@@ -116,6 +147,43 @@ pub(crate) fn has_metering_headers(headers: &axum::http::HeaderMap) -> bool {
         || headers.contains_key("x-model-name")
         || headers.contains_key("x-agent-name")
         || headers.contains_key("x-provider-name")
+        || headers.contains_key("x-success")
+        || headers.contains_key("x-counts-source")
+}
+
+/// Maps a completion status to the `success` bind. Only `completed` bills as
+/// success; every other status (`failed`, `error`, `cancelled`) is failure.
+pub(crate) fn metering_success(status: &str) -> bool {
+    status == "completed"
+}
+
+/// Parses the `x-success` header. Missing means success (backwards compat for
+/// emitters that predate the flag); explicit `false`/`0` means failure.
+pub(crate) fn parse_success_header(headers: &axum::http::HeaderMap) -> bool {
+    !matches!(
+        headers
+            .get("x-success")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("false" | "0" | "failed" | "error")
+    )
+}
+
+/// Parses the `x-counts-source` header (`reported`/`estimated`/`unknown`).
+/// Anything else (including missing) maps to `None` so old rows stay NULL.
+pub(crate) fn parse_counts_source_header(headers: &axum::http::HeaderMap) -> Option<String> {
+    match headers
+        .get("x-counts-source")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("reported") => Some("reported".to_string()),
+        Some("estimated") => Some("estimated".to_string()),
+        Some("unknown") => Some("unknown".to_string()),
+        _ => None,
+    }
 }
 
 /// Parses metering headers into a snapshot, or `None` when no metering headers are set.
@@ -151,6 +219,8 @@ pub(crate) fn parse_metering_headers(headers: &axum::http::HeaderMap) -> Option<
             .get("x-provider-name")
             .and_then(|v| v.to_str().ok())
             .map(|v| v.to_string()),
+        success: parse_success_header(headers),
+        counts_source: parse_counts_source_header(headers),
     })
 }
 
@@ -163,6 +233,16 @@ pub(crate) fn extract_metering_from_response(
 
 /// Builds INSERT bind parameters from a tenant id and metering snapshot.
 pub(crate) fn usage_event_params(tenant_id: &str, snapshot: &MeteringSnapshot) -> UsageEventParams {
+    usage_event_params_with_key(tenant_id, None, snapshot)
+}
+
+/// Builds INSERT bind parameters with per-key attribution.
+/// `api_key_id=None` for non-key writers (scheduler/trigger/pipeline).
+pub(crate) fn usage_event_params_with_key(
+    tenant_id: &str,
+    api_key_id: Option<&str>,
+    snapshot: &MeteringSnapshot,
+) -> UsageEventParams {
     UsageEventParams {
         tenant_id: tenant_id.to_string(),
         request_count: 1,
@@ -172,22 +252,31 @@ pub(crate) fn usage_event_params(tenant_id: &str, snapshot: &MeteringSnapshot) -
         model_name: snapshot.model_name.clone(),
         agent_name: snapshot.agent_name.clone(),
         provider_name: snapshot.provider_name.clone(),
+        success: snapshot.success,
+        counts_source: snapshot.counts_source.clone(),
+        api_key_id: api_key_id.map(|s| s.to_string()),
     }
 }
 
-/// Reads intercepted [`UsageContext`] and maps its snapshot to INSERT params.
+/// Reads intercepted [`UsageContext`] and maps its snapshot to INSERT params,
+/// threading per-key attribution from the context.
 pub(crate) fn usage_event_params_from_ctx(ctx: &Arc<Context>) -> Option<UsageEventParams> {
     let usage = ctx.get::<UsageContext>()?;
     let snapshot = usage.snapshot()?;
-    Some(usage_event_params(&usage.tenant_id, &snapshot))
+    Some(usage_event_params_with_key(
+        &usage.tenant_id,
+        usage.api_key_id.as_deref(),
+        &snapshot,
+    ))
 }
 
 async fn record_usage_params(
     tenant_id: &str,
+    api_key_id: Option<&str>,
     snapshot: &MeteringSnapshot,
     pool: &sqlx::PgPool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let params = usage_event_params(tenant_id, snapshot);
+    let params = usage_event_params_with_key(tenant_id, api_key_id, snapshot);
 
     // Record usage event.
     // Use runtime `sqlx::query` (not the `query!` macro) so downstream
@@ -195,7 +284,7 @@ async fn record_usage_params(
     // Library crates that ship via crates.io cannot rely on a live DB
     // or bundled cache being available to their consumers.
     sqlx::query(
-        "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, 'http', $3, $4, $5, $6, $7, $8, $9, $10)",
+        "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, success, counts_source, api_key_id, created_at) VALUES ($1, $2, 'http', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
     )
     .bind(uuid::Uuid::new_v4().to_string())
     .bind(params.tenant_id)
@@ -206,6 +295,9 @@ async fn record_usage_params(
     .bind(params.model_name)
     .bind(params.agent_name)
     .bind(params.provider_name)
+    .bind(params.success)
+    .bind(params.counts_source)
+    .bind(params.api_key_id)
     .bind(chrono::Utc::now().timestamp())
     .execute(pool)
     .await?;
@@ -376,6 +468,8 @@ mod tests {
             model_name: Some("test-model".to_string()),
             agent_name: Some("agent".to_string()),
             provider_name: Some("openai".to_string()),
+            success: true,
+            counts_source: Some("reported".to_string()),
         };
 
         let params = usage_event_params("tenant-abc", &snapshot);
@@ -398,6 +492,8 @@ mod tests {
             model_name: None,
             agent_name: None,
             provider_name: Some("anthropic".to_string()),
+            success: false,
+            counts_source: Some("estimated".to_string()),
         };
 
         let params = usage_event_params("t", &snapshot);
@@ -437,10 +533,14 @@ mod tests {
             model_name: Some("gpt".into()),
             agent_name: Some("bot".into()),
             provider_name: Some("openai".into()),
+            success: true,
+            counts_source: Some("reported".to_string()),
         });
         let params = usage_event_params_from_ctx(&child).expect("recorded snapshot");
         assert_eq!(params.tenant_id, "acme");
         assert_eq!(params.token_count, 10);
+        assert!(params.success);
+        assert_eq!(params.counts_source.as_deref(), Some("reported"));
     }
 
     #[test]
@@ -460,6 +560,8 @@ mod tests {
             model_name: Some("gpt".into()),
             agent_name: Some("bot".into()),
             provider_name: Some("openai".into()),
+            success: true,
+            counts_source: None,
         });
         let snapshot = cloned.snapshot().expect("clone must share snapshot");
         assert_eq!(snapshot.token_count, 10);
@@ -480,6 +582,8 @@ mod tests {
             model_name: Some("gpt".into()),
             agent_name: Some("bot".into()),
             provider_name: Some("openai".into()),
+            success: true,
+            counts_source: Some("estimated".to_string()),
         });
         let params = usage_event_params_from_ctx(&child).expect("intercepted clone sees record");
         assert_eq!(params.tenant_id, "acme");
@@ -497,8 +601,97 @@ mod tests {
             model_name: None,
             agent_name: None,
             provider_name: None,
+            success: true,
+            counts_source: None,
         });
         let clone = usage.clone();
         assert_eq!(clone.snapshot().map(|s| s.token_count), Some(3));
+    }
+
+    #[test]
+    fn metering_success_only_completed_is_success() {
+        assert!(metering_success("completed"));
+        assert!(!metering_success("failed"));
+        assert!(!metering_success("error"));
+        assert!(!metering_success("cancelled"));
+        assert!(!metering_success(""));
+    }
+
+    #[test]
+    fn parse_success_header_defaults_true_and_parses_false() {
+        assert!(parse_success_header(&HeaderMap::new()));
+        assert!(parse_success_header(&headers_with(&[(
+            "x-success",
+            "true"
+        )])));
+        assert!(!parse_success_header(&headers_with(&[(
+            "x-success",
+            "false"
+        )])));
+        assert!(!parse_success_header(&headers_with(&[("x-success", "0")])));
+        assert!(!parse_success_header(&headers_with(&[(
+            "x-success",
+            "failed"
+        )])));
+    }
+
+    #[test]
+    fn parse_counts_source_header_accepts_known_vocabulary() {
+        assert_eq!(
+            parse_counts_source_header(&headers_with(&[("x-counts-source", "reported")])),
+            Some("reported".to_string())
+        );
+        assert_eq!(
+            parse_counts_source_header(&headers_with(&[("x-counts-source", "estimated")])),
+            Some("estimated".to_string())
+        );
+        assert_eq!(
+            parse_counts_source_header(&headers_with(&[("x-counts-source", "unknown")])),
+            Some("unknown".to_string())
+        );
+        assert_eq!(parse_counts_source_header(&HeaderMap::new()), None);
+        assert_eq!(
+            parse_counts_source_header(&headers_with(&[("x-counts-source", "bogus")])),
+            None
+        );
+    }
+
+    #[test]
+    fn has_metering_headers_true_for_success_and_source() {
+        assert!(has_metering_headers(&headers_with(&[(
+            "x-success",
+            "false"
+        )])));
+        assert!(has_metering_headers(&headers_with(&[(
+            "x-counts-source",
+            "reported"
+        )])));
+    }
+
+    #[test]
+    fn parse_metering_headers_maps_failed_zeroed_snapshot() {
+        let headers = headers_with(&[
+            ("x-input-tokens", "0"),
+            ("x-output-tokens", "0"),
+            ("x-success", "false"),
+            ("x-counts-source", "estimated"),
+        ]);
+        let snapshot = parse_metering_headers(&headers).expect("snapshot");
+        assert_eq!(snapshot.input_tokens, 0);
+        assert_eq!(snapshot.output_tokens, 0);
+        assert_eq!(snapshot.token_count, 0);
+        assert!(!snapshot.success);
+        assert_eq!(snapshot.counts_source.as_deref(), Some("estimated"));
+        let params = usage_event_params("t-failed", &snapshot);
+        assert!(!params.success);
+        assert_eq!(params.token_count, 0);
+    }
+
+    #[test]
+    fn parse_metering_headers_success_defaults_true_without_flag() {
+        let headers = headers_with(&[("x-input-tokens", "5"), ("x-output-tokens", "7")]);
+        let snapshot = parse_metering_headers(&headers).expect("snapshot");
+        assert!(snapshot.success);
+        assert_eq!(snapshot.counts_source, None);
     }
 }

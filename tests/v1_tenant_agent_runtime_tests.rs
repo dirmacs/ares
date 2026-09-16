@@ -124,6 +124,12 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
             parallel_tools: false,
             extra: HashMap::new(),
             compaction_enabled: None,
+            temperature: None,
+            max_tokens: None,
+            stop: None,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
         },
     );
     agents.insert(
@@ -137,6 +143,12 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
             parallel_tools: false,
             extra: HashMap::new(),
             compaction_enabled: None,
+            temperature: None,
+            max_tokens: None,
+            stop: None,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
         },
     );
 
@@ -272,7 +284,7 @@ async fn provision_tenant(tenant_db: &Arc<TenantDb>, prefix: &str) -> (String, S
         .await
         .expect("allow mock-model");
     let (_, api_key) = tenant_db
-        .create_api_key(&tenant.id, format!("{}-key", prefix))
+        .create_api_key(&tenant.id, format!("{}-key", prefix), None, None)
         .await
         .expect("create api key");
     (tenant.id, api_key)
@@ -635,4 +647,142 @@ async fn test_v1_run_agent_persists_trace_rows() {
         cost.total_llm_calls >= 1,
         "expected run_costs to reflect llm calls"
     );
+}
+
+// ── Metering truth (MeterBuild) ──────────────────────────────────────────
+// Failed runs persist success=false with zeroed counts; estimates labeled;
+// dead HTTP path revived via UsageContext snapshot + header fallback.
+
+#[tokio::test]
+async fn test_v1_chat_success_meters_success_true() {
+    // Live: /v1/chat success emits x-success=true plus x-counts-source and
+    // persists a usage_events row with success=true (header fallback covers
+    // the snapshot when the handler only sets headers).
+    let (server, tenant_db) = create_v1_test_server().await;
+    let (tenant_id, api_key) = provision_tenant(&tenant_db, "meter-chat-ok").await;
+
+    let response = server
+        .post("/api/v1/chat")
+        .add_header("Authorization", format!("Bearer {}", api_key))
+        .json(&json!({
+            "message": "hello",
+            "agent_type": "product"
+        }))
+        .await;
+
+    assert_eq!(response.status_code(), 200);
+    let headers = response.headers();
+    assert_eq!(
+        headers.get("x-success").and_then(|v| v.to_str().ok()),
+        Some("true")
+    );
+    let source = headers
+        .get("x-counts-source")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        source == "reported" || source == "estimated",
+        "expected reported/estimated, got {source:?}"
+    );
+
+    // usage write is spawned: poll with a deadline.
+    let deadline = std::time::Duration::from_secs(10);
+    let started = std::time::Instant::now();
+    let row = loop {
+        let row: Option<(i64, i64, bool, Option<String>)> = sqlx::query_as(
+            "SELECT token_count, request_count, success, counts_source FROM usage_events WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(&tenant_id)
+        .fetch_optional(tenant_db.pool())
+        .await
+        .expect("query usage_events");
+        if row.is_some() || started.elapsed() >= deadline {
+            break row;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    let (tokens, requests, success, counts_source) =
+        row.expect("usage_events row must appear before deadline");
+    assert!(success, "chat success must persist success=true");
+    assert_eq!(requests, 1);
+    assert!(tokens >= 0);
+    assert!(
+        matches!(
+            counts_source.as_deref(),
+            Some("reported") | Some("estimated")
+        ),
+        "expected labeled counts_source, got {counts_source:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_usage_ingest_ok_and_timeout_success_mapping() {
+    // Live: ingest ok bills success=true, timeout bills success=false, both
+    // labeled counts_source='unknown'. SUM WHERE success excludes failures.
+    let (server, tenant_db) = create_v1_test_server().await;
+    let (tenant_id, api_key) = provision_tenant(&tenant_db, "meter-ingest").await;
+    insert_tenant_agent(&tenant_db, &tenant_id, "ingest-ok", "probe").await;
+    insert_tenant_agent(&tenant_db, &tenant_id, "ingest-timeout", "probe").await;
+
+    let ok_id = format!("req-ok-{}", Uuid::new_v4());
+    let timeout_id = format!("req-timeout-{}", Uuid::new_v4());
+    let response = server
+        .post("/api/v1/usage/events")
+        .add_header("Authorization", format!("Bearer {}", api_key))
+        .json(&json!([
+            {
+                "agent": "ingest-ok",
+                "model": "mock-model",
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "outcome_class": "ok",
+                "latency_ms": 100,
+                "request_id": ok_id,
+            },
+            {
+                "agent": "ingest-timeout",
+                "model": "mock-model",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "outcome_class": "timeout",
+                "latency_ms": 5000,
+                "request_id": timeout_id,
+            }
+        ]))
+        .await;
+
+    assert_eq!(response.status_code(), 202);
+
+    let ok_row: (bool, Option<String>, i64) = sqlx::query_as(
+        "SELECT success, counts_source, token_count FROM usage_events WHERE tenant_id = $1 AND request_id = $2",
+    )
+    .bind(&tenant_id)
+    .bind(&ok_id)
+    .fetch_one(tenant_db.pool())
+    .await
+    .expect("ok row");
+    assert!(ok_row.0, "ingest ok must map success=true");
+    assert_eq!(ok_row.1.as_deref(), Some("unknown"));
+    assert_eq!(ok_row.2, 15);
+
+    let timeout_row: (bool, Option<String>) = sqlx::query_as(
+        "SELECT success, counts_source FROM usage_events WHERE tenant_id = $1 AND request_id = $2",
+    )
+    .bind(&tenant_id)
+    .bind(&timeout_id)
+    .fetch_one(tenant_db.pool())
+    .await
+    .expect("timeout row");
+    assert!(!timeout_row.0, "ingest timeout must map success=false");
+    assert_eq!(timeout_row.1.as_deref(), Some("unknown"));
+
+    // Quota view: SUM WHERE success counts only the ok row.
+    let billed: (i64,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(token_count)::bigint, 0) FROM usage_events WHERE tenant_id = $1 AND success",
+    )
+    .bind(&tenant_id)
+    .fetch_one(tenant_db.pool())
+    .await
+    .expect("sum where success");
+    assert_eq!(billed.0, 15, "failed ingest rows must not bill");
 }

@@ -10,6 +10,7 @@ use crate::Result;
 use ares_agent::context_provider::AgentRuntimeContext;
 use ares_agent::research::coordinator::ResearchCoordinator;
 use ares_store::agent_runs;
+use ares_store::run_history::{redact_agent_run_error, tenant_no_retain};
 use ares_types::models::TenantContext;
 use ares_types::types::{
     AgentContext, AgentType, AppError, ChatRequest, ChatResponse, ResearchRequest, ResearchResponse,
@@ -28,6 +29,11 @@ pub async fn v1_chat(
     Json(payload): Json<ChatRequest>,
 ) -> Result<axum::response::Response> {
     let tc = extract_tenant(ctx)?;
+    // Clone the metering handle before moving it into the Cordis intercept so
+    // both success and failure paths can `record` with an explicit success
+    // flag. Snapshot is authoritative; headers are the fallback in
+    // `track_usage`. Failed runs persist success=false with zeroed counts.
+    let usage_ctx = usage.clone().map(|Extension(u)| u);
     // Open the tenant realm when TenantRealms is on ctx, then intercept TenantContext.
     let state_ctx = ares_agent::request_tenant_ctx(&state_ctx, tc.clone());
     let state_ctx = match usage {
@@ -135,16 +141,95 @@ pub async fn v1_chat(
         if let Some(ext) = eruka_context.clone() {
             req_ctx.provide(ares_agent::ExternalContext(ext));
         }
-        let exec_result = exec_svc.run(&req, &req_ctx).await?;
+        let exec_result = match exec_svc.run(&req, &req_ctx).await {
+            Ok(ok) => ok,
+            Err(e) => {
+                // Failure path still meters: zeroed counts with success=false.
+                // Error text stays in the body via HttpError; headers carry
+                // only the boolean flag (never raw text).
+                if let Some(u) = usage_ctx.as_ref() {
+                    u.record(metering_snapshot(
+                        0,
+                        0,
+                        None,
+                        Some(agent_name.clone()),
+                        None,
+                        false,
+                        Some("estimated".to_string()),
+                    ));
+                }
+                {
+                    let pool = state_ctx
+                        .get::<ares_store::TenantDb>()
+                        .expect("not provided")
+                        .pool()
+                        .clone();
+                    let tid = tc.tenant_id.clone();
+                    let aname = agent_name.clone();
+                    let no_retain = tenant_no_retain(&pool, &tid).await;
+                    let err_text = redact_agent_run_error(no_retain, Some(&e.to_string()));
+                    let metadata = agent_runs::AgentRunMetadata {
+                        workspace_id: payload.workspace_id.clone(),
+                        session_id: Some(agent_context.session_id.clone()),
+                        request_source: Some("api_v1_chat".to_string()),
+                        product: None,
+                        agent_config_source: Some("execute".to_string()),
+                        agent_config_version: None,
+                        eruka_binding_id: None,
+                        eruka_context_hit,
+                        eruka_read_count: if eruka_context_hit { 1 } else { 0 },
+                        eruka_write_count: 0,
+                        pipeline_id: None,
+                        schedule_id: None,
+                        trigger_id: None,
+                    };
+                    let duration_ms = start.elapsed().as_millis() as i64;
+                    tokio::spawn(async move {
+                        let _ = agent_runs::insert_agent_run_with_metadata(
+                            &pool,
+                            &tid,
+                            &aname,
+                            None,
+                            "failed",
+                            0,
+                            0,
+                            duration_ms,
+                            err_text.as_deref(),
+                            "unknown",
+                            "unknown",
+                            false,
+                            Some(&metadata),
+                        )
+                        .await;
+                    });
+                }
+                return Err(HttpError::from(e));
+            }
+        };
         let duration_ms = start.elapsed().as_millis() as i64;
         let response_text = exec_result.response.content;
         let (model_name, provider_name) =
             execution_metadata_names(exec_result.response.metadata.as_ref());
+        let counts_source = llm_counts_source(exec_result.response.usage.as_ref()).to_string();
         let (input_tokens, output_tokens) = llm_token_counts_u32(
             exec_result.response.usage.as_ref(),
             &effective_message,
             &response_text,
         );
+
+        // Success path meters with success=true. Snapshot is authoritative;
+        // headers are the fallback parsed by `track_usage`.
+        if let Some(u) = usage_ctx.as_ref() {
+            u.record(metering_snapshot(
+                input_tokens as i64,
+                output_tokens as i64,
+                Some(model_name.clone()),
+                Some(exec_result.agent_name.clone()),
+                Some(provider_name.clone()),
+                true,
+                Some(counts_source.clone()),
+            ));
+        }
 
         // Record agent run with metadata from ExecutionResult
         {
@@ -194,18 +279,26 @@ pub async fn v1_chat(
             });
         }
 
-        return Ok(axum::Json(serde_json::json!({
-            "response": response_text,
-            "agent": exec_result.agent_name,
-            "source": exec_result.source.as_str(),
-            "model": model_name,
-            "provider": provider_name,
-            "usage": {
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-            }
-        }))
-        .into_response());
+        return Ok(usage_response(
+            serde_json::json!({
+                "response": response_text,
+                "agent": exec_result.agent_name,
+                "source": exec_result.source.as_str(),
+                "model": model_name,
+                "provider": provider_name,
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                }
+            }),
+            input_tokens as u64,
+            output_tokens as u64,
+            &model_name,
+            &provider_name,
+            &exec_result.agent_name,
+            true,
+            &counts_source,
+        ));
     }
 
     Err(HttpError::from(AppError::Unavailable(
@@ -249,6 +342,9 @@ pub async fn v1_research(
     Json(payload): Json<ResearchRequest>,
 ) -> Result<Response> {
     let tc = extract_tenant(ctx)?;
+    // Keep the metering handle for the failure path (headers cannot carry
+    // metering on Err, so the snapshot path persists success=false).
+    let usage_ctx = usage.clone().map(|Extension(u)| u);
     let state_ctx = ares_agent::request_tenant_ctx(&state_ctx, tc.clone());
     let state_ctx = match usage {
         Some(Extension(u)) => state_ctx.with_intercept(u),
@@ -302,7 +398,40 @@ pub async fn v1_research(
     ensure_research_model_allowed(&state_ctx, &tc.tenant_id, &model_name).await?;
 
     let coordinator = ResearchCoordinator::new(llm_client, depth, max_iterations);
-    let (findings, sources, usage) = coordinator.research_with_usage(&payload.query).await?;
+    let (findings, sources, research_usage) =
+        match coordinator.research_with_usage(&payload.query).await {
+            Ok(ok) => ok,
+            Err(e) => {
+                // Failure path still meters: zeroed counts, success=false.
+                // Headers cannot carry metering on Err; the snapshot path does.
+                // Error text stays in the body; never in headers.
+                if let Some(u) = usage_ctx.as_ref() {
+                    u.record(metering_snapshot(
+                        0,
+                        0,
+                        Some(model_name.clone()),
+                        Some("research".to_string()),
+                        Some(configured_provider.clone()),
+                        false,
+                        Some("estimated".to_string()),
+                    ));
+                }
+                return Err(HttpError::from(e));
+            }
+        };
+
+    // Research token totals accumulate provider-reported usage across phases.
+    if let Some(u) = usage_ctx.as_ref() {
+        u.record(metering_snapshot(
+            research_usage.input_tokens as i64,
+            research_usage.output_tokens as i64,
+            Some(model_name.clone()),
+            Some("research".to_string()),
+            Some(configured_provider.clone()),
+            true,
+            Some("reported".to_string()),
+        ));
+    }
 
     let response = ResearchResponse {
         findings,
@@ -312,11 +441,13 @@ pub async fn v1_research(
 
     Ok(usage_response(
         response,
-        usage.input_tokens as u64,
-        usage.output_tokens as u64,
+        research_usage.input_tokens as u64,
+        research_usage.output_tokens as u64,
         &model_name,
         &configured_provider,
         "research",
+        true,
+        "reported",
     ))
 }
 

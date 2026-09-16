@@ -57,10 +57,11 @@ impl Drop for RunCompletionGuard {
             // Flag off persists exactly 'cancelled' as before.
             let error = redact_agent_run_error(no_retain, Some("cancelled")).unwrap_or_default();
             let _ = sqlx::query(
-                "UPDATE agent_runs SET status = 'failed', error = $2 WHERE id = $1 AND status = 'running'",
+                "UPDATE agent_runs SET status = 'failed', error = $2, updated_at = $3 WHERE id = $1 AND status = 'running'",
             )
             .bind(&run_id)
             .bind(&error)
+            .bind(chrono::Utc::now().timestamp())
             .execute(&pool)
             .await;
         });
@@ -302,7 +303,7 @@ pub async fn run_agent(
             let err_msg =
                 redact_agent_run_error(no_retain, skill_result.as_ref().err().map(String::as_str));
             sqlx::query(
-                "UPDATE agent_runs SET status = $2, input_tokens = $3, output_tokens = $4, duration_ms = $5, error = $6 WHERE id = $1",
+                "UPDATE agent_runs SET status = $2, input_tokens = $3, output_tokens = $4, duration_ms = $5, error = $6, updated_at = $7 WHERE id = $1",
             )
             .bind(&run_id)
             .bind(status)
@@ -310,6 +311,7 @@ pub async fn run_agent(
             .bind(output_tokens)
             .bind(dur)
             .bind(err_msg.as_deref())
+            .bind(Utc::now().timestamp())
             .execute(&pool)
             .await
             .map_err(|e| HttpError::from(ares_types::types::AppError::Database(e.to_string())))?;
@@ -565,7 +567,7 @@ pub async fn run_agent(
                 let otok = output_tokens as i64;
                 let dur = duration_ms as i64;
                 sqlx::query(
-                    "UPDATE agent_runs SET status = 'completed', input_tokens = $2, output_tokens = $3, duration_ms = $4, error = NULL, model_name = $5, provider_name = $6 WHERE id = $1",
+                    "UPDATE agent_runs SET status = 'completed', input_tokens = $2, output_tokens = $3, duration_ms = $4, error = NULL, model_name = $5, provider_name = $6, updated_at = $7 WHERE id = $1",
                 )
                 .bind(&run_id)
                 .bind(itok)
@@ -573,6 +575,7 @@ pub async fn run_agent(
                 .bind(dur)
                 .bind(&model_name)
                 .bind(&provider_name)
+                .bind(Utc::now().timestamp())
                 .execute(&pool)
                 .await
                 .map_err(|e| HttpError::from(ares_types::types::AppError::Database(e.to_string())))?;
@@ -652,11 +655,12 @@ pub async fn run_agent(
                 let err_msg = redact_agent_run_error(no_retain, Some(raw_err.as_str()));
                 let dur = duration_ms as i64;
                 sqlx::query(
-                    "UPDATE agent_runs SET status = 'failed', input_tokens = 0, output_tokens = 0, duration_ms = $2, error = $3 WHERE id = $1",
+                    "UPDATE agent_runs SET status = 'failed', input_tokens = 0, output_tokens = 0, duration_ms = $2, error = $3, updated_at = $4 WHERE id = $1",
                 )
                 .bind(&run_id)
                 .bind(dur)
                 .bind(err_msg.as_deref())
+                .bind(Utc::now().timestamp())
                 .execute(&pool)
                 .await
                 .map_err(|e| HttpError::from(ares_types::types::AppError::Database(e.to_string())))?;
@@ -830,7 +834,7 @@ pub async fn list_api_keys(
             name: k.name,
             prefix: k.key_prefix,
             created_at: ts_to_dt(k.created_at),
-            last_used: None,
+            last_used: k.last_used_at.map(ts_to_dt),
             expires_at: k.expires_at.map(ts_to_dt),
             scopes: ares_types::normalize_api_key_scope(Some(&k.scopes)),
         })
@@ -881,7 +885,7 @@ pub async fn create_api_key(
             name: api_key.name,
             prefix: api_key.key_prefix,
             created_at: ts_to_dt(api_key.created_at),
-            last_used: None,
+            last_used: api_key.last_used_at.map(ts_to_dt),
             expires_at: api_key.expires_at.map(ts_to_dt),
             scopes: ares_types::normalize_api_key_scope(Some(&api_key.scopes)),
         },
@@ -951,7 +955,7 @@ pub async fn rotate_api_key(
             name: api_key.name,
             prefix: api_key.key_prefix,
             created_at: ts_to_dt(api_key.created_at),
-            last_used: None,
+            last_used: api_key.last_used_at.map(ts_to_dt),
             expires_at: api_key.expires_at.map(ts_to_dt),
             scopes: ares_types::normalize_api_key_scope(Some(&api_key.scopes)),
         },

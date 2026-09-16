@@ -803,33 +803,9 @@ impl Execute {
 
         let tenant = tenant_from_request_ctx(ctx, None);
 
-        let mut injected_context: Option<String> = None;
-        let provider_opt: Option<Arc<dyn crate::context_provider::ContextProvider>> = req
-            .ctx_provider
-            .clone()
-            .or_else(|| self.context_provider.clone());
-        if let Some(provider) = provider_opt {
-            let tid = tenant.clone().unwrap_or_default();
-            let rt_ctx = crate::context_provider::AgentRuntimeContext::new(
-                tid.clone(),
-                &req.agent_name,
-                "agent_execution",
-            );
-            if let Some(s) = provider.get_context_for_run(&rt_ctx).await {
-                tracing::debug!(
-                    len = s.len(),
-                    "memory injected via ContextProvider::get_context_for_run"
-                );
-                injected_context = Some(s);
-            } else if let Some(s) = provider.get_context(&req.agent_name, &tid).await {
-                tracing::debug!(
-                    len = s.len(),
-                    "memory injected via ContextProvider::get_context"
-                );
-                injected_context = Some(s);
-            }
-        }
-
+        let injected_context = self
+            .injected_context_from_provider(&req, tenant.as_deref())
+            .await;
         let tools = ctx.get::<ares_tools::Tools>().unwrap_or_else(|| {
             Arc::new(ares_tools::Tools::from_static(std::iter::empty::<
                 Arc<dyn ares_tools::Tool>,
@@ -854,29 +830,7 @@ You are {}.",
             format!("You are {}.", req.agent_name)
         };
 
-        let mut base_messages: Vec<ares_llm::coordinator::ConversationMessage> = Vec::new();
-        base_messages.push(ares_llm::coordinator::ConversationMessage::system(
-            system_prompt.clone(),
-        ));
-        for msg in &req.history {
-            let mut cm = match msg.role {
-                ares_types::types::MessageRole::User => {
-                    ares_llm::coordinator::ConversationMessage::user(&msg.content)
-                }
-                ares_types::types::MessageRole::Assistant => {
-                    ares_llm::coordinator::ConversationMessage::assistant(&msg.content, vec![])
-                }
-                _ => ares_llm::coordinator::ConversationMessage::system(&msg.content),
-            };
-            cm.parts = msg.parts.clone();
-            base_messages.push(cm);
-        }
-        base_messages.push(user_message_with_parts(
-            req.message.clone(),
-            req.parts.clone(),
-            req.previous_response_id.clone(),
-        ));
-
+        let base_messages = Self::build_conversation_messages(&req, &system_prompt);
         let llm = match ctx.get::<ares_llm::Llm>() {
             Some(llm) => Some(llm),
             None if self.strict_fallbacks => {
@@ -897,137 +851,29 @@ You are {}.",
                         req.web_search,
                         req.previous_response_id.clone(),
                     );
-                    if !req.parts.is_empty() || req.previous_response_id.is_some() {
-                        let llm_start = std::time::Instant::now();
-                        match client
-                            .generate_with_tools_and_history(&base_messages, &tool_definitions)
-                            .await
-                        {
-                            Ok(resp) => {
-                                if let Some(obs) = req.observability.clone() {
-                                    let llm_latency = llm_start.elapsed().as_millis() as i64;
-                                    let prompt_tok = resp
-                                        .usage
-                                        .as_ref()
-                                        .map(|u| u.prompt_tokens as i64)
-                                        .unwrap_or(0);
-                                    let completion_tok = resp
-                                        .usage
-                                        .as_ref()
-                                        .map(|u| u.completion_tokens as i64)
-                                        .unwrap_or(0);
-                                    let record = ares_llm::observability::LlmCallRecord {
-                                        step_index: 0,
-                                        provider: "unknown".to_string(),
-                                        model: client.model_name().to_string(),
-                                        prompt_tokens: prompt_tok,
-                                        completion_tokens: completion_tok,
-                                        latency_ms: llm_latency,
-                                        status: "success".to_string(),
-                                        cached_tokens: resp
-                                            .usage
-                                            .as_ref()
-                                            .and_then(|u| u.cached_tokens),
-                                        total_time_ms: Some(llm_latency),
-                                    };
-                                    let _ = obs.log_llm_call(record).await;
-                                }
-                                return Ok(AgentResponse {
-                                    content: resp.content,
-                                    usage: resp.usage,
-                                    metadata: None,
-                                });
-                            }
-                            Err(e) => {
-                                if self.strict_fallbacks {
-                                    return Err(AppError::Unavailable(format!(
-                                        "strict_fallbacks: generate_with_tools_and_history failed: {e}"
-                                    )));
-                                }
-                                tracing::warn!(
-                                    error = %e,
-                                    "multimodal generate failed, trying fallback LLM chain"
-                                );
-                            }
-                        }
-                    } else {
-                        let config = ares_llm::coordinator::ToolCallingConfig::default();
-                        let mut coordinator = ares_llm::coordinator::ToolCoordinator::new(
+                    if let Some(outcome) = self
+                        .try_multimodal_generate(
+                            client.as_ref(),
+                            &req,
+                            &base_messages,
+                            &tool_definitions,
+                        )
+                        .await
+                    {
+                        return outcome;
+                    }
+                    if let Some(outcome) = self
+                        .try_tool_coordinator(
+                            ctx,
                             client,
-                            Arc::clone(&tools),
-                            config,
-                        );
-                        // Thread the caller-provided sink so each model/tool
-                        // step writes its row inline (awaited in the loop, so
-                        // partial progress survives error/timeout exits).
-                        if let Some(obs) = req.observability.clone() {
-                            coordinator = coordinator.with_observability(obs);
-                        }
-                        match coordinator
-                            .execute(Some(&system_prompt), &req.message, ctx)
-                            .await
-                        {
-                            Ok(coord_result) => {
-                                if let Some(_db) = tenant_db(ctx) {
-                                    tracing::debug!(
-                                        content_len = coord_result.content.len(),
-                                        "observability sink run_history/agent_runs via TenantDb"
-                                    );
-                                    let _ = _db;
-                                }
-                                let usage = coord_result.total_usage.clone();
-                                if let Some(tdb) = tenant_db(ctx) {
-                                    let _pool = tdb.pool();
-                                    tracing::debug!(
-                                        tenant = ?tenant,
-                                        prompt = usage.prompt_tokens,
-                                        completion = usage.completion_tokens,
-                                        total = usage.total_tokens,
-                                        "token budget check via TenantDb and usage aggregation"
-                                    );
-                                    let _ = _pool;
-                                }
-                                self.emit_observability_typed::<cordis::AgentUsageEvent>(
-                                    ctx,
-                                    &cordis::AgentUsagePayload {
-                                        tenant: tenant.clone(),
-                                        prompt: usage.prompt_tokens as i64,
-                                        completion: usage.completion_tokens as i64,
-                                        total: usage.total_tokens as i64,
-                                    },
-                                )
-                                .await;
-                                let mut detector = crate::loop_detector::LoopDetector::new();
-                                match detector.check(&coord_result.content) {
-                                    crate::loop_detector::LoopStatus::LoopDetected {
-                                        repeats,
-                                        action,
-                                        kind,
-                                    } => {
-                                        tracing::warn!(
-                                            repeats,
-                                            ?action,
-                                            ?kind,
-                                            "loop_detector triggered in Execute"
-                                        );
-                                    }
-                                    crate::loop_detector::LoopStatus::Ok => {}
-                                }
-                                return Ok(AgentResponse {
-                                    content: coord_result.content,
-                                    usage: Some(usage),
-                                    metadata: None,
-                                });
-                            }
-                            Err(e) => {
-                                if self.strict_fallbacks {
-                                    return Err(AppError::Unavailable(format!(
-                                        "strict_fallbacks: ToolCoordinator::execute failed: {e}"
-                                    )));
-                                }
-                                tracing::warn!(error = %e, "ToolCoordinator loop failed, trying fallback LLM chain");
-                            }
-                        }
+                            &tools,
+                            &req,
+                            &system_prompt,
+                            tenant.clone(),
+                        )
+                        .await
+                    {
+                        return outcome;
                     }
                 }
                 Err(e) => {
@@ -1047,28 +893,8 @@ You are {}.",
                     "strict_fallbacks: fallback LLM chain unavailable".into(),
                 ));
             }
-            if let Ok(fb_client) = llm
-                .get_client(ctx, ares_llm::CapabilityRequirements::default())
-                .await
-            {
-                apply_generation_hints(
-                    fb_client.as_ref(),
-                    req.web_search,
-                    req.previous_response_id.clone(),
-                );
-                if let Ok(content) = fb_client.generate(&req.message).await {
-                    if let Some(_db) = tenant_db(ctx) {
-                        tracing::debug!("fallback observability run_history/agent_runs");
-                        let _ = _db;
-                    }
-                    let mut detector = crate::loop_detector::LoopDetector::new();
-                    let _ = detector.check(&content);
-                    return Ok(AgentResponse {
-                        content,
-                        usage: None,
-                        metadata: None,
-                    });
-                }
+            if let Some(response) = self.try_fallback_llm_chain(ctx, &llm, &req).await {
+                return Ok(response);
             }
         }
 
@@ -1092,6 +918,258 @@ You are {}.",
             } else {
                 req.message.clone()
             },
+            usage: None,
+            metadata: None,
+        })
+    }
+
+    /// Inject memory through the request's `ContextProvider` (or the engine's
+    /// fallback provider): `get_context_for_run` first, then `get_context`.
+    async fn injected_context_from_provider(
+        &self,
+        req: &AgentRequest,
+        tenant: Option<&str>,
+    ) -> Option<String> {
+        let provider_opt: Option<Arc<dyn crate::context_provider::ContextProvider>> = req
+            .ctx_provider
+            .clone()
+            .or_else(|| self.context_provider.clone());
+        let provider = provider_opt?;
+        let tid = tenant.unwrap_or_default().to_string();
+        let rt_ctx = crate::context_provider::AgentRuntimeContext::new(
+            tid.clone(),
+            &req.agent_name,
+            "agent_execution",
+        );
+        if let Some(s) = provider.get_context_for_run(&rt_ctx).await {
+            tracing::debug!(
+                len = s.len(),
+                "memory injected via ContextProvider::get_context_for_run"
+            );
+            Some(s)
+        } else if let Some(s) = provider.get_context(&req.agent_name, &tid).await {
+            tracing::debug!(
+                len = s.len(),
+                "memory injected via ContextProvider::get_context"
+            );
+            Some(s)
+        } else {
+            None
+        }
+    }
+
+    /// Build the conversation: system prompt, then history turns, then the
+    /// in-flight user turn with parts and continuation id.
+    fn build_conversation_messages(
+        req: &AgentRequest,
+        system_prompt: &str,
+    ) -> Vec<ares_llm::coordinator::ConversationMessage> {
+        let mut base_messages: Vec<ares_llm::coordinator::ConversationMessage> = Vec::new();
+        base_messages.push(ares_llm::coordinator::ConversationMessage::system(
+            system_prompt,
+        ));
+        for msg in &req.history {
+            let mut cm = match msg.role {
+                ares_types::types::MessageRole::User => {
+                    ares_llm::coordinator::ConversationMessage::user(&msg.content)
+                }
+                ares_types::types::MessageRole::Assistant => {
+                    ares_llm::coordinator::ConversationMessage::assistant(&msg.content, vec![])
+                }
+                _ => ares_llm::coordinator::ConversationMessage::system(&msg.content),
+            };
+            cm.parts = msg.parts.clone();
+            base_messages.push(cm);
+        }
+        base_messages.push(user_message_with_parts(
+            req.message.clone(),
+            req.parts.clone(),
+            req.previous_response_id.clone(),
+        ));
+        base_messages
+    }
+
+    /// Multimodal/history path: when the request carries parts or a
+    /// continuation id, call `generate_with_tools_and_history` directly.
+    /// Returns `None` to fall through to the tool-coordinator path, or the
+    /// failing outcome in strict mode.
+    async fn try_multimodal_generate(
+        &self,
+        client: &dyn ares_llm::LLMClient,
+        req: &AgentRequest,
+        base_messages: &[ares_llm::coordinator::ConversationMessage],
+        tool_definitions: &[ares_types::types::ToolDefinition],
+    ) -> Option<Result<AgentResponse, AppError>> {
+        if req.parts.is_empty() && req.previous_response_id.is_none() {
+            return None;
+        }
+        let llm_start = std::time::Instant::now();
+        match client
+            .generate_with_tools_and_history(base_messages, tool_definitions)
+            .await
+        {
+            Ok(resp) => {
+                if let Some(obs) = req.observability.clone() {
+                    let llm_latency = llm_start.elapsed().as_millis() as i64;
+                    let prompt_tok = resp
+                        .usage
+                        .as_ref()
+                        .map(|u| u.prompt_tokens as i64)
+                        .unwrap_or(0);
+                    let completion_tok = resp
+                        .usage
+                        .as_ref()
+                        .map(|u| u.completion_tokens as i64)
+                        .unwrap_or(0);
+                    let record = ares_llm::observability::LlmCallRecord {
+                        step_index: 0,
+                        provider: "unknown".to_string(),
+                        model: client.model_name().to_string(),
+                        prompt_tokens: prompt_tok,
+                        completion_tokens: completion_tok,
+                        latency_ms: llm_latency,
+                        status: "success".to_string(),
+                        cached_tokens: resp.usage.as_ref().and_then(|u| u.cached_tokens),
+                        total_time_ms: Some(llm_latency),
+                    };
+                    let _ = obs.log_llm_call(record).await;
+                }
+                Some(Ok(AgentResponse {
+                    content: resp.content,
+                    usage: resp.usage,
+                    metadata: None,
+                }))
+            }
+            Err(e) => {
+                if self.strict_fallbacks {
+                    return Some(Err(AppError::Unavailable(format!(
+                        "strict_fallbacks: generate_with_tools_and_history failed: {e}"
+                    ))));
+                }
+                tracing::warn!(
+                    error = %e,
+                    "multimodal generate failed, trying fallback LLM chain"
+                );
+                None
+            }
+        }
+    }
+
+    /// Tool-coordinator path: run the multi-turn tool loop, aggregate usage,
+    /// and emit the usage event. Returns `None` to fall through to the
+    /// fallback chain when the loop fails and strict mode is off.
+    async fn try_tool_coordinator(
+        &self,
+        ctx: &Arc<Context>,
+        client: Box<dyn ares_llm::LLMClient>,
+        tools: &Arc<ares_tools::Tools>,
+        req: &AgentRequest,
+        system_prompt: &str,
+        tenant: Option<String>,
+    ) -> Option<Result<AgentResponse, AppError>> {
+        let config = ares_llm::coordinator::ToolCallingConfig::default();
+        let mut coordinator =
+            ares_llm::coordinator::ToolCoordinator::new(client, Arc::clone(tools), config);
+        // Thread the caller-provided sink so each model/tool step writes its
+        // row inline (awaited in the loop, so partial progress survives
+        // error/timeout exits).
+        if let Some(obs) = req.observability.clone() {
+            coordinator = coordinator.with_observability(obs);
+        }
+        match coordinator
+            .execute(Some(system_prompt), &req.message, ctx)
+            .await
+        {
+            Ok(coord_result) => {
+                if let Some(_db) = tenant_db(ctx) {
+                    tracing::debug!(
+                        content_len = coord_result.content.len(),
+                        "observability sink run_history/agent_runs via TenantDb"
+                    );
+                    let _ = _db;
+                }
+                let usage = coord_result.total_usage.clone();
+                if let Some(tdb) = tenant_db(ctx) {
+                    let _pool = tdb.pool();
+                    tracing::debug!(
+                        tenant = ?tenant,
+                        prompt = usage.prompt_tokens,
+                        completion = usage.completion_tokens,
+                        total = usage.total_tokens,
+                        "token budget check via TenantDb and usage aggregation"
+                    );
+                    let _ = _pool;
+                }
+                self.emit_observability_typed::<cordis::AgentUsageEvent>(
+                    ctx,
+                    &cordis::AgentUsagePayload {
+                        tenant: tenant.clone(),
+                        prompt: usage.prompt_tokens as i64,
+                        completion: usage.completion_tokens as i64,
+                        total: usage.total_tokens as i64,
+                    },
+                )
+                .await;
+                let mut detector = crate::loop_detector::LoopDetector::new();
+                match detector.check(&coord_result.content) {
+                    crate::loop_detector::LoopStatus::LoopDetected {
+                        repeats,
+                        action,
+                        kind,
+                    } => {
+                        tracing::warn!(
+                            repeats,
+                            ?action,
+                            ?kind,
+                            "loop_detector triggered in Execute"
+                        );
+                    }
+                    crate::loop_detector::LoopStatus::Ok => {}
+                }
+                Some(Ok(AgentResponse {
+                    content: coord_result.content,
+                    usage: Some(usage),
+                    metadata: None,
+                }))
+            }
+            Err(e) => {
+                if self.strict_fallbacks {
+                    return Some(Err(AppError::Unavailable(format!(
+                        "strict_fallbacks: ToolCoordinator::execute failed: {e}"
+                    ))));
+                }
+                tracing::warn!(error = %e, "ToolCoordinator loop failed, trying fallback LLM chain");
+                None
+            }
+        }
+    }
+
+    /// Fallback LLM chain: plain `generate` through the non-boxed client.
+    /// Returns `None` when no client or no content is available.
+    async fn try_fallback_llm_chain(
+        &self,
+        ctx: &Arc<Context>,
+        llm: &Arc<ares_llm::Llm>,
+        req: &AgentRequest,
+    ) -> Option<AgentResponse> {
+        let fb_client = llm
+            .get_client(ctx, ares_llm::CapabilityRequirements::default())
+            .await
+            .ok()?;
+        apply_generation_hints(
+            fb_client.as_ref(),
+            req.web_search,
+            req.previous_response_id.clone(),
+        );
+        let content = fb_client.generate(&req.message).await.ok()?;
+        if let Some(_db) = tenant_db(ctx) {
+            tracing::debug!("fallback observability run_history/agent_runs");
+            let _ = _db;
+        }
+        let mut detector = crate::loop_detector::LoopDetector::new();
+        let _ = detector.check(&content);
+        Some(AgentResponse {
+            content,
             usage: None,
             metadata: None,
         })

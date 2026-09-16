@@ -40,6 +40,24 @@ fn llm_token_counts_u64(
     }
 }
 
+/// Maps a completion status to the `success` bind. Only `completed` bills as
+/// success; failed runs persist with `success=false` and zeroed counts.
+pub(crate) fn scheduled_usage_success(status: &str) -> bool {
+    status == "completed"
+}
+
+/// Labels token counts: provider-reported when LLM usage is present,
+/// locally estimated otherwise (covers estimate fallback and zeroed failures).
+pub(crate) fn scheduled_counts_source(
+    usage: Option<&ares_llm::client::TokenUsage>,
+) -> &'static str {
+    if usage.is_some() {
+        "reported"
+    } else {
+        "estimated"
+    }
+}
+
 fn ctx_tracker(
     ctx: &std::sync::Arc<cordis::Context>,
 ) -> Option<std::sync::Arc<dyn crate::RunTracker>> {
@@ -1057,50 +1075,61 @@ async fn execute_scheduled_agent(
         .map_err(|error| error.to_string());
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    let (status, error_msg, input_tokens, output_tokens, model_name, provider_name, output) =
-        match execution {
-            Ok(result) => {
-                let (input, output) = llm_token_counts_u64(
-                    result.response.usage.as_ref(),
-                    &effective_message,
-                    &result.response.content,
-                );
-                let model = result
-                    .response
-                    .metadata
-                    .as_ref()
-                    .map(|metadata| metadata.model_name.clone())
-                    .unwrap_or_else(|| if skill_run { "skill" } else { "unknown" }.to_string());
-                let provider = result
-                    .response
-                    .metadata
-                    .as_ref()
-                    .map(|metadata| metadata.provider_name.clone())
-                    .unwrap_or_else(|| if skill_run { "skill" } else { "unknown" }.to_string());
-                track_finish(app_state, &run_id, "completed");
-                (
-                    "completed",
-                    None,
-                    input as i64,
-                    output as i64,
-                    model,
-                    provider,
-                    result.response.content,
-                )
-            }
-            Err(error) => {
-                track_finish(app_state, &run_id, "error");
-                (
-                    "failed",
-                    Some(error),
-                    0,
-                    0,
-                    "unknown".to_string(),
-                    "unknown".to_string(),
-                    String::new(),
-                )
-            }
-        };
+    let (
+        status,
+        error_msg,
+        input_tokens,
+        output_tokens,
+        model_name,
+        provider_name,
+        output,
+        counts_source,
+    ) = match execution {
+        Ok(result) => {
+            let source = scheduled_counts_source(result.response.usage.as_ref()).to_string();
+            let (input, output) = llm_token_counts_u64(
+                result.response.usage.as_ref(),
+                &effective_message,
+                &result.response.content,
+            );
+            let model = result
+                .response
+                .metadata
+                .as_ref()
+                .map(|metadata| metadata.model_name.clone())
+                .unwrap_or_else(|| if skill_run { "skill" } else { "unknown" }.to_string());
+            let provider = result
+                .response
+                .metadata
+                .as_ref()
+                .map(|metadata| metadata.provider_name.clone())
+                .unwrap_or_else(|| if skill_run { "skill" } else { "unknown" }.to_string());
+            track_finish(app_state, &run_id, "completed");
+            (
+                "completed",
+                None,
+                input as i64,
+                output as i64,
+                model,
+                provider,
+                result.response.content,
+                source,
+            )
+        }
+        Err(error) => {
+            track_finish(app_state, &run_id, "error");
+            (
+                "failed",
+                Some(error),
+                0,
+                0,
+                "unknown".to_string(),
+                "unknown".to_string(),
+                String::new(),
+                "estimated".to_string(),
+            )
+        }
+    };
 
     let metadata = AgentRunMetadata {
         workspace_id: None,
@@ -1195,9 +1224,11 @@ async fn execute_scheduled_agent(
     let usage_model = (model_name != "unknown").then_some(model_name);
     let usage_provider = (provider_name != "unknown").then_some(provider_name);
     let token_total = input_tokens + output_tokens;
+    let usage_success = scheduled_usage_success(status);
+    let usage_counts_source = Some(counts_source.clone());
     tokio::spawn(async move {
         let _ = sqlx::query(
-            "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+            "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, success, counts_source, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(usage_tid)
@@ -1209,6 +1240,8 @@ async fn execute_scheduled_agent(
         .bind(usage_model)
         .bind(usage_agent)
         .bind(usage_provider)
+        .bind(usage_success)
+        .bind(usage_counts_source)
         .bind(chrono::Utc::now().timestamp())
         .execute(&usage_pool)
         .await;
@@ -1347,6 +1380,14 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_usage_success_maps_completed_only() {
+        assert!(scheduled_usage_success("completed"));
+        assert!(!scheduled_usage_success("failed"));
+        assert!(!scheduled_usage_success("error"));
+        assert_eq!(scheduled_counts_source(None), "estimated");
+    }
+
+    #[test]
     fn scheduled_agent_success_prepares_downstream_pipeline_execution_and_billing() {
         let schedule = schedule("schedule-1");
         let source_output = r#"{"status":"success","result":"ready"}"#;
@@ -1383,6 +1424,8 @@ mod tests {
             23,
             "gpt-4o-mini",
             "openai",
+            "completed",
+            Some("reported".to_string()),
         );
 
         assert_eq!(effects.metadata.request_source.as_deref(), Some("pipeline"));

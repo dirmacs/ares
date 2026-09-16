@@ -908,6 +908,7 @@ mod tests {
             pipeline_id: None,
             schedule_id: None,
             trigger_id: None,
+            updated_at: Some(1_700_000_000),
         };
         let v1 = agent_run_row_to_v1(row);
         assert_eq!(v1.id, "run-1");

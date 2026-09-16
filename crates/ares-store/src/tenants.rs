@@ -1,6 +1,7 @@
 use crate::PostgresClient;
+use ares_types::models::tenant::API_KEY_MAX_TTL_DAYS;
 use ares_types::types::{AppError, Result};
-use ares_types::{ApiKey, Tenant, TenantContext, TenantTier};
+use ares_types::{normalize_api_key_scope, ApiKey, Tenant, TenantContext, TenantTier};
 use chrono::{Datelike, Utc};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
@@ -93,7 +94,20 @@ impl TenantDb {
         }
     }
 
-    pub async fn create_api_key(&self, tenant_id: &str, name: String) -> Result<(ApiKey, String)> {
+    /// Creates an API key with least-privilege scope and optional TTL.
+    ///
+    /// - `scopes`: `None`/unknown defaults to `full` (byte-identical legacy behavior).
+    /// - `expires_in_days`: `None` means never expires (provisioned keys document
+    ///   this choice); `Some(d)` must be `1..=3650` else `InvalidInput`.
+    pub async fn create_api_key(
+        &self,
+        tenant_id: &str,
+        name: String,
+        scopes: Option<String>,
+        expires_in_days: Option<u32>,
+    ) -> Result<(ApiKey, String)> {
+        let scopes = normalize_api_key_scope(scopes.as_deref());
+        let expires_at = expires_at_from_days(expires_in_days)?;
         let id = uuid::Uuid::new_v4().to_string();
         let raw_key = generate_api_key();
         let key_prefix = api_key_prefix(&raw_key)
@@ -101,10 +115,18 @@ impl TenantDb {
 
         let key_hash = hash_api_key(&raw_key);
 
-        let api_key = ApiKey::new(id, tenant_id.to_string(), key_hash, key_prefix, name);
+        let api_key = ApiKey::new_with_scope(
+            id,
+            tenant_id.to_string(),
+            key_hash,
+            key_prefix,
+            name,
+            scopes,
+            expires_at,
+        );
 
         sqlx::query(
-            "INSERT INTO api_keys (id, tenant_id, key_hash, key_prefix, name, is_active, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+            "INSERT INTO api_keys (id, tenant_id, key_hash, key_prefix, name, is_active, created_at, expires_at, scopes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
         )
         .bind(&api_key.id)
         .bind(&api_key.tenant_id)
@@ -114,6 +136,7 @@ impl TenantDb {
         .bind(api_key.is_active as i32)
         .bind(api_key.created_at)
         .bind(api_key.expires_at)
+        .bind(&api_key.scopes)
         .execute(&self.postgres.pool)
         .await
         .map_err(|e| AppError::Database(format!("Failed to create API key: {}", e)))?;
@@ -121,9 +144,39 @@ impl TenantDb {
         Ok((api_key, raw_key))
     }
 
+    /// Fetches one key for rotation/audit. `NotFound` when the id is unknown
+    /// for this tenant.
+    pub async fn get_api_key(&self, tenant_id: &str, key_id: &str) -> Result<ApiKey> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, key_hash, key_prefix, name, is_active, created_at, expires_at, COALESCE(scopes, 'full') FROM api_keys WHERE id = $1 AND tenant_id = $2"
+        )
+        .bind(key_id)
+        .bind(tenant_id)
+        .fetch_optional(&self.postgres.pool)
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to get API key: {}", e)))?;
+        let Some(row) = row else {
+            return Err(AppError::NotFound(format!(
+                "API key '{}' not found for tenant '{}'",
+                key_id, tenant_id
+            )));
+        };
+        Ok(ApiKey {
+            id: row.get(0),
+            tenant_id: row.get(1),
+            key_hash: row.get(2),
+            key_prefix: row.get(3),
+            name: row.get(4),
+            is_active: row.get::<i32, _>(5) != 0,
+            created_at: row.get(6),
+            expires_at: row.get(7),
+            scopes: normalize_api_key_scope(Some(row.get::<String, _>(8).as_str())),
+        })
+    }
+
     pub async fn list_api_keys(&self, tenant_id: &str) -> Result<Vec<ApiKey>> {
         let rows = sqlx::query(
-            "SELECT id, tenant_id, key_hash, key_prefix, name, is_active, created_at, expires_at FROM api_keys WHERE tenant_id = $1 ORDER BY created_at DESC"
+            "SELECT id, tenant_id, key_hash, key_prefix, name, is_active, created_at, expires_at, COALESCE(scopes, 'full') FROM api_keys WHERE tenant_id = $1 ORDER BY created_at DESC"
         )
         .bind(tenant_id)
         .fetch_all(&self.postgres.pool)
@@ -133,6 +186,7 @@ impl TenantDb {
         let mut keys = Vec::new();
         for row in rows {
             let expires_at: Option<i64> = row.get(7);
+            let scopes: String = row.get(8);
             keys.push(ApiKey {
                 id: row.get(0),
                 tenant_id: row.get(1),
@@ -142,20 +196,24 @@ impl TenantDb {
                 is_active: row.get::<i32, _>(5) != 0,
                 created_at: row.get(6),
                 expires_at,
+                scopes: normalize_api_key_scope(Some(&scopes)),
             });
         }
 
         Ok(keys)
     }
 
+    /// Verifies a raw key and returns the tenant context with key identity
+    /// plus scopes. Expired/revoked/unknown keys yield `Ok(None)` (caller
+    /// maps to 401). Unknown scope values normalize to `full`.
     pub async fn verify_api_key(&self, raw_key: &str) -> Result<Option<TenantContext>> {
         let Some(key_prefix) = api_key_prefix(raw_key) else {
             return Ok(None);
         };
         let row = sqlx::query(
-            "SELECT ak.id, ak.tenant_id, ak.key_hash, ak.is_active, ak.expires_at, t.tier 
-             FROM api_keys ak 
-             JOIN tenants t ON ak.tenant_id = t.id 
+            "SELECT ak.id, ak.tenant_id, ak.key_hash, ak.is_active, ak.expires_at, t.tier, COALESCE(ak.scopes, 'full')
+             FROM api_keys ak
+             JOIN tenants t ON ak.tenant_id = t.id
              WHERE ak.key_prefix = $1",
         )
         .bind(key_prefix)
@@ -164,10 +222,12 @@ impl TenantDb {
         .map_err(|e| AppError::Database(format!("Failed to lookup API key: {}", e)))?;
 
         if let Some(row) = row {
+            let key_id: String = row.get(0);
             let key_hash: String = row.get(2);
             let is_active: i32 = row.get(3);
             let expires_at: Option<i64> = row.get(4);
             let tier_str: String = row.get(5);
+            let scopes_raw: String = row.get(6);
 
             if is_active == 0 {
                 return Ok(None);
@@ -186,8 +246,11 @@ impl TenantDb {
 
             let tenant_id: String = row.get(1);
             let tier = TenantTier::from_str(&tier_str).unwrap_or(TenantTier::Free);
+            let scopes = normalize_api_key_scope(Some(&scopes_raw));
 
-            Ok(Some(TenantContext::new(tenant_id, tier)))
+            Ok(Some(TenantContext::with_key(
+                tenant_id, tier, key_id, scopes,
+            )))
         } else {
             Ok(None)
         }
@@ -272,11 +335,17 @@ impl TenantDb {
         Ok(count)
     }
 
+    /// Revived HTTP metering path: persists one `usage_events` row with an
+    /// explicit `success` bind plus per-key attribution. Failed runs persist
+    /// `success=false` with zeroed counts (caller zeroes); `api_key_id` is
+    /// `None` for non-key writers (scheduler/trigger/pipeline leave it NULL).
     pub async fn record_usage_event(
         &self,
         tenant_id: &str,
         requests: u64,
         tokens: u64,
+        success: bool,
+        api_key_id: Option<&str>,
     ) -> Result<()> {
         let now = Utc::now();
         let today = now
@@ -295,12 +364,14 @@ impl TenantDb {
             .timestamp();
 
         sqlx::query(
-            "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, created_at) VALUES ($1, $2, 'http', $3, $4, $5)"
+            "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, success, api_key_id, created_at) VALUES ($1, $2, 'http', $3, $4, $5, $6, $7)"
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(tenant_id)
         .bind(requests as i64)
         .bind(tokens as i64)
+        .bind(success)
+        .bind(api_key_id)
         .bind(now.timestamp())
         .execute(&self.postgres.pool)
         .await
@@ -498,6 +569,22 @@ impl cordis::Service for TenantDb {
     }
     fn check(&self) -> bool {
         true
+    }
+}
+
+/// Computes `expires_at` (unix seconds) from a TTL in days.
+/// `None` means never expires. `Some(d)` must be `1..=3650` else `InvalidInput`.
+pub fn expires_at_from_days(expires_in_days: Option<u32>) -> Result<Option<i64>> {
+    match expires_in_days {
+        None => Ok(None),
+        Some(days) if days == 0 || days > API_KEY_MAX_TTL_DAYS => Err(AppError::InvalidInput(
+            "expires_in_days must be between 1 and 3650".to_string(),
+        )),
+        Some(days) => {
+            let now = Utc::now().timestamp();
+            let delta = i64::from(days) * 86_400;
+            Ok(Some(now + delta))
+        }
     }
 }
 
@@ -857,10 +944,20 @@ mod tests {
     async fn test_create_api_key_without_db_returns_database_error() {
         let db = test_tenant_db();
         let err = db
-            .create_api_key("tenant-1", "primary".into())
+            .create_api_key("tenant-1", "primary".into(), None, None)
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::Database(_)));
+    }
+
+    #[test]
+    fn expires_at_from_days_validates_range() {
+        assert!(expires_at_from_days(None).unwrap().is_none());
+        let ts = expires_at_from_days(Some(30)).unwrap().unwrap();
+        assert!(ts > chrono::Utc::now().timestamp());
+        assert!(expires_at_from_days(Some(0)).is_err());
+        assert!(expires_at_from_days(Some(3651)).is_err());
+        assert!(expires_at_from_days(Some(3650)).is_ok());
     }
 
     #[tokio::test]
@@ -887,7 +984,10 @@ mod tests {
     #[tokio::test]
     async fn test_record_usage_event_without_db_returns_database_error() {
         let db = test_tenant_db();
-        let err = db.record_usage_event("tenant-1", 3, 120).await.unwrap_err();
+        let err = db
+            .record_usage_event("tenant-1", 3, 120, true, Some("key-1"))
+            .await
+            .unwrap_err();
         assert!(matches!(err, AppError::Database(_)));
     }
 
@@ -1051,6 +1151,7 @@ mod tests {
             is_active: false,
             created_at: 42,
             expires_at: Some(99),
+            scopes: "full".to_string(),
         };
         let restored: ApiKey = serde_json::from_str(&serde_json::to_string(&key).unwrap()).unwrap();
         assert_eq!(restored.id, key.id);

@@ -143,7 +143,7 @@ async fn boot() -> (String, String) {
     ctx.provide(ares_agent::execution::Execute::new());
 
     let (_api_key, raw_key) = tenant_db
-        .create_api_key(TENANT_ID, "usage-ingest-live-test".to_string())
+        .create_api_key(TENANT_ID, "usage-ingest-live-test".to_string(), None, None)
         .await
         .expect("mint staging key");
 

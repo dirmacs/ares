@@ -126,6 +126,27 @@ impl Tenant {
     }
 }
 
+pub const API_KEY_SCOPE_FULL: &str = "full";
+pub const API_KEY_SCOPE_INGEST: &str = "ingest";
+
+/// Maximum TTL for API keys in days (about 10 years).
+pub const API_KEY_MAX_TTL_DAYS: u32 = 3650;
+
+/// Normalizes a raw scopes value to the starter vocabulary (`full`/`ingest`).
+/// `None`, empty, or unknown values default to `full` so old rows and
+/// forward-compatible writers keep byte-identical full-key behavior.
+pub fn normalize_api_key_scope(raw: Option<&str>) -> String {
+    match raw.map(str::trim) {
+        Some(API_KEY_SCOPE_FULL) => API_KEY_SCOPE_FULL.to_string(),
+        Some(API_KEY_SCOPE_INGEST) => API_KEY_SCOPE_INGEST.to_string(),
+        _ => API_KEY_SCOPE_FULL.to_string(),
+    }
+}
+
+fn default_api_key_scope() -> String {
+    API_KEY_SCOPE_FULL.to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiKey {
     pub id: String,
@@ -136,6 +157,8 @@ pub struct ApiKey {
     pub is_active: bool,
     pub created_at: i64,
     pub expires_at: Option<i64>,
+    #[serde(default = "default_api_key_scope")]
+    pub scopes: String,
 }
 
 impl ApiKey {
@@ -155,7 +178,34 @@ impl ApiKey {
             is_active: true,
             created_at: chrono::Utc::now().timestamp(),
             expires_at: None,
+            scopes: API_KEY_SCOPE_FULL.to_string(),
         }
+    }
+
+    pub fn new_with_scope(
+        id: String,
+        tenant_id: String,
+        key_hash: String,
+        key_prefix: String,
+        name: String,
+        scopes: String,
+        expires_at: Option<i64>,
+    ) -> Self {
+        Self {
+            id,
+            tenant_id,
+            key_hash,
+            key_prefix,
+            name,
+            is_active: true,
+            created_at: chrono::Utc::now().timestamp(),
+            expires_at,
+            scopes: normalize_api_key_scope(Some(&scopes)),
+        }
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.scopes == API_KEY_SCOPE_FULL
     }
 }
 
@@ -185,15 +235,64 @@ pub struct TenantContext {
     pub tenant_id: String,
     pub tier: TenantTier,
     pub quota: TenantQuota,
+    /// API key id that authenticated this request, if any.
+    /// `None` for internal contexts (tests, MCP without key threading).
+    #[serde(default)]
+    pub api_key_id: Option<String>,
+    /// Least-privilege scope for this key. Defaults to `full`.
+    #[serde(default = "default_api_key_scope")]
+    pub scopes: String,
 }
 
 impl TenantContext {
     pub fn new(tenant_id: String, tier: TenantTier) -> Self {
+        let quota = TenantQuota::from_tier(&tier);
         Self {
             tenant_id,
             tier,
-            quota: TenantQuota::from_tier(&tier),
+            quota,
+            api_key_id: None,
+            scopes: API_KEY_SCOPE_FULL.to_string(),
         }
+    }
+
+    /// Context for a verified API key, carrying key identity plus scopes.
+    pub fn with_key(
+        tenant_id: String,
+        tier: TenantTier,
+        api_key_id: String,
+        scopes: String,
+    ) -> Self {
+        let quota = TenantQuota::from_tier(&tier);
+        Self {
+            tenant_id,
+            tier,
+            quota,
+            api_key_id: Some(api_key_id),
+            scopes: normalize_api_key_scope(Some(&scopes)),
+        }
+    }
+
+    /// `true` when this context carries full privileges (bypasses scope checks).
+    pub fn is_full_scope(&self) -> bool {
+        self.scopes == API_KEY_SCOPE_FULL
+    }
+
+    /// Least-privilege check: `full` allows every endpoint, `ingest` allows
+    /// only `POST */v1/usage/events`. Unknown scopes normalize to `full`
+    /// at verify time, so this only sees `full` or `ingest`.
+    pub fn allows_endpoint(&self, method: &str, path: &str) -> bool {
+        if self.is_full_scope() {
+            return true;
+        }
+        if self.scopes == API_KEY_SCOPE_INGEST {
+            // Paths arrive prefix-stripped inside nested routers
+            // (`/usage/events`, not `/api/v1/usage/events`); accept both.
+            return method.eq_ignore_ascii_case("POST")
+                && (path == "/usage/events" || path.ends_with("/v1/usage/events"));
+        }
+        // Defensive: unknown scopes fail closed here; verify normalizes to full.
+        false
     }
 
     pub fn admit(&self, monthly_requests: u64, daily_requests: u64) -> Result<(), QuotaExceeded> {
@@ -466,11 +565,39 @@ mod tests {
             is_active: false,
             created_at: 0,
             expires_at: Some(i64::MAX),
+            scopes: "full".into(),
         };
         let parsed: ApiKey = serde_json::from_str(&serde_json::to_string(&key).unwrap()).unwrap();
         assert!(!parsed.is_active);
         assert_eq!(parsed.expires_at, Some(i64::MAX));
         assert!(parsed.name.is_empty());
+    }
+
+    #[test]
+    fn normalize_scope_defaults_unknown_to_full() {
+        assert_eq!(normalize_api_key_scope(None), "full");
+        assert_eq!(normalize_api_key_scope(Some("")), "full");
+        assert_eq!(normalize_api_key_scope(Some("full")), "full");
+        assert_eq!(normalize_api_key_scope(Some("ingest")), "ingest");
+        assert_eq!(normalize_api_key_scope(Some("weird")), "full");
+        assert_eq!(normalize_api_key_scope(Some("  ingest  ")), "ingest");
+    }
+
+    #[test]
+    fn tenant_context_allows_endpoint_enforces_least_privilege() {
+        let full = TenantContext::new("t".into(), TenantTier::Free);
+        assert!(full.is_full_scope());
+        assert!(full.allows_endpoint("POST", "/v1/agents/x/run"));
+        assert!(full.allows_endpoint("POST", "/v1/usage/events"));
+        let ingest =
+            TenantContext::with_key("t".into(), TenantTier::Free, "k".into(), "ingest".into());
+        assert!(!ingest.is_full_scope());
+        assert!(!ingest.allows_endpoint("POST", "/v1/agents/x/run"));
+        assert!(!ingest.allows_endpoint("GET", "/v1/usage/events"));
+        assert!(ingest.allows_endpoint("POST", "/v1/usage/events"));
+        assert!(ingest.allows_endpoint("POST", "/api/v1/usage/events"));
+        assert!(ingest.allows_endpoint("POST", "/usage/events"));
+        assert!(!ingest.allows_endpoint("GET", "/usage/events"));
     }
 
     #[test]

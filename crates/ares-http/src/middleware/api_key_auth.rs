@@ -168,10 +168,34 @@ pub async fn api_key_auth_middleware(req: Request, next: Next) -> Response {
         }
     }
 
+    // Least-privilege scopes: `full` bypasses, `ingest` may only call
+    // `POST */v1/usage/events`. Checked after verify+admit per contract.
+    if !tenant_ctx.allows_endpoint(req.method().as_str(), req.uri().path()) {
+        return error_response(StatusCode::FORBIDDEN, "insufficient_scope");
+    }
+
     let mut req = req;
     req.extensions_mut().insert(tenant_ctx);
 
     next.run(req).await
+}
+
+/// Pure scope gate for unit tests: `full` allows everything, `ingest`
+/// allows only `POST */v1/usage/events`.
+pub(crate) fn scope_allows(scopes: &str, method: &str, path: &str) -> bool {
+    use ares_types::models::tenant::{API_KEY_SCOPE_FULL, API_KEY_SCOPE_INGEST};
+    let scopes = scopes.trim();
+    if scopes == API_KEY_SCOPE_FULL || scopes.is_empty() {
+        return true;
+    }
+    if scopes == API_KEY_SCOPE_INGEST {
+        // Same nested-prefix rule as TenantContext::allows_endpoint.
+        return method.eq_ignore_ascii_case("POST")
+            && (path == "/usage/events" || path.ends_with("/v1/usage/events"));
+    }
+    // Unknown scopes normalize to `full` at verify time; fail open to full
+    // here so pre-normalized callers keep byte-identical behavior.
+    true
 }
 
 fn error_response(status: StatusCode, message: &str) -> Response {
@@ -250,7 +274,7 @@ mod tests {
             .await
             .expect("create tenant");
         let (_, api_key) = tenant_db
-            .create_api_key(&tenant.id, format!("{name}-key"))
+            .create_api_key(&tenant.id, format!("{name}-key"), None, None)
             .await
             .expect("create api key");
         (tenant.id, api_key)
@@ -391,6 +415,21 @@ mod tests {
             validate_api_key_format(""),
             Err(ApiKeyAuthError::InvalidApiKeyFormat)
         );
+    }
+
+    #[test]
+    fn scope_allows_full_bypasses_and_ingest_restricts_to_ingest() {
+        assert!(scope_allows("full", "POST", "/v1/agents/x/run"));
+        assert!(scope_allows("full", "GET", "/v1/usage"));
+        assert!(!scope_allows("ingest", "POST", "/v1/agents/x/run"));
+        assert!(!scope_allows("ingest", "GET", "/v1/usage/events"));
+        assert!(scope_allows("ingest", "POST", "/v1/usage/events"));
+        assert!(scope_allows("ingest", "POST", "/api/v1/usage/events"));
+        assert!(scope_allows("ingest", "POST", "/usage/events"));
+        assert!(!scope_allows("ingest", "GET", "/usage/events"));
+        // Unknown scopes normalize to full at verify; gate fails open here
+        // so pre-normalized callers keep byte-identical behavior.
+        assert!(scope_allows("weird", "POST", "/v1/agents/x/run"));
     }
 
     #[test]
@@ -715,7 +754,7 @@ mod tests {
 
         for _ in 0..1_000 {
             tenant_db
-                .record_usage_event(&_tenant_id, 1, 0)
+                .record_usage_event(&_tenant_id, 1, 0, true, None)
                 .await
                 .expect("record usage");
         }
@@ -780,7 +819,7 @@ mod tests {
 
         for _ in 0..50 {
             tenant_db
-                .record_usage_event(&_tenant_id, 1, 0)
+                .record_usage_event(&_tenant_id, 1, 0, true, None)
                 .await
                 .expect("record usage");
         }

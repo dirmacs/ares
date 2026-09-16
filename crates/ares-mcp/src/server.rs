@@ -471,10 +471,12 @@ impl AresMcpServer {
         }
     }
 
-    /// Records usage after a tool call completes.
+    /// Records usage after a tool call completes, threading per-key
+    /// attribution when the caller sees the session key identity.
     async fn track_usage(
         &self,
         tenant_id: &str,
+        api_key_id: Option<&str>,
         operation: McpOperation,
         tokens: u64,
         success: bool,
@@ -487,6 +489,7 @@ impl AresMcpServer {
             tokens,
             success,
             duration_ms,
+            api_key_id,
         )
         .await
         {
@@ -520,6 +523,7 @@ impl AresMcpServer {
         let duration = start.elapsed().as_millis() as u64;
         self.track_usage(
             session.tenant_id(),
+            session.api_key_id(),
             McpOperation::ListAgents,
             0,
             true,
@@ -543,6 +547,7 @@ impl AresMcpServer {
             let duration = start.elapsed().as_millis() as u64;
             self.track_usage(
                 session.tenant_id(),
+                session.api_key_id(),
                 McpOperation::RunAgent,
                 estimated_tokens,
                 true,
@@ -590,6 +595,7 @@ impl AresMcpServer {
 
                 self.track_usage(
                     session.tenant_id(),
+                    session.api_key_id(),
                     McpOperation::RunAgent,
                     estimated_tokens,
                     true,
@@ -629,6 +635,7 @@ impl AresMcpServer {
                 let body = response.text().await.unwrap_or_default();
                 self.track_usage(
                     session.tenant_id(),
+                    session.api_key_id(),
                     McpOperation::RunAgent,
                     0,
                     false,
@@ -640,6 +647,7 @@ impl AresMcpServer {
             Err(e) => {
                 self.track_usage(
                     session.tenant_id(),
+                    session.api_key_id(),
                     McpOperation::RunAgent,
                     0,
                     false,
@@ -675,6 +683,7 @@ impl AresMcpServer {
             Some((status, partial, error)) => {
                 self.track_usage(
                     session.tenant_id(),
+                    session.api_key_id(),
                     McpOperation::GetStatus,
                     0,
                     true,
@@ -692,6 +701,7 @@ impl AresMcpServer {
             None => {
                 self.track_usage(
                     session.tenant_id(),
+                    session.api_key_id(),
                     McpOperation::GetStatus,
                     0,
                     true,
@@ -750,6 +760,7 @@ impl AresMcpServer {
 
                 self.track_usage(
                     session.tenant_id(),
+                    session.api_key_id(),
                     McpOperation::DeployAgent,
                     0,
                     true,
@@ -776,6 +787,7 @@ impl AresMcpServer {
                 let body = response.text().await.unwrap_or_default();
                 self.track_usage(
                     session.tenant_id(),
+                    session.api_key_id(),
                     McpOperation::DeployAgent,
                     0,
                     false,
@@ -787,6 +799,7 @@ impl AresMcpServer {
             Err(e) => {
                 self.track_usage(
                     session.tenant_id(),
+                    session.api_key_id(),
                     McpOperation::DeployAgent,
                     0,
                     false,
@@ -815,6 +828,8 @@ impl AresMcpServer {
             .to_date
             .unwrap_or_else(|| now.format("%Y-%m-%d").to_string());
 
+        // Metering truth: failed runs (success=false) do not bill. Counts only
+        // successful rows; old rows default success=true so no backfill.
         let row: (i64, i64, i64) = sqlx::query_as(
             r#"
             SELECT
@@ -825,6 +840,7 @@ impl AresMcpServer {
             WHERE tenant_id = $1
               AND created_at >= $2
               AND created_at <= $3
+              AND success
             "#,
         )
         .bind(&tenant_id)
@@ -843,8 +859,15 @@ impl AresMcpServer {
 
         let duration = start.elapsed().as_millis() as u64;
 
-        self.track_usage(&tenant_id, McpOperation::GetUsage, 0, true, duration)
-            .await;
+        self.track_usage(
+            &tenant_id,
+            session.api_key_id(),
+            McpOperation::GetUsage,
+            0,
+            true,
+            duration,
+        )
+        .await;
 
         let (max_requests, max_agents, max_tokens) = tier_limits(&tier);
 

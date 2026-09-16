@@ -38,6 +38,11 @@ pub fn validate_api_key_format(api_key: &str) -> Result<(), McpAuthError> {
 
 #[cfg(feature = "postgres")]
 /// Validates an API key against the tenant database and returns `TenantContext`.
+///
+/// Threads key identity plus scopes via `TenantContext` (`api_key_id` +
+/// `scopes`). MCP tool execution requires `full` scope: `ingest`-scoped keys
+/// are rejected here (full-only). This documents the full-only rule and
+/// enforces it at connection time.
 pub async fn validate_mcp_api_key(
     tenant_db: &ares_store::tenants::TenantDb,
     api_key: &str,
@@ -50,9 +55,17 @@ pub async fn validate_mcp_api_key(
         .map_err(|e| McpAuthError::InvalidKey(e.to_string()))?
         .ok_or_else(|| McpAuthError::InvalidKey("API key not found or inactive".to_string()))?;
 
+    if !tenant.is_full_scope() {
+        return Err(McpAuthError::InvalidKey(
+            "insufficient_scope: MCP requires a full-scope API key".to_string(),
+        ));
+    }
+
     tracing::info!(
         tenant_id = %tenant.tenant_id,
         tier = %tenant.tier.as_str(),
+        api_key_id = ?tenant.api_key_id,
+        scopes = %tenant.scopes,
         "MCP connection authenticated"
     );
 
@@ -85,6 +98,14 @@ impl McpSession {
 
     pub fn tier(&self) -> &str {
         self.tenant.tier.as_str()
+    }
+    /// Key identity for per-key attribution (`usage_events.api_key_id`).
+    pub fn api_key_id(&self) -> Option<&str> {
+        self.tenant.api_key_id.as_deref()
+    }
+
+    pub fn scopes(&self) -> &str {
+        &self.tenant.scopes
     }
 }
 

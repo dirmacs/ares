@@ -178,6 +178,10 @@ pub fn create_router(
                 .get(crate::api::handlers::admin::list_api_keys),
         )
         .route(
+            "/admin/tenants/{tenant_id}/api-keys/{key_id}",
+            delete(crate::api::handlers::admin::revoke_api_key),
+        )
+        .route(
             "/admin/tenants/{tenant_id}/usage",
             get(crate::api::handlers::admin::get_tenant_usage),
         )
@@ -652,10 +656,6 @@ pub fn create_router(
         .route("/agents", get(crate::api::handlers::v1::list_agents))
         .route("/agents/{name}", get(crate::api::handlers::v1::get_agent))
         .route(
-            "/agents/{name}/sandbox-run",
-            post(crate::api::handlers::v1::sandbox_run_agent),
-        )
-        .route(
             "/agents/{name}/runs",
             get(crate::api::handlers::v1::list_agent_runs),
         )
@@ -678,6 +678,10 @@ pub fn create_router(
         .route(
             "/api-keys/{id}",
             delete(crate::api::handlers::v1::revoke_api_key),
+        )
+        .route(
+            "/api-keys/{id}/rotate",
+            post(crate::api::handlers::v1::rotate_api_key),
         )
         .route(
             "/tenant/data",

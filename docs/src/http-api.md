@@ -449,7 +449,6 @@ Machine clients use tenant API keys. Metered routes record usage per call:
 | POST | `/v1/chat` | Chat completion. |
 | POST | `/v1/research` | Deep research run. |
 | POST | `/v1/agents/{name}/run` | Run a named agent. |
-| POST | `/v1/agents/{name}/sandbox-run` | Sandbox execution. |
 | GET | `/v1/agents` | List agents visible to the tenant. |
 | GET | `/v1/agents/{name}` | Read one agent. |
 | GET | `/v1/agents/{name}/runs` | List run history. |

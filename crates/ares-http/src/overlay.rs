@@ -2563,16 +2563,24 @@ api_key_env = "API"
             parallel_tools: true,
             extra: {
                 let mut m = HashMap::new();
-                m.insert("temperature".to_string(), toml::Value::Float(0.9));
+                m.insert("custom_key".to_string(), toml::Value::Float(0.9));
                 m
             },
             compaction_enabled: None,
+            temperature: Some(0.9),
+            max_tokens: None,
+            stop: None,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
         };
         let decoded: AgentConfig = toml::from_str(&toml::to_string(&agent).unwrap()).unwrap();
         assert_eq!(decoded.model, "m1");
         assert_eq!(decoded.max_tool_iterations, 7);
         assert!(decoded.parallel_tools);
-        assert!(decoded.extra.contains_key("temperature"));
+        assert_eq!(decoded.temperature, Some(0.9));
+        assert!(decoded.extra.contains_key("custom_key"));
+        assert!(!decoded.extra.contains_key("temperature"));
     }
 
     #[test]

@@ -69,6 +69,12 @@ fn create_test_config() -> ares_http::overlay::AresConfig {
             parallel_tools: false,
             extra: HashMap::new(),
             compaction_enabled: None,
+            temperature: None,
+            max_tokens: None,
+            stop: None,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
         },
     );
     agents.insert(
@@ -82,6 +88,12 @@ fn create_test_config() -> ares_http::overlay::AresConfig {
             parallel_tools: false,
             extra: HashMap::new(),
             compaction_enabled: None,
+            temperature: None,
+            max_tokens: None,
+            stop: None,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
         },
     );
 
@@ -360,6 +372,12 @@ fn test_missing_reference_rejected() {
             parallel_tools: false,
             extra: HashMap::new(),
             compaction_enabled: None,
+            temperature: None,
+            max_tokens: None,
+            stop: None,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
         },
     );
 
@@ -393,6 +411,12 @@ fn test_tool_filtering_in_agent() {
         parallel_tools: false,
         extra: HashMap::new(),
         compaction_enabled: None,
+        temperature: None,
+        max_tokens: None,
+        stop: None,
+        top_p: None,
+        frequency_penalty: None,
+        presence_penalty: None,
     };
 
     // Verify tools are captured

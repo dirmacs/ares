@@ -38,6 +38,30 @@ pub struct AgentConfig {
     #[serde(default)]
     pub compaction_enabled: Option<bool>,
 
+    /// Sampling temperature override (0.0..=2.0). None = provider default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+
+    /// Maximum output tokens override (>0). None = provider default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+
+    /// Stop sequences. None = provider default; Some(vec) sent verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop: Option<Vec<String>>,
+
+    /// Nucleus sampling override (0.0..=1.0). None = provider default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+
+    /// Frequency penalty override (-2.0..=2.0). None = provider default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frequency_penalty: Option<f32>,
+
+    /// Presence penalty override (-2.0..=2.0). None = provider default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence_penalty: Option<f32>,
+
     /// Additional agent-specific configuration passed through.
     #[serde(flatten)]
     pub extra: HashMap<String, toml::Value>,

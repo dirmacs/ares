@@ -209,9 +209,24 @@ impl AgentRegistry {
         pool: &sqlx::PgPool,
         fleet_secrets: &ares_store::FleetSecrets,
     ) -> Result<ConfigurableAgent> {
+        let tenant_params = ares_llm::ModelParams {
+            temperature: config.temperature,
+            max_tokens: config.max_tokens,
+            stop: config.stop.clone(),
+            top_p: config.top_p,
+            frequency_penalty: config.frequency_penalty,
+            presence_penalty: config.presence_penalty,
+            ..Default::default()
+        };
         let chain = self
             .provider_registry
-            .resolve_with_fallback(&config.model, tenant_id, pool, fleet_secrets)
+            .resolve_with_fallback(
+                &config.model,
+                tenant_id,
+                pool,
+                fleet_secrets,
+                &tenant_params,
+            )
             .await?;
 
         let allowlist_store = ares_store::tenant_allowlist::TenantAllowlistStore::new(pool);
@@ -515,6 +530,12 @@ mod tests {
             extra: HashMap::new(),
             allowed_tools: None,
             compaction_enabled: None,
+            temperature: None,
+            max_tokens: None,
+            stop: None,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
         };
 
         registry.register("test-agent", config);
@@ -542,6 +563,12 @@ mod tests {
                 extra: HashMap::new(),
                 allowed_tools: None,
                 compaction_enabled: None,
+                temperature: None,
+                max_tokens: None,
+                stop: None,
+                top_p: None,
+                frequency_penalty: None,
+                presence_penalty: None,
             },
         );
 
@@ -556,6 +583,12 @@ mod tests {
                 extra: HashMap::new(),
                 allowed_tools: None,
                 compaction_enabled: None,
+                temperature: None,
+                max_tokens: None,
+                stop: None,
+                top_p: None,
+                frequency_penalty: None,
+                presence_penalty: None,
             },
         );
 
@@ -582,6 +615,12 @@ mod tests {
                 extra: HashMap::new(),
                 allowed_tools: None,
                 compaction_enabled: None,
+                temperature: None,
+                max_tokens: None,
+                stop: None,
+                top_p: None,
+                frequency_penalty: None,
+                presence_penalty: None,
             },
         );
 
@@ -609,6 +648,12 @@ mod tests {
                 extra: HashMap::new(),
                 allowed_tools: None,
                 compaction_enabled: None,
+                temperature: None,
+                max_tokens: None,
+                stop: None,
+                top_p: None,
+                frequency_penalty: None,
+                presence_penalty: None,
             },
         );
 
@@ -623,6 +668,12 @@ mod tests {
                 extra: HashMap::new(),
                 allowed_tools: None,
                 compaction_enabled: None,
+                temperature: None,
+                max_tokens: None,
+                stop: None,
+                top_p: None,
+                frequency_penalty: None,
+                presence_penalty: None,
             },
         );
 
@@ -660,6 +711,12 @@ mod tests {
                     extra: HashMap::new(),
                     allowed_tools: None,
                     compaction_enabled: None,
+                    temperature: None,
+                    max_tokens: None,
+                    stop: None,
+                    top_p: None,
+                    frequency_penalty: None,
+                    presence_penalty: None,
                 },
             )
             .build();
@@ -702,6 +759,12 @@ mod tests {
                     extra: HashMap::new(),
                     allowed_tools: None,
                     compaction_enabled: None,
+                    temperature: None,
+                    max_tokens: None,
+                    stop: None,
+                    top_p: None,
+                    frequency_penalty: None,
+                    presence_penalty: None,
                 },
             );
             map
@@ -738,6 +801,12 @@ mod tests {
                     extra: HashMap::new(),
                     allowed_tools: None,
                     compaction_enabled: None,
+                    temperature: None,
+                    max_tokens: None,
+                    stop: None,
+                    top_p: None,
+                    frequency_penalty: None,
+                    presence_penalty: None,
                 },
             );
             map
@@ -776,6 +845,12 @@ mod tests {
                     extra: HashMap::new(),
                     allowed_tools: None,
                     compaction_enabled: None,
+                    temperature: None,
+                    max_tokens: None,
+                    stop: None,
+                    top_p: None,
+                    frequency_penalty: None,
+                    presence_penalty: None,
                 },
             )
             .build();
@@ -803,6 +878,12 @@ mod tests {
                     extra: HashMap::new(),
                     allowed_tools: None,
                     compaction_enabled: None,
+                    temperature: None,
+                    max_tokens: None,
+                    stop: None,
+                    top_p: None,
+                    frequency_penalty: None,
+                    presence_penalty: None,
                 },
             )
             .build();
@@ -847,6 +928,12 @@ mod tests {
                 extra: HashMap::new(),
                 allowed_tools: None,
                 compaction_enabled: None,
+                temperature: None,
+                max_tokens: None,
+                stop: None,
+                top_p: None,
+                frequency_penalty: None,
+                presence_penalty: None,
             },
         );
 
@@ -873,6 +960,12 @@ mod tests {
                 extra: HashMap::new(),
                 allowed_tools: None,
                 compaction_enabled: None,
+                temperature: None,
+                max_tokens: None,
+                stop: None,
+                top_p: None,
+                frequency_penalty: None,
+                presence_penalty: None,
             },
         );
 
@@ -941,6 +1034,12 @@ mod tests {
                 parallel_tools: false,
                 extra: HashMap::new(),
                 compaction_enabled: None,
+                temperature: None,
+                max_tokens: None,
+                stop: None,
+                top_p: None,
+                frequency_penalty: None,
+                presence_penalty: None,
             },
         );
         Arc::new(MapToon(agents))
@@ -998,6 +1097,12 @@ mod tests {
                 extra: HashMap::new(),
                 allowed_tools: None,
                 compaction_enabled: None,
+                temperature: None,
+                max_tokens: None,
+                stop: None,
+                top_p: None,
+                frequency_penalty: None,
+                presence_penalty: None,
             },
         );
 

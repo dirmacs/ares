@@ -105,6 +105,12 @@ fn agent_config_from_user_agent(user_agent: &UserAgent) -> AgentConfig {
         allowed_tools: None,
         extra: std::collections::HashMap::new(),
         compaction_enabled: None,
+        temperature: None,
+        max_tokens: None,
+        stop: None,
+        top_p: None,
+        frequency_penalty: None,
+        presence_penalty: None,
     }
 }
 

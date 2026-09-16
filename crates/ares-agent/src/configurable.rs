@@ -2045,6 +2045,12 @@ pub fn agent_config_from_user_agent(user_agent: &ares_store::postgres::UserAgent
         parallel_tools: user_agent.parallel_tools,
         compaction_enabled: None,
         allowed_tools: None,
+        temperature: None,
+        max_tokens: None,
+        stop: None,
+        top_p: None,
+        frequency_penalty: None,
+        presence_penalty: None,
         extra: std::collections::HashMap::new(),
     }
 }

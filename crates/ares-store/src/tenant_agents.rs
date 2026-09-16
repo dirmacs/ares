@@ -167,216 +167,27 @@ pub fn validate_tenant_config(value: &serde_json::Value) -> Result<TenantAgentCo
         })?
         .to_string();
 
-    let system_prompt = match obj.get("system_prompt") {
-        Some(serde_json::Value::Null) | None => None,
-        Some(serde_json::Value::String(value)) => Some(value.clone()),
-        Some(_) => {
-            return Err(AppError::InvalidInput(
-                "Tenant agent config field 'system_prompt' must be a string".into(),
-            ));
-        }
-    };
+    let system_prompt = optional_string(obj, "system_prompt")?;
 
-    let tools = match obj.get("tools") {
-        Some(serde_json::Value::Array(values)) => values
-            .iter()
-            .map(|value| {
-                value.as_str().map(|s| s.to_string()).ok_or_else(|| {
-                    AppError::InvalidInput(
-                        "Tenant agent config field 'tools' must be an array of strings".into(),
-                    )
-                })
-            })
-            .collect::<Result<Vec<_>>>()?,
-        Some(serde_json::Value::Null) | None => Vec::new(),
-        Some(_) => {
-            return Err(AppError::InvalidInput(
-                "Tenant agent config field 'tools' must be an array".into(),
-            ));
-        }
-    };
+    let tools = string_array_or_empty(obj, "tools")?;
 
-    let max_tool_iterations = match obj.get("max_tool_iterations") {
-        Some(serde_json::Value::Number(value)) => value.as_u64().ok_or_else(|| {
-            AppError::InvalidInput(
-                "Tenant agent config field 'max_tool_iterations' must be a non-negative integer"
-                    .into(),
-            )
-        })? as usize,
-        Some(serde_json::Value::Null) | None => DEFAULT_MAX_TOOL_ITERATIONS,
-        Some(_) => {
-            return Err(AppError::InvalidInput(
-                "Tenant agent config field 'max_tool_iterations' must be a number".into(),
-            ));
-        }
-    };
+    let max_tool_iterations =
+        optional_usize(obj, "max_tool_iterations")?.unwrap_or(DEFAULT_MAX_TOOL_ITERATIONS);
 
-    let parallel_tools = match obj.get("parallel_tools") {
-        Some(serde_json::Value::Bool(value)) => *value,
-        Some(serde_json::Value::Null) | None => false,
-        Some(_) => {
-            return Err(AppError::InvalidInput(
-                "Tenant agent config field 'parallel_tools' must be a boolean".into(),
-            ));
-        }
-    };
+    let parallel_tools = optional_bool(obj, "parallel_tools")?.unwrap_or(false);
 
-    let version = match obj.get("version") {
-        Some(serde_json::Value::Null) | None => None,
-        Some(serde_json::Value::String(value)) => {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        }
-        Some(_) => {
-            return Err(AppError::InvalidInput(
-                "Tenant agent config field 'version' must be a string".into(),
-            ));
-        }
-    };
+    let version = optional_trimmed_string(obj, "version")?;
 
-    let sandbox = match obj.get("sandbox") {
-        Some(serde_json::Value::Bool(value)) => *value,
-        Some(serde_json::Value::Null) | None => false,
-        Some(_) => {
-            return Err(AppError::InvalidInput(
-                "Tenant agent config field 'sandbox' must be a boolean".into(),
-            ));
-        }
-    };
+    let sandbox = optional_bool(obj, "sandbox")?.unwrap_or(false);
 
-    let temperature = match obj.get("temperature") {
-        Some(serde_json::Value::Null) | None => None,
-        Some(serde_json::Value::Number(v)) => {
-            let f = v.as_f64().ok_or_else(|| {
-                AppError::InvalidInput(
-                    "Tenant agent config field 'temperature' must be a number".into(),
-                )
-            })? as f32;
-            if !f.is_finite() || f < 0.0 || f > 2.0 {
-                return Err(AppError::InvalidInput(
-                    "Tenant agent config field 'temperature' must be between 0.0 and 2.0".into(),
-                ));
-            }
-            Some(f)
-        }
-        Some(_) => {
-            return Err(AppError::InvalidInput(
-                "Tenant agent config field 'temperature' must be a number".into(),
-            ));
-        }
-    };
-    let max_tokens = match obj.get("max_tokens") {
-        Some(serde_json::Value::Null) | None => None,
-        Some(serde_json::Value::Number(v)) => {
-            let n = v.as_u64().ok_or_else(|| {
-                AppError::InvalidInput(
-                    "Tenant agent config field 'max_tokens' must be a positive integer".into(),
-                )
-            })?;
-            if n == 0 || n > u32::MAX as u64 {
-                return Err(AppError::InvalidInput(
-                    "Tenant agent config field 'max_tokens' must be a positive integer".into(),
-                ));
-            }
-            Some(n as u32)
-        }
-        Some(_) => {
-            return Err(AppError::InvalidInput(
-                "Tenant agent config field 'max_tokens' must be a number".into(),
-            ));
-        }
-    };
-    let stop = match obj.get("stop") {
-        Some(serde_json::Value::Null) | None => None,
-        Some(serde_json::Value::String(s)) => Some(vec![s.clone()]),
-        Some(serde_json::Value::Array(v)) => {
-            let mut out = Vec::with_capacity(v.len());
-            for e in v {
-                match e {
-                    serde_json::Value::String(s) => out.push(s.clone()),
-                    _ => {
-                        return Err(AppError::InvalidInput(
-                            "Tenant agent config field 'stop' must be a string or array of strings"
-                                .into(),
-                        ));
-                    }
-                }
-            }
-            Some(out)
-        }
-        Some(_) => {
-            return Err(AppError::InvalidInput(
-                "Tenant agent config field 'stop' must be a string or array of strings".into(),
-            ));
-        }
-    };
-    let top_p = match obj.get("top_p") {
-        Some(serde_json::Value::Null) | None => None,
-        Some(serde_json::Value::Number(v)) => {
-            let f = v.as_f64().ok_or_else(|| {
-                AppError::InvalidInput("Tenant agent config field 'top_p' must be a number".into())
-            })? as f32;
-            if !f.is_finite() || f < 0.0 || f > 1.0 {
-                return Err(AppError::InvalidInput(
-                    "Tenant agent config field 'top_p' must be between 0.0 and 1.0".into(),
-                ));
-            }
-            Some(f)
-        }
-        Some(_) => {
-            return Err(AppError::InvalidInput(
-                "Tenant agent config field 'top_p' must be a number".into(),
-            ));
-        }
-    };
-    let frequency_penalty = match obj.get("frequency_penalty") {
-        Some(serde_json::Value::Null) | None => None,
-        Some(serde_json::Value::Number(v)) => {
-            let f = v.as_f64().ok_or_else(|| {
-                AppError::InvalidInput(
-                    "Tenant agent config field 'frequency_penalty' must be a number".into(),
-                )
-            })? as f32;
-            if !f.is_finite() || f < -2.0 || f > 2.0 {
-                return Err(AppError::InvalidInput(
-                    "Tenant agent config field 'frequency_penalty' must be between -2.0 and 2.0"
-                        .into(),
-                ));
-            }
-            Some(f)
-        }
-        Some(_) => {
-            return Err(AppError::InvalidInput(
-                "Tenant agent config field 'frequency_penalty' must be a number".into(),
-            ));
-        }
-    };
-    let presence_penalty = match obj.get("presence_penalty") {
-        Some(serde_json::Value::Null) | None => None,
-        Some(serde_json::Value::Number(v)) => {
-            let f = v.as_f64().ok_or_else(|| {
-                AppError::InvalidInput(
-                    "Tenant agent config field 'presence_penalty' must be a number".into(),
-                )
-            })? as f32;
-            if !f.is_finite() || f < -2.0 || f > 2.0 {
-                return Err(AppError::InvalidInput(
-                    "Tenant agent config field 'presence_penalty' must be between -2.0 and 2.0"
-                        .into(),
-                ));
-            }
-            Some(f)
-        }
-        Some(_) => {
-            return Err(AppError::InvalidInput(
-                "Tenant agent config field 'presence_penalty' must be a number".into(),
-            ));
-        }
-    };
+    let temperature = optional_f32_in_range(obj, "temperature", 0.0, 2.0, "0.0 and 2.0")?;
+    let max_tokens = optional_positive_u32(obj, "max_tokens")?;
+    let stop = optional_string_list(obj, "stop")?;
+    let top_p = optional_f32_in_range(obj, "top_p", 0.0, 1.0, "0.0 and 1.0")?;
+    let frequency_penalty =
+        optional_f32_in_range(obj, "frequency_penalty", -2.0, 2.0, "-2.0 and 2.0")?;
+    let presence_penalty =
+        optional_f32_in_range(obj, "presence_penalty", -2.0, 2.0, "-2.0 and 2.0")?;
 
     Ok(TenantAgentConfig {
         model,
@@ -393,6 +204,185 @@ pub fn validate_tenant_config(value: &serde_json::Value) -> Result<TenantAgentCo
         frequency_penalty,
         presence_penalty,
     })
+}
+
+/// JSON object handle as returned by `serde_json::Value::as_object`.
+type JsonObject = serde_json::Map<String, serde_json::Value>;
+
+/// Read an optional string field; `null` and absent both mean `None`.
+fn optional_string(obj: &JsonObject, field: &str) -> Result<Option<String>> {
+    match obj.get(field) {
+        Some(serde_json::Value::Null) | None => Ok(None),
+        Some(serde_json::Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(AppError::InvalidInput(format!(
+            "Tenant agent config field '{field}' must be a string"
+        ))),
+    }
+}
+
+/// Read an optional string field, trimmed; a blank string means `None`.
+fn optional_trimmed_string(obj: &JsonObject, field: &str) -> Result<Option<String>> {
+    match obj.get(field) {
+        Some(serde_json::Value::Null) | None => Ok(None),
+        Some(serde_json::Value::String(value)) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(trimmed.to_string()))
+            }
+        }
+        Some(_) => Err(AppError::InvalidInput(format!(
+            "Tenant agent config field '{field}' must be a string"
+        ))),
+    }
+}
+
+/// Read an optional array-of-strings field; absent means an empty vec.
+fn string_array_or_empty(obj: &JsonObject, field: &str) -> Result<Vec<String>> {
+    match obj.get(field) {
+        Some(serde_json::Value::Array(values)) => values
+            .iter()
+            .map(|value| {
+                value.as_str().map(|s| s.to_string()).ok_or_else(|| {
+                    AppError::InvalidInput(format!(
+                        "Tenant agent config field '{field}' must be an array of strings"
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>>>(),
+        Some(serde_json::Value::Null) | None => Ok(Vec::new()),
+        Some(_) => Err(AppError::InvalidInput(format!(
+            "Tenant agent config field '{field}' must be an array"
+        ))),
+    }
+}
+
+/// Read an optional boolean field; `null` and absent both mean `None`.
+fn optional_bool(obj: &JsonObject, field: &str) -> Result<Option<bool>> {
+    match obj.get(field) {
+        Some(serde_json::Value::Bool(value)) => Ok(Some(*value)),
+        Some(serde_json::Value::Null) | None => Ok(None),
+        Some(_) => Err(AppError::InvalidInput(format!(
+            "Tenant agent config field '{field}' must be a boolean"
+        ))),
+    }
+}
+
+/// Read an optional non-negative integer field.
+fn optional_usize(obj: &JsonObject, field: &str) -> Result<Option<usize>> {
+    match obj.get(field) {
+        Some(serde_json::Value::Number(value)) => value
+            .as_u64()
+            .map(|n| n as usize)
+            .ok_or_else(|| {
+                AppError::InvalidInput(format!(
+                    "Tenant agent config field '{field}' must be a non-negative integer"
+                ))
+            })
+            .map(Some),
+        Some(serde_json::Value::Null) | None => Ok(None),
+        Some(_) => Err(AppError::InvalidInput(format!(
+            "Tenant agent config field '{field}' must be a number"
+        ))),
+    }
+}
+
+/// Read an optional positive `u32` field.
+fn optional_positive_u32(obj: &JsonObject, field: &str) -> Result<Option<u32>> {
+    match obj.get(field) {
+        Some(serde_json::Value::Number(value)) => {
+            let n = value.as_u64().ok_or_else(|| {
+                AppError::InvalidInput(format!(
+                    "Tenant agent config field '{field}' must be a positive integer"
+                ))
+            })?;
+            checked_positive_u32(n, field).map(Some)
+        }
+        Some(serde_json::Value::Null) | None => Ok(None),
+        Some(_) => Err(AppError::InvalidInput(format!(
+            "Tenant agent config field '{field}' must be a number"
+        ))),
+    }
+}
+
+/// Range check for [`optional_positive_u32`].
+fn checked_positive_u32(n: u64, field: &str) -> Result<u32> {
+    if n == 0 || n > u32::MAX as u64 {
+        return Err(AppError::InvalidInput(format!(
+            "Tenant agent config field '{field}' must be a positive integer"
+        )));
+    }
+    Ok(n as u32)
+}
+
+/// Read an optional `f32` field constrained to a finite `[min, max]` range.
+fn optional_f32_in_range(
+    obj: &JsonObject,
+    field: &str,
+    min: f32,
+    max: f32,
+    range_text: &str,
+) -> Result<Option<f32>> {
+    match obj.get(field) {
+        Some(serde_json::Value::Null) | None => Ok(None),
+        Some(value @ serde_json::Value::Number(_)) => {
+            f32_field_value(value, field, min, max, range_text).map(Some)
+        }
+        Some(_) => Err(AppError::InvalidInput(format!(
+            "Tenant agent config field '{field}' must be a number"
+        ))),
+    }
+}
+
+/// Numeric check for [`optional_f32_in_range`]; keeps the original error
+/// precedence: a non-convertible number first, then the range check.
+fn f32_field_value(
+    value: &serde_json::Value,
+    field: &str,
+    min: f32,
+    max: f32,
+    range_text: &str,
+) -> Result<f32> {
+    let f = value.as_f64().ok_or_else(|| {
+        AppError::InvalidInput(format!(
+            "Tenant agent config field '{field}' must be a number"
+        ))
+    })? as f32;
+    if !f.is_finite() || f < min || f > max {
+        return Err(AppError::InvalidInput(format!(
+            "Tenant agent config field '{field}' must be between {range_text}"
+        )));
+    }
+    Ok(f)
+}
+
+/// Read an optional string-or-string-array field.
+fn optional_string_list(obj: &JsonObject, field: &str) -> Result<Option<Vec<String>>> {
+    match obj.get(field) {
+        Some(serde_json::Value::Null) | None => Ok(None),
+        Some(serde_json::Value::String(value)) => Ok(Some(vec![value.clone()])),
+        Some(serde_json::Value::Array(values)) => string_entries(values, field).map(Some),
+        Some(_) => Err(AppError::InvalidInput(format!(
+            "Tenant agent config field '{field}' must be a string or array of strings"
+        ))),
+    }
+}
+
+/// Convert a JSON array of strings into `Vec<String>`; any other entry fails.
+fn string_entries(values: &[serde_json::Value], field: &str) -> Result<Vec<String>> {
+    let mut out = Vec::with_capacity(values.len());
+    for entry in values {
+        match entry {
+            serde_json::Value::String(s) => out.push(s.clone()),
+            _ => {
+                return Err(AppError::InvalidInput(format!(
+                    "Tenant agent config field '{field}' must be a string or array of strings"
+                )));
+            }
+        }
+    }
+    Ok(out)
 }
 
 pub fn tenant_config_version(config: &serde_json::Value, updated_at: i64) -> String {

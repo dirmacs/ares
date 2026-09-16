@@ -738,7 +738,9 @@ fn default_endpoint(
 ) -> String {
     match kind {
         AdapterKind::OpenAI | AdapterKind::OpenAIResp => "https://api.openai.com/v1/".into(),
-        AdapterKind::Gemini | AdapterKind::GeminiIx => "https://generativelanguage.googleapis.com/v1beta/".into(),
+        AdapterKind::Gemini | AdapterKind::GeminiIx => {
+            "https://generativelanguage.googleapis.com/v1beta/".into()
+        }
         AdapterKind::Anthropic => "https://api.anthropic.com/v1/".into(),
         AdapterKind::MiniMax => "https://api.minimax.io/anthropic/v1/".into(),
         AdapterKind::Ollama => "http://localhost:11434/".into(),

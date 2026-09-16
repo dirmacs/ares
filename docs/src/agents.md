@@ -1,6 +1,6 @@
 # Agents
 
-This chapter describes the agent configuration model in ARES v0.11.1.
+This chapter describes the agent configuration model in ARES v0.11.5.
 Every field here is read from the source files named in each section.
 
 Agent behavior comes from TOML configuration. The root file `ares.toml` carries an `[agents]` table. You can also keep agents in TOON files under `config/agents/`. The `config.agents_dir` key in `ares.toml` sets that directory (`crates/ares-http/src/overlay.rs`, `DynamicConfigPaths`).
@@ -18,7 +18,15 @@ Each agent entry deserializes into `AgentConfig` (`crates/ares-agent/src/config.
 | `max_tool_iterations` | integer | 10 | Maximum tool-calling rounds before the agent stops. |
 | `parallel_tools` | boolean | false | Run independent tool calls in parallel when possible. |
 | `compaction_enabled` | boolean | false | Turn on per-session history compaction through the LLM `Compactor`. Long conversations stay a bounded working set instead of a last-5 history slice. |
+| `temperature` | float | none | Sampling temperature 0..2 |
+| `max_tokens` | integer | none | Maximum tokens in the response |
+| `stop` | string or array | none | Stop sequences; string normalizes to single-element array |
+| `top_p` | float | none | Nucleus sampling 0..1 |
+| `frequency_penalty` | float | none | Frequency penalty -2..2 |
+| `presence_penalty` | float | none | Presence penalty -2..2 |
 | *(extra keys)* | table | empty | Unknown keys pass through unchanged via `#[serde(flatten)]`. |
+
+Per-call hints override tenant config, which overrides host alias defaults. Fallback legs inherit the resolved params verbatim.
 
 Deserialization details worth knowing when you write TOML:
 

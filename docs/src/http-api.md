@@ -553,6 +553,78 @@ All admin routes take the `X-Admin-Secret` header. Route groups in `routes.rs`:
 
 `PUT` on a tenant agent merges the patch into the stored config. Omitted fields keep their values, so partial updates never wipe the config. An explicit `null` clears a field. Unknown fields stay untouched, and an empty tools array clears the tool list. The merged config passes validation before it saves. Rollback replaces the config wholesale and skips the merge.
 
+### API Key Scopes
+
+Every API key carries a `scopes` field. Two values exist today:
+
+| Scope | Grants |
+|---|---|
+| `full` | All tenant endpoints. Default when no scope is specified. |
+| `ingest` | `POST /v1/usage/events` only. |
+
+The middleware checks scopes after authentication. A key whose scope does not cover the requested endpoint receives HTTP 403 with `insufficient_scope`.
+
+#### TTL
+
+Pass `expires_in_days` (1 to 3650) when creating, provisioning, or rotating a key. The server computes `expires_at` from the current time. Omitting the field creates a key that never expires.
+
+#### Rotation
+
+```
+POST /api/admin/tenants/{tenant_id}/api-keys/{key_id}/rotate
+```
+
+Rotation mints a new key first, then revokes the old one. The response includes the raw secret once. Store it immediately; the server never shows it again. Scopes and TTL carry forward from the original key unless overridden in the request body.
+
+#### Revocation
+
+```
+DELETE /api/admin/tenants/{tenant_id}/api-keys/{key_id}
+```
+
+Sets `is_active` to 0. The key stops authenticating immediately. An audit entry records the revocation.
+
+#### Attribution
+
+Every usage event row stores the `api_key_id` of the calling key. Scheduler and trigger runs that fire without a key leave this field NULL.
+
+### Usage Ingest
+
+External systems report usage through a batch endpoint:
+
+```
+POST /api/v1/usage/events
+Authorization: Bearer ares_xxx
+Content-Type: application/json
+```
+
+The body is a JSON array of 1 to 100 events. Maximum body size is 256 KiB. Each event accepts these fields:
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `request_id` | string | yes | Unique id for idempotency (max 128 chars). |
+| `agent` | string | yes | Agent name; must exist and be enabled. |
+| `model` | string | yes | Model identifier. |
+| `input_tokens` | integer | yes | Input token count. |
+| `output_tokens` | integer | yes | Output token count. |
+| `outcome_class` | string | yes | One of `ok`, `client_error`, `upstream_error`, `timeout`. |
+| `reason_code` | string | no | Free-text reason (max 128 chars). |
+| `latency_ms` | integer | yes | Request latency in milliseconds. |
+| `occurred_at` | string | no | ISO 8601 timestamp; defaults to server time. |
+
+The endpoint uses `deny_unknown_fields`, so unrecognized keys return 422. The response is HTTP 202 with a per-event result array:
+
+```json
+{
+  "results": [
+    {"request_id": "abc-123", "status": "recorded", "id": "uuid"},
+    {"request_id": "abc-123", "status": "deduplicated"}
+  ]
+}
+```
+
+Redelivery with the same `(tenant_id, request_id)` pair returns `deduplicated` instead of inserting a duplicate row.
+
 ### Cordis Service Lifecycle
 
 These routes manage the plugin runtime. Unknown loader state answers `503`.

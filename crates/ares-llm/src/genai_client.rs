@@ -937,7 +937,9 @@ mod tests {
             opts.stop_sequences,
             vec!["END".to_string(), "STOP".to_string()]
         );
-        assert_eq!(opts.top_p, Some(0.9));
+        // `ModelParams::top_p` is `f32`; `chat_options` widens it to `f64`,
+        // so the expected value is the widened f32, not the f64 literal.
+        assert_eq!(opts.top_p, Some(f64::from(0.9_f32)));
         let body = opts.extra_body.expect("penalties land in extra_body");
         assert_eq!(
             body.get("frequency_penalty").and_then(|v| v.as_f64()),

@@ -8,6 +8,14 @@
 //!
 //! ## Opt-in routing through nimaproxy
 //!
+//! ## Retry policy
+//!
+//! Live NIM calls are retried on two upstream-instability classes:
+//! overload-class failures (HTTP 5xx, or an "overloaded" SSE payload) get
+//! three attempts total, and call stalls (the 90s `CALL_TIMEOUT` elapsed)
+//! get ONE retry. Assertions, auth errors, and every other failure stop
+//! immediately and are never retried.
+//!
 //! Setting `NVIDIA_API_BASE=http://127.0.0.1:8080/v1` together with any
 //! non-empty `NVIDIA_API_KEY` (see [`skip_without_key`]) routes every call in
 //! this file through the local key-racing proxy (nimaproxy) instead of
@@ -104,30 +112,92 @@ fn upstream_err(context: &str, err: impl std::fmt::Display) -> String {
     redact(&format!("{context}: {err}"))
 }
 
-/// Run a live test body up to THREE attempts total, retrying only
-/// upstream-overload failures with 5s then 15s backoff. Any other failure
-/// (assertion, timeout, auth) stops immediately.
-async fn with_overload_retries<F, Fut>(test: &str, mut once: F)
+/// Wrap one call timeout for the retry classifier. The message keeps the
+/// original "timed out" wording so logs stay greppable.
+fn timeout_err(context: &str) -> String {
+    format!("{context} timed out")
+}
+
+/// Failure classes eligible for a live-test retry, with their bounds.
+#[derive(Clone, Copy)]
+enum RetryClass {
+    /// HTTP 5xx or an "overloaded" SSE payload: three attempts total.
+    Overload,
+    /// A call stall (the 90s timeout elapsed): ONE retry, two attempts max.
+    Timeout,
+}
+
+impl RetryClass {
+    fn classify(message: &str) -> Option<Self> {
+        if is_upstream_overload(message) {
+            Some(Self::Overload)
+        } else if message.to_lowercase().contains("timed out") {
+            Some(Self::Timeout)
+        } else {
+            None
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Overload => "upstream overload",
+            Self::Timeout => "timeout",
+        }
+    }
+
+    /// Total attempts allowed for this class (the first try included).
+    fn max_attempts(self) -> usize {
+        match self {
+            Self::Overload => 3,
+            Self::Timeout => 2,
+        }
+    }
+
+    fn backoff_secs(self, retries_used: usize) -> u64 {
+        match self {
+            Self::Overload => [5, 15][retries_used.min(1)],
+            Self::Timeout => 5,
+        }
+    }
+
+    fn slot(self) -> usize {
+        match self {
+            Self::Overload => 0,
+            Self::Timeout => 1,
+        }
+    }
+}
+
+/// Run a live test body with bounded retries for NIM instability:
+/// overload-class failures get three attempts total (5s then 15s backoff),
+/// timeout-class stalls get ONE retry. Any other failure stops immediately.
+async fn with_retries<F, Fut>(test: &str, mut once: F)
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<(), String>>,
 {
-    const BACKOFF_SECS: [u64; 2] = [5, 15];
-    let mut attempt = 0usize;
+    let mut attempts = 0usize;
+    let mut retries_used = [0usize; 2];
     loop {
-        match once().await {
+        attempts += 1;
+        let message = match once().await {
             Ok(()) => return,
-            Err(message) if attempt < BACKOFF_SECS.len() && is_upstream_overload(&message) => {
-                eprintln!(
-                    "{test}: upstream overload on attempt {}: {message}; retrying in {}s",
-                    attempt + 1,
-                    BACKOFF_SECS[attempt]
-                );
-                tokio::time::sleep(Duration::from_secs(BACKOFF_SECS[attempt])).await;
-                attempt += 1;
-            }
-            Err(message) => panic_redacted(test, message),
+            Err(message) => message,
+        };
+        let Some(class) = RetryClass::classify(&message) else {
+            panic_redacted(test, message);
+        };
+        let slot = class.slot();
+        if retries_used[slot] + 1 >= class.max_attempts() {
+            panic_redacted(test, message);
         }
+        let backoff = class.backoff_secs(retries_used[slot]);
+        retries_used[slot] += 1;
+        eprintln!(
+            "{test}: {} on attempt {attempts}: {message}; retrying in {backoff}s",
+            class.label()
+        );
+        tokio::time::sleep(Duration::from_secs(backoff)).await;
     }
 }
 
@@ -386,7 +456,7 @@ async fn live_complete() {
     if skip_without_key("live_complete") {
         return;
     }
-    with_overload_retries("live_complete", live_complete_once).await;
+    with_retries("live_complete", live_complete_once).await;
 }
 
 async fn live_complete_once() -> Result<(), String> {
@@ -397,7 +467,7 @@ async fn live_complete_once() -> Result<(), String> {
         client.generate("Reply with exactly one word: pong"),
     )
     .await
-    .unwrap_or_else(|_| panic!("live_complete timed out"))
+    .map_err(|_| timeout_err("live_complete"))?
     .map_err(|e| upstream_err("live_complete generate", e))?;
     eprintln!(
         "live_complete model={} chars={}",
@@ -419,7 +489,7 @@ async fn live_stream() {
     if skip_without_key("live_stream") {
         return;
     }
-    with_overload_retries("live_stream", live_stream_once).await;
+    with_retries("live_stream", live_stream_once).await;
 }
 
 async fn live_stream_once() -> Result<(), String> {
@@ -430,7 +500,7 @@ async fn live_stream_once() -> Result<(), String> {
         client.stream("Reply with exactly one word: pong"),
     )
     .await
-    .unwrap_or_else(|_| panic!("live_stream setup timed out"))
+    .map_err(|_| timeout_err("live_stream setup"))?
     .map_err(|e| upstream_err("live_stream LLMClient::stream", e))?;
 
     let mut chunks = 0usize;
@@ -445,7 +515,7 @@ async fn live_stream_once() -> Result<(), String> {
     };
     tokio::time::timeout(CALL_TIMEOUT, collect)
         .await
-        .unwrap_or_else(|_| panic!("live_stream collect timed out"))?;
+        .map_err(|_| timeout_err("live_stream collect"))??;
 
     eprintln!(
         "live_stream model={} chunks={} chars={}",
@@ -466,7 +536,7 @@ async fn live_tool_loop() {
     if skip_without_key("live_tool_loop") {
         return;
     }
-    with_overload_retries("live_tool_loop", live_tool_loop_once).await;
+    with_retries("live_tool_loop", live_tool_loop_once).await;
 }
 
 async fn live_tool_loop_once() -> Result<(), String> {
@@ -481,7 +551,7 @@ async fn live_tool_loop_once() -> Result<(), String> {
         ),
     )
     .await
-    .unwrap_or_else(|_| panic!("live_tool_loop timed out"));
+    .map_err(|_| timeout_err("live_tool_loop"))?;
 
     match result {
         Ok(resp) => {
@@ -523,7 +593,7 @@ async fn live_embed() {
     if skip_without_key("live_embed") {
         return;
     }
-    with_overload_retries("live_embed", live_embed_once).await;
+    with_retries("live_embed", live_embed_once).await;
 }
 
 async fn live_embed_once() -> Result<(), String> {
@@ -543,7 +613,7 @@ async fn live_embed_once() -> Result<(), String> {
         client.embed(&["ARES live NVIDIA embedding probe".to_string()]),
     )
     .await
-    .unwrap_or_else(|_| panic!("live_embed timed out"))
+    .map_err(|_| timeout_err("live_embed"))?
     .map_err(|e| upstream_err("live_embed", e))?;
 
     eprintln!(
@@ -567,7 +637,7 @@ async fn live_stream_text_tools_api() {
     if skip_without_key("live_stream_text_tools_api") {
         return;
     }
-    with_overload_retries(
+    with_retries(
         "live_stream_text_tools_api",
         live_stream_text_tools_api_once,
     )
@@ -583,7 +653,7 @@ async fn live_stream_text_tools_api_once() -> Result<(), String> {
         client.stream_with_tools_and_history(&[user], &[]),
     )
     .await
-    .unwrap_or_else(|_| panic!("live_stream_text_tools_api setup timed out"))
+    .map_err(|_| timeout_err("live_stream_text_tools_api setup"))?
     .map_err(|e| upstream_err("live_stream_text_tools_api setup", e))?;
     let mut text = String::new();
     let collect = async {
@@ -597,7 +667,7 @@ async fn live_stream_text_tools_api_once() -> Result<(), String> {
     };
     tokio::time::timeout(CALL_TIMEOUT, collect)
         .await
-        .unwrap_or_else(|_| panic!("live_stream_text_tools_api collect timed out"))?;
+        .map_err(|_| timeout_err("live_stream_text_tools_api collect"))??;
     eprintln!(
         "live_stream_text_tools_api model={} chars={}",
         client.model_name(),
@@ -616,7 +686,7 @@ async fn live_stream_with_tools() {
     if skip_without_key("live_stream_with_tools") {
         return;
     }
-    with_overload_retries("live_stream_with_tools", live_stream_with_tools_once).await;
+    with_retries("live_stream_with_tools", live_stream_with_tools_once).await;
 }
 
 async fn live_stream_with_tools_once() -> Result<(), String> {
@@ -630,7 +700,7 @@ async fn live_stream_with_tools_once() -> Result<(), String> {
         client.stream_with_tools_and_history(&[user], &tools),
     )
     .await
-    .unwrap_or_else(|_| panic!("live_stream_with_tools setup timed out"))
+    .map_err(|_| timeout_err("live_stream_with_tools setup"))?
     .map_err(|e| upstream_err("live_stream_with_tools setup", e))?;
 
     let mut text = String::new();
@@ -646,7 +716,7 @@ async fn live_stream_with_tools_once() -> Result<(), String> {
     };
     tokio::time::timeout(CALL_TIMEOUT, collect)
         .await
-        .unwrap_or_else(|_| panic!("live_stream_with_tools collect timed out"))?;
+        .map_err(|_| timeout_err("live_stream_with_tools collect"))??;
 
     eprintln!(
         "live_stream_with_tools model={} chars={} tool_calls={}",
@@ -702,7 +772,7 @@ async fn live_vision_parts() {
     if skip_without_key("live_vision_parts") {
         return;
     }
-    with_overload_retries("live_vision_parts", live_vision_parts_once).await;
+    with_retries("live_vision_parts", live_vision_parts_once).await;
 }
 
 async fn live_vision_parts_once() -> Result<(), String> {
@@ -762,7 +832,7 @@ async fn live_vision_parts_once() -> Result<(), String> {
         client.stream_with_tools_and_history(&[user], &[]),
     )
     .await
-    .unwrap_or_else(|_| panic!("live_vision_parts setup timed out"))
+    .map_err(|_| timeout_err("live_vision_parts setup"))?
     .map_err(|e| upstream_err("live_vision_parts stream_with_tools_and_history", e))?;
 
     let mut text = String::new();
@@ -779,7 +849,7 @@ async fn live_vision_parts_once() -> Result<(), String> {
     };
     tokio::time::timeout(CALL_TIMEOUT, collect)
         .await
-        .unwrap_or_else(|_| panic!("live_vision_parts collect timed out"))?;
+        .map_err(|_| timeout_err("live_vision_parts collect"))??;
 
     eprintln!(
         "live_vision_parts model={} chars={}",

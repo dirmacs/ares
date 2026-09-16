@@ -71,7 +71,7 @@ pub struct CreateTemplateRequest {
 const DEFAULT_MAX_TOOL_ITERATIONS: usize = 5;
 
 /// Parsed tenant-agent JSONB config used for resolution and CRUD validation.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TenantAgentConfig {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -86,6 +86,18 @@ pub struct TenantAgentConfig {
     pub version: Option<String>,
     #[serde(default)]
     pub sandbox: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frequency_penalty: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence_penalty: Option<f32>,
 }
 
 fn default_max_tool_iterations_json() -> usize {
@@ -101,7 +113,7 @@ pub struct TenantAgentRowSnapshot {
 }
 
 /// Outcome of pure tenant-agent config resolution (registry fallback vs tenant DB).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TenantAgentResolveOutcome {
     UseTenantDb {
         config: TenantAgentConfig,
@@ -236,6 +248,136 @@ pub fn validate_tenant_config(value: &serde_json::Value) -> Result<TenantAgentCo
         }
     };
 
+    let temperature = match obj.get("temperature") {
+        Some(serde_json::Value::Null) | None => None,
+        Some(serde_json::Value::Number(v)) => {
+            let f = v.as_f64().ok_or_else(|| {
+                AppError::InvalidInput(
+                    "Tenant agent config field 'temperature' must be a number".into(),
+                )
+            })? as f32;
+            if !f.is_finite() || f < 0.0 || f > 2.0 {
+                return Err(AppError::InvalidInput(
+                    "Tenant agent config field 'temperature' must be between 0.0 and 2.0".into(),
+                ));
+            }
+            Some(f)
+        }
+        Some(_) => {
+            return Err(AppError::InvalidInput(
+                "Tenant agent config field 'temperature' must be a number".into(),
+            ));
+        }
+    };
+    let max_tokens = match obj.get("max_tokens") {
+        Some(serde_json::Value::Null) | None => None,
+        Some(serde_json::Value::Number(v)) => {
+            let n = v.as_u64().ok_or_else(|| {
+                AppError::InvalidInput(
+                    "Tenant agent config field 'max_tokens' must be a positive integer".into(),
+                )
+            })?;
+            if n == 0 || n > u32::MAX as u64 {
+                return Err(AppError::InvalidInput(
+                    "Tenant agent config field 'max_tokens' must be a positive integer".into(),
+                ));
+            }
+            Some(n as u32)
+        }
+        Some(_) => {
+            return Err(AppError::InvalidInput(
+                "Tenant agent config field 'max_tokens' must be a number".into(),
+            ));
+        }
+    };
+    let stop = match obj.get("stop") {
+        Some(serde_json::Value::Null) | None => None,
+        Some(serde_json::Value::String(s)) => Some(vec![s.clone()]),
+        Some(serde_json::Value::Array(v)) => {
+            let mut out = Vec::with_capacity(v.len());
+            for e in v {
+                match e {
+                    serde_json::Value::String(s) => out.push(s.clone()),
+                    _ => {
+                        return Err(AppError::InvalidInput(
+                            "Tenant agent config field 'stop' must be a string or array of strings"
+                                .into(),
+                        ));
+                    }
+                }
+            }
+            Some(out)
+        }
+        Some(_) => {
+            return Err(AppError::InvalidInput(
+                "Tenant agent config field 'stop' must be a string or array of strings".into(),
+            ));
+        }
+    };
+    let top_p = match obj.get("top_p") {
+        Some(serde_json::Value::Null) | None => None,
+        Some(serde_json::Value::Number(v)) => {
+            let f = v.as_f64().ok_or_else(|| {
+                AppError::InvalidInput("Tenant agent config field 'top_p' must be a number".into())
+            })? as f32;
+            if !f.is_finite() || f < 0.0 || f > 1.0 {
+                return Err(AppError::InvalidInput(
+                    "Tenant agent config field 'top_p' must be between 0.0 and 1.0".into(),
+                ));
+            }
+            Some(f)
+        }
+        Some(_) => {
+            return Err(AppError::InvalidInput(
+                "Tenant agent config field 'top_p' must be a number".into(),
+            ));
+        }
+    };
+    let frequency_penalty = match obj.get("frequency_penalty") {
+        Some(serde_json::Value::Null) | None => None,
+        Some(serde_json::Value::Number(v)) => {
+            let f = v.as_f64().ok_or_else(|| {
+                AppError::InvalidInput(
+                    "Tenant agent config field 'frequency_penalty' must be a number".into(),
+                )
+            })? as f32;
+            if !f.is_finite() || f < -2.0 || f > 2.0 {
+                return Err(AppError::InvalidInput(
+                    "Tenant agent config field 'frequency_penalty' must be between -2.0 and 2.0"
+                        .into(),
+                ));
+            }
+            Some(f)
+        }
+        Some(_) => {
+            return Err(AppError::InvalidInput(
+                "Tenant agent config field 'frequency_penalty' must be a number".into(),
+            ));
+        }
+    };
+    let presence_penalty = match obj.get("presence_penalty") {
+        Some(serde_json::Value::Null) | None => None,
+        Some(serde_json::Value::Number(v)) => {
+            let f = v.as_f64().ok_or_else(|| {
+                AppError::InvalidInput(
+                    "Tenant agent config field 'presence_penalty' must be a number".into(),
+                )
+            })? as f32;
+            if !f.is_finite() || f < -2.0 || f > 2.0 {
+                return Err(AppError::InvalidInput(
+                    "Tenant agent config field 'presence_penalty' must be between -2.0 and 2.0"
+                        .into(),
+                ));
+            }
+            Some(f)
+        }
+        Some(_) => {
+            return Err(AppError::InvalidInput(
+                "Tenant agent config field 'presence_penalty' must be a number".into(),
+            ));
+        }
+    };
+
     Ok(TenantAgentConfig {
         model,
         system_prompt,
@@ -244,6 +386,12 @@ pub fn validate_tenant_config(value: &serde_json::Value) -> Result<TenantAgentCo
         parallel_tools,
         version,
         sandbox,
+        temperature,
+        max_tokens,
+        stop,
+        top_p,
+        frequency_penalty,
+        presence_penalty,
     })
 }
 
@@ -319,6 +467,31 @@ pub fn prepare_create_tenant_agent(req: &CreateTenantAgentRequest) -> Result<Vec
     Ok(validate_tenant_config(&req.config)?.tools)
 }
 
+/// Merges a config patch over the stored config, one level deep.
+///
+/// Object patches spread over `current`: present keys replace, absent keys
+/// keep their stored value. An explicit `null` clears the key (removes it
+/// from the merged object). A non-object patch replaces `current` wholesale
+/// (shape validation then rejects it). Unknown keys are preserved from both
+/// sides. An empty array is a present value, so `"tools": []` clears tools.
+pub fn deep_merge_config(
+    current: &serde_json::Value,
+    patch: &serde_json::Value,
+) -> serde_json::Value {
+    let Some(patch_obj) = patch.as_object() else {
+        return patch.clone();
+    };
+    let mut merged = current.as_object().cloned().unwrap_or_default();
+    for (key, value) in patch_obj {
+        if value.is_null() {
+            merged.remove(key);
+        } else {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    serde_json::Value::Object(merged)
+}
+
 pub fn merge_tenant_agent_update(
     current: &TenantAgent,
     req: &UpdateTenantAgentRequest,
@@ -333,7 +506,11 @@ pub fn merge_tenant_agent_update(
             .description
             .clone()
             .or_else(|| current.description.clone()),
-        config: req.config.clone().unwrap_or_else(|| current.config.clone()),
+        config: req
+            .config
+            .as_ref()
+            .map(|patch| deep_merge_config(&current.config, patch))
+            .unwrap_or_else(|| current.config.clone()),
         enabled: req.enabled.unwrap_or(current.enabled),
         updated_at: now,
         ..current.clone()
@@ -664,8 +841,8 @@ pub async fn update_tenant_agent(
     let current = get_tenant_agent(pool, tenant_id, agent_name).await?;
 
     let merged = merge_tenant_agent_update(&current, &req, now);
-    if let Some(config) = req.config.as_ref() {
-        validate_tenant_config(config)?;
+    if req.config.is_some() {
+        validate_tenant_config(&merged.config)?;
     }
 
     sqlx::query(
@@ -1550,6 +1727,135 @@ mod tests {
         let merged = merge_tenant_agent_update(&current, &req, 5);
         assert!(!merged.enabled);
         assert_eq!(merged.config["model"], "slow");
+    }
+
+    #[test]
+    fn deep_merge_partial_prompt_retains_model_tools_and_max() {
+        let mut current = sample_agent();
+        current.config = serde_json::json!({
+            "model": "fast",
+            "system_prompt": "old",
+            "tools": ["search", "read"],
+            "max_tool_iterations": 7,
+            "custom": "keep",
+        });
+        let req = UpdateTenantAgentRequest {
+            display_name: None,
+            description: None,
+            config: Some(serde_json::json!({"system_prompt": "new"})),
+            enabled: None,
+        };
+        let merged = merge_tenant_agent_update(&current, &req, 1);
+        assert_eq!(merged.config["system_prompt"], "new");
+        assert_eq!(merged.config["model"], "fast");
+        assert_eq!(
+            merged.config["tools"],
+            serde_json::json!(["search", "read"])
+        );
+        assert_eq!(merged.config["max_tool_iterations"], 7);
+        assert_eq!(merged.config["custom"], "keep");
+    }
+
+    #[test]
+    fn deep_merge_partial_tools_retains_prompt() {
+        let mut current = sample_agent();
+        current.config = serde_json::json!({
+            "model": "fast",
+            "system_prompt": "hello",
+            "tools": ["search", "read"],
+        });
+        let req = UpdateTenantAgentRequest {
+            display_name: None,
+            description: None,
+            config: Some(serde_json::json!({"tools": ["search"]})),
+            enabled: None,
+        };
+        let merged = merge_tenant_agent_update(&current, &req, 1);
+        assert_eq!(merged.config["tools"], serde_json::json!(["search"]));
+        assert_eq!(merged.config["system_prompt"], "hello");
+        assert_eq!(merged.config["model"], "fast");
+
+        let clear_req = UpdateTenantAgentRequest {
+            display_name: None,
+            description: None,
+            config: Some(serde_json::json!({"tools": []})),
+            enabled: None,
+        };
+        let cleared = merge_tenant_agent_update(&current, &clear_req, 1);
+        assert_eq!(cleared.config["tools"], serde_json::json!([]));
+        assert_eq!(cleared.config["system_prompt"], "hello");
+    }
+
+    #[test]
+    fn deep_merge_model_only_partial_retains_prompt() {
+        let mut current = sample_agent();
+        current.config = serde_json::json!({
+            "model": "fast",
+            "system_prompt": "hello",
+        });
+        let req = UpdateTenantAgentRequest {
+            display_name: None,
+            description: None,
+            config: Some(serde_json::json!({"model": "slow"})),
+            enabled: None,
+        };
+        let merged = merge_tenant_agent_update(&current, &req, 1);
+        assert_eq!(merged.config["model"], "slow");
+        assert_eq!(merged.config["system_prompt"], "hello");
+    }
+
+    #[test]
+    fn deep_merge_null_clears_vs_absent_keeps() {
+        let current = serde_json::json!({
+            "model": "fast",
+            "system_prompt": "old",
+            "tools": ["a"],
+        });
+        let cleared = deep_merge_config(&current, &serde_json::json!({"system_prompt": null}));
+        assert!(cleared.get("system_prompt").is_none());
+        assert_eq!(cleared["model"], "fast");
+
+        let kept = deep_merge_config(&current, &serde_json::json!({}));
+        assert_eq!(kept["system_prompt"], "old");
+
+        let replaced = deep_merge_config(&current, &serde_json::json!("oops"));
+        assert_eq!(replaced, serde_json::json!("oops"));
+
+        let mut agent = sample_agent();
+        agent.config = current;
+        let req = UpdateTenantAgentRequest {
+            display_name: None,
+            description: None,
+            config: Some(serde_json::json!({"system_prompt": null})),
+            enabled: None,
+        };
+        let merged = merge_tenant_agent_update(&agent, &req, 1);
+        assert!(merged.config.get("system_prompt").is_none());
+    }
+
+    #[test]
+    fn deep_merge_merged_passes_validation_where_incoming_only_would_not() {
+        let mut current = sample_agent();
+        current.config = serde_json::json!({
+            "model": "fast",
+            "system_prompt": "old",
+            "tools": ["search"],
+            "max_tool_iterations": 7,
+        });
+        let patch = serde_json::json!({"system_prompt": "new"});
+        assert!(validate_tenant_config(&patch).is_err());
+        let merged_value = deep_merge_config(&current.config, &patch);
+        let cfg = validate_tenant_config(&merged_value).expect("merged partial should validate");
+        assert_eq!(cfg.model, "fast");
+
+        let req = UpdateTenantAgentRequest {
+            display_name: None,
+            description: None,
+            config: Some(patch),
+            enabled: None,
+        };
+        let merged = merge_tenant_agent_update(&current, &req, 1);
+        validate_tenant_config(&merged.config).expect("merged agent config should validate");
     }
 
     #[test]

@@ -134,6 +134,9 @@ pub async fn run_agent(
     Json(input): Json<serde_json::Value>,
 ) -> Result<Response> {
     let tc = extract_tenant(ctx)?;
+    // Keep the metering handle for explicit success recording on both paths.
+    // Snapshot is authoritative; headers are the fallback in `track_usage`.
+    let usage_ctx = usage.clone().map(|Extension(u)| u);
     // Open the tenant realm when TenantRealms is on ctx, then intercept TenantContext.
     let state_ctx = ares_agent::request_tenant_ctx(&state_ctx, tc.clone());
     let state_ctx = match usage {
@@ -319,45 +322,61 @@ pub async fn run_agent(
         }
 
         let response_agent_id = name.clone();
-        let (response, input_tokens, output_tokens) = match skill_result {
-            Ok(context) => {
-                let (input_tokens, output_tokens) =
-                    ares_agent::skills::skill_result_token_counts(&context);
-                let total_tokens = (input_tokens + output_tokens).max(0) as u64;
-                let response = V1AgentRun {
-                    id: run_id,
-                    agent_id: response_agent_id.clone(),
-                    status: "completed".to_string(),
-                    input: input.clone(),
-                    output: Some(context),
-                    error: None,
-                    started_at: Utc::now(),
-                    finished_at: Some(Utc::now()),
-                    duration_ms: Some(duration_ms),
-                    tokens_used: Some(total_tokens),
-                };
-                (
-                    response,
-                    input_tokens.max(0) as u64,
-                    output_tokens.max(0) as u64,
-                )
-            }
-            Err(e) => {
-                let response = V1AgentRun {
-                    id: run_id,
-                    agent_id: response_agent_id.clone(),
-                    status: "failed".to_string(),
-                    input: input.clone(),
-                    output: None,
-                    error: Some(e),
-                    started_at: Utc::now(),
-                    finished_at: Some(Utc::now()),
-                    duration_ms: Some(duration_ms),
-                    tokens_used: Some(0),
-                };
-                (response, 0u64, 0u64)
-            }
-        };
+        // Skill counts aggregate nested reported usage; failures are zeroed.
+        let (response, input_tokens, output_tokens, metering_ok, metering_source) =
+            match skill_result {
+                Ok(context) => {
+                    let (input_tokens, output_tokens) =
+                        ares_agent::skills::skill_result_token_counts(&context);
+                    let total_tokens = (input_tokens + output_tokens).max(0) as u64;
+                    let response = V1AgentRun {
+                        id: run_id,
+                        agent_id: response_agent_id.clone(),
+                        status: "completed".to_string(),
+                        input: input.clone(),
+                        output: Some(context),
+                        error: None,
+                        started_at: Utc::now(),
+                        finished_at: Some(Utc::now()),
+                        duration_ms: Some(duration_ms),
+                        tokens_used: Some(total_tokens),
+                    };
+                    (
+                        response,
+                        input_tokens.max(0) as u64,
+                        output_tokens.max(0) as u64,
+                        true,
+                        "reported",
+                    )
+                }
+                Err(e) => {
+                    let response = V1AgentRun {
+                        id: run_id,
+                        agent_id: response_agent_id.clone(),
+                        status: "failed".to_string(),
+                        input: input.clone(),
+                        output: None,
+                        error: Some(e),
+                        started_at: Utc::now(),
+                        finished_at: Some(Utc::now()),
+                        duration_ms: Some(duration_ms),
+                        tokens_used: Some(0),
+                    };
+                    (response, 0u64, 0u64, false, "estimated")
+                }
+            };
+
+        if let Some(u) = usage_ctx.as_ref() {
+            u.record(metering_snapshot(
+                input_tokens as i64,
+                output_tokens as i64,
+                Some("skill".to_string()),
+                Some(response_agent_id.clone()),
+                Some("skill".to_string()),
+                metering_ok,
+                Some(metering_source.to_string()),
+            ));
+        }
 
         let mut response = usage_response(
             response,
@@ -366,6 +385,8 @@ pub async fn run_agent(
             "skill",
             "skill",
             &response_agent_id,
+            metering_ok,
+            metering_source,
         );
         set_header(
             response.headers_mut(),
@@ -512,6 +533,7 @@ pub async fn run_agent(
 
     match result {
         Ok(response) => {
+            let counts_source = llm_counts_source(response.usage.as_ref()).to_string();
             let (input_tokens, output_tokens) = llm_token_counts_u64(
                 response.usage.as_ref(),
                 &effective_message,
@@ -576,6 +598,18 @@ pub async fn run_agent(
                 tokens_used: Some(input_tokens + output_tokens),
             };
 
+            if let Some(u) = usage_ctx.as_ref() {
+                u.record(metering_snapshot(
+                    input_tokens as i64,
+                    output_tokens as i64,
+                    Some(model_name.clone()),
+                    Some(response_agent_id.clone()),
+                    Some(provider_name.clone()),
+                    true,
+                    Some(counts_source.clone()),
+                ));
+            }
+
             let mut response = usage_response(
                 response,
                 input_tokens,
@@ -583,6 +617,8 @@ pub async fn run_agent(
                 &model_name,
                 &provider_name,
                 &response_agent_id,
+                true,
+                &counts_source,
             );
             set_header(
                 response.headers_mut(),
@@ -646,8 +682,28 @@ pub async fn run_agent(
                 tokens_used: Some(0),
             };
 
-            let mut response =
-                usage_response(response, 0, 0, "unknown", "unknown", &response_agent_id);
+            if let Some(u) = usage_ctx.as_ref() {
+                u.record(metering_snapshot(
+                    0,
+                    0,
+                    Some("unknown".to_string()),
+                    Some(response_agent_id.clone()),
+                    Some("unknown".to_string()),
+                    false,
+                    Some("estimated".to_string()),
+                ));
+            }
+
+            let mut response = usage_response(
+                response,
+                0,
+                0,
+                "unknown",
+                "unknown",
+                &response_agent_id,
+                false,
+                "estimated",
+            );
             set_header(
                 response.headers_mut(),
                 "x-agent-config-source",
@@ -1005,6 +1061,7 @@ pub fn routes() -> axum::Router<Arc<Context>> {
         .route("/v1/agents/list_api_keys", get(list_api_keys))
         .route("/v1/agents/create_api_key", post(create_api_key))
         .route("/v1/agents/revoke_api_key", delete(revoke_api_key))
+        .route("/v1/agents/rotate_api_key", post(rotate_api_key))
         .route("/v1/agents/delete_tenant_data", delete(delete_tenant_data))
 }
 

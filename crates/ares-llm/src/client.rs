@@ -260,6 +260,8 @@ pub struct ModelParams {
     pub max_tokens: Option<u32>,
     /// Nucleus sampling parameter
     pub top_p: Option<f32>,
+    /// Stop sequences (halt generation when encountered)
+    pub stop: Option<Vec<String>>,
     /// Frequency penalty (-2.0 to 2.0)
     pub frequency_penalty: Option<f32>,
     /// Presence penalty (-2.0 to 2.0)
@@ -282,11 +284,39 @@ impl ModelParams {
             temperature: Some(config.temperature),
             max_tokens: Some(config.max_tokens),
             top_p: None,
+            stop: None,
             frequency_penalty: None,
             presence_penalty: None,
             reasoning_effort: None,
             reasoning_budget_tokens: None,
         }
+    }
+
+    /// Overlay tenant params onto a base (host alias) param set.
+    ///
+    /// `Some` tenant values win verbatim; `None` keeps the base.
+    /// Used so every resolve hit (tier, model, provider-name, each
+    /// fallback) inherits the same tenant generation fields.
+    pub fn overlayed(mut self, tenant: &ModelParams) -> Self {
+        if tenant.temperature.is_some() {
+            self.temperature = tenant.temperature;
+        }
+        if tenant.max_tokens.is_some() {
+            self.max_tokens = tenant.max_tokens;
+        }
+        if tenant.stop.is_some() {
+            self.stop = tenant.stop.clone();
+        }
+        if tenant.top_p.is_some() {
+            self.top_p = tenant.top_p;
+        }
+        if tenant.frequency_penalty.is_some() {
+            self.frequency_penalty = tenant.frequency_penalty;
+        }
+        if tenant.presence_penalty.is_some() {
+            self.presence_penalty = tenant.presence_penalty;
+        }
+        self
     }
 }
 
@@ -1451,6 +1481,7 @@ mod tests {
         assert!(params.temperature.is_none());
         assert!(params.max_tokens.is_none());
         assert!(params.top_p.is_none());
+        assert!(params.stop.is_none());
         assert!(params.frequency_penalty.is_none());
         assert!(params.presence_penalty.is_none());
     }
@@ -1467,6 +1498,7 @@ mod tests {
         assert_eq!(params.temperature, Some(0.5));
         assert_eq!(params.max_tokens, Some(1024));
         assert!(params.top_p.is_none());
+        assert!(params.stop.is_none());
         assert!(params.frequency_penalty.is_none());
         assert!(params.presence_penalty.is_none());
     }
@@ -1483,6 +1515,7 @@ mod tests {
         assert_eq!(params.temperature, Some(0.7));
         assert_eq!(params.max_tokens, Some(512));
         assert!(params.top_p.is_none());
+        assert!(params.stop.is_none());
         assert!(params.frequency_penalty.is_none());
         assert!(params.presence_penalty.is_none());
     }
@@ -1493,6 +1526,7 @@ mod tests {
             temperature: Some(0.8),
             max_tokens: Some(2048),
             top_p: Some(0.95),
+            stop: Some(vec!["END".to_string()]),
             frequency_penalty: Some(-0.5),
             presence_penalty: Some(0.3),
             reasoning_effort: None,

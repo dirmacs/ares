@@ -97,6 +97,141 @@ pub fn agent_config_from_json(json: &serde_json::Value) -> Result<AgentConfig> {
         }
     };
 
+    let temperature = match obj.get("temperature") {
+        Some(serde_json::Value::Null) | None => None,
+        Some(serde_json::Value::Number(value)) => {
+            let parsed = value.as_f64().ok_or_else(|| {
+                AppError::Configuration(
+                    "Tenant agent config field 'temperature' must be a number".into(),
+                )
+            })? as f32;
+            if !parsed.is_finite() || parsed < 0.0 || parsed > 2.0 {
+                return Err(AppError::Configuration(
+                    "Tenant agent config field 'temperature' must be between 0.0 and 2.0".into(),
+                ));
+            }
+            Some(parsed)
+        }
+        Some(_) => {
+            return Err(AppError::Configuration(
+                "Tenant agent config field 'temperature' must be a number".into(),
+            ));
+        }
+    };
+
+    let max_tokens = match obj.get("max_tokens") {
+        Some(serde_json::Value::Null) | None => None,
+        Some(serde_json::Value::Number(value)) => {
+            let parsed = value.as_u64().ok_or_else(|| {
+                AppError::Configuration(
+                    "Tenant agent config field 'max_tokens' must be a positive integer".into(),
+                )
+            })?;
+            if parsed == 0 || parsed > u32::MAX as u64 {
+                return Err(AppError::Configuration(
+                    "Tenant agent config field 'max_tokens' must be a positive integer".into(),
+                ));
+            }
+            Some(parsed as u32)
+        }
+        Some(_) => {
+            return Err(AppError::Configuration(
+                "Tenant agent config field 'max_tokens' must be a number".into(),
+            ));
+        }
+    };
+
+    let stop = match obj.get("stop") {
+        Some(serde_json::Value::Null) | None => None,
+        Some(serde_json::Value::String(value)) => Some(vec![value.clone()]),
+        Some(serde_json::Value::Array(values)) => {
+            let mut collected = Vec::with_capacity(values.len());
+            for value in values {
+                match value {
+                    serde_json::Value::String(text) => collected.push(text.clone()),
+                    _ => {
+                        return Err(AppError::Configuration(
+                            "Tenant agent config field 'stop' must be a string or array of strings"
+                                .into(),
+                        ));
+                    }
+                }
+            }
+            Some(collected)
+        }
+        Some(_) => {
+            return Err(AppError::Configuration(
+                "Tenant agent config field 'stop' must be a string or array of strings".into(),
+            ));
+        }
+    };
+
+    let top_p = match obj.get("top_p") {
+        Some(serde_json::Value::Null) | None => None,
+        Some(serde_json::Value::Number(value)) => {
+            let parsed = value.as_f64().ok_or_else(|| {
+                AppError::Configuration("Tenant agent config field 'top_p' must be a number".into())
+            })? as f32;
+            if !parsed.is_finite() || parsed < 0.0 || parsed > 1.0 {
+                return Err(AppError::Configuration(
+                    "Tenant agent config field 'top_p' must be between 0.0 and 1.0".into(),
+                ));
+            }
+            Some(parsed)
+        }
+        Some(_) => {
+            return Err(AppError::Configuration(
+                "Tenant agent config field 'top_p' must be a number".into(),
+            ));
+        }
+    };
+
+    let frequency_penalty = match obj.get("frequency_penalty") {
+        Some(serde_json::Value::Null) | None => None,
+        Some(serde_json::Value::Number(value)) => {
+            let parsed = value.as_f64().ok_or_else(|| {
+                AppError::Configuration(
+                    "Tenant agent config field 'frequency_penalty' must be a number".into(),
+                )
+            })? as f32;
+            if !parsed.is_finite() || parsed < -2.0 || parsed > 2.0 {
+                return Err(AppError::Configuration(
+                    "Tenant agent config field 'frequency_penalty' must be between -2.0 and 2.0"
+                        .into(),
+                ));
+            }
+            Some(parsed)
+        }
+        Some(_) => {
+            return Err(AppError::Configuration(
+                "Tenant agent config field 'frequency_penalty' must be a number".into(),
+            ));
+        }
+    };
+
+    let presence_penalty = match obj.get("presence_penalty") {
+        Some(serde_json::Value::Null) | None => None,
+        Some(serde_json::Value::Number(value)) => {
+            let parsed = value.as_f64().ok_or_else(|| {
+                AppError::Configuration(
+                    "Tenant agent config field 'presence_penalty' must be a number".into(),
+                )
+            })? as f32;
+            if !parsed.is_finite() || parsed < -2.0 || parsed > 2.0 {
+                return Err(AppError::Configuration(
+                    "Tenant agent config field 'presence_penalty' must be between -2.0 and 2.0"
+                        .into(),
+                ));
+            }
+            Some(parsed)
+        }
+        Some(_) => {
+            return Err(AppError::Configuration(
+                "Tenant agent config field 'presence_penalty' must be a number".into(),
+            ));
+        }
+    };
+
     Ok(AgentConfig {
         model,
         system_prompt,
@@ -109,6 +244,12 @@ pub fn agent_config_from_json(json: &serde_json::Value) -> Result<AgentConfig> {
             Some(allowed_tools)
         },
         compaction_enabled: None,
+        temperature,
+        max_tokens,
+        stop,
+        top_p,
+        frequency_penalty,
+        presence_penalty,
         extra: HashMap::new(),
     })
 }
@@ -548,6 +689,12 @@ mod tests {
         assert!(config.tools.is_empty());
         assert_eq!(config.max_tool_iterations, 5);
         assert!(!config.parallel_tools);
+        assert!(config.temperature.is_none());
+        assert!(config.max_tokens.is_none());
+        assert!(config.stop.is_none());
+        assert!(config.top_p.is_none());
+        assert!(config.frequency_penalty.is_none());
+        assert!(config.presence_penalty.is_none());
         assert!(config.extra.is_empty());
     }
 
@@ -595,6 +742,96 @@ mod tests {
 
         assert_eq!(config.model, "default");
         assert!(config.extra.is_empty());
+    }
+
+    #[test]
+    fn tenant_config_accepts_gen_params() {
+        let config = agent_config_from_json(&serde_json::json!({
+            "model": "default",
+            "temperature": 1.5,
+            "max_tokens": 1024,
+            "stop": ["END", "STOP"],
+            "top_p": 0.9,
+            "frequency_penalty": 0.5,
+            "presence_penalty": -0.5
+        }))
+        .expect("gen params accept");
+
+        assert_eq!(config.temperature, Some(1.5));
+        assert_eq!(config.max_tokens, Some(1024));
+        assert_eq!(
+            config.stop,
+            Some(vec!["END".to_string(), "STOP".to_string()])
+        );
+        assert_eq!(config.top_p, Some(0.9));
+        assert_eq!(config.frequency_penalty, Some(0.5));
+        assert_eq!(config.presence_penalty, Some(-0.5));
+    }
+
+    #[test]
+    fn tenant_config_stop_normalizes_string_and_array() {
+        let from_string = agent_config_from_json(&serde_json::json!({
+            "model": "default",
+            "stop": "END"
+        }))
+        .expect("stop string");
+        assert_eq!(from_string.stop, Some(vec!["END".to_string()]));
+
+        let from_array = agent_config_from_json(&serde_json::json!({
+            "model": "default",
+            "stop": ["A", "B"]
+        }))
+        .expect("stop array");
+        assert_eq!(
+            from_array.stop,
+            Some(vec!["A".to_string(), "B".to_string()])
+        );
+
+        let missing = agent_config_from_json(&serde_json::json!({
+            "model": "default"
+        }))
+        .expect("stop missing");
+        assert!(missing.stop.is_none());
+    }
+
+    #[test]
+    fn tenant_config_null_gen_params_default_to_none() {
+        let config = agent_config_from_json(&serde_json::json!({
+            "model": "default",
+            "temperature": null,
+            "max_tokens": null,
+            "stop": null,
+            "top_p": null,
+            "frequency_penalty": null,
+            "presence_penalty": null
+        }))
+        .expect("null gen params");
+
+        assert!(config.temperature.is_none());
+        assert!(config.max_tokens.is_none());
+        assert!(config.stop.is_none());
+        assert!(config.top_p.is_none());
+        assert!(config.frequency_penalty.is_none());
+        assert!(config.presence_penalty.is_none());
+    }
+
+    #[test]
+    fn tenant_config_rejects_out_of_range_gen_params() {
+        for payload in [
+            serde_json::json!({"model": "default", "temperature": -0.1}),
+            serde_json::json!({"model": "default", "temperature": 2.1}),
+            serde_json::json!({"model": "default", "temperature": "hot"}),
+            serde_json::json!({"model": "default", "max_tokens": 0}),
+            serde_json::json!({"model": "default", "max_tokens": "many"}),
+            serde_json::json!({"model": "default", "top_p": -0.1}),
+            serde_json::json!({"model": "default", "top_p": 1.1}),
+            serde_json::json!({"model": "default", "stop": 42}),
+            serde_json::json!({"model": "default", "stop": ["ok", 7]}),
+            serde_json::json!({"model": "default", "frequency_penalty": 2.5}),
+            serde_json::json!({"model": "default", "presence_penalty": -2.5}),
+        ] {
+            agent_config_from_json(&payload).expect_err("out-of-range gen param");
+        }
     }
 
     #[test]
@@ -654,6 +891,12 @@ mod tests {
                 max_tool_iterations: 5,
                 parallel_tools: false,
                 compaction_enabled: None,
+                temperature: None,
+                max_tokens: None,
+                stop: None,
+                top_p: None,
+                frequency_penalty: None,
+                presence_penalty: None,
                 extra: std::collections::HashMap::new(),
                 allowed_tools: None,
             },
@@ -815,6 +1058,12 @@ mod tests {
                     max_tool_iterations: 5,
                     parallel_tools: false,
                     compaction_enabled: None,
+                    temperature: None,
+                    max_tokens: None,
+                    stop: None,
+                    top_p: None,
+                    frequency_penalty: None,
+                    presence_penalty: None,
                     extra: HashMap::new(),
                     allowed_tools: None,
                 },
@@ -1002,6 +1251,12 @@ mod tests {
                     max_tool_iterations: 5,
                     parallel_tools: false,
                     compaction_enabled: None,
+                    temperature: None,
+                    max_tokens: None,
+                    stop: None,
+                    top_p: None,
+                    frequency_penalty: None,
+                    presence_penalty: None,
                     extra: HashMap::new(),
                     allowed_tools: None,
                 },

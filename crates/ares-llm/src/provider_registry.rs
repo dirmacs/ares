@@ -1053,6 +1053,7 @@ impl ProviderRegistry {
         tenant_id: &str,
         pool: &sqlx::PgPool,
         fleet_secrets: &ares_store::FleetSecrets,
+        tenant_params: &ModelParams,
     ) -> Result<Vec<ResolvedProviderConfig>> {
         use ares_store::tenant_model_tiers::TenantModelTierStore;
         use std::collections::HashSet;
@@ -1072,7 +1073,7 @@ impl ProviderRegistry {
                     provider_name: tier.provider_name,
                     model_name: tier.model_name,
                     provider_config,
-                    params: ModelParams::default(),
+                    params: ModelParams::default().overlayed(tenant_params),
                     tenant_id: Some(tenant_id.to_string()),
                 }
             }
@@ -1090,7 +1091,7 @@ impl ProviderRegistry {
                         provider_name: model_cfg.provider.clone(),
                         model_name: model_cfg.model.clone(),
                         provider_config,
-                        params: ModelParams::from_model_config(&model_cfg),
+                        params: ModelParams::from_model_config(&model_cfg).overlayed(tenant_params),
                         tenant_id: Some(tenant_id.to_string()),
                     }
                 } else if let Some(provider_config) =
@@ -1107,7 +1108,7 @@ impl ProviderRegistry {
                         provider_name: tier_or_model.to_string(),
                         model_name,
                         provider_config,
-                        params: ModelParams::default(),
+                        params: ModelParams::default().overlayed(tenant_params),
                         tenant_id: Some(tenant_id.to_string()),
                     }
                 } else {
@@ -1155,7 +1156,7 @@ impl ProviderRegistry {
                     provider_name: fallback_name.clone(),
                     model_name,
                     provider_config,
-                    params: ModelParams::default(),
+                    params: ModelParams::default().overlayed(tenant_params),
                     tenant_id: Some(tenant_id.to_string()),
                 });
             }

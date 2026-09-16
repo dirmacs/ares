@@ -549,6 +549,10 @@ All admin routes take the `X-Admin-Secret` header. Route groups in `routes.rs`:
 | Runtime providers | `GET/POST /admin/runtime_providers`, `GET/DELETE /admin/runtime_providers/{name}` |
 | Platform stats | `GET /admin/stats` |
 
+### Agent Config Updates
+
+`PUT` on a tenant agent merges the patch into the stored config. Omitted fields keep their values, so partial updates never wipe the config. An explicit `null` clears a field. Unknown fields stay untouched, and an empty tools array clears the tool list. The merged config passes validation before it saves. Rollback replaces the config wholesale and skips the merge.
+
 ### Cordis Service Lifecycle
 
 These routes manage the plugin runtime. Unknown loader state answers `503`.

@@ -1,6 +1,9 @@
 pub mod models;
 pub mod types;
-pub use models::{ApiKey, QuotaExceeded, Tenant, TenantContext, TenantQuota, TenantTier};
+pub use models::{
+    normalize_api_key_scope, ApiKey, QuotaExceeded, Tenant, TenantContext, TenantQuota, TenantTier,
+    API_KEY_MAX_TTL_DAYS, API_KEY_SCOPE_FULL, API_KEY_SCOPE_INGEST,
+};
 pub use types::{AppError, ErrorCode, Result};
 
 #[cfg(test)]

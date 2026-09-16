@@ -142,11 +142,27 @@ pub struct V1ApiKey {
     pub created_at: DateTime<Utc>,
     pub last_used: Option<DateTime<Utc>>,
     pub expires_at: Option<DateTime<Utc>>,
+    #[serde(default = "default_v1_scope")]
+    pub scopes: String,
+}
+
+fn default_v1_scope() -> String {
+    ares_types::models::tenant::API_KEY_SCOPE_FULL.to_string()
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateApiKeyRequest {
     pub name: String,
+    pub expires_in_days: Option<u32>,
+    #[serde(default)]
+    pub scopes: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RotateApiKeyRequest {
+    #[serde(default)]
+    pub scopes: Option<String>,
+    #[serde(default)]
     pub expires_in_days: Option<u32>,
 }
 

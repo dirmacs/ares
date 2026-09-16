@@ -776,13 +776,18 @@ pub async fn list_api_keys(
             created_at: ts_to_dt(k.created_at),
             last_used: None,
             expires_at: k.expires_at.map(ts_to_dt),
+            scopes: ares_types::normalize_api_key_scope(Some(&k.scopes)),
         })
         .collect();
 
     Ok(Json(response))
 }
 
-/// POST /v1/api-keys — create a new API key
+/// POST /v1/api-keys — create a new API key.
+///
+/// Honors `expires_in_days` (`1..=3650`, else 400) and `scopes`
+/// (`full`/`ingest`, unknown defaults to `full`). Surfaces `expires_at`
+/// and `scopes` so callers can persist them.
 pub async fn create_api_key(
     State(state_ctx): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
@@ -790,6 +795,13 @@ pub async fn create_api_key(
     Json(payload): Json<CreateApiKeyRequest>,
 ) -> Result<Json<CreateApiKeyResponse>> {
     let tc = extract_tenant(ctx)?;
+    if let Some(days) = payload.expires_in_days {
+        if !(1..=3650).contains(&days) {
+            return Err(HttpError::from(ares_types::types::AppError::InvalidInput(
+                "expires_in_days must be between 1 and 3650".to_string(),
+            )));
+        }
+    }
     // Open the tenant realm when TenantRealms is on ctx, then intercept TenantContext.
     let state_ctx = ares_agent::request_tenant_ctx(&state_ctx, tc.clone());
     let state_ctx = match usage {
@@ -799,7 +811,12 @@ pub async fn create_api_key(
     let (api_key, raw_key) = state_ctx
         .get::<ares_store::TenantDb>()
         .expect("not provided")
-        .create_api_key(&tc.tenant_id, payload.name)
+        .create_api_key(
+            &tc.tenant_id,
+            payload.name,
+            payload.scopes,
+            payload.expires_in_days,
+        )
         .await?;
 
     Ok(Json(CreateApiKeyResponse {
@@ -810,6 +827,77 @@ pub async fn create_api_key(
             created_at: ts_to_dt(api_key.created_at),
             last_used: None,
             expires_at: api_key.expires_at.map(ts_to_dt),
+            scopes: ares_types::normalize_api_key_scope(Some(&api_key.scopes)),
+        },
+        secret: raw_key,
+    }))
+}
+
+/// POST /v1/api-keys/{id}/rotate — mint a replacement key, then revoke the old.
+///
+/// Double-mint order: the new key is created first so the tenant never loses
+/// access if the revoke fails. The old key is revoked immediately after.
+/// Audit-logged. The new secret is returned once-only; it cannot be retrieved
+/// again.
+pub async fn rotate_api_key(
+    State(state_ctx): State<Arc<Context>>,
+    ctx: Option<Extension<TenantContext>>,
+    usage: Option<Extension<crate::middleware::usage::UsageContext>>,
+    Path(key_id): Path<String>,
+    Json(payload): Json<RotateApiKeyRequest>,
+) -> Result<Json<CreateApiKeyResponse>> {
+    let tc = extract_tenant(ctx)?;
+    if let Some(days) = payload.expires_in_days {
+        if !(1..=3650).contains(&days) {
+            return Err(HttpError::from(ares_types::types::AppError::InvalidInput(
+                "expires_in_days must be between 1 and 3650".to_string(),
+            )));
+        }
+    }
+    // Open the tenant realm when TenantRealms is on ctx, then intercept TenantContext.
+    let state_ctx = ares_agent::request_tenant_ctx(&state_ctx, tc.clone());
+    let state_ctx = match usage {
+        Some(Extension(u)) => state_ctx.with_intercept(u),
+        None => state_ctx,
+    };
+    let db = state_ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided");
+    // Preserve the old key's name/scopes when the caller does not override.
+    let old = db.get_api_key(&tc.tenant_id, &key_id).await?;
+    let name = old.name.clone();
+    let scopes = payload.scopes.or(Some(old.scopes.clone()));
+    // Mint first.
+    let (api_key, raw_key) = db
+        .create_api_key(&tc.tenant_id, name, scopes, payload.expires_in_days)
+        .await?;
+    // Then revoke the old key.
+    db.revoke_api_key(&tc.tenant_id, &key_id).await?;
+    let pool = db.pool().clone();
+    let new_id = api_key.id.clone();
+    let old_id = key_id.clone();
+    tokio::spawn(async move {
+        let details = format!("{{\"rotated_from\":\"{}\"}}", old_id);
+        let _ = ares_store::audit_log::log_admin_action(
+            &pool,
+            "rotate_api_key",
+            "api_key",
+            &new_id,
+            Some(&details),
+            None,
+        )
+        .await;
+    });
+
+    Ok(Json(CreateApiKeyResponse {
+        key: V1ApiKey {
+            id: api_key.id,
+            name: api_key.name,
+            prefix: api_key.key_prefix,
+            created_at: ts_to_dt(api_key.created_at),
+            last_used: None,
+            expires_at: api_key.expires_at.map(ts_to_dt),
+            scopes: ares_types::normalize_api_key_scope(Some(&api_key.scopes)),
         },
         secret: raw_key,
     }))

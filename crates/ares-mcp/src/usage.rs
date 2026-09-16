@@ -109,6 +109,8 @@ pub fn aggregate_effective_tokens(events: &[(u64, McpOperation)]) -> i64 {
 /// - `tokens_used`: Actual tokens consumed (0 for non-LLM calls, actual count for RunAgent)
 /// - `success`: Whether the call succeeded
 /// - `duration_ms`: How long the call took in milliseconds
+/// - `api_key_id`: Key identity for per-key attribution (`None` when the
+///   caller cannot see it; MCP sessions thread `McpSession::api_key_id()`).
 ///
 /// # Errors
 /// Returns error if the database insert fails. The caller should
@@ -121,19 +123,22 @@ pub async fn record_mcp_usage(
     tokens_used: u64,
     success: bool,
     duration_ms: u64,
+    api_key_id: Option<&str>,
 ) -> Result<(), AppError> {
     let now_ts = Utc::now().timestamp();
     let op_name = operation.as_str();
     let effective_tokens = compute_effective_tokens(tokens_used, operation);
 
-    // Insert into unified usage_events table (matches migrations/001_usage_events_unified.sql)
+    // Insert into unified usage_events table (matches migrations/001_usage_events_unified.sql).
+    // `api_key_id` attributes the row to the calling key (031); `None` for
+    // callers that cannot see key identity.
     let result = sqlx::query(
         r#"
         INSERT INTO usage_events (
             id, tenant_id, source, request_count, token_count,
-            operation, tokens_used, effective_tokens, success, duration_ms, created_at
+            operation, tokens_used, effective_tokens, success, duration_ms, api_key_id, created_at
         )
-        VALUES ($1, $2, 'mcp', 1, $3, $4, $5, $6, $7, $8, $9)
+        VALUES ($1, $2, 'mcp', 1, $3, $4, $5, $6, $7, $8, $9, $10)
         "#,
     )
     .bind(Uuid::new_v4().to_string())
@@ -144,6 +149,7 @@ pub async fn record_mcp_usage(
     .bind(effective_tokens as i64)
     .bind(success)
     .bind(duration_ms as i64)
+    .bind(api_key_id)
     .bind(now_ts)
     .execute(pool)
     .await;
@@ -197,11 +203,13 @@ pub async fn check_quota(
         .and_utc()
         .timestamp();
 
+    // Metering truth: failed runs persist success=false and must not consume
+    // quota. Old rows default success=true (no backfill needed).
     let row: (i64,) = sqlx::query_as(
         r#"
         SELECT COALESCE(SUM(effective_tokens)::bigint, 0)
         FROM usage_events
-        WHERE tenant_id = $1 AND created_at >= $2
+        WHERE tenant_id = $1 AND created_at >= $2 AND success
         "#,
     )
     .bind(tenant_id)
@@ -449,6 +457,7 @@ mod tests {
                 0,
                 true,
                 25,
+                Some("key-1"),
             )
             .await;
 

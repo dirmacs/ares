@@ -72,10 +72,22 @@ pub async fn create_api_key(
     Path(tenant_id): Path<String>,
     Json(payload): Json<CreateApiKeyRequest>,
 ) -> Result<Json<serde_json::Value>> {
+    if let Some(days) = payload.expires_in_days {
+        if !(1..=3650).contains(&days) {
+            return Err(HttpError::from(AppError::InvalidInput(
+                "expires_in_days must be between 1 and 3650".to_string(),
+            )));
+        }
+    }
     let (api_key, raw_key) = ctx
         .get::<ares_store::TenantDb>()
         .expect("not provided")
-        .create_api_key(&tenant_id, payload.name)
+        .create_api_key(
+            &tenant_id,
+            payload.name,
+            payload.scopes,
+            payload.expires_in_days,
+        )
         .await?;
 
     let pool = ctx
@@ -92,8 +104,35 @@ pub async fn create_api_key(
     Ok(Json(serde_json::json!({
         "api_key": api_key,
         "raw_key": raw_key,
+        "expires_at": api_key.expires_at,
         "warning": "Store this raw key securely. You will not be able to retrieve it again."
     })))
+}
+
+/// DELETE /admin/tenants/{tenant_id}/api-keys/{key_id} — revoke a key.
+///
+/// Returns 404 when the key id is unknown for this tenant. Audit-logged.
+pub async fn revoke_api_key(
+    State(ctx): State<Arc<Context>>,
+    Path((tenant_id, key_id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>> {
+    ctx.get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .revoke_api_key(&tenant_id, &key_id)
+        .await?;
+
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
+    let kid = key_id.clone();
+    tokio::spawn(async move {
+        let _ =
+            audit_log::log_admin_action(&pool, "revoke_api_key", "api_key", &kid, None, None).await;
+    });
+
+    Ok(Json(serde_json::json!({"revoked": true, "key_id": key_id})))
 }
 
 pub async fn list_api_keys(
@@ -197,10 +236,24 @@ pub async fn provision_client(
     )
     .await?;
 
+    if let Some(days) = req.expires_in_days {
+        if !(1..=3650).contains(&days) {
+            return Err(HttpError::from(AppError::InvalidInput(
+                "expires_in_days must be between 1 and 3650".to_string(),
+            )));
+        }
+    }
+    // TTL choice: `expires_in_days=None` mints a never-expiring key (documented
+    // here); pass `Some(days)` for a time-boxed provisioned key.
     let (api_key, raw_key) = ctx
         .get::<ares_store::TenantDb>()
         .expect("not provided")
-        .create_api_key(&tenant.id, req.api_key_name)
+        .create_api_key(
+            &tenant.id,
+            req.api_key_name,
+            req.scopes,
+            req.expires_in_days,
+        )
         .await?;
 
     let pool = ctx
@@ -231,10 +284,12 @@ pub async fn provision_client(
         tenant_name: tenant.name,
         tier: tenant.tier.as_str().to_string(),
         product_type,
-        api_key_id: api_key.id,
-        api_key_prefix: api_key.key_prefix,
+        api_key_id: api_key.id.clone(),
+        api_key_prefix: api_key.key_prefix.clone(),
         raw_api_key: raw_key,
         agents_created: agents.into_iter().map(|a| a.agent_name).collect(),
+        expires_at: api_key.expires_at,
+        scopes: ares_types::normalize_api_key_scope(Some(&api_key.scopes)),
     }))
 }
 
@@ -276,6 +331,7 @@ pub fn routes() -> axum::Router<Arc<Context>> {
         .route("/tenants/get_tenant", get(get_tenant))
         .route("/tenants/create_api_key", post(create_api_key))
         .route("/tenants/list_api_keys", get(list_api_keys))
+        .route("/tenants/revoke_api_key", delete(revoke_api_key))
         .route("/tenants/get_tenant_usage", get(get_tenant_usage))
         .route("/tenants/update_tenant_quota", put(update_tenant_quota))
         .route("/tenants/provision_client", post(provision_client))

@@ -32,6 +32,10 @@ pub struct CreateTenantRequest {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CreateApiKeyRequest {
     pub name: String,
+    #[serde(default)]
+    pub scopes: Option<String>,
+    #[serde(default)]
+    pub expires_in_days: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -66,6 +70,8 @@ pub struct ApiKeyResponse {
     pub name: String,
     pub is_active: bool,
     pub created_at: i64,
+    pub scopes: String,
+    pub expires_at: Option<i64>,
 }
 
 impl From<ares_types::models::ApiKey> for ApiKeyResponse {
@@ -77,6 +83,8 @@ impl From<ares_types::models::ApiKey> for ApiKeyResponse {
             name: k.name,
             is_active: k.is_active,
             created_at: k.created_at,
+            scopes: ares_types::normalize_api_key_scope(Some(&k.scopes)),
+            expires_at: k.expires_at,
         }
     }
 }
@@ -178,6 +186,13 @@ pub struct ProvisionClientRequest {
     pub tier: String,
     pub product_type: String,
     pub api_key_name: String,
+    /// Optional TTL in days (`1..=3650`). `None` means the provisioned key
+    /// never expires; callers that need expiry must pass an explicit TTL.
+    #[serde(default)]
+    pub expires_in_days: Option<u32>,
+    /// Optional scope for the provisioned key (`full`/`ingest`). Defaults to `full`.
+    #[serde(default)]
+    pub scopes: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -190,6 +205,8 @@ pub struct ProvisionClientResponse {
     pub api_key_prefix: String,
     pub raw_api_key: String,
     pub agents_created: Vec<String>,
+    pub expires_at: Option<i64>,
+    pub scopes: String,
 }
 
 // =============================================================================
@@ -1098,6 +1115,8 @@ mod tests {
     fn create_api_key_request_roundtrip() {
         let req = CreateApiKeyRequest {
             name: "Primary".into(),
+            scopes: None,
+            expires_in_days: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: CreateApiKeyRequest = serde_json::from_str(&json).unwrap();
@@ -1435,6 +1454,8 @@ mod tests {
             api_key_prefix: "ares_".into(),
             raw_api_key: "secret".into(),
             agents_created: vec!["a1".into()],
+            expires_at: None,
+            scopes: "full".into(),
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["agents_created"][0], "a1");

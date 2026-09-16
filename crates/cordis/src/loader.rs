@@ -836,73 +836,16 @@ impl Loader {
         let mut results: Vec<AppliedAction> = Vec::with_capacity(actions.len());
 
         for action in &actions {
-            match action {
-                LoaderAction::Retire { id } => {
-                    staged.push(Staged::Retire { id: id.clone() });
-                }
-                LoaderAction::UpdateConfig { id, new_config } => {
-                    let old_config = current
-                        .0
-                        .iter()
-                        .find(|e| e.id == *id)
-                        .map(|e| e.config.clone())
-                        .unwrap_or(serde_json::Value::Null);
-                    // Pre-flight: trial the NEW config through the same
-                    // scratch-context machinery the verified hot-swap uses,
-                    // BEFORE staging the mutation. A failing factory leaves
-                    // the old provider serving and fails the action; a
-                    // passing trial discards the candidate (the live fiber
-                    // re-applies below).
-                    if let Err(error) = Self::trial_config_verified(ctx, id, new_config) {
-                        tracing::error!(entry_id = %id, error = %error,
-                            "Loader: config pre-flight failed; old provider kept");
-                        results.push(AppliedAction {
-                            id: id.clone(),
-                            action: "update-config",
-                            status: Err(format!("config pre-flight failed: {error}")),
-                            verified: true,
-                        });
-                        return results;
-                    }
-                    let fid = journal.get(id).and_then(|r| r.fiber_id);
-                    staged.push(Staged::UpdateConfig {
-                        id: id.clone(),
-                        old_config,
-                        new_config: new_config.clone(),
-                        fid,
-                    });
-                }
-                LoaderAction::Begin { id } => {
-                    let Some(entry) = desired.0.iter().find(|e| &e.id == id) else {
-                        results.push(AppliedAction {
-                            id: id.clone(),
-                            action: "begin",
-                            status: Err(format!("entry '{id}' not found in desired tree")),
-                            verified: true,
-                        });
-                        return results;
-                    };
-                    staged.push(Staged::Begin {
-                        id: id.clone(),
-                        entry: entry.clone(),
-                    });
-                }
-                LoaderAction::RebuildFiber { id, plugin } => {
-                    let Some(entry) = desired.0.iter().find(|e| &e.id == id) else {
-                        results.push(AppliedAction {
-                            id: id.clone(),
-                            action: "rebuild-fiber",
-                            status: Err(format!("entry '{id}' not found in desired tree")),
-                            verified: false,
-                        });
-                        return results;
-                    };
-                    staged.push(Staged::RebuildFiber {
-                        id: id.clone(),
-                        entry: entry.clone(),
-                        plugin: plugin.clone(),
-                    });
-                }
+            if !Self::stage_action(
+                ctx,
+                current,
+                desired,
+                journal,
+                action,
+                &mut staged,
+                &mut results,
+            ) {
+                return results;
             }
         }
 
@@ -910,21 +853,10 @@ impl Loader {
         // (providers must exist before dependents reactivate), then config
         // updates, then retirements. Ties keep a stable order by entry id so
         // batches are deterministic regardless of HashMap iteration order.
-        let order_key = |s: &Staged| match s {
-            Staged::Begin { .. } | Staged::RebuildFiber { .. } => 0u8,
-            Staged::UpdateConfig { .. } => 1u8,
-            Staged::Retire { .. } => 2u8,
-        };
-        let tie_key = |s: &Staged| match s {
-            Staged::Retire { id }
-            | Staged::UpdateConfig { id, .. }
-            | Staged::Begin { id, .. }
-            | Staged::RebuildFiber { id, .. } => id.clone(),
-        };
         staged.sort_by(|a, b| {
-            order_key(a)
-                .cmp(&order_key(b))
-                .then(tie_key(a).cmp(&tie_key(b)))
+            a.order_key()
+                .cmp(&b.order_key())
+                .then(a.tie_key().cmp(&b.tie_key()))
         });
 
         // Phase 2 — APPLY in dependency order, rolling back every
@@ -936,68 +868,9 @@ impl Loader {
         let mut verified_for: HashMap<String, bool> = HashMap::new();
 
         for step in staged {
-            let (id, kind): (String, &'static str) = match &step {
-                Staged::Retire { id } => (id.clone(), "retire"),
-                Staged::UpdateConfig { id, .. } => (id.clone(), "update-config"),
-                Staged::Begin { id, .. } => (id.clone(), "begin"),
-                Staged::RebuildFiber { id, .. } => (id.clone(), "rebuild-fiber"),
-            };
-            let (outcome, verified): (Result<(), String>, bool) = match step {
-                Staged::Retire { ref id } => {
-                    // Dispose the live fiber (undo effects) before clearing.
-                    if let Some(record) = journal.get(id) {
-                        if let Some(fid) = record.fiber_id {
-                            if let Some(fiber) = ctx
-                                .get::<crate::RegistryService>()
-                                .and_then(|rs| rs.get_fiber(fid))
-                            {
-                                if let Err(error) = fiber.dispose().await {
-                                    tracing::error!(id = %id, %error, "Loader: fiber stuck in transition during retire");
-                                }
-                            }
-                        }
-                    }
-                    journal.retire(id);
-                    tracing::info!(id = %id, "Loader: retired entry");
-                    (Ok(()), true)
-                }
-                Staged::UpdateConfig {
-                    ref id,
-                    ref new_config,
-                    fid,
-                    ..
-                } => {
-                    journal.update_config(id, new_config.clone(), None);
-                    // Drive Fiber::update when a live fiber is known.
-                    if let Some(fiber) = fid.and_then(|f| {
-                        ctx.get::<crate::RegistryService>()
-                            .and_then(|rs| rs.get_fiber(f))
-                    }) {
-                        match Self::drive_fiber_update(ctx, &fiber) {
-                            Ok(()) => (Ok(()), true),
-                            Err(e) => (Err(e), false),
-                        }
-                    } else {
-                        (Ok(()), true)
-                    }
-                }
-                Staged::Begin { ref entry, .. } => match Self::instantiate_entry(ctx, entry) {
-                    Ok(_fid) => (Ok(()), true),
-                    Err(e) => (Err(e.to_string()), false),
-                },
-                Staged::RebuildFiber {
-                    ref id,
-                    ref entry,
-                    ref plugin,
-                } => {
-                    match Self::rebuild_fiber_verified(ctx, id, plugin, entry.clone(), journal)
-                        .await
-                    {
-                        Ok(v) => (Ok(()), v),
-                        Err(e) => (Err(e), false),
-                    }
-                }
-            };
+            let (id, kind): (String, &'static str) = step.describe();
+            let (outcome, verified): (Result<(), String>, bool) =
+                Self::apply_step(ctx, journal, &step).await;
             if let Err(err) = outcome {
                 // ROLLBACK: undo everything this batch already applied,
                 // newest-first, then report Failed naming the failing entry.
@@ -1018,8 +891,202 @@ impl Loader {
         // its member fibers permanently inactive, so name it at load time.
         Self::report_cycles(ctx);
         *current = desired.clone();
-        // Render outcomes in the ORIGINAL reconcile order (stable by entry id
-        // within each dependency class), not the dependency apply order.
+        results.extend(Self::render_outcomes(&actions, &verified_for));
+        results
+    }
+
+    /// Stage one reconcile action: resolve its payload and push the staged
+    /// mutation. Returns `false` when the batch must abort — `results` already
+    /// carries the failing action.
+    fn stage_action(
+        ctx: &Arc<crate::Context>,
+        current: &EntryTree,
+        desired: &EntryTree,
+        journal: &crate::LoaderJournal,
+        action: &LoaderAction,
+        staged: &mut Vec<apply_staged::Staged>,
+        results: &mut Vec<AppliedAction>,
+    ) -> bool {
+        match action {
+            LoaderAction::Retire { id } => {
+                staged.push(apply_staged::Staged::Retire { id: id.clone() });
+            }
+            LoaderAction::UpdateConfig { id, new_config } => {
+                if !Self::stage_config_update(
+                    ctx, current, journal, id, new_config, staged, results,
+                ) {
+                    return false;
+                }
+            }
+            LoaderAction::Begin { id } => {
+                let Some(entry) = desired.0.iter().find(|e| &e.id == id) else {
+                    results.push(AppliedAction {
+                        id: id.clone(),
+                        action: "begin",
+                        status: Err(format!("entry '{id}' not found in desired tree")),
+                        verified: true,
+                    });
+                    return false;
+                };
+                staged.push(apply_staged::Staged::Begin {
+                    id: id.clone(),
+                    entry: entry.clone(),
+                });
+            }
+            LoaderAction::RebuildFiber { id, plugin } => {
+                let Some(entry) = desired.0.iter().find(|e| &e.id == id) else {
+                    results.push(AppliedAction {
+                        id: id.clone(),
+                        action: "rebuild-fiber",
+                        status: Err(format!("entry '{id}' not found in desired tree")),
+                        verified: false,
+                    });
+                    return false;
+                };
+                staged.push(apply_staged::Staged::RebuildFiber {
+                    id: id.clone(),
+                    entry: entry.clone(),
+                    plugin: plugin.clone(),
+                });
+            }
+        }
+        true
+    }
+
+    /// Stage one config update: snapshot the old config, pre-flight the new
+    /// one through the verified hot-swap trial, then push the staged change.
+    fn stage_config_update(
+        ctx: &Arc<crate::Context>,
+        current: &EntryTree,
+        journal: &crate::LoaderJournal,
+        id: &str,
+        new_config: &serde_json::Value,
+        staged: &mut Vec<apply_staged::Staged>,
+        results: &mut Vec<AppliedAction>,
+    ) -> bool {
+        let old_config = current
+            .0
+            .iter()
+            .find(|e| e.id == id)
+            .map(|e| e.config.clone())
+            .unwrap_or(serde_json::Value::Null);
+        // Pre-flight: trial the NEW config through the same scratch-context
+        // machinery the verified hot-swap uses, BEFORE staging the mutation.
+        // A failing factory leaves the old provider serving and fails the
+        // action; a passing trial discards the candidate (the live fiber
+        // re-applies below).
+        if let Err(error) = Self::trial_config_verified(ctx, id, new_config) {
+            tracing::error!(entry_id = %id, error = %error,
+                "Loader: config pre-flight failed; old provider kept");
+            results.push(AppliedAction {
+                id: id.to_string(),
+                action: "update-config",
+                status: Err(format!("config pre-flight failed: {error}")),
+                verified: true,
+            });
+            return false;
+        }
+        let fid = journal.get(id).and_then(|r| r.fiber_id);
+        staged.push(apply_staged::Staged::UpdateConfig {
+            id: id.to_string(),
+            old_config,
+            new_config: new_config.clone(),
+            fid,
+        });
+        true
+    }
+
+    /// Execute one staged step and return its outcome plus the hot-swap
+    /// verification flag reported for that action.
+    async fn apply_step(
+        ctx: &Arc<crate::Context>,
+        journal: &crate::LoaderJournal,
+        step: &apply_staged::Staged,
+    ) -> (Result<(), String>, bool) {
+        match step {
+            apply_staged::Staged::Retire { id } => {
+                (Self::retire_entry(ctx, journal, id).await, true)
+            }
+            apply_staged::Staged::UpdateConfig {
+                id,
+                new_config,
+                fid,
+                ..
+            } => {
+                let outcome = Self::update_config_entry(ctx, journal, id, new_config, *fid);
+                let verified = outcome.is_ok();
+                (outcome, verified)
+            }
+            apply_staged::Staged::Begin { entry, .. } => {
+                let outcome = Self::instantiate_entry(ctx, entry)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string());
+                let verified = outcome.is_ok();
+                (outcome, verified)
+            }
+            apply_staged::Staged::RebuildFiber { id, entry, plugin } => {
+                match Self::rebuild_fiber_verified(ctx, id, plugin, entry.clone(), journal).await {
+                    Ok(v) => (Ok(()), v),
+                    Err(e) => (Err(e), false),
+                }
+            }
+        }
+    }
+
+    /// Retire one entry: dispose the live fiber (undo effects) before
+    /// clearing its journal record.
+    async fn retire_entry(
+        ctx: &Arc<crate::Context>,
+        journal: &crate::LoaderJournal,
+        id: &str,
+    ) -> Result<(), String> {
+        // Dispose the live fiber (undo effects) before clearing.
+        if let Some(record) = journal.get(id) {
+            if let Some(fid) = record.fiber_id {
+                if let Some(fiber) = ctx
+                    .get::<crate::RegistryService>()
+                    .and_then(|rs| rs.get_fiber(fid))
+                {
+                    if let Err(error) = fiber.dispose().await {
+                        tracing::error!(id = %id, %error, "Loader: fiber stuck in transition during retire");
+                    }
+                }
+            }
+        }
+        journal.retire(id);
+        tracing::info!(id = %id, "Loader: retired entry");
+        Ok(())
+    }
+
+    /// Drive one live config update: record the new config in the journal,
+    /// then re-apply the fiber through `drive_fiber_update` when its id is
+    /// known.
+    fn update_config_entry(
+        ctx: &Arc<crate::Context>,
+        journal: &crate::LoaderJournal,
+        id: &str,
+        new_config: &serde_json::Value,
+        fid: Option<crate::FiberId>,
+    ) -> Result<(), String> {
+        journal.update_config(id, new_config.clone(), None);
+        // Drive Fiber::update when a live fiber is known.
+        if let Some(fiber) = fid.and_then(|f| {
+            ctx.get::<crate::RegistryService>()
+                .and_then(|rs| rs.get_fiber(f))
+        }) {
+            Self::drive_fiber_update(ctx, &fiber)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Render the batch's successful outcomes in the ORIGINAL reconcile order
+    /// (stable by entry id within each dependency class), not the dependency
+    /// apply order.
+    fn render_outcomes(
+        actions: &[LoaderAction],
+        verified_for: &HashMap<String, bool>,
+    ) -> Vec<AppliedAction> {
         let kind_of = |probe_id: &str| -> &'static str {
             match actions.iter().find(|a| match a {
                 LoaderAction::Begin { id }
@@ -1033,18 +1100,19 @@ impl Loader {
                 _ => "rebuild-fiber",
             }
         };
+        let mut out: Vec<AppliedAction> = Vec::with_capacity(verified_for.len());
         for id in verified_for.keys() {
             // Every staged step either succeeded (recorded above) or aborted
             // the whole batch earlier, so every id carries an outcome.
             let verified = verified_for[id];
-            results.push(AppliedAction {
+            out.push(AppliedAction {
                 id: id.clone(),
                 action: kind_of(id),
                 status: Ok(()),
                 verified,
             });
         }
-        results
+        out
     }
 
     // --- C2 cascade batching -------------------------------------------------
@@ -1238,6 +1306,39 @@ mod apply_staged {
             entry: Entry,
             plugin: String,
         },
+    }
+
+    impl Staged {
+        /// `(entry id, action label)` as reported to admin callers.
+        pub(super) fn describe(&self) -> (String, &'static str) {
+            match self {
+                Staged::Retire { id } => (id.clone(), "retire"),
+                Staged::UpdateConfig { id, .. } => (id.clone(), "update-config"),
+                Staged::Begin { id, .. } => (id.clone(), "begin"),
+                Staged::RebuildFiber { id, .. } => (id.clone(), "rebuild-fiber"),
+            }
+        }
+
+        /// Dependency-order rank: providers first, then config updates, then
+        /// retirements.
+        pub(super) fn order_key(&self) -> u8 {
+            match self {
+                Staged::Begin { .. } | Staged::RebuildFiber { .. } => 0u8,
+                Staged::UpdateConfig { .. } => 1u8,
+                Staged::Retire { .. } => 2u8,
+            }
+        }
+
+        /// Stable tiebreak: the entry id (deterministic batches regardless
+        /// of HashMap iteration order).
+        pub(super) fn tie_key(&self) -> String {
+            match self {
+                Staged::Retire { id }
+                | Staged::UpdateConfig { id, .. }
+                | Staged::Begin { id, .. }
+                | Staged::RebuildFiber { id, .. } => id.clone(),
+            }
+        }
     }
 }
 

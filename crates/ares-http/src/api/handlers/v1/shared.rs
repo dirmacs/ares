@@ -202,6 +202,7 @@ pub fn llm_counts_source(usage: Option<&ares_llm::client::TokenUsage>) -> &'stat
     }
 }
 
+#[allow(clippy::too_many_arguments)] // metering tail mirrors the wire fields 1:1
 pub fn usage_response<T: Serialize>(
     payload: T,
     input_tokens: u64,

@@ -60,7 +60,7 @@ pub(crate) fn emergency_stop_message() -> &'static str {
 fn ensure_emergency_stop_inactive(stop: &ares_agent::EmergencyStop) -> Result<()> {
     if stop.is_active() {
         return Err(HttpError::from(AppError::Unavailable(
-            emergency_stop_message().to_string().into(),
+            emergency_stop_message().to_string(),
         )));
     }
     Ok(())

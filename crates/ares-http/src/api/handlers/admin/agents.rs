@@ -473,9 +473,10 @@ pub async fn delete_agent_template_handler(
     let store = AgentTemplateStore::new(__pool_22);
     let deleted = store.delete_template(&id).await?;
     if deleted == 0 {
-        return Err(HttpError::from(AppError::NotFound(
-            format!("Template '{}' not found", id).into(),
-        )));
+        return Err(HttpError::from(AppError::NotFound(format!(
+            "Template '{}' not found",
+            id
+        ))));
     }
 
     let pool = ctx
@@ -713,10 +714,6 @@ pub async fn list_agent_templates_handler(
     let templates = list_agent_templates(&__pool_26, product_type).await?;
     Ok(Json(templates))
 }
-
-/// GET /api/admin/agents/{agent_id}/versions
-
-/// POST /api/admin/agents/{agent_id}/rollback/{version}
 
 /// GET /api/admin/agents/emergency-stop
 /// Return whether the global emergency stop is active.

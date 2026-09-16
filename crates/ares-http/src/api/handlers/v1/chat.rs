@@ -329,9 +329,10 @@ pub(crate) fn research_model_allowlist_decision(is_allowed: bool, model_name: &s
     if is_allowed {
         return Ok(());
     }
-    Err(HttpError::from(AppError::Auth(
-        format!("Model '{}' is not allowed for this tenant", model_name).into(),
-    )))
+    Err(HttpError::from(AppError::Auth(format!(
+        "Model '{}' is not allowed for this tenant",
+        model_name
+    ))))
 }
 
 /// POST /v1/research — tenant-scoped research with provider-reported metering.

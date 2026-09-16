@@ -82,9 +82,9 @@ pub async fn delete_trigger(
     let store = db_schedules::EventTriggerStore::new(&__pool_3);
     let rows = store.delete_trigger(&id).await?;
     if rows == 0 {
-        return Err(HttpError::from(AppError::NotFound(
-            format!("trigger {id} not found").into(),
-        )));
+        return Err(HttpError::from(AppError::NotFound(format!(
+            "trigger {id} not found"
+        ))));
     }
 
     let pool = ctx
@@ -205,9 +205,9 @@ pub async fn delete_tenant_trigger(
     let store = db_schedules::EventTriggerStore::new(&__pool_7);
     let rows = store.delete_trigger_for_tenant(&tenant_id, &id).await?;
     if rows == 0 {
-        return Err(HttpError::from(AppError::NotFound(
-            format!("trigger {id} not found for tenant {tenant_id}").into(),
-        )));
+        return Err(HttpError::from(AppError::NotFound(format!(
+            "trigger {id} not found for tenant {tenant_id}"
+        ))));
     }
 
     let pool = ctx

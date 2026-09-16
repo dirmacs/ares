@@ -553,76 +553,20 @@ impl ModelCapabilities {
 
     /// Check if this model satisfies the given requirements.
     pub fn satisfies(&self, requirements: &CapabilityRequirements) -> bool {
-        // Check boolean requirements
-        if requirements.requires_tools && !self.supports_tools {
-            return false;
-        }
-        if requirements.requires_vision && !self.supports_vision {
-            return false;
-        }
-        if requirements.requires_audio && !self.supports_audio {
-            return false;
-        }
-        if requirements.requires_json_mode && !self.supports_json_mode {
-            return false;
-        }
-        if requirements.requires_streaming && !self.supports_streaming {
-            return false;
-        }
-        if requirements.requires_reasoning && !self.supports_reasoning {
-            return false;
-        }
-        if requirements.requires_code_execution && !self.supports_code_execution {
-            return false;
-        }
-        if requirements.requires_local && !self.is_local {
-            return false;
-        }
-        if requirements.requires_production_ready && !self.production_ready {
+        if self.violates_hard_capability(requirements) {
             return false;
         }
 
-        // Check numeric requirements
-        if let Some(min_context) = requirements.min_context_window {
-            if self.context_window < min_context {
-                return false;
-            }
-        }
-        if let Some(min_output) = requirements.min_output_tokens {
-            if self.max_output_tokens < min_output {
-                return false;
-            }
+        if self.violates_numeric_limits(requirements) {
+            return false;
         }
 
-        // Check tier requirements
-        if let Some(ref max_cost) = requirements.max_cost_tier {
-            if !tier_satisfies(&self.cost_tier, max_cost) {
-                return false;
-            }
-        }
-        if let Some(ref min_speed) = requirements.min_speed_tier {
-            if !tier_satisfies(min_speed, &self.speed_tier) {
-                return false;
-            }
-        }
-        if let Some(ref min_quality) = requirements.min_quality_tier {
-            if !tier_satisfies(min_quality, &self.quality_tier) {
-                return false;
-            }
+        if self.violates_tier_requirements(requirements) {
+            return false;
         }
 
-        // Check required tags
-        for tag in &requirements.required_tags {
-            if !self.tags.contains(tag) {
-                return false;
-            }
-        }
-
-        // Check excluded families
-        if let Some(ref family) = self.family {
-            if requirements.excluded_families.contains(family) {
-                return false;
-            }
+        if self.violates_tag_or_family_requirements(requirements) {
+            return false;
         }
 
         true
@@ -632,56 +576,143 @@ impl ModelCapabilities {
     ///
     /// Higher score = better match. Used for ranking when multiple models satisfy requirements.
     pub fn score(&self, requirements: &CapabilityRequirements) -> u32 {
-        let mut score = 0u32;
-
-        // Bonus for exceeding minimum requirements
-        if let Some(min_context) = requirements.min_context_window {
-            score += (self.context_window.saturating_sub(min_context)) / 1000;
-        }
-
-        // Bonus for speed when not explicitly required
-        score += match self.speed_tier.as_str() {
-            "realtime" => 40,
-            "fast" => 30,
-            "medium" => 20,
-            "slow" => 10,
-            _ => 0,
-        };
-
-        // Bonus for quality
-        score += match self.quality_tier.as_str() {
-            "premium" => 40,
-            "high" => 30,
-            "standard" => 20,
-            "basic" => 10,
-            _ => 0,
-        };
-
-        // Penalty for cost (prefer cheaper when quality is equal)
-        score += match self.cost_tier.as_str() {
-            "free" => 50,
-            "low" => 40,
-            "medium" => 30,
-            "high" => 20,
-            "premium" => 10,
-            _ => 0,
-        };
-
-        // Bonus for local models (no network latency/cost)
-        if self.is_local {
-            score += 20;
-        }
-
-        // Bonus for having more capabilities than required
-        if self.supports_tools && !requirements.requires_tools {
-            score += 5;
-        }
-        if self.supports_reasoning && !requirements.requires_reasoning {
-            score += 10;
-        }
-
-        score
+        self.context_bonus(requirements)
+            + tier_score(&self.speed_tier, SPEED_TIER_SCORES)
+            + tier_score(&self.quality_tier, QUALITY_TIER_SCORES)
+            + tier_score(&self.cost_tier, COST_TIER_SCORES)
+            + self.local_bonus()
+            + self.unrequired_capability_bonus(requirements)
     }
+    /// Bonus for exceeding the required context window.
+    fn context_bonus(&self, requirements: &CapabilityRequirements) -> u32 {
+        requirements
+            .min_context_window
+            .map_or(0, |min| self.context_window.saturating_sub(min) / 1000)
+    }
+
+    /// Bonus for local models, which avoid network latency and cost.
+    fn local_bonus(&self) -> u32 {
+        if self.is_local {
+            20
+        } else {
+            0
+        }
+    }
+
+    /// Bonus for capabilities the model has beyond what was required.
+    fn unrequired_capability_bonus(&self, requirements: &CapabilityRequirements) -> u32 {
+        let tools_bonus = if self.supports_tools && !requirements.requires_tools {
+            5
+        } else {
+            0
+        };
+        let reasoning_bonus = if self.supports_reasoning && !requirements.requires_reasoning {
+            10
+        } else {
+            0
+        };
+        tools_bonus + reasoning_bonus
+    }
+
+    /// True when a hard capability requirement is not met.
+    fn violates_hard_capability(&self, requirements: &CapabilityRequirements) -> bool {
+        [
+            (requirements.requires_tools, self.supports_tools),
+            (requirements.requires_vision, self.supports_vision),
+            (requirements.requires_audio, self.supports_audio),
+            (requirements.requires_json_mode, self.supports_json_mode),
+            (requirements.requires_streaming, self.supports_streaming),
+            (requirements.requires_reasoning, self.supports_reasoning),
+            (
+                requirements.requires_code_execution,
+                self.supports_code_execution,
+            ),
+            (requirements.requires_local, self.is_local),
+            (
+                requirements.requires_production_ready,
+                self.production_ready,
+            ),
+        ]
+        .iter()
+        .any(|(required, supported)| *required && !*supported)
+    }
+
+    /// True when a numeric minimum requirement is not met.
+    fn violates_numeric_limits(&self, requirements: &CapabilityRequirements) -> bool {
+        let context_too_small = requirements
+            .min_context_window
+            .is_some_and(|min| self.context_window < min);
+        let output_too_small = requirements
+            .min_output_tokens
+            .is_some_and(|min| self.max_output_tokens < min);
+        context_too_small || output_too_small
+    }
+
+    /// True when a tier requirement is not met.
+    fn violates_tier_requirements(&self, requirements: &CapabilityRequirements) -> bool {
+        let cost_too_high = requirements
+            .max_cost_tier
+            .as_deref()
+            .is_some_and(|max| !tier_satisfies(&self.cost_tier, max));
+        let speed_too_slow = requirements
+            .min_speed_tier
+            .as_deref()
+            .is_some_and(|min| !tier_satisfies(min, &self.speed_tier));
+        let quality_too_low = requirements
+            .min_quality_tier
+            .as_deref()
+            .is_some_and(|min| !tier_satisfies(min, &self.quality_tier));
+        cost_too_high || speed_too_slow || quality_too_low
+    }
+
+    /// True when a required tag is missing or the family is excluded.
+    fn violates_tag_or_family_requirements(&self, requirements: &CapabilityRequirements) -> bool {
+        if requirements
+            .required_tags
+            .iter()
+            .any(|tag| !self.tags.contains(tag))
+        {
+            return true;
+        }
+        if let Some(family) = &self.family {
+            if requirements.excluded_families.contains(family) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// Score table for speed tiers; unknown values score 0 like the original
+/// match arms.
+const SPEED_TIER_SCORES: &[(&str, u32)] =
+    &[("realtime", 40), ("fast", 30), ("medium", 20), ("slow", 10)];
+
+/// Score table for quality tiers; unknown values score 0 like the original
+/// match arms.
+const QUALITY_TIER_SCORES: &[(&str, u32)] = &[
+    ("premium", 40),
+    ("high", 30),
+    ("standard", 20),
+    ("basic", 10),
+];
+
+/// Score table for cost tiers; unknown values score 0 like the original
+/// match arms.
+const COST_TIER_SCORES: &[(&str, u32)] = &[
+    ("free", 50),
+    ("low", 40),
+    ("medium", 30),
+    ("high", 20),
+    ("premium", 10),
+];
+
+/// Look up a tier's score in a table.
+fn tier_score(tier: &str, scores: &[(&str, u32)]) -> u32 {
+    scores
+        .iter()
+        .find(|(name, _)| *name == tier)
+        .map_or(0, |(_, score)| *score)
 }
 
 /// Requirements for model capability matching.

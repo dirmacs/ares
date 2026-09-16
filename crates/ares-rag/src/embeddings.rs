@@ -351,67 +351,11 @@ pub enum EmbeddingModelType {
 impl EmbeddingModelType {
     /// Convert to fastembed's EmbeddingModel enum
     pub fn to_fastembed_model(&self) -> FastEmbedModel {
-        match self {
-            // Fast English
-            Self::BgeSmallEnV15 => FastEmbedModel::BGESmallENV15,
-            Self::BgeSmallEnV15Q => FastEmbedModel::BGESmallENV15Q,
-            Self::AllMiniLmL6V2 => FastEmbedModel::AllMiniLML6V2,
-            Self::AllMiniLmL6V2Q => FastEmbedModel::AllMiniLML6V2Q,
-            Self::AllMiniLmL12V2 => FastEmbedModel::AllMiniLML12V2,
-            Self::AllMiniLmL12V2Q => FastEmbedModel::AllMiniLML12V2Q,
-            Self::AllMpnetBaseV2 => FastEmbedModel::AllMpnetBaseV2,
-
-            // High quality English
-            Self::BgeBaseEnV15 => FastEmbedModel::BGEBaseENV15,
-            Self::BgeBaseEnV15Q => FastEmbedModel::BGEBaseENV15Q,
-            Self::BgeLargeEnV15 => FastEmbedModel::BGELargeENV15,
-            Self::BgeLargeEnV15Q => FastEmbedModel::BGELargeENV15Q,
-
-            // Multilingual
-            Self::MultilingualE5Small => FastEmbedModel::MultilingualE5Small,
-            Self::MultilingualE5Base => FastEmbedModel::MultilingualE5Base,
-            Self::MultilingualE5Large => FastEmbedModel::MultilingualE5Large,
-            Self::ParaphraseMiniLmL12V2 => FastEmbedModel::ParaphraseMLMiniLML12V2,
-            Self::ParaphraseMiniLmL12V2Q => FastEmbedModel::ParaphraseMLMiniLML12V2Q,
-            Self::ParaphraseMultilingualMpnetBaseV2 => FastEmbedModel::ParaphraseMLMpnetBaseV2,
-
-            // Chinese
-            Self::BgeSmallZhV15 => FastEmbedModel::BGESmallZHV15,
-            Self::BgeLargeZhV15 => FastEmbedModel::BGELargeZHV15,
-
-            // Long context
-            Self::NomicEmbedTextV1 => FastEmbedModel::NomicEmbedTextV1,
-            Self::NomicEmbedTextV15 => FastEmbedModel::NomicEmbedTextV15,
-            Self::NomicEmbedTextV15Q => FastEmbedModel::NomicEmbedTextV15Q,
-
-            // Specialized
-            Self::MxbaiEmbedLargeV1 => FastEmbedModel::MxbaiEmbedLargeV1,
-            Self::MxbaiEmbedLargeV1Q => FastEmbedModel::MxbaiEmbedLargeV1Q,
-            Self::GteBaseEnV15 => FastEmbedModel::GTEBaseENV15,
-            Self::GteBaseEnV15Q => FastEmbedModel::GTEBaseENV15Q,
-            Self::GteLargeEnV15 => FastEmbedModel::GTELargeENV15,
-            Self::GteLargeEnV15Q => FastEmbedModel::GTELargeENV15Q,
-            Self::ClipVitB32 => FastEmbedModel::ClipVitB32,
-
-            // Code
-            Self::JinaEmbeddingsV2BaseCode => FastEmbedModel::JinaEmbeddingsV2BaseCode,
-
-            // Modern
-            Self::EmbeddingGemma300M => FastEmbedModel::EmbeddingGemma300M,
-            Self::ModernBertEmbedLarge => FastEmbedModel::ModernBertEmbedLarge,
-
-            // Snowflake Arctic
-            Self::SnowflakeArcticEmbedXs => FastEmbedModel::SnowflakeArcticEmbedXS,
-            Self::SnowflakeArcticEmbedXsQ => FastEmbedModel::SnowflakeArcticEmbedXSQ,
-            Self::SnowflakeArcticEmbedS => FastEmbedModel::SnowflakeArcticEmbedS,
-            Self::SnowflakeArcticEmbedSQ => FastEmbedModel::SnowflakeArcticEmbedSQ,
-            Self::SnowflakeArcticEmbedM => FastEmbedModel::SnowflakeArcticEmbedM,
-            Self::SnowflakeArcticEmbedMQ => FastEmbedModel::SnowflakeArcticEmbedMQ,
-            Self::SnowflakeArcticEmbedMLong => FastEmbedModel::SnowflakeArcticEmbedMLong,
-            Self::SnowflakeArcticEmbedMLongQ => FastEmbedModel::SnowflakeArcticEmbedMLongQ,
-            Self::SnowflakeArcticEmbedL => FastEmbedModel::SnowflakeArcticEmbedL,
-            Self::SnowflakeArcticEmbedLQ => FastEmbedModel::SnowflakeArcticEmbedLQ,
-        }
+        FAST_EMBED_MODELS
+            .iter()
+            .find(|(model, _)| model == self)
+            .map(|(_, fast)| fast.clone())
+            .expect("every EmbeddingModelType maps to a fastembed model")
     }
 
     /// Get the HuggingFace repo ID for this model (used for pre-downloading)
@@ -573,52 +517,439 @@ impl EmbeddingModelType {
     }
 }
 
+/// Alias table for [`EmbeddingModelType::from_str`]; the first matching
+/// entry wins, in the same order the original match arms used.
+const MODEL_ALIASES: &[(&str, EmbeddingModelType)] = &[
+    ("bge-small-en-v1.5", EmbeddingModelType::BgeSmallEnV15),
+    ("bge-small-en", EmbeddingModelType::BgeSmallEnV15),
+    ("bge-small", EmbeddingModelType::BgeSmallEnV15),
+    ("bge-small-en-v1.5-q", EmbeddingModelType::BgeSmallEnV15Q),
+    ("all-minilm-l6-v2", EmbeddingModelType::AllMiniLmL6V2),
+    ("minilm-l6", EmbeddingModelType::AllMiniLmL6V2),
+    ("all-minilm-l6-v2-q", EmbeddingModelType::AllMiniLmL6V2Q),
+    ("all-minilm-l12-v2", EmbeddingModelType::AllMiniLmL12V2),
+    ("minilm-l12", EmbeddingModelType::AllMiniLmL12V2),
+    ("all-minilm-l12-v2-q", EmbeddingModelType::AllMiniLmL12V2Q),
+    ("all-mpnet-base-v2", EmbeddingModelType::AllMpnetBaseV2),
+    ("mpnet", EmbeddingModelType::AllMpnetBaseV2),
+    ("bge-base-en-v1.5", EmbeddingModelType::BgeBaseEnV15),
+    ("bge-base-en", EmbeddingModelType::BgeBaseEnV15),
+    ("bge-base", EmbeddingModelType::BgeBaseEnV15),
+    ("bge-base-en-v1.5-q", EmbeddingModelType::BgeBaseEnV15Q),
+    ("bge-large-en-v1.5", EmbeddingModelType::BgeLargeEnV15),
+    ("bge-large-en", EmbeddingModelType::BgeLargeEnV15),
+    ("bge-large", EmbeddingModelType::BgeLargeEnV15),
+    ("bge-large-en-v1.5-q", EmbeddingModelType::BgeLargeEnV15Q),
+    (
+        "multilingual-e5-small",
+        EmbeddingModelType::MultilingualE5Small,
+    ),
+    ("e5-small", EmbeddingModelType::MultilingualE5Small),
+    (
+        "multilingual-e5-base",
+        EmbeddingModelType::MultilingualE5Base,
+    ),
+    ("e5-base", EmbeddingModelType::MultilingualE5Base),
+    (
+        "multilingual-e5-large",
+        EmbeddingModelType::MultilingualE5Large,
+    ),
+    ("e5-large", EmbeddingModelType::MultilingualE5Large),
+    (
+        "paraphrase-minilm-l12-v2",
+        EmbeddingModelType::ParaphraseMiniLmL12V2,
+    ),
+    (
+        "paraphrase-minilm-l12-v2-q",
+        EmbeddingModelType::ParaphraseMiniLmL12V2Q,
+    ),
+    (
+        "paraphrase-multilingual-mpnet-base-v2",
+        EmbeddingModelType::ParaphraseMultilingualMpnetBaseV2,
+    ),
+    ("bge-small-zh-v1.5", EmbeddingModelType::BgeSmallZhV15),
+    ("bge-small-zh", EmbeddingModelType::BgeSmallZhV15),
+    ("bge-large-zh-v1.5", EmbeddingModelType::BgeLargeZhV15),
+    ("bge-large-zh", EmbeddingModelType::BgeLargeZhV15),
+    ("nomic-embed-text-v1", EmbeddingModelType::NomicEmbedTextV1),
+    ("nomic-v1", EmbeddingModelType::NomicEmbedTextV1),
+    (
+        "nomic-embed-text-v1.5",
+        EmbeddingModelType::NomicEmbedTextV15,
+    ),
+    ("nomic-v1.5", EmbeddingModelType::NomicEmbedTextV15),
+    ("nomic", EmbeddingModelType::NomicEmbedTextV15),
+    (
+        "nomic-embed-text-v1.5-q",
+        EmbeddingModelType::NomicEmbedTextV15Q,
+    ),
+    (
+        "mxbai-embed-large-v1",
+        EmbeddingModelType::MxbaiEmbedLargeV1,
+    ),
+    ("mxbai", EmbeddingModelType::MxbaiEmbedLargeV1),
+    (
+        "mxbai-embed-large-v1-q",
+        EmbeddingModelType::MxbaiEmbedLargeV1Q,
+    ),
+    ("gte-base-en-v1.5", EmbeddingModelType::GteBaseEnV15),
+    ("gte-base", EmbeddingModelType::GteBaseEnV15),
+    ("gte-base-en-v1.5-q", EmbeddingModelType::GteBaseEnV15Q),
+    ("gte-large-en-v1.5", EmbeddingModelType::GteLargeEnV15),
+    ("gte-large", EmbeddingModelType::GteLargeEnV15),
+    ("gte-large-en-v1.5-q", EmbeddingModelType::GteLargeEnV15Q),
+    ("clip-vit-b-32", EmbeddingModelType::ClipVitB32),
+    ("clip", EmbeddingModelType::ClipVitB32),
+    (
+        "jina-embeddings-v2-base-code",
+        EmbeddingModelType::JinaEmbeddingsV2BaseCode,
+    ),
+    ("jina-code", EmbeddingModelType::JinaEmbeddingsV2BaseCode),
+    (
+        "embedding-gemma-300m",
+        EmbeddingModelType::EmbeddingGemma300M,
+    ),
+    ("gemma-300m", EmbeddingModelType::EmbeddingGemma300M),
+    ("gemma", EmbeddingModelType::EmbeddingGemma300M),
+    (
+        "modernbert-embed-large",
+        EmbeddingModelType::ModernBertEmbedLarge,
+    ),
+    ("modernbert", EmbeddingModelType::ModernBertEmbedLarge),
+    (
+        "snowflake-arctic-embed-xs",
+        EmbeddingModelType::SnowflakeArcticEmbedXs,
+    ),
+    (
+        "snowflake-arctic-embed-xs-q",
+        EmbeddingModelType::SnowflakeArcticEmbedXsQ,
+    ),
+    (
+        "snowflake-arctic-embed-s",
+        EmbeddingModelType::SnowflakeArcticEmbedS,
+    ),
+    (
+        "snowflake-arctic-embed-s-q",
+        EmbeddingModelType::SnowflakeArcticEmbedSQ,
+    ),
+    (
+        "snowflake-arctic-embed-m",
+        EmbeddingModelType::SnowflakeArcticEmbedM,
+    ),
+    (
+        "snowflake-arctic-embed-m-q",
+        EmbeddingModelType::SnowflakeArcticEmbedMQ,
+    ),
+    (
+        "snowflake-arctic-embed-m-long",
+        EmbeddingModelType::SnowflakeArcticEmbedMLong,
+    ),
+    (
+        "snowflake-arctic-embed-m-long-q",
+        EmbeddingModelType::SnowflakeArcticEmbedMLongQ,
+    ),
+    (
+        "snowflake-arctic-embed-l",
+        EmbeddingModelType::SnowflakeArcticEmbedL,
+    ),
+    ("snowflake-l", EmbeddingModelType::SnowflakeArcticEmbedL),
+    (
+        "snowflake-arctic-embed-l-q",
+        EmbeddingModelType::SnowflakeArcticEmbedLQ,
+    ),
+];
+
+/// Display name for every [`EmbeddingModelType`] variant.
+const MODEL_DISPLAY_NAMES: &[(EmbeddingModelType, &str)] = &[
+    (EmbeddingModelType::BgeSmallEnV15, "bge-small-en-v1.5"),
+    (EmbeddingModelType::BgeSmallEnV15Q, "bge-small-en-v1.5-q"),
+    (EmbeddingModelType::AllMiniLmL6V2, "all-minilm-l6-v2"),
+    (EmbeddingModelType::AllMiniLmL6V2Q, "all-minilm-l6-v2-q"),
+    (EmbeddingModelType::AllMiniLmL12V2, "all-minilm-l12-v2"),
+    (EmbeddingModelType::AllMiniLmL12V2Q, "all-minilm-l12-v2-q"),
+    (EmbeddingModelType::AllMpnetBaseV2, "all-mpnet-base-v2"),
+    (EmbeddingModelType::BgeBaseEnV15, "bge-base-en-v1.5"),
+    (EmbeddingModelType::BgeBaseEnV15Q, "bge-base-en-v1.5-q"),
+    (EmbeddingModelType::BgeLargeEnV15, "bge-large-en-v1.5"),
+    (EmbeddingModelType::BgeLargeEnV15Q, "bge-large-en-v1.5-q"),
+    (
+        EmbeddingModelType::MultilingualE5Small,
+        "multilingual-e5-small",
+    ),
+    (
+        EmbeddingModelType::MultilingualE5Base,
+        "multilingual-e5-base",
+    ),
+    (
+        EmbeddingModelType::MultilingualE5Large,
+        "multilingual-e5-large",
+    ),
+    (
+        EmbeddingModelType::ParaphraseMiniLmL12V2,
+        "paraphrase-minilm-l12-v2",
+    ),
+    (
+        EmbeddingModelType::ParaphraseMiniLmL12V2Q,
+        "paraphrase-minilm-l12-v2-q",
+    ),
+    (
+        EmbeddingModelType::ParaphraseMultilingualMpnetBaseV2,
+        "paraphrase-multilingual-mpnet-base-v2",
+    ),
+    (EmbeddingModelType::BgeSmallZhV15, "bge-small-zh-v1.5"),
+    (EmbeddingModelType::BgeLargeZhV15, "bge-large-zh-v1.5"),
+    (EmbeddingModelType::NomicEmbedTextV1, "nomic-embed-text-v1"),
+    (
+        EmbeddingModelType::NomicEmbedTextV15,
+        "nomic-embed-text-v1.5",
+    ),
+    (
+        EmbeddingModelType::NomicEmbedTextV15Q,
+        "nomic-embed-text-v1.5-q",
+    ),
+    (
+        EmbeddingModelType::MxbaiEmbedLargeV1,
+        "mxbai-embed-large-v1",
+    ),
+    (
+        EmbeddingModelType::MxbaiEmbedLargeV1Q,
+        "mxbai-embed-large-v1-q",
+    ),
+    (EmbeddingModelType::GteBaseEnV15, "gte-base-en-v1.5"),
+    (EmbeddingModelType::GteBaseEnV15Q, "gte-base-en-v1.5-q"),
+    (EmbeddingModelType::GteLargeEnV15, "gte-large-en-v1.5"),
+    (EmbeddingModelType::GteLargeEnV15Q, "gte-large-en-v1.5-q"),
+    (EmbeddingModelType::ClipVitB32, "clip-vit-b-32"),
+    (
+        EmbeddingModelType::JinaEmbeddingsV2BaseCode,
+        "jina-embeddings-v2-base-code",
+    ),
+    (
+        EmbeddingModelType::EmbeddingGemma300M,
+        "embedding-gemma-300m",
+    ),
+    (
+        EmbeddingModelType::ModernBertEmbedLarge,
+        "modernbert-embed-large",
+    ),
+    (
+        EmbeddingModelType::SnowflakeArcticEmbedXs,
+        "snowflake-arctic-embed-xs",
+    ),
+    (
+        EmbeddingModelType::SnowflakeArcticEmbedXsQ,
+        "snowflake-arctic-embed-xs-q",
+    ),
+    (
+        EmbeddingModelType::SnowflakeArcticEmbedS,
+        "snowflake-arctic-embed-s",
+    ),
+    (
+        EmbeddingModelType::SnowflakeArcticEmbedSQ,
+        "snowflake-arctic-embed-s-q",
+    ),
+    (
+        EmbeddingModelType::SnowflakeArcticEmbedM,
+        "snowflake-arctic-embed-m",
+    ),
+    (
+        EmbeddingModelType::SnowflakeArcticEmbedMQ,
+        "snowflake-arctic-embed-m-q",
+    ),
+    (
+        EmbeddingModelType::SnowflakeArcticEmbedMLong,
+        "snowflake-arctic-embed-m-long",
+    ),
+    (
+        EmbeddingModelType::SnowflakeArcticEmbedMLongQ,
+        "snowflake-arctic-embed-m-long-q",
+    ),
+    (
+        EmbeddingModelType::SnowflakeArcticEmbedL,
+        "snowflake-arctic-embed-l",
+    ),
+    (
+        EmbeddingModelType::SnowflakeArcticEmbedLQ,
+        "snowflake-arctic-embed-l-q",
+    ),
+];
+
+/// fastembed model for every [`EmbeddingModelType`] variant.
+const FAST_EMBED_MODELS: &[(EmbeddingModelType, FastEmbedModel)] = &[
+    (
+        EmbeddingModelType::BgeSmallEnV15,
+        FastEmbedModel::BGESmallENV15,
+    ),
+    (
+        EmbeddingModelType::BgeSmallEnV15Q,
+        FastEmbedModel::BGESmallENV15Q,
+    ),
+    (
+        EmbeddingModelType::AllMiniLmL6V2,
+        FastEmbedModel::AllMiniLML6V2,
+    ),
+    (
+        EmbeddingModelType::AllMiniLmL6V2Q,
+        FastEmbedModel::AllMiniLML6V2Q,
+    ),
+    (
+        EmbeddingModelType::AllMiniLmL12V2,
+        FastEmbedModel::AllMiniLML12V2,
+    ),
+    (
+        EmbeddingModelType::AllMiniLmL12V2Q,
+        FastEmbedModel::AllMiniLML12V2Q,
+    ),
+    (
+        EmbeddingModelType::AllMpnetBaseV2,
+        FastEmbedModel::AllMpnetBaseV2,
+    ),
+    (
+        EmbeddingModelType::BgeBaseEnV15,
+        FastEmbedModel::BGEBaseENV15,
+    ),
+    (
+        EmbeddingModelType::BgeBaseEnV15Q,
+        FastEmbedModel::BGEBaseENV15Q,
+    ),
+    (
+        EmbeddingModelType::BgeLargeEnV15,
+        FastEmbedModel::BGELargeENV15,
+    ),
+    (
+        EmbeddingModelType::BgeLargeEnV15Q,
+        FastEmbedModel::BGELargeENV15Q,
+    ),
+    (
+        EmbeddingModelType::MultilingualE5Small,
+        FastEmbedModel::MultilingualE5Small,
+    ),
+    (
+        EmbeddingModelType::MultilingualE5Base,
+        FastEmbedModel::MultilingualE5Base,
+    ),
+    (
+        EmbeddingModelType::MultilingualE5Large,
+        FastEmbedModel::MultilingualE5Large,
+    ),
+    (
+        EmbeddingModelType::ParaphraseMiniLmL12V2,
+        FastEmbedModel::ParaphraseMLMiniLML12V2,
+    ),
+    (
+        EmbeddingModelType::ParaphraseMiniLmL12V2Q,
+        FastEmbedModel::ParaphraseMLMiniLML12V2Q,
+    ),
+    (
+        EmbeddingModelType::ParaphraseMultilingualMpnetBaseV2,
+        FastEmbedModel::ParaphraseMLMpnetBaseV2,
+    ),
+    (
+        EmbeddingModelType::BgeSmallZhV15,
+        FastEmbedModel::BGESmallZHV15,
+    ),
+    (
+        EmbeddingModelType::BgeLargeZhV15,
+        FastEmbedModel::BGELargeZHV15,
+    ),
+    (
+        EmbeddingModelType::NomicEmbedTextV1,
+        FastEmbedModel::NomicEmbedTextV1,
+    ),
+    (
+        EmbeddingModelType::NomicEmbedTextV15,
+        FastEmbedModel::NomicEmbedTextV15,
+    ),
+    (
+        EmbeddingModelType::NomicEmbedTextV15Q,
+        FastEmbedModel::NomicEmbedTextV15Q,
+    ),
+    (
+        EmbeddingModelType::MxbaiEmbedLargeV1,
+        FastEmbedModel::MxbaiEmbedLargeV1,
+    ),
+    (
+        EmbeddingModelType::MxbaiEmbedLargeV1Q,
+        FastEmbedModel::MxbaiEmbedLargeV1Q,
+    ),
+    (
+        EmbeddingModelType::GteBaseEnV15,
+        FastEmbedModel::GTEBaseENV15,
+    ),
+    (
+        EmbeddingModelType::GteBaseEnV15Q,
+        FastEmbedModel::GTEBaseENV15Q,
+    ),
+    (
+        EmbeddingModelType::GteLargeEnV15,
+        FastEmbedModel::GTELargeENV15,
+    ),
+    (
+        EmbeddingModelType::GteLargeEnV15Q,
+        FastEmbedModel::GTELargeENV15Q,
+    ),
+    (EmbeddingModelType::ClipVitB32, FastEmbedModel::ClipVitB32),
+    (
+        EmbeddingModelType::JinaEmbeddingsV2BaseCode,
+        FastEmbedModel::JinaEmbeddingsV2BaseCode,
+    ),
+    (
+        EmbeddingModelType::EmbeddingGemma300M,
+        FastEmbedModel::EmbeddingGemma300M,
+    ),
+    (
+        EmbeddingModelType::ModernBertEmbedLarge,
+        FastEmbedModel::ModernBertEmbedLarge,
+    ),
+    (
+        EmbeddingModelType::SnowflakeArcticEmbedXs,
+        FastEmbedModel::SnowflakeArcticEmbedXS,
+    ),
+    (
+        EmbeddingModelType::SnowflakeArcticEmbedXsQ,
+        FastEmbedModel::SnowflakeArcticEmbedXSQ,
+    ),
+    (
+        EmbeddingModelType::SnowflakeArcticEmbedS,
+        FastEmbedModel::SnowflakeArcticEmbedS,
+    ),
+    (
+        EmbeddingModelType::SnowflakeArcticEmbedSQ,
+        FastEmbedModel::SnowflakeArcticEmbedSQ,
+    ),
+    (
+        EmbeddingModelType::SnowflakeArcticEmbedM,
+        FastEmbedModel::SnowflakeArcticEmbedM,
+    ),
+    (
+        EmbeddingModelType::SnowflakeArcticEmbedMQ,
+        FastEmbedModel::SnowflakeArcticEmbedMQ,
+    ),
+    (
+        EmbeddingModelType::SnowflakeArcticEmbedMLong,
+        FastEmbedModel::SnowflakeArcticEmbedMLong,
+    ),
+    (
+        EmbeddingModelType::SnowflakeArcticEmbedMLongQ,
+        FastEmbedModel::SnowflakeArcticEmbedMLongQ,
+    ),
+    (
+        EmbeddingModelType::SnowflakeArcticEmbedL,
+        FastEmbedModel::SnowflakeArcticEmbedL,
+    ),
+    (
+        EmbeddingModelType::SnowflakeArcticEmbedLQ,
+        FastEmbedModel::SnowflakeArcticEmbedLQ,
+    ),
+];
+
 impl Display for EmbeddingModelType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let name = match self {
-            Self::BgeSmallEnV15 => "bge-small-en-v1.5",
-            Self::BgeSmallEnV15Q => "bge-small-en-v1.5-q",
-            Self::AllMiniLmL6V2 => "all-minilm-l6-v2",
-            Self::AllMiniLmL6V2Q => "all-minilm-l6-v2-q",
-            Self::AllMiniLmL12V2 => "all-minilm-l12-v2",
-            Self::AllMiniLmL12V2Q => "all-minilm-l12-v2-q",
-            Self::AllMpnetBaseV2 => "all-mpnet-base-v2",
-            Self::BgeBaseEnV15 => "bge-base-en-v1.5",
-            Self::BgeBaseEnV15Q => "bge-base-en-v1.5-q",
-            Self::BgeLargeEnV15 => "bge-large-en-v1.5",
-            Self::BgeLargeEnV15Q => "bge-large-en-v1.5-q",
-            Self::MultilingualE5Small => "multilingual-e5-small",
-            Self::MultilingualE5Base => "multilingual-e5-base",
-            Self::MultilingualE5Large => "multilingual-e5-large",
-            Self::ParaphraseMiniLmL12V2 => "paraphrase-minilm-l12-v2",
-            Self::ParaphraseMiniLmL12V2Q => "paraphrase-minilm-l12-v2-q",
-            Self::ParaphraseMultilingualMpnetBaseV2 => "paraphrase-multilingual-mpnet-base-v2",
-            Self::BgeSmallZhV15 => "bge-small-zh-v1.5",
-            Self::BgeLargeZhV15 => "bge-large-zh-v1.5",
-            Self::NomicEmbedTextV1 => "nomic-embed-text-v1",
-            Self::NomicEmbedTextV15 => "nomic-embed-text-v1.5",
-            Self::NomicEmbedTextV15Q => "nomic-embed-text-v1.5-q",
-            Self::MxbaiEmbedLargeV1 => "mxbai-embed-large-v1",
-            Self::MxbaiEmbedLargeV1Q => "mxbai-embed-large-v1-q",
-            Self::GteBaseEnV15 => "gte-base-en-v1.5",
-            Self::GteBaseEnV15Q => "gte-base-en-v1.5-q",
-            Self::GteLargeEnV15 => "gte-large-en-v1.5",
-            Self::GteLargeEnV15Q => "gte-large-en-v1.5-q",
-            Self::ClipVitB32 => "clip-vit-b-32",
-            Self::JinaEmbeddingsV2BaseCode => "jina-embeddings-v2-base-code",
-            Self::EmbeddingGemma300M => "embedding-gemma-300m",
-            Self::ModernBertEmbedLarge => "modernbert-embed-large",
-            Self::SnowflakeArcticEmbedXs => "snowflake-arctic-embed-xs",
-            Self::SnowflakeArcticEmbedXsQ => "snowflake-arctic-embed-xs-q",
-            Self::SnowflakeArcticEmbedS => "snowflake-arctic-embed-s",
-            Self::SnowflakeArcticEmbedSQ => "snowflake-arctic-embed-s-q",
-            Self::SnowflakeArcticEmbedM => "snowflake-arctic-embed-m",
-            Self::SnowflakeArcticEmbedMQ => "snowflake-arctic-embed-m-q",
-            Self::SnowflakeArcticEmbedMLong => "snowflake-arctic-embed-m-long",
-            Self::SnowflakeArcticEmbedMLongQ => "snowflake-arctic-embed-m-long-q",
-            Self::SnowflakeArcticEmbedL => "snowflake-arctic-embed-l",
-            Self::SnowflakeArcticEmbedLQ => "snowflake-arctic-embed-l-q",
-        };
+        let name = MODEL_DISPLAY_NAMES
+            .iter()
+            .find(|(model, _)| model == self)
+            .map_or("", |(_, name)| *name);
+        debug_assert!(!name.is_empty());
         write!(f, "{}", name)
     }
 }
@@ -627,59 +958,23 @@ impl FromStr for EmbeddingModelType {
     type Err = AppError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "bge-small-en-v1.5" | "bge-small-en" | "bge-small" => Ok(Self::BgeSmallEnV15),
-            "bge-small-en-v1.5-q" => Ok(Self::BgeSmallEnV15Q),
-            "all-minilm-l6-v2" | "minilm-l6" => Ok(Self::AllMiniLmL6V2),
-            "all-minilm-l6-v2-q" => Ok(Self::AllMiniLmL6V2Q),
-            "all-minilm-l12-v2" | "minilm-l12" => Ok(Self::AllMiniLmL12V2),
-            "all-minilm-l12-v2-q" => Ok(Self::AllMiniLmL12V2Q),
-            "all-mpnet-base-v2" | "mpnet" => Ok(Self::AllMpnetBaseV2),
-            "bge-base-en-v1.5" | "bge-base-en" | "bge-base" => Ok(Self::BgeBaseEnV15),
-            "bge-base-en-v1.5-q" => Ok(Self::BgeBaseEnV15Q),
-            "bge-large-en-v1.5" | "bge-large-en" | "bge-large" => Ok(Self::BgeLargeEnV15),
-            "bge-large-en-v1.5-q" => Ok(Self::BgeLargeEnV15Q),
-            "multilingual-e5-small" | "e5-small" => Ok(Self::MultilingualE5Small),
-            "multilingual-e5-base" | "e5-base" => Ok(Self::MultilingualE5Base),
-            "multilingual-e5-large" | "e5-large" => Ok(Self::MultilingualE5Large),
-            "paraphrase-minilm-l12-v2" => Ok(Self::ParaphraseMiniLmL12V2),
-            "paraphrase-minilm-l12-v2-q" => Ok(Self::ParaphraseMiniLmL12V2Q),
-            "paraphrase-multilingual-mpnet-base-v2" => Ok(Self::ParaphraseMultilingualMpnetBaseV2),
-            "bge-small-zh-v1.5" | "bge-small-zh" => Ok(Self::BgeSmallZhV15),
-            "bge-large-zh-v1.5" | "bge-large-zh" => Ok(Self::BgeLargeZhV15),
-            "nomic-embed-text-v1" | "nomic-v1" => Ok(Self::NomicEmbedTextV1),
-            "nomic-embed-text-v1.5" | "nomic-v1.5" | "nomic" => Ok(Self::NomicEmbedTextV15),
-            "nomic-embed-text-v1.5-q" => Ok(Self::NomicEmbedTextV15Q),
-            "mxbai-embed-large-v1" | "mxbai" => Ok(Self::MxbaiEmbedLargeV1),
-            "mxbai-embed-large-v1-q" => Ok(Self::MxbaiEmbedLargeV1Q),
-            "gte-base-en-v1.5" | "gte-base" => Ok(Self::GteBaseEnV15),
-            "gte-base-en-v1.5-q" => Ok(Self::GteBaseEnV15Q),
-            "gte-large-en-v1.5" | "gte-large" => Ok(Self::GteLargeEnV15),
-            "gte-large-en-v1.5-q" => Ok(Self::GteLargeEnV15Q),
-            "clip-vit-b-32" | "clip" => Ok(Self::ClipVitB32),
-            "jina-embeddings-v2-base-code" | "jina-code" => Ok(Self::JinaEmbeddingsV2BaseCode),
-            "embedding-gemma-300m" | "gemma-300m" | "gemma" => Ok(Self::EmbeddingGemma300M),
-            "modernbert-embed-large" | "modernbert" => Ok(Self::ModernBertEmbedLarge),
-            "snowflake-arctic-embed-xs" => Ok(Self::SnowflakeArcticEmbedXs),
-            "snowflake-arctic-embed-xs-q" => Ok(Self::SnowflakeArcticEmbedXsQ),
-            "snowflake-arctic-embed-s" => Ok(Self::SnowflakeArcticEmbedS),
-            "snowflake-arctic-embed-s-q" => Ok(Self::SnowflakeArcticEmbedSQ),
-            "snowflake-arctic-embed-m" => Ok(Self::SnowflakeArcticEmbedM),
-            "snowflake-arctic-embed-m-q" => Ok(Self::SnowflakeArcticEmbedMQ),
-            "snowflake-arctic-embed-m-long" => Ok(Self::SnowflakeArcticEmbedMLong),
-            "snowflake-arctic-embed-m-long-q" => Ok(Self::SnowflakeArcticEmbedMLongQ),
-            "snowflake-arctic-embed-l" | "snowflake-l" => Ok(Self::SnowflakeArcticEmbedL),
-            "snowflake-arctic-embed-l-q" => Ok(Self::SnowflakeArcticEmbedLQ),
-            _ => Err(AppError::Internal(format!(
-                "Unknown embedding model: {}. Use one of: {}",
-                s,
-                EmbeddingModelType::all()
-                    .iter()
-                    .map(|m| m.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ))),
+        let lowered = s.to_lowercase();
+        if let Some(model) = MODEL_ALIASES
+            .iter()
+            .find(|(alias, _)| *alias == lowered.as_str())
+            .map(|(_, model)| *model)
+        {
+            return Ok(model);
         }
+        Err(AppError::Internal(format!(
+            "Unknown embedding model: {}. Use one of: {}",
+            s,
+            EmbeddingModelType::all()
+                .iter()
+                .map(|m| m.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )))
     }
 }
 

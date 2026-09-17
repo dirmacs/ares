@@ -254,6 +254,21 @@ pub enum SkillStep {
     },
 }
 
+/// Mutable per-execution state threaded through a skill's main step loop.
+struct SkillRunState {
+    context: serde_json::Value,
+    step_index: i32,
+}
+
+/// Borrowed handles every main step of one skill execution needs.
+struct SkillStepScope<'a> {
+    ctx: &'a Arc<cordis::Context>,
+    tenant_id: &'a str,
+    run_id: &'a str,
+    subtask_key: &'a str,
+    depth: usize,
+}
+
 /// Engine that loads a [`Skill`] from the DB and executes its steps.
 pub struct SkillEngine {
     pool: PgPool,
@@ -651,133 +666,202 @@ impl SkillEngine {
             .map_err(|e| format!("Invalid skill steps: {}", e))?;
 
         // 3. Execute each step sequentially
-        let mut context = serde_json::json!({"input": input});
-        let mut step_index: i32 = 0;
+        let mut state = SkillRunState {
+            context: serde_json::json!({"input": input}),
+            step_index: 0,
+        };
+        let scope = SkillStepScope {
+            ctx,
+            tenant_id,
+            run_id,
+            subtask_key: &subtask_key,
+            depth,
+        };
 
         for step in steps {
             // Call boundary: never start the next LLM round or tool
             // iteration once cancellation latched. The governing token is
             // re-read from the registry at every boundary so an external
             // trigger racing the run is honored immediately.
-            ensure_execution_active(self, ctx, &subtask_key)?;
+            ensure_execution_active(self, scope.ctx, scope.subtask_key)?;
             match step {
                 SkillStep::ToolCall { tool_name, args } => {
-                    tracing::info!("Step {}: tool_call {}", step_index, tool_name);
-                    ensure_tenant_tool_allowed(&self.pool, tenant_id, &tool_name).await?;
-                    let start = std::time::Instant::now();
-
-                    // Execute via request-context Tools (tenant isolate → runtime → static).
-                    let result = self
-                        .execute_tenant_tool(ctx, tenant_id, &tool_name, args.clone())
+                    self.run_tool_step(&scope, &mut state, tool_name, args)
                         .await?;
-
-                    let latency_ms = start.elapsed().as_millis() as i64;
-
-                    // Store result in context
-                    context[&format!("step_{}", step_index)] =
-                        successful_step_context(result.clone());
-
-                    // Log the completed tool call
-                    self.log_tool_call_result(
-                        run_id,
-                        tenant_id,
-                        step_index,
-                        &tool_name,
-                        args,
-                        Some(result),
-                        latency_ms,
-                    )
-                    .await?;
                 }
                 SkillStep::LlmCall { prompt, model_tier } => {
-                    tracing::info!("Step {}: llm_call (tier: {})", step_index, model_tier);
-                    let start = std::time::Instant::now();
-
-                    // Resolve model tier to concrete model
-                    let (provider_name, model_name) =
-                        resolve_model_tier(tenant_id, &model_tier, &self.pool)
-                            .await
-                            .unwrap_or_else(|| ("default".to_string(), model_tier.clone()));
-                    ensure_tenant_model_allowed(&self.pool, tenant_id, &model_name).await?;
-
-                    // Build messages and call Llm through the request context.
-                    let messages = vec![("user".to_string(), prompt.clone())];
-                    self.enforce_token_budget_before_llm_call(tenant_id).await?;
-                    let (response, ambient_metadata) = self
-                        .complete_llm_step_with_metadata(
-                            ctx,
-                            &messages,
-                            &model_name,
-                            Some(run_id),
-                            Some(tenant_id),
-                            Some(step_index),
-                            Some(provider_name.as_str()),
-                        )
-                        .await;
-                    let response = response?;
-                    self.record_llm_token_budget_usage(tenant_id, run_id, &model_name, &response)
+                    self.run_llm_step(&scope, &mut state, prompt, model_tier)
                         .await?;
-
-                    let latency_ms = start.elapsed().as_millis() as i64;
-
-                    // Store result
-                    let result = serde_json::json!({
-                        "content": response.content,
-                        "usage": response.usage,
-                    });
-                    context[&format!("step_{}", step_index)] =
-                        successful_step_context(result.clone());
-
-                    // Log
-                    self.log_llm_call_with_metadata(
-                        run_id,
-                        tenant_id,
-                        step_index,
-                        &provider_name,
-                        &model_name,
-                        response,
-                        latency_ms,
-                        ambient_metadata,
-                    )
-                    .await?;
                 }
                 SkillStep::SkillCall { skill_id, input } => {
-                    tracing::info!("Step {}: skill_call {}", step_index, skill_id);
-                    let result = Box::pin(
-                        self.delegate_skill_call(&skill_id, input, tenant_id, run_id, ctx, depth),
-                    )
-                    .await?;
-                    context[&format!("step_{}", step_index)] = successful_step_context(result);
+                    self.run_skill_step(&scope, &mut state, skill_id, input)
+                        .await?;
                 }
                 SkillStep::Condition {
                     expression,
                     then_steps,
                 } => {
-                    tracing::info!("Step {}: condition {}", step_index, expression);
-                    if let Some(ready_steps) = ready_then_steps(&expression, &then_steps, &context)
-                    {
-                        // Recursively execute then_steps
-                        for (sub_idx, sub_step) in ready_steps.iter().enumerate() {
-                            let sub_step_index = step_index + 1 + sub_idx as i32;
-                            self.execute_sub_step(
-                                sub_step,
-                                ctx,
-                                tenant_id,
-                                run_id,
-                                sub_step_index,
-                                &mut context,
-                                depth,
-                                &subtask_key,
-                            )
-                            .await?;
-                        }
-                    }
+                    self.run_condition_step(&scope, &mut state, expression, then_steps)
+                        .await?;
                 }
             }
-            step_index += 1;
+            state.step_index += 1;
         }
 
-        Ok(context)
+        Ok(state.context)
+    }
+
+    /// One `tool_call` step: policy gate, execution via request-context
+    /// Tools, context store, run-history log.
+    async fn run_tool_step(
+        &self,
+        scope: &SkillStepScope<'_>,
+        state: &mut SkillRunState,
+        tool_name: String,
+        args: serde_json::Value,
+    ) -> Result<(), String> {
+        let step_index = state.step_index;
+        tracing::info!("Step {}: tool_call {}", step_index, tool_name);
+        ensure_tenant_tool_allowed(&self.pool, scope.tenant_id, &tool_name).await?;
+        let start = std::time::Instant::now();
+
+        // Execute via request-context Tools (tenant isolate → runtime → static).
+        let result = self
+            .execute_tenant_tool(scope.ctx, scope.tenant_id, &tool_name, args.clone())
+            .await?;
+
+        let latency_ms = start.elapsed().as_millis() as i64;
+
+        // Store result in context
+        state.context[&format!("step_{}", step_index)] = successful_step_context(result.clone());
+
+        // Log the completed tool call
+        self.log_tool_call_result(
+            scope.run_id,
+            scope.tenant_id,
+            step_index,
+            &tool_name,
+            args,
+            Some(result),
+            latency_ms,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// One `llm_call` step: tier resolution, policy gates, budgeted
+    /// completion, context store, run-history log.
+    async fn run_llm_step(
+        &self,
+        scope: &SkillStepScope<'_>,
+        state: &mut SkillRunState,
+        prompt: String,
+        model_tier: String,
+    ) -> Result<(), String> {
+        let step_index = state.step_index;
+        tracing::info!("Step {}: llm_call (tier: {})", step_index, model_tier);
+        let start = std::time::Instant::now();
+
+        // Resolve model tier to concrete model
+        let (provider_name, model_name) =
+            resolve_model_tier(scope.tenant_id, &model_tier, &self.pool)
+                .await
+                .unwrap_or_else(|| ("default".to_string(), model_tier.clone()));
+        ensure_tenant_model_allowed(&self.pool, scope.tenant_id, &model_name).await?;
+
+        // Build messages and call Llm through the request context.
+        let messages = vec![("user".to_string(), prompt.clone())];
+        self.enforce_token_budget_before_llm_call(scope.tenant_id)
+            .await?;
+        let (response, ambient_metadata) = self
+            .complete_llm_step_with_metadata(
+                scope.ctx,
+                &messages,
+                &model_name,
+                Some(scope.run_id),
+                Some(scope.tenant_id),
+                Some(step_index),
+                Some(provider_name.as_str()),
+            )
+            .await;
+        let response = response?;
+        self.record_llm_token_budget_usage(scope.tenant_id, scope.run_id, &model_name, &response)
+            .await?;
+
+        let latency_ms = start.elapsed().as_millis() as i64;
+
+        // Store result
+        let result = serde_json::json!({
+            "content": response.content,
+            "usage": response.usage,
+        });
+        state.context[&format!("step_{}", step_index)] = successful_step_context(result.clone());
+
+        // Log
+        self.log_llm_call_with_metadata(
+            scope.run_id,
+            scope.tenant_id,
+            step_index,
+            &provider_name,
+            &model_name,
+            response,
+            latency_ms,
+            ambient_metadata,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// One `skill_call` step: delegated sub-execution, context store.
+    async fn run_skill_step(
+        &self,
+        scope: &SkillStepScope<'_>,
+        state: &mut SkillRunState,
+        skill_id: String,
+        input: serde_json::Value,
+    ) -> Result<(), String> {
+        let step_index = state.step_index;
+        tracing::info!("Step {}: skill_call {}", step_index, skill_id);
+        let result = Box::pin(self.delegate_skill_call(
+            &skill_id,
+            input,
+            scope.tenant_id,
+            scope.run_id,
+            scope.ctx,
+            scope.depth,
+        ))
+        .await?;
+        state.context[&format!("step_{}", step_index)] = successful_step_context(result);
+        Ok(())
+    }
+
+    /// One `condition` step: run every then-step whose expression is ready.
+    async fn run_condition_step(
+        &self,
+        scope: &SkillStepScope<'_>,
+        state: &mut SkillRunState,
+        expression: String,
+        then_steps: Vec<SkillStep>,
+    ) -> Result<(), String> {
+        tracing::info!("Step {}: condition {}", state.step_index, expression);
+        if let Some(ready_steps) = ready_then_steps(&expression, &then_steps, &state.context) {
+            // Recursively execute then_steps
+            for (sub_idx, sub_step) in ready_steps.iter().enumerate() {
+                let sub_step_index = state.step_index + 1 + sub_idx as i32;
+                self.execute_sub_step(
+                    sub_step,
+                    scope.ctx,
+                    scope.tenant_id,
+                    scope.run_id,
+                    sub_step_index,
+                    &mut state.context,
+                    scope.depth,
+                    scope.subtask_key,
+                )
+                .await?;
+            }
+        }
+        Ok(())
     }
 
     /// Execute a single sub-step (used for conditional branches).

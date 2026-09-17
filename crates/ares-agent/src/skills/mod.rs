@@ -681,6 +681,25 @@ fn ready_then_steps<'a>(
     }
 }
 
+/// Mutable per-execution state threaded through a skill's main step loop.
+#[cfg(feature = "postgres")]
+struct SkillRunState {
+    context: serde_json::Value,
+    step_index: i32,
+    tool_rounds: usize,
+}
+
+/// Borrowed handles every main step of one skill execution needs.
+#[cfg(feature = "postgres")]
+struct SkillStepScope<'a> {
+    ctx: &'a Arc<Context>,
+    pool: &'a sqlx::PgPool,
+    tenant_id: &'a str,
+    run_id: &'a str,
+    skill_id: &'a str,
+    depth: usize,
+}
+
 /// Cordis Service for skills — owns SkillCall/ToolCall/LlmCall/Condition with depth limiting.
 ///
 /// `execution` is the unified `Execute` (single place for observability/usage).
@@ -803,147 +822,210 @@ impl SkillsService {
             let steps: Vec<SkillStep> = serde_json::from_value(skill.steps)
                 .map_err(|e| format!("Invalid skill steps: {}", e))?;
 
-            let mut context = serde_json::json!({"input": input});
-            let mut step_index: i32 = 0;
-            // Per-execution tool-round ledger (main steps + conditional branches).
-            let mut tool_rounds: usize = 0;
+            let mut state = SkillRunState {
+                context: serde_json::json!({"input": input}),
+                step_index: 0,
+                tool_rounds: 0,
+            };
+            let scope = SkillStepScope {
+                ctx,
+                pool: &pool,
+                tenant_id: &tenant_id,
+                run_id: &run_id,
+                skill_id,
+                depth,
+            };
 
             for step in steps {
                 match step {
                     SkillStep::ToolCall { tool_name, args } => {
-                        check_tool_round_cap(
-                            tool_rounds,
-                            &format!("skill {skill_id} main step {step_index}"),
-                        )?;
-                        tool_rounds += 1;
-                        tracing::info!("Step {}: tool_call {}", step_index, tool_name);
-                        let start = std::time::Instant::now();
-                        let result =
-                            execute_skill_tool(ctx, &tenant_id, &tool_name, args.clone()).await?;
-                        let latency_ms = start.elapsed().as_millis() as i64;
-                        context[&format!("step_{}", step_index)] =
-                            successful_step_context(result.clone());
-                        // Log to run_history when pool available
-                        let store = ares_store::run_history::RunHistoryStore::new(&pool);
-                        let req = ares_store::run_history::LogToolCallRequest {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            run_id: run_id.clone(),
-                            tenant_id: tenant_id.clone(),
-                            agent_name: "skill_executor".to_string(),
-                            step_index,
-                            tool_name: tool_name.clone(),
-                            tool_type: "skill_step".to_string(),
-                            arguments: args.clone(),
-                            result: Some(result),
-                            latency_ms,
-                            status: "success".to_string(),
-                            error_message: None,
-                            created_at: chrono::Utc::now().timestamp(),
-                        };
-                        let _ = store.insert_tool_call(&req).await;
+                        self.run_tool_step(&scope, &mut state, tool_name, args)
+                            .await?;
                     }
                     SkillStep::LlmCall { prompt, model_tier } => {
-                        tracing::info!("Step {}: llm_call tier={}", step_index, model_tier);
-                        let start = std::time::Instant::now();
-                        let (provider_name, model_name) =
-                            ("default".to_string(), model_tier.clone());
-                        let response =
-                            skill_llm_response(ctx, &prompt, &model_name, &provider_name).await?;
-
-                        let latency_ms = start.elapsed().as_millis() as i64;
-                        let result = serde_json::json!({"content": response.content, "usage": response.usage});
-                        context[&format!("step_{}", step_index)] =
-                            successful_step_context(result.clone());
-                        let store = ares_store::run_history::RunHistoryStore::new(&pool);
-                        let usage = response.usage.unwrap_or_default();
-                        let req = ares_store::run_history::LogLlmCallRequest {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            run_id: run_id.clone(),
-                            tenant_id: tenant_id.clone(),
-                            agent_name: "skill_executor".to_string(),
-                            step_index,
-                            provider: provider_name.clone(),
-                            model: model_name.clone(),
-                            prompt_tokens: usage.prompt_tokens as i64,
-                            completion_tokens: usage.completion_tokens as i64,
-                            total_tokens: usage.total_tokens as i64,
-                            estimated_cost_usd: rust_decimal::Decimal::new(
-                                (usage.prompt_tokens as i64 + usage.completion_tokens as i64) * 2,
-                                6,
-                            ),
-                            latency_ms,
-                            cached_tokens: usage.cached_tokens,
-                            total_time_ms: Some(latency_ms),
-                            status: "success".to_string(),
-                            error_message: None,
-                            request_payload: None,
-                            response_payload: Some(
-                                serde_json::json!({"content": response.content}),
-                            ),
-                            created_at: chrono::Utc::now().timestamp(),
-                        };
-                        let _ = store.insert_llm_call(&req).await;
+                        self.run_llm_step(&scope, &mut state, prompt, model_tier)
+                            .await?;
                     }
                     SkillStep::SkillCall {
                         skill_id: inner_id,
                         input: inner_input,
                     } => {
-                        tracing::info!("Step {}: skill_call {}", step_index, inner_id);
-                        // Anti-recursion: delegation may not nest inside a
-                        // delegated sub-workflow.
-                        validate_delegated_step("skill_call", depth)?;
-                        // Snapshot the input for review BEFORE the consuming
-                        // sub-execution; no allocation while the gate is off.
-                        let review_input =
-                            self.review_delegated_results.then(|| inner_input.clone());
-                        let result = Box::pin(self.execute_skill_at_depth(
-                            &inner_id,
-                            inner_input,
-                            ctx,
-                            depth + 1,
-                        ))
-                        .await?;
-                        // Tool hygiene: strip tool-chatter command lines from
-                        // delegated text before it enters the parent context.
-                        let mut result = result;
-                        sanitize_result_value(&mut result);
-                        let result = match review_input {
-                            Some(review_input) => {
-                                self.review_nested_result(&inner_id, &review_input, result, ctx)
-                                    .await?
-                            }
-                            None => result,
-                        };
-                        context[&format!("step_{}", step_index)] = successful_step_context(result);
+                        self.run_skill_step(&scope, &mut state, inner_id, inner_input)
+                            .await?;
                     }
                     SkillStep::Condition {
                         expression,
                         then_steps,
                     } => {
-                        tracing::info!("Step {}: condition {}", step_index, expression);
-                        if let Some(ready) = ready_then_steps(&expression, &then_steps, &context) {
-                            for (sub_idx, sub_step) in ready.iter().enumerate() {
-                                let sub_index = step_index + 1 + sub_idx as i32;
-                                self.execute_sub_step(
-                                    sub_step,
-                                    ctx,
-                                    &pool,
-                                    &tenant_id,
-                                    &run_id,
-                                    sub_index,
-                                    &mut context,
-                                    depth,
-                                    &mut tool_rounds,
-                                )
-                                .await?;
-                            }
-                        }
+                        self.run_condition_step(&scope, &mut state, expression, then_steps)
+                            .await?;
                     }
                 }
-                step_index += 1;
+                state.step_index += 1;
             }
-            Ok(context)
+            Ok(state.context)
         }
+    }
+
+    /// One `tool_call` step: round cap, execution, context store, run-history log.
+    #[cfg(feature = "postgres")]
+    async fn run_tool_step(
+        &self,
+        scope: &SkillStepScope<'_>,
+        state: &mut SkillRunState,
+        tool_name: String,
+        args: serde_json::Value,
+    ) -> Result<(), String> {
+        check_tool_round_cap(
+            state.tool_rounds,
+            &format!("skill {} main step {}", scope.skill_id, state.step_index),
+        )?;
+        state.tool_rounds += 1;
+        let step_index = state.step_index;
+        tracing::info!("Step {}: tool_call {}", step_index, tool_name);
+        let start = std::time::Instant::now();
+        let result =
+            execute_skill_tool(scope.ctx, scope.tenant_id, &tool_name, args.clone()).await?;
+        let latency_ms = start.elapsed().as_millis() as i64;
+        state.context[&format!("step_{}", step_index)] = successful_step_context(result.clone());
+        // Log to run_history when pool available
+        let store = ares_store::run_history::RunHistoryStore::new(scope.pool);
+        let req = ares_store::run_history::LogToolCallRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            run_id: scope.run_id.to_string(),
+            tenant_id: scope.tenant_id.to_string(),
+            agent_name: "skill_executor".to_string(),
+            step_index,
+            tool_name: tool_name.clone(),
+            tool_type: "skill_step".to_string(),
+            arguments: args.clone(),
+            result: Some(result),
+            latency_ms,
+            status: "success".to_string(),
+            error_message: None,
+            created_at: chrono::Utc::now().timestamp(),
+        };
+        let _ = store.insert_tool_call(&req).await;
+        Ok(())
+    }
+
+    /// One `llm_call` step: tier-named model, response, context store,
+    /// run-history log.
+    #[cfg(feature = "postgres")]
+    async fn run_llm_step(
+        &self,
+        scope: &SkillStepScope<'_>,
+        state: &mut SkillRunState,
+        prompt: String,
+        model_tier: String,
+    ) -> Result<(), String> {
+        let step_index = state.step_index;
+        tracing::info!("Step {}: llm_call tier={}", step_index, model_tier);
+        let start = std::time::Instant::now();
+        let (provider_name, model_name) = ("default".to_string(), model_tier.clone());
+        let response = skill_llm_response(scope.ctx, &prompt, &model_name, &provider_name).await?;
+
+        let latency_ms = start.elapsed().as_millis() as i64;
+        let result = serde_json::json!({"content": response.content, "usage": response.usage});
+        state.context[&format!("step_{}", step_index)] = successful_step_context(result.clone());
+        let store = ares_store::run_history::RunHistoryStore::new(scope.pool);
+        let usage = response.usage.unwrap_or_default();
+        let req = ares_store::run_history::LogLlmCallRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            run_id: scope.run_id.to_string(),
+            tenant_id: scope.tenant_id.to_string(),
+            agent_name: "skill_executor".to_string(),
+            step_index,
+            provider: provider_name.clone(),
+            model: model_name.clone(),
+            prompt_tokens: usage.prompt_tokens as i64,
+            completion_tokens: usage.completion_tokens as i64,
+            total_tokens: usage.total_tokens as i64,
+            estimated_cost_usd: rust_decimal::Decimal::new(
+                (usage.prompt_tokens as i64 + usage.completion_tokens as i64) * 2,
+                6,
+            ),
+            latency_ms,
+            cached_tokens: usage.cached_tokens,
+            total_time_ms: Some(latency_ms),
+            status: "success".to_string(),
+            error_message: None,
+            request_payload: None,
+            response_payload: Some(serde_json::json!({"content": response.content})),
+            created_at: chrono::Utc::now().timestamp(),
+        };
+        let _ = store.insert_llm_call(&req).await;
+        Ok(())
+    }
+
+    /// One `skill_call` step: anti-recursion gate, delegated sub-execution,
+    /// optional review, context store.
+    #[cfg(feature = "postgres")]
+    async fn run_skill_step(
+        &self,
+        scope: &SkillStepScope<'_>,
+        state: &mut SkillRunState,
+        inner_id: String,
+        inner_input: serde_json::Value,
+    ) -> Result<(), String> {
+        let step_index = state.step_index;
+        tracing::info!("Step {}: skill_call {}", step_index, inner_id);
+        // Anti-recursion: delegation may not nest inside a
+        // delegated sub-workflow.
+        validate_delegated_step("skill_call", scope.depth)?;
+        // Snapshot the input for review BEFORE the consuming
+        // sub-execution; no allocation while the gate is off.
+        let review_input = self.review_delegated_results.then(|| inner_input.clone());
+        let result = Box::pin(self.execute_skill_at_depth(
+            &inner_id,
+            inner_input,
+            scope.ctx,
+            scope.depth + 1,
+        ))
+        .await?;
+        // Tool hygiene: strip tool-chatter command lines from
+        // delegated text before it enters the parent context.
+        let mut result = result;
+        sanitize_result_value(&mut result);
+        let result = match review_input {
+            Some(review_input) => {
+                self.review_nested_result(&inner_id, &review_input, result, scope.ctx)
+                    .await?
+            }
+            None => result,
+        };
+        state.context[&format!("step_{}", step_index)] = successful_step_context(result);
+        Ok(())
+    }
+
+    /// One `condition` step: run every then-step whose expression is ready.
+    #[cfg(feature = "postgres")]
+    async fn run_condition_step(
+        &self,
+        scope: &SkillStepScope<'_>,
+        state: &mut SkillRunState,
+        expression: String,
+        then_steps: Vec<SkillStep>,
+    ) -> Result<(), String> {
+        tracing::info!("Step {}: condition {}", state.step_index, expression);
+        if let Some(ready) = ready_then_steps(&expression, &then_steps, &state.context) {
+            for (sub_idx, sub_step) in ready.iter().enumerate() {
+                let sub_index = state.step_index + 1 + sub_idx as i32;
+                self.execute_sub_step(
+                    sub_step,
+                    scope.ctx,
+                    scope.pool,
+                    scope.tenant_id,
+                    scope.run_id,
+                    sub_index,
+                    &mut state.context,
+                    scope.depth,
+                    &mut state.tool_rounds,
+                )
+                .await?;
+            }
+        }
+        Ok(())
     }
 
     #[cfg(feature = "postgres")]

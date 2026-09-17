@@ -653,17 +653,8 @@ impl SkillEngine {
         validate_skill_call_depth(depth)?;
         let subtask_key = format!("{run_id}/{skill_id}");
 
-        // 1. Load the skill definition
-        let skill_store = SkillStore::new(&self.pool);
-        let skill = skill_store
-            .get_skill_for_tenant(skill_id, tenant_id)
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "Skill not found".to_string())?;
-
-        // 2. Parse steps JSONB into SkillStep vec
-        let steps: Vec<SkillStep> = serde_json::from_value(skill.steps)
-            .map_err(|e| format!("Invalid skill steps: {}", e))?;
+        // 1+2. Load the skill definition and parse its steps JSONB.
+        let steps = self.load_skill_steps(skill_id, tenant_id).await?;
 
         // 3. Execute each step sequentially
         let mut state = SkillRunState {
@@ -684,27 +675,7 @@ impl SkillEngine {
             // re-read from the registry at every boundary so an external
             // trigger racing the run is honored immediately.
             ensure_execution_active(self, scope.ctx, scope.subtask_key)?;
-            match step {
-                SkillStep::ToolCall { tool_name, args } => {
-                    self.run_tool_step(&scope, &mut state, tool_name, args)
-                        .await?;
-                }
-                SkillStep::LlmCall { prompt, model_tier } => {
-                    self.run_llm_step(&scope, &mut state, prompt, model_tier)
-                        .await?;
-                }
-                SkillStep::SkillCall { skill_id, input } => {
-                    self.run_skill_step(&scope, &mut state, skill_id, input)
-                        .await?;
-                }
-                SkillStep::Condition {
-                    expression,
-                    then_steps,
-                } => {
-                    self.run_condition_step(&scope, &mut state, expression, then_steps)
-                        .await?;
-                }
-            }
+            self.run_step(&scope, &mut state, step).await?;
             state.step_index += 1;
         }
 
@@ -862,6 +833,48 @@ impl SkillEngine {
             }
         }
         Ok(())
+    }
+
+    /// Load a skill definition and parse its steps JSONB.
+    async fn load_skill_steps(
+        &self,
+        skill_id: &str,
+        tenant_id: &str,
+    ) -> Result<Vec<SkillStep>, String> {
+        let skill_store = SkillStore::new(&self.pool);
+        let skill = skill_store
+            .get_skill_for_tenant(skill_id, tenant_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Skill not found".to_string())?;
+        serde_json::from_value(skill.steps).map_err(|e| format!("Invalid skill steps: {}", e))
+    }
+
+    /// Dispatch one main step to its kind runner.
+    async fn run_step(
+        &self,
+        scope: &SkillStepScope<'_>,
+        state: &mut SkillRunState,
+        step: SkillStep,
+    ) -> Result<(), String> {
+        match step {
+            SkillStep::ToolCall { tool_name, args } => {
+                self.run_tool_step(scope, state, tool_name, args).await
+            }
+            SkillStep::LlmCall { prompt, model_tier } => {
+                self.run_llm_step(scope, state, prompt, model_tier).await
+            }
+            SkillStep::SkillCall { skill_id, input } => {
+                self.run_skill_step(scope, state, skill_id, input).await
+            }
+            SkillStep::Condition {
+                expression,
+                then_steps,
+            } => {
+                self.run_condition_step(scope, state, expression, then_steps)
+                    .await
+            }
+        }
     }
 
     /// Execute a single sub-step (used for conditional branches).

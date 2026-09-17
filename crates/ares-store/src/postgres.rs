@@ -13,8 +13,13 @@ use uuid::Uuid;
 /// Default PostgreSQL connection URL used when no override or env var is set.
 pub const DEFAULT_POSTGRES_URL: &str = "postgres://postgres:postgres@localhost:5432/ares";
 
-/// Lazy pool URL for `PostgresClient::new_test()` (no live connection).
-pub const TEST_POSTGRES_URL: &str = "postgres://test:test@localhost:5432/test";
+/// Lazy pool URL for `PostgresClient::new_test()`.
+///
+/// Points at a Unix-socket directory that does not exist: a query on the stub
+/// pool fails immediately with a connection error. No server is dialed and no
+/// credentials are sent, so test runs leave no auth failures in the server log.
+const UNAVAILABLE_POSTGRES_URL: &str =
+    "postgres://postgres@%2Ftmp%2Fares-store-no-test-server/ares_test";
 
 /// Default pool size for production connections.
 pub const DEFAULT_MAX_CONNECTIONS: u32 = 5;
@@ -195,11 +200,14 @@ impl PostgresClient {
 
     /// Create a test-only client with a lazy pool that doesn't actually connect.
     /// Use this in unit tests that construct a context but never execute queries.
+    ///
+    /// The lazy pool targets an unavailable local socket, so an accidental query
+    /// fails fast with a database error instead of dialing a live server.
     #[doc(hidden)]
     pub fn new_test() -> Self {
         let pool = PgPoolOptions::new()
             .max_connections(1)
-            .connect_lazy(TEST_POSTGRES_URL)
+            .connect_lazy(UNAVAILABLE_POSTGRES_URL)
             .expect("connect_lazy should never fail");
         Self { pool }
     }
@@ -789,11 +797,15 @@ mod tests {
         assert!(format!("{:?}", parts).contains("PostgresUrlParts"));
     }
 
-    #[test]
-    fn test_postgres_url_matches_new_test_pool() {
-        let parts = parse_postgres_url(TEST_POSTGRES_URL).expect("parse test url");
-        assert_eq!(parts.database, "test");
-        assert_eq!(parts.user.as_deref(), Some("test"));
+    /// The stub pool must surface a database error without a live server.
+    #[tokio::test]
+    async fn new_test_pool_queries_fail_without_live_server() {
+        let client = PostgresClient::new_test();
+        let err = client
+            .get_user_by_id("nonexistent")
+            .await
+            .expect_err("stub pool must not reach a server");
+        assert!(matches!(err, AppError::Database(_)));
     }
 
     // ── Query building helpers (session / message SQL) ───────────────────

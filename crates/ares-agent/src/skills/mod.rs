@@ -792,13 +792,7 @@ impl SkillsService {
             let _exec = &self.execution;
 
             // Resolve PgPool via Cordis context (PostgresClient is always provided).
-            let pool: sqlx::PgPool = {
-                if let Some(svc) = ctx.get::<ares_store::PostgresClient>() {
-                    svc.pool.clone()
-                } else {
-                    return Err("Database pool not available via Context".to_string());
-                }
-            };
+            let pool = self.skill_pool(ctx)?;
 
             let tenant_id = input
                 .get("tenant_id")
@@ -812,15 +806,7 @@ impl SkillsService {
                 .to_string();
 
             // Load skill definition from DB
-            let skill_store = ares_store::skills::SkillStore::new(&pool);
-            let skill = skill_store
-                .get_skill_for_tenant(skill_id, &tenant_id)
-                .await
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| "Skill not found".to_string())?;
-
-            let steps: Vec<SkillStep> = serde_json::from_value(skill.steps)
-                .map_err(|e| format!("Invalid skill steps: {}", e))?;
+            let steps = self.load_skill_steps(&pool, skill_id, &tenant_id).await?;
 
             let mut state = SkillRunState {
                 context: serde_json::json!({"input": input}),
@@ -837,30 +823,7 @@ impl SkillsService {
             };
 
             for step in steps {
-                match step {
-                    SkillStep::ToolCall { tool_name, args } => {
-                        self.run_tool_step(&scope, &mut state, tool_name, args)
-                            .await?;
-                    }
-                    SkillStep::LlmCall { prompt, model_tier } => {
-                        self.run_llm_step(&scope, &mut state, prompt, model_tier)
-                            .await?;
-                    }
-                    SkillStep::SkillCall {
-                        skill_id: inner_id,
-                        input: inner_input,
-                    } => {
-                        self.run_skill_step(&scope, &mut state, inner_id, inner_input)
-                            .await?;
-                    }
-                    SkillStep::Condition {
-                        expression,
-                        then_steps,
-                    } => {
-                        self.run_condition_step(&scope, &mut state, expression, then_steps)
-                            .await?;
-                    }
-                }
+                self.run_step(&scope, &mut state, step).await?;
                 state.step_index += 1;
             }
             Ok(state.context)
@@ -1026,6 +989,64 @@ impl SkillsService {
             }
         }
         Ok(())
+    }
+
+    /// Resolve the Postgres pool from the Cordis context.
+    #[cfg(feature = "postgres")]
+    fn skill_pool(&self, ctx: &Arc<Context>) -> Result<sqlx::PgPool, String> {
+        match ctx.get::<ares_store::PostgresClient>() {
+            Some(svc) => Ok(svc.pool.clone()),
+            None => Err("Database pool not available via Context".to_string()),
+        }
+    }
+
+    /// Load a skill definition and parse its steps JSONB.
+    #[cfg(feature = "postgres")]
+    async fn load_skill_steps(
+        &self,
+        pool: &sqlx::PgPool,
+        skill_id: &str,
+        tenant_id: &str,
+    ) -> Result<Vec<SkillStep>, String> {
+        let skill_store = ares_store::skills::SkillStore::new(pool);
+        let skill = skill_store
+            .get_skill_for_tenant(skill_id, tenant_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Skill not found".to_string())?;
+        serde_json::from_value(skill.steps).map_err(|e| format!("Invalid skill steps: {}", e))
+    }
+
+    /// Dispatch one main step to its kind runner.
+    #[cfg(feature = "postgres")]
+    async fn run_step(
+        &self,
+        scope: &SkillStepScope<'_>,
+        state: &mut SkillRunState,
+        step: SkillStep,
+    ) -> Result<(), String> {
+        match step {
+            SkillStep::ToolCall { tool_name, args } => {
+                self.run_tool_step(scope, state, tool_name, args).await
+            }
+            SkillStep::LlmCall { prompt, model_tier } => {
+                self.run_llm_step(scope, state, prompt, model_tier).await
+            }
+            SkillStep::SkillCall {
+                skill_id: inner_id,
+                input: inner_input,
+            } => {
+                self.run_skill_step(scope, state, inner_id, inner_input)
+                    .await
+            }
+            SkillStep::Condition {
+                expression,
+                then_steps,
+            } => {
+                self.run_condition_step(scope, state, expression, then_steps)
+                    .await
+            }
+        }
     }
 
     #[cfg(feature = "postgres")]

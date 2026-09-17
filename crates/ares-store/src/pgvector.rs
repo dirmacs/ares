@@ -20,9 +20,6 @@ use crate::postgres::parse_postgres_url;
 /// Default PostgreSQL URL for pgvector-backed storage.
 pub const DEFAULT_PGVECTOR_URL: &str = "postgres://postgres:postgres@localhost:5432/ares";
 
-/// Test URL used by unit tests (no live connection required).
-pub const TEST_PGVECTOR_URL: &str = "postgres://test:test@localhost:5432/test";
-
 /// SQL to ensure the pgvector extension exists.
 pub const CREATE_VECTOR_EXTENSION_SQL: &str = "CREATE EXTENSION IF NOT EXISTS vector";
 
@@ -444,6 +441,9 @@ mod tests {
     use crate::postgres::is_postgres_url;
     use ares_types::types::AppError;
 
+    /// Sample connection URL for parsing tests; never dialed.
+    const SAMPLE_PGVECTOR_URL: &str = "postgres://app:secret@localhost:5432/vectors";
+
     // ── Connection URL resolution ────────────────────────────────────────
 
     #[test]
@@ -511,8 +511,8 @@ mod tests {
     fn test_pgvector_url_is_valid_postgres_url() {
         #[cfg(feature = "postgres")]
         {
-            let parts = parse_postgres_url(TEST_PGVECTOR_URL).expect("parse test url");
-            assert_eq!(parts.database, "test");
+            let parts = parse_postgres_url(SAMPLE_PGVECTOR_URL).expect("parse sample url");
+            assert_eq!(parts.database, "vectors");
         }
     }
 
@@ -895,9 +895,9 @@ mod tests {
     #[cfg(feature = "postgres")]
     #[test]
     fn test_pgvector_url_parses_database_name() {
-        let parts = parse_pgvector_url(TEST_PGVECTOR_URL).expect("parse test url");
-        assert_eq!(parts.database, "test");
-        assert!(is_pgvector_url(TEST_PGVECTOR_URL));
+        let parts = parse_pgvector_url(SAMPLE_PGVECTOR_URL).expect("parse sample url");
+        assert_eq!(parts.database, "vectors");
+        assert!(is_pgvector_url(SAMPLE_PGVECTOR_URL));
     }
 
     #[tokio::test]

@@ -18,7 +18,9 @@ use ares_llm::coordinator::ConversationMessage;
 use ares_llm::observability::{LlmCallRecord, ObservabilitySink, ToolCallRecord};
 use ares_llm::{LLMClient, LLMResponse, LlmStreamEvent};
 use ares_tools::Tools;
-use ares_types::types::{AgentContext, AgentType, AppError, ContentPart, Result, ToolDefinition};
+use ares_types::types::{
+    AgentContext, AgentType, AppError, ContentPart, Result, ToolCall, ToolDefinition,
+};
 use async_trait::async_trait;
 use cordis::{Context, CordisError, EventsService};
 use futures::StreamExt;
@@ -53,6 +55,17 @@ struct LlmAttemptResponse {
     response: LLMResponse,
     provider_name: String,
     model_name: String,
+}
+
+/// State prepared once per `execute_with_tools` call: the seeded message
+/// list plus the compaction handles the multi-turn loop reuses.
+struct ToolTurnSetup {
+    messages: Vec<ConversationMessage>,
+    session_compactor: Option<Arc<Compactor>>,
+    #[cfg(feature = "postgres")]
+    snapshot_pool: Option<sqlx::PgPool>,
+    #[cfg(feature = "postgres")]
+    session_key: String,
 }
 
 enum OpenedLlmStream {
@@ -1314,6 +1327,178 @@ When referencing facts above, cite [E1], [E2] etc.",
             "execute_with_tools: tool definitions loaded"
         );
 
+        let mut turn = self.prepare_tool_turn(input, context).await;
+
+        let mut total_usage = TokenUsage::default();
+        let mut last_provider_name = self.provider_name.clone();
+        let mut last_model_name = self.llm.model_name().to_string();
+
+        for iteration in 0..self.max_tool_iterations {
+            let attempt = self
+                .run_llm_iteration(&context.user_id, &turn.messages, &tools, iteration)
+                .await?;
+            last_provider_name = attempt.provider_name;
+            last_model_name = attempt.model_name;
+            let response = attempt.response;
+
+            if let Some(usage) = &response.usage {
+                total_usage = TokenUsage::new(
+                    total_usage.prompt_tokens + usage.prompt_tokens,
+                    total_usage.completion_tokens + usage.completion_tokens,
+                );
+            }
+
+            if response.tool_calls.is_empty() {
+                self.spawn_turn_compaction(&turn, input, &response.content);
+                return Ok(AgentResponse {
+                    content: response.content,
+                    usage: Some(total_usage),
+                    metadata: Some(ExecutionMetadata {
+                        model_name: last_model_name,
+                        provider_name: last_provider_name,
+                    }),
+                });
+            }
+
+            // Add assistant message with tool calls
+            turn.messages.push(ConversationMessage::assistant(
+                &response.content,
+                response.tool_calls.clone(),
+            ));
+
+            self.execute_tool_calls(&mut turn.messages, &response.tool_calls, iteration)
+                .await?;
+        }
+
+        // Max iterations reached — make ONE final LLM call without tools to get synthesis
+        // Bug #7 fix: the last assistant message has empty content (it was a tool-call message).
+        // We need the LLM to synthesize a final response from all the tool results.
+        tracing::warn!(
+            agent = %self.name,
+            "Max tool iterations ({}) reached — making final synthesis call",
+            self.max_tool_iterations
+        );
+        self.preflight_budget_check(&context.user_id).await?;
+
+        let synth_start = std::time::Instant::now();
+        let final_response = self
+            .try_generate_with_tools_and_history(&turn.messages, &[])
+            .await;
+        let synth_latency = synth_start.elapsed().as_millis() as i64;
+        if let Ok(attempt) = &final_response {
+            last_provider_name = attempt.provider_name.clone();
+            last_model_name = attempt.model_name.clone();
+        }
+
+        if let Ok(attempt) = &final_response {
+            let prompt_tok = attempt
+                .response
+                .usage
+                .as_ref()
+                .map(|u| u.prompt_tokens as i64)
+                .unwrap_or(0);
+            let completion_tok = attempt
+                .response
+                .usage
+                .as_ref()
+                .map(|u| u.completion_tokens as i64)
+                .unwrap_or(0);
+            let _ = self
+                .record_and_check_budget(&context.user_id, prompt_tok, completion_tok)
+                .await;
+        }
+
+        // Log the final synthesis call
+        if let Some(obs) = &self.observability {
+            let (prompt_tok, completion_tok, status) = match &final_response {
+                Ok(attempt) => (
+                    attempt
+                        .response
+                        .usage
+                        .as_ref()
+                        .map(|u| u.prompt_tokens as i64)
+                        .unwrap_or(0),
+                    attempt
+                        .response
+                        .usage
+                        .as_ref()
+                        .map(|u| u.completion_tokens as i64)
+                        .unwrap_or(0),
+                    "success".to_string(),
+                ),
+                Err(_) => (0, 0, "error".to_string()),
+            };
+            let record = LlmCallRecord {
+                step_index: self.max_tool_iterations as i32,
+                provider: last_provider_name.clone(),
+                model: last_model_name.clone(),
+                prompt_tokens: prompt_tok,
+                completion_tokens: completion_tok,
+                latency_ms: synth_latency,
+                cached_tokens: final_response
+                    .as_ref()
+                    .ok()
+                    .and_then(|attempt| attempt.response.usage.as_ref())
+                    .and_then(|u| u.cached_tokens),
+                total_time_ms: Some(synth_latency),
+                status,
+            };
+            let _ = obs.log_llm_call(record).await;
+        }
+
+        // Fire-and-forget compaction of the completed turn when the final
+        // synthesis succeeded. Failures are logged at debug only.
+        if let Ok(attempt) = &final_response {
+            if !attempt.response.content.is_empty() {
+                self.spawn_turn_compaction(&turn, input, &attempt.response.content);
+            }
+        }
+
+        let content = match final_response {
+            Ok(attempt) if !attempt.response.content.is_empty() => attempt.response.content,
+            Ok(_) => {
+                // Final call also returned empty — find any non-empty assistant content
+                turn.messages
+                    .iter()
+                    .rev()
+                    .find(|m| {
+                        m.role == ares_llm::coordinator::MessageRole::Assistant
+                            && !m.content.is_empty()
+                    })
+                    .map(|m| m.content.clone())
+                    .unwrap_or_else(|| {
+                        "Agent completed tool calls but could not generate a final response."
+                            .to_string()
+                    })
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Final synthesis call failed");
+                // Still try to return something useful
+                turn.messages
+                    .iter()
+                    .rev()
+                    .find(|m| {
+                        m.role == ares_llm::coordinator::MessageRole::Assistant
+                            && !m.content.is_empty()
+                    })
+                    .map(|m| m.content.clone())
+                    .unwrap_or_else(|| format!("Agent completed but synthesis failed: {}", e))
+            }
+        };
+
+        Ok(AgentResponse {
+            content,
+            usage: Some(total_usage),
+            metadata: Some(ExecutionMetadata {
+                model_name: last_model_name,
+                provider_name: last_provider_name,
+            }),
+        })
+    }
+
+    /// Build the initial message list (system prompt, compacted or last-5
+    /// history, user turn) and the compaction handles reused by the loop.
+    async fn prepare_tool_turn(&self, input: &str, context: &AgentContext) -> ToolTurnSetup {
         let mut messages: Vec<ConversationMessage> = Vec::new();
 
         // Inject external context if a ContextProvider is configured
@@ -1383,297 +1568,159 @@ When referencing facts above, cite [E1], [E2] etc.",
             self.previous_response_id.clone(),
         ));
 
-        let mut total_usage = TokenUsage::default();
-        let mut last_provider_name = self.provider_name.clone();
-        let mut last_model_name = self.llm.model_name().to_string();
-
-        for iteration in 0..self.max_tool_iterations {
-            self.preflight_budget_check(&context.user_id).await?;
-
-            let llm_start = std::time::Instant::now();
-            let attempt = self
-                .try_generate_with_tools_and_history(&messages, &tools)
-                .await?;
-            let llm_latency = llm_start.elapsed().as_millis() as i64;
-            last_provider_name = attempt.provider_name;
-            last_model_name = attempt.model_name;
-            let response = attempt.response;
-
-            {
-                let prompt_tok = response
-                    .usage
-                    .as_ref()
-                    .map(|u| u.prompt_tokens as i64)
-                    .unwrap_or(0);
-                let completion_tok = response
-                    .usage
-                    .as_ref()
-                    .map(|u| u.completion_tokens as i64)
-                    .unwrap_or(0);
-                self.record_and_check_budget(&context.user_id, prompt_tok, completion_tok)
-                    .await?;
-            }
-
-            // Log the LLM call
-            if let Some(obs) = &self.observability {
-                let prompt_tok = response
-                    .usage
-                    .as_ref()
-                    .map(|u| u.prompt_tokens as i64)
-                    .unwrap_or(0);
-                let completion_tok = response
-                    .usage
-                    .as_ref()
-                    .map(|u| u.completion_tokens as i64)
-                    .unwrap_or(0);
-                let record = LlmCallRecord {
-                    step_index: iteration as i32,
-                    provider: last_provider_name.clone(),
-                    model: last_model_name.clone(),
-                    prompt_tokens: prompt_tok,
-                    completion_tokens: completion_tok,
-                    latency_ms: llm_latency,
-                    status: "success".to_string(),
-                    cached_tokens: response.usage.as_ref().and_then(|u| u.cached_tokens),
-                    total_time_ms: Some(llm_latency),
-                };
-                let _ = obs.log_llm_call(record).await;
-            }
-
-            if let Some(usage) = &response.usage {
-                total_usage = TokenUsage::new(
-                    total_usage.prompt_tokens + usage.prompt_tokens,
-                    total_usage.completion_tokens + usage.completion_tokens,
-                );
-            }
-
-            if response.tool_calls.is_empty() {
-                // Fire-and-forget compaction of the completed turn. Failures
-                // are logged at debug and never affect the response.
-                if let Some(compactor) = &session_compactor {
-                    let compactor = Arc::clone(compactor);
-                    let input = input.to_string();
-                    let content = response.content.clone();
-                    tokio::spawn(async move {
-                        let event = compactor.record_turn(input, content).await;
-                        log_compact_event("record_turn", &event);
-                        for event in compactor.audit_if_due().await {
-                            log_compact_event("audit", &event);
-                        }
-                        #[cfg(feature = "postgres")]
-                        if let Some(pool) = snapshot_pool.clone() {
-                            persist_session_snapshot(&compactor, pool, &session_key).await;
-                        }
-                    });
-                }
-                return Ok(AgentResponse {
-                    content: response.content,
-                    usage: Some(total_usage),
-                    metadata: Some(ExecutionMetadata {
-                        model_name: last_model_name,
-                        provider_name: last_provider_name,
-                    }),
-                });
-            }
-
-            // Add assistant message with tool calls
-            messages.push(ConversationMessage::assistant(
-                &response.content,
-                response.tool_calls.clone(),
-            ));
-
-            // Execute each tool call and add results
-            for tc in &response.tool_calls {
-                // Runtime enforcement of allowed_tools (DIR1-46): deny-by-default.
-                if !self.can_use_tool(&tc.name) {
-                    tracing::warn!(
-                        agent = %self.name,
-                        tool = %tc.name,
-                        allowed_tools = ?self.allowed_tools,
-                        "Tool not in allowed_tools list — denying execution"
-                    );
-                    return Err(AppError::Auth(format!(
-                        "Tool '{}' is not allowed for this agent",
-                        tc.name
-                    )));
-                }
-
-                let tool_start = std::time::Instant::now();
-                let is_builtin = {
-                    let ctx = self.cordis_ctx.clone().unwrap_or_else(Context::new_root);
-                    self.tools
-                        .as_ref()
-                        .and_then(|t| t.resolve(&ctx, &tc.name))
-                        .is_some()
-                };
-                let tool_type = self.observed_tool_type(&tc.name, is_builtin);
-                let result = self.dispatch_tool(&tc.name, tc.arguments.clone()).await;
-                let tool_latency = tool_start.elapsed().as_millis() as i64;
-                let result_value = match result {
-                    Ok(v) => v,
-                    Err(e) => serde_json::json!({"error": e.to_string()}),
-                };
-
-                // Log the tool call
-                if let Some(obs) = &self.observability {
-                    let status = if result_value.get("error").is_some() {
-                        "error".to_string()
-                    } else {
-                        "success".to_string()
-                    };
-                    let tool_record = ToolCallRecord {
-                        step_index: iteration as i32,
-                        tool_name: tc.name.clone(),
-                        tool_type,
-                        arguments: tc.arguments.clone(),
-                        result: Some(result_value.clone()),
-                        latency_ms: tool_latency,
-                        status,
-                    };
-                    let _ = obs.log_tool_call(tool_record).await;
-                }
-
-                messages.push(ConversationMessage::tool_result(&tc.id, &result_value));
-            }
+        ToolTurnSetup {
+            messages,
+            session_compactor,
+            #[cfg(feature = "postgres")]
+            snapshot_pool,
+            #[cfg(feature = "postgres")]
+            session_key,
         }
+    }
 
-        // Max iterations reached — make ONE final LLM call without tools to get synthesis
-        // Bug #7 fix: the last assistant message has empty content (it was a tool-call message).
-        // We need the LLM to synthesize a final response from all the tool results.
-        tracing::warn!(
-            agent = %self.name,
-            "Max tool iterations ({}) reached — making final synthesis call",
-            self.max_tool_iterations
-        );
-        self.preflight_budget_check(&context.user_id).await?;
+    /// One LLM turn: preflight budget, generate with tools, budget
+    /// accounting, and observability log. Returns the raw attempt.
+    async fn run_llm_iteration(
+        &self,
+        user_id: &str,
+        messages: &[ConversationMessage],
+        tools: &[ToolDefinition],
+        iteration: usize,
+    ) -> Result<LlmAttemptResponse> {
+        self.preflight_budget_check(user_id).await?;
 
-        let synth_start = std::time::Instant::now();
-        let final_response = self
-            .try_generate_with_tools_and_history(&messages, &[])
-            .await;
-        let synth_latency = synth_start.elapsed().as_millis() as i64;
-        if let Ok(attempt) = &final_response {
-            last_provider_name = attempt.provider_name.clone();
-            last_model_name = attempt.model_name.clone();
-        }
+        let llm_start = std::time::Instant::now();
+        let attempt = self
+            .try_generate_with_tools_and_history(messages, tools)
+            .await?;
+        let llm_latency = llm_start.elapsed().as_millis() as i64;
 
-        if let Ok(attempt) = &final_response {
-            let prompt_tok = attempt
-                .response
-                .usage
-                .as_ref()
-                .map(|u| u.prompt_tokens as i64)
-                .unwrap_or(0);
-            let completion_tok = attempt
-                .response
-                .usage
-                .as_ref()
-                .map(|u| u.completion_tokens as i64)
-                .unwrap_or(0);
-            let _ = self
-                .record_and_check_budget(&context.user_id, prompt_tok, completion_tok)
-                .await;
-        }
+        let prompt_tok = attempt
+            .response
+            .usage
+            .as_ref()
+            .map(|u| u.prompt_tokens as i64)
+            .unwrap_or(0);
+        let completion_tok = attempt
+            .response
+            .usage
+            .as_ref()
+            .map(|u| u.completion_tokens as i64)
+            .unwrap_or(0);
+        self.record_and_check_budget(user_id, prompt_tok, completion_tok)
+            .await?;
 
-        // Log the final synthesis call
+        // Log the LLM call
         if let Some(obs) = &self.observability {
-            let (prompt_tok, completion_tok, status) = match &final_response {
-                Ok(attempt) => (
-                    attempt
-                        .response
-                        .usage
-                        .as_ref()
-                        .map(|u| u.prompt_tokens as i64)
-                        .unwrap_or(0),
-                    attempt
-                        .response
-                        .usage
-                        .as_ref()
-                        .map(|u| u.completion_tokens as i64)
-                        .unwrap_or(0),
-                    "success".to_string(),
-                ),
-                Err(_) => (0, 0, "error".to_string()),
-            };
             let record = LlmCallRecord {
-                step_index: self.max_tool_iterations as i32,
-                provider: last_provider_name.clone(),
-                model: last_model_name.clone(),
+                step_index: iteration as i32,
+                provider: attempt.provider_name.clone(),
+                model: attempt.model_name.clone(),
                 prompt_tokens: prompt_tok,
                 completion_tokens: completion_tok,
-                latency_ms: synth_latency,
-                cached_tokens: final_response
+                latency_ms: llm_latency,
+                status: "success".to_string(),
+                cached_tokens: attempt
+                    .response
+                    .usage
                     .as_ref()
-                    .ok()
-                    .and_then(|attempt| attempt.response.usage.as_ref())
                     .and_then(|u| u.cached_tokens),
-                total_time_ms: Some(synth_latency),
-                status,
+                total_time_ms: Some(llm_latency),
             };
             let _ = obs.log_llm_call(record).await;
         }
 
-        // Fire-and-forget compaction of the completed turn when the final
-        // synthesis succeeded. Failures are logged at debug only.
-        if let (Ok(attempt), Some(compactor)) = (&final_response, &session_compactor) {
-            if !attempt.response.content.is_empty() {
-                let compactor = Arc::clone(compactor);
-                let input = input.to_string();
-                let content = attempt.response.content.clone();
-                tokio::spawn(async move {
-                    let event = compactor.record_turn(input, content).await;
-                    log_compact_event("record_turn", &event);
-                    for event in compactor.audit_if_due().await {
-                        log_compact_event("audit", &event);
-                    }
-                    #[cfg(feature = "postgres")]
-                    if let Some(pool) = snapshot_pool.clone() {
-                        persist_session_snapshot(&compactor, pool, &session_key).await;
-                    }
-                });
+        Ok(attempt)
+    }
+
+    /// Execute every tool call of one iteration: allow-check, resolve,
+    /// dispatch, observability log, and result message. A denied tool
+    /// aborts the run.
+    async fn execute_tool_calls(
+        &self,
+        messages: &mut Vec<ConversationMessage>,
+        tool_calls: &[ToolCall],
+        iteration: usize,
+    ) -> Result<()> {
+        for tc in tool_calls {
+            // Runtime enforcement of allowed_tools (DIR1-46): deny-by-default.
+            if !self.can_use_tool(&tc.name) {
+                tracing::warn!(
+                    agent = %self.name,
+                    tool = %tc.name,
+                    allowed_tools = ?self.allowed_tools,
+                    "Tool not in allowed_tools list — denying execution"
+                );
+                return Err(AppError::Auth(format!(
+                    "Tool '{}' is not allowed for this agent",
+                    tc.name
+                )));
             }
+
+            let tool_start = std::time::Instant::now();
+            let is_builtin = {
+                let ctx = self.cordis_ctx.clone().unwrap_or_else(Context::new_root);
+                self.tools
+                    .as_ref()
+                    .and_then(|t| t.resolve(&ctx, &tc.name))
+                    .is_some()
+            };
+            let tool_type = self.observed_tool_type(&tc.name, is_builtin);
+            let result = self.dispatch_tool(&tc.name, tc.arguments.clone()).await;
+            let tool_latency = tool_start.elapsed().as_millis() as i64;
+            let result_value = match result {
+                Ok(v) => v,
+                Err(e) => serde_json::json!({"error": e.to_string()}),
+            };
+
+            // Log the tool call
+            if let Some(obs) = &self.observability {
+                let status = if result_value.get("error").is_some() {
+                    "error".to_string()
+                } else {
+                    "success".to_string()
+                };
+                let tool_record = ToolCallRecord {
+                    step_index: iteration as i32,
+                    tool_name: tc.name.clone(),
+                    tool_type,
+                    arguments: tc.arguments.clone(),
+                    result: Some(result_value.clone()),
+                    latency_ms: tool_latency,
+                    status,
+                };
+                let _ = obs.log_tool_call(tool_record).await;
+            }
+
+            messages.push(ConversationMessage::tool_result(&tc.id, &result_value));
         }
+        Ok(())
+    }
 
-        let content = match final_response {
-            Ok(attempt) if !attempt.response.content.is_empty() => attempt.response.content,
-            Ok(_) => {
-                // Final call also returned empty — find any non-empty assistant content
-                messages
-                    .iter()
-                    .rev()
-                    .find(|m| {
-                        m.role == ares_llm::coordinator::MessageRole::Assistant
-                            && !m.content.is_empty()
-                    })
-                    .map(|m| m.content.clone())
-                    .unwrap_or_else(|| {
-                        "Agent completed tool calls but could not generate a final response."
-                            .to_string()
-                    })
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "Final synthesis call failed");
-                // Still try to return something useful
-                messages
-                    .iter()
-                    .rev()
-                    .find(|m| {
-                        m.role == ares_llm::coordinator::MessageRole::Assistant
-                            && !m.content.is_empty()
-                    })
-                    .map(|m| m.content.clone())
-                    .unwrap_or_else(|| format!("Agent completed but synthesis failed: {}", e))
-            }
+    /// Fire-and-forget compaction of the completed turn. Failures are
+    /// logged at debug and never affect the response.
+    fn spawn_turn_compaction(&self, turn: &ToolTurnSetup, input: &str, content: &str) {
+        let Some(compactor) = &turn.session_compactor else {
+            return;
         };
-
-        Ok(AgentResponse {
-            content,
-            usage: Some(total_usage),
-            metadata: Some(ExecutionMetadata {
-                model_name: last_model_name,
-                provider_name: last_provider_name,
-            }),
-        })
+        let compactor = Arc::clone(compactor);
+        let input = input.to_string();
+        let content = content.to_string();
+        #[cfg(feature = "postgres")]
+        let snapshot_pool = turn.snapshot_pool.clone();
+        #[cfg(feature = "postgres")]
+        let session_key = turn.session_key.clone();
+        tokio::spawn(async move {
+            let event = compactor.record_turn(input, content).await;
+            log_compact_event("record_turn", &event);
+            for event in compactor.audit_if_due().await {
+                log_compact_event("audit", &event);
+            }
+            #[cfg(feature = "postgres")]
+            if let Some(pool) = snapshot_pool {
+                persist_session_snapshot(&compactor, pool, &session_key).await;
+            }
+        });
     }
 
     async fn open_iteration_stream(

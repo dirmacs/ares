@@ -382,15 +382,10 @@ fn sqlx_err(e: sqlx::Error) -> AppError {
 mod tests {
     use super::*;
     use crate::fleet_secrets::decrypt_api_key;
-    use sqlx::PgPool;
     use std::sync::LazyLock;
     use tokio::sync::Mutex;
 
     static OAUTH_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
-    async fn create_test_pool() -> PgPool {
-        ares_test_support::pool().await
-    }
 
     fn ensure_master_key() {
         if std::env::var("FLEET_SECRETS_KEY").is_err() {
@@ -404,7 +399,7 @@ mod tests {
     #[tokio::test]
     async fn test_oauth_credential_crud() {
         let _env_guard = OAUTH_ENV_LOCK.lock().await;
-        let pool = create_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let store = OAuthCredentialStore::new(&pool);
         ensure_master_key();
 
@@ -516,7 +511,7 @@ mod tests {
     #[tokio::test]
     async fn test_oauth_credential_without_optional_tokens() {
         let _env_guard = OAUTH_ENV_LOCK.lock().await;
-        let pool = create_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let store = OAuthCredentialStore::new(&pool);
         ensure_master_key();
 
@@ -547,7 +542,7 @@ mod tests {
     #[tokio::test]
     async fn test_oauth_credential_missing_master_key() {
         let _env_guard = OAUTH_ENV_LOCK.lock().await;
-        let pool = create_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let store = OAuthCredentialStore::new(&pool);
 
         // Temporarily remove the key

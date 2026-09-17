@@ -1961,11 +1961,6 @@ mod tests {
     #[cfg(feature = "postgres")]
     mod postgres_integration {
         use super::*;
-        use sqlx::PgPool;
-
-        async fn try_test_pool() -> PgPool {
-            ares_test_support::pool().await
-        }
 
         fn unique_tenant() -> String {
             format!("tenant-test-{}", uuid::Uuid::new_v4())
@@ -1973,7 +1968,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_create_get_delete_tenant_agent() {
-            let pool = try_test_pool().await;
+            let (_lock, pool) = crate::test_db::pool().await;
             let tenant_id = unique_tenant();
             sqlx::query("INSERT INTO tenants (id, name, tier, created_at, updated_at) VALUES ($1, $2, 'free', 1, 1) ON CONFLICT (id) DO NOTHING")
                 .bind(&tenant_id).bind("Test Tenant").execute(&pool).await.expect("tenant");
@@ -2004,7 +1999,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_create_rejects_invalid_config() {
-            let pool = try_test_pool().await;
+            let (_lock, pool) = crate::test_db::pool().await;
             let err = create_tenant_agent(
                 &pool,
                 &unique_tenant(),
@@ -2022,7 +2017,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_list_tenant_agents_orders_by_name() {
-            let pool = try_test_pool().await;
+            let (_lock, pool) = crate::test_db::pool().await;
             let tenant_id = unique_tenant();
             sqlx::query("INSERT INTO tenants (id, name, tier, created_at, updated_at) VALUES ($1, $2, 'free', 1, 1) ON CONFLICT (id) DO NOTHING")
                 .bind(&tenant_id).bind("List Tenant").execute(&pool).await.expect("tenant");

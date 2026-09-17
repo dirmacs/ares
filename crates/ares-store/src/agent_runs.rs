@@ -1017,10 +1017,6 @@ mod tests {
 
     // ── Integration test helpers ─────────────────────────────────────────
 
-    async fn try_test_pool() -> PgPool {
-        ares_test_support::pool().await
-    }
-
     fn unique_tenant() -> String {
         format!("tenant-test-{}", uuid::Uuid::new_v4())
     }
@@ -1070,7 +1066,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_insert_agent_run_with_real_pool() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
 
@@ -1111,7 +1107,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_insert_agent_run_with_metadata() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
 
@@ -1175,7 +1171,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_insert_agent_run_with_supplied_id_and_metadata() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
         let run_id = format!("run-test-{}", uuid::Uuid::new_v4());
@@ -1223,7 +1219,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_list_agent_runs_with_agent_name_filter() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
 
@@ -1292,7 +1288,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_list_agent_runs_pagination() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
 
@@ -1337,7 +1333,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_get_agent_run_stats_aggregation() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
 
@@ -1408,7 +1404,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_get_platform_stats_counts() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
         seed_tenant_agent(&pool, &tenant_id, "plat-agent").await;
@@ -1460,7 +1456,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_list_all_agents_returns_entry() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
         seed_tenant_agent(&pool, &tenant_id, "all-agent").await;
@@ -1650,9 +1646,15 @@ mod tests {
 
     #[tokio::test]
     async fn integration_reap_stale_running_runs_only_flips_stale() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
+
+        // Leftover running rows from earlier runs would inflate the global
+        // reap count. The test lock keeps every other writer out.
+        let _ = sqlx::query("DELETE FROM agent_runs WHERE status = 'running'")
+            .execute(&pool)
+            .await;
 
         let stale_id = insert_agent_run(
             &pool,
@@ -1736,7 +1738,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_insert_sets_updated_at_equal_created_at() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
 
@@ -1784,7 +1786,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_status_update_advances_updated_at() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
 
@@ -1854,9 +1856,15 @@ mod tests {
 
     #[tokio::test]
     async fn integration_reap_heartbeats_updated_at() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
+
+        // Leftover running rows from earlier runs would inflate the global
+        // reap count. The test lock keeps every other writer out.
+        let _ = sqlx::query("DELETE FROM agent_runs WHERE status = 'running'")
+            .execute(&pool)
+            .await;
 
         let stale_id = insert_agent_run(
             &pool,

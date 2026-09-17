@@ -867,268 +867,315 @@ fn genai_from_config(
 
 #[cfg(feature = "genai")]
 fn simple_genai_fields(config: &ProviderConfig) -> (AdapterKind, &str, Option<String>, &str) {
+    if let Some(fields) = openai_compatible_fields(config) {
+        return fields;
+    }
+    if let Some(fields) = aggregator_fields(config) {
+        return fields;
+    }
+    if let Some(fields) = vendor_fields(config) {
+        return fields;
+    }
+    if let Some(fields) = dedicated_endpoint_fields(config) {
+        return fields;
+    }
+    unreachable!("simple_genai_fields on {}", config.type_name())
+}
+
+/// Static fields for hosted gateways that speak the OpenAI chat protocol.
+#[cfg(feature = "genai")]
+fn openai_compatible_fields(
+    config: &ProviderConfig,
+) -> Option<(AdapterKind, &str, Option<String>, &str)> {
     match config {
         ProviderConfig::OpenAIResp {
             api_key_env,
             api_base,
             default_model,
-        } => (
+        } => Some((
             AdapterKind::OpenAIResp,
             api_key_env,
             api_base.clone(),
             default_model,
-        ),
-        ProviderConfig::Gemini {
-            api_key_env,
-            api_base,
-            default_model,
-        } => (
-            AdapterKind::Gemini,
-            api_key_env,
-            api_base.clone(),
-            default_model,
-        ),
-        ProviderConfig::Fireworks {
-            api_key_env,
-            api_base,
-            default_model,
-        } => (
-            AdapterKind::Fireworks,
-            api_key_env,
-            api_base.clone(),
-            default_model,
-        ),
-        ProviderConfig::Together {
-            api_key_env,
-            api_base,
-            default_model,
-        } => (
-            AdapterKind::Together,
-            api_key_env,
-            api_base.clone(),
-            default_model,
-        ),
+        )),
         ProviderConfig::Groq {
             api_key_env,
             api_base,
             default_model,
-        } => (
+        } => Some((
             AdapterKind::Groq,
             api_key_env,
             api_base.clone(),
             default_model,
-        ),
-        ProviderConfig::Aihubmix {
-            api_key_env,
-            api_base,
-            default_model,
-        } => (
-            AdapterKind::Aihubmix,
-            api_key_env,
-            api_base.clone(),
-            default_model,
-        ),
-        ProviderConfig::Kimi {
-            api_key_env,
-            api_base,
-            default_model,
-        } => (
-            AdapterKind::Kimi,
-            api_key_env,
-            api_base.clone(),
-            default_model,
-        ),
-        ProviderConfig::Mimo {
-            api_key_env,
-            api_base,
-            default_model,
-        } => (
-            AdapterKind::Mimo,
-            api_key_env,
-            api_base.clone(),
-            default_model,
-        ),
-        ProviderConfig::Moonshot {
-            api_key_env,
-            api_base,
-            default_model,
-        } => (
-            AdapterKind::Moonshot,
-            api_key_env,
-            api_base.clone(),
-            default_model,
-        ),
-        ProviderConfig::Nebius {
-            api_key_env,
-            api_base,
-            default_model,
-        } => (
-            AdapterKind::Nebius,
-            api_key_env,
-            api_base.clone(),
-            default_model,
-        ),
-        ProviderConfig::Xai {
-            api_key_env,
-            api_base,
-            default_model,
-        } => (
-            AdapterKind::Xai,
-            api_key_env,
-            api_base.clone(),
-            default_model,
-        ),
+        )),
         ProviderConfig::DeepSeek {
             api_key_env,
             api_base,
             default_model,
-        } => (
+        } => Some((
             AdapterKind::DeepSeek,
             api_key_env,
             api_base.clone(),
             default_model,
-        ),
-        ProviderConfig::Zai {
+        )),
+        ProviderConfig::Xai {
             api_key_env,
             api_base,
             default_model,
-        } => (
-            AdapterKind::Zai,
+        } => Some((
+            AdapterKind::Xai,
             api_key_env,
             api_base.clone(),
             default_model,
-        ),
-        ProviderConfig::BigModel {
+        )),
+        ProviderConfig::Aihubmix {
             api_key_env,
             api_base,
             default_model,
-        } => (
-            AdapterKind::BigModel,
+        } => Some((
+            AdapterKind::Aihubmix,
             api_key_env,
             api_base.clone(),
             default_model,
-        ),
-        ProviderConfig::Aliyun {
+        )),
+        ProviderConfig::Kimi {
             api_key_env,
             api_base,
             default_model,
-        } => (
-            AdapterKind::Aliyun,
+        } => Some((
+            AdapterKind::Kimi,
             api_key_env,
             api_base.clone(),
             default_model,
-        ),
-        ProviderConfig::QwenCloud {
+        )),
+        ProviderConfig::Moonshot {
             api_key_env,
             api_base,
             default_model,
-        } => (
-            AdapterKind::QwenCloud,
+        } => Some((
+            AdapterKind::Moonshot,
             api_key_env,
             api_base.clone(),
             default_model,
-        ),
+        )),
+        ProviderConfig::Nebius {
+            api_key_env,
+            api_base,
+            default_model,
+        } => Some((
+            AdapterKind::Nebius,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        )),
+        ProviderConfig::Mimo {
+            api_key_env,
+            api_base,
+            default_model,
+        } => Some((
+            AdapterKind::Mimo,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        )),
         ProviderConfig::Baidu {
             api_key_env,
             api_base,
             default_model,
-        } => (
+        } => Some((
             AdapterKind::Baidu,
             api_key_env,
             api_base.clone(),
             default_model,
-        ),
-        ProviderConfig::Cohere {
+        )),
+        _ => None,
+    }
+}
+
+/// Static fields for aggregator and multi-vendor gateways.
+#[cfg(feature = "genai")]
+fn aggregator_fields(config: &ProviderConfig) -> Option<(AdapterKind, &str, Option<String>, &str)> {
+    match config {
+        ProviderConfig::Fireworks {
             api_key_env,
             api_base,
             default_model,
-        } => (
-            AdapterKind::Cohere,
+        } => Some((
+            AdapterKind::Fireworks,
             api_key_env,
             api_base.clone(),
             default_model,
-        ),
-        ProviderConfig::OllamaCloud {
+        )),
+        ProviderConfig::Together {
             api_key_env,
             api_base,
             default_model,
-        } => (
-            AdapterKind::OllamaCloud,
+        } => Some((
+            AdapterKind::Together,
             api_key_env,
             api_base.clone(),
             default_model,
-        ),
-        ProviderConfig::Omlx {
-            api_key_env,
-            api_base,
-            default_model,
-        } => (
-            AdapterKind::Omlx,
-            api_key_env,
-            api_base.clone(),
-            default_model,
-        ),
+        )),
         ProviderConfig::GithubCopilot {
             api_key_env,
             api_base,
             default_model,
-        } => (
+        } => Some((
             AdapterKind::GithubCopilot,
             api_key_env,
             api_base.clone(),
             default_model,
-        ),
+        )),
         ProviderConfig::OpenCodeGo {
             api_key_env,
             api_base,
             default_model,
-        } => (
+        } => Some((
             AdapterKind::OpenCodeGo,
             api_key_env,
             api_base.clone(),
             default_model,
-        ),
-        ProviderConfig::BedrockApi {
-            api_key_env,
-            api_base,
-            default_model,
-        } => (
-            AdapterKind::BedrockApi,
-            api_key_env,
-            api_base.clone(),
-            default_model,
-        ),
+        )),
         ProviderConfig::OpenRouter {
             api_key_env,
             api_base,
             default_model,
-        } => (
+        } => Some((
             AdapterKind::OpenRouter,
             api_key_env,
             api_base.clone(),
             default_model,
-        ),
+        )),
         ProviderConfig::AtlasCloud {
             api_key_env,
             api_base,
             default_model,
-        } => (
+        } => Some((
             AdapterKind::AtlasCloud,
             api_key_env,
             api_base.clone(),
             default_model,
-        ),
+        )),
+        ProviderConfig::Cohere {
+            api_key_env,
+            api_base,
+            default_model,
+        } => Some((
+            AdapterKind::Cohere,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        )),
+        _ => None,
+    }
+}
+
+/// Static fields for first-party vendor APIs and Ollama Cloud.
+#[cfg(feature = "genai")]
+fn vendor_fields(config: &ProviderConfig) -> Option<(AdapterKind, &str, Option<String>, &str)> {
+    match config {
+        ProviderConfig::Gemini {
+            api_key_env,
+            api_base,
+            default_model,
+        } => Some((
+            AdapterKind::Gemini,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        )),
+        ProviderConfig::Zai {
+            api_key_env,
+            api_base,
+            default_model,
+        } => Some((
+            AdapterKind::Zai,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        )),
+        ProviderConfig::BigModel {
+            api_key_env,
+            api_base,
+            default_model,
+        } => Some((
+            AdapterKind::BigModel,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        )),
+        ProviderConfig::Aliyun {
+            api_key_env,
+            api_base,
+            default_model,
+        } => Some((
+            AdapterKind::Aliyun,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        )),
+        ProviderConfig::QwenCloud {
+            api_key_env,
+            api_base,
+            default_model,
+        } => Some((
+            AdapterKind::QwenCloud,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        )),
+        ProviderConfig::OllamaCloud {
+            api_key_env,
+            api_base,
+            default_model,
+        } => Some((
+            AdapterKind::OllamaCloud,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        )),
         ProviderConfig::MiniMax {
             api_key_env,
             api_base,
             default_model,
-        } => (
+        } => Some((
             AdapterKind::MiniMax,
             api_key_env,
             api_base.clone(),
             default_model,
-        ),
-        other => unreachable!("simple_genai_fields on {}", other.type_name()),
+        )),
+        _ => None,
+    }
+}
+
+/// Static fields for kinds whose endpoint is built by a dedicated
+/// resolver: Bedrock regions and the local MLX server.
+#[cfg(feature = "genai")]
+fn dedicated_endpoint_fields(
+    config: &ProviderConfig,
+) -> Option<(AdapterKind, &str, Option<String>, &str)> {
+    match config {
+        ProviderConfig::Omlx {
+            api_key_env,
+            api_base,
+            default_model,
+        } => Some((
+            AdapterKind::Omlx,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        )),
+        ProviderConfig::BedrockApi {
+            api_key_env,
+            api_base,
+            default_model,
+        } => Some((
+            AdapterKind::BedrockApi,
+            api_key_env,
+            api_base.clone(),
+            default_model,
+        )),
+        _ => None,
     }
 }
 

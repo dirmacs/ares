@@ -18,9 +18,9 @@ use crate::{
         search::{HybridWeights, SearchEngine, SearchStrategy},
     },
     types::{
-        AppError, Document, DocumentMetadata, RagDeleteCollectionRequest,
+        AppError, Claims, Document, DocumentMetadata, RagDeleteCollectionRequest,
         RagDeleteCollectionResponse, RagIngestRequest, RagIngestResponse, RagSearchRequest,
-        RagSearchResponse, RagSearchResult,
+        RagSearchResponse, RagSearchResult, SearchResult,
     },
     HttpError, Result,
 };
@@ -334,35 +334,7 @@ pub async fn search(
     Json(payload): Json<RagSearchRequest>,
 ) -> Result<Json<RagSearchResponse>> {
     let start = Instant::now();
-    // Respect RAG feature flag
-    if !ctx
-        .get::<crate::overlay::AresConfigManager>()
-        .expect("not provided")
-        .config()
-        .rag
-        .vector
-        .enabled
-    {
-        return Err(HttpError::from(AppError::FeatureDisabled(
-            "RAG feature is disabled. Set `[rag.vector] enabled = true` in ares.toml".into(),
-        )));
-    }
-
-    let pool = ctx
-        .get::<ares_store::TenantDb>()
-        .expect("not provided")
-        .pool()
-        .clone();
-    let allowlist_store = allowlist::TenantAllowlistStore::new(&pool);
-    if !allowlist_store
-        .is_rag_source_allowed(&claims.sub, &payload.collection)
-        .await?
-    {
-        return Err(HttpError::from(AppError::Auth(format!(
-            "RAG source '{}' is not allowed for this tenant",
-            payload.collection
-        ))));
-    }
+    ensure_rag_allowed(&ctx, &claims, &payload.collection).await?;
 
     // Validate input
     // Scope collection to user for isolation
@@ -409,68 +381,8 @@ pub async fn search(
         )
         .await?;
 
-    // Apply additional search strategies if needed
-    let mut results: Vec<RagSearchResult> = match strategy {
-        SearchStrategy::Semantic => {
-            // Pure semantic search - already done
-            vector_results
-                .iter()
-                .take(payload.limit)
-                .map(|r| RagSearchResult {
-                    id: r.document.id.clone(),
-                    content: r.document.content.clone(),
-                    score: r.score,
-                    metadata: r.document.metadata.clone(),
-                })
-                .collect()
-        }
-        SearchStrategy::Bm25 | SearchStrategy::Fuzzy | SearchStrategy::Hybrid => {
-            // For BM25, fuzzy, or hybrid, we need to build an index over the results
-            let mut search_engine = SearchEngine::new();
-
-            // Index the vector search results as Document structs
-            for r in &vector_results {
-                search_engine.index_document(&r.document);
-            }
-
-            // Get strategy-specific results
-            let strategy_results = match strategy {
-                SearchStrategy::Bm25 => search_engine.search_bm25(&payload.query, payload.limit),
-                SearchStrategy::Fuzzy => search_engine.search_fuzzy(&payload.query, payload.limit),
-                SearchStrategy::Hybrid => {
-                    // Combine semantic and BM25 using hybrid search
-                    let semantic_scores: Vec<_> = vector_results
-                        .iter()
-                        .map(|r| (r.document.id.clone(), r.score))
-                        .collect();
-                    let weights = HybridWeights::default();
-                    search_engine.search_hybrid(
-                        &payload.query,
-                        &semantic_scores,
-                        &weights,
-                        payload.limit,
-                    )
-                }
-                _ => vec![], // Already handled above
-            };
-
-            // Map back to full documents
-            strategy_results
-                .iter()
-                .filter_map(|(id, score)| {
-                    vector_results
-                        .iter()
-                        .find(|r| r.document.id == *id)
-                        .map(|r| RagSearchResult {
-                            id: r.document.id.clone(),
-                            content: r.document.content.clone(),
-                            score: *score,
-                            metadata: r.document.metadata.clone(),
-                        })
-                })
-                .collect()
-        }
-    };
+    // Rank the candidates for the requested strategy
+    let mut results = rank_results(strategy, &vector_results, &payload.query, payload.limit);
 
     // Apply reranking if requested.
     #[cfg(feature = "local-embeddings")]
@@ -568,6 +480,123 @@ pub async fn search(
         reranked,
         duration_ms: start.elapsed().as_millis() as u64,
     }))
+}
+
+/// Fail-closed search preconditions: the RAG feature must be enabled and the
+/// tenant allowlist must name the collection (same errors as the inline checks
+/// this replaces).
+async fn ensure_rag_allowed(ctx: &Arc<Context>, claims: &Claims, collection: &str) -> Result<()> {
+    // Respect RAG feature flag
+    if !ctx
+        .get::<crate::overlay::AresConfigManager>()
+        .expect("not provided")
+        .config()
+        .rag
+        .vector
+        .enabled
+    {
+        return Err(HttpError::from(AppError::FeatureDisabled(
+            "RAG feature is disabled. Set `[rag.vector] enabled = true` in ares.toml".into(),
+        )));
+    }
+
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
+    let allowlist_store = allowlist::TenantAllowlistStore::new(&pool);
+    if !allowlist_store
+        .is_rag_source_allowed(&claims.sub, collection)
+        .await?
+    {
+        return Err(HttpError::from(AppError::Auth(format!(
+            "RAG source '{}' is not allowed for this tenant",
+            collection
+        ))));
+    }
+    Ok(())
+}
+
+/// Rank the vector-store candidates for the requested strategy. Semantic keeps
+/// the store's similarity order; BM25/fuzzy/hybrid re-score through the
+/// lexical engine.
+fn rank_results(
+    strategy: SearchStrategy,
+    vector_results: &[SearchResult],
+    query: &str,
+    limit: usize,
+) -> Vec<RagSearchResult> {
+    match strategy {
+        SearchStrategy::Semantic => semantic_results(vector_results, limit),
+        SearchStrategy::Bm25 | SearchStrategy::Fuzzy | SearchStrategy::Hybrid => {
+            lexical_results(strategy, vector_results, query, limit)
+        }
+    }
+}
+
+/// Pure semantic pass: the store already ranked these by similarity.
+fn semantic_results(vector_results: &[SearchResult], limit: usize) -> Vec<RagSearchResult> {
+    vector_results
+        .iter()
+        .take(limit)
+        .map(|hit| to_rag_result(hit, hit.score))
+        .collect()
+}
+
+/// Index the candidates once for lexical and hybrid scoring.
+fn indexed_engine(vector_results: &[SearchResult]) -> SearchEngine {
+    let mut search_engine = SearchEngine::new();
+    for hit in vector_results {
+        search_engine.index_document(&hit.document);
+    }
+    search_engine
+}
+
+/// BM25/fuzzy/hybrid pass: index the candidates, score them, then map the
+/// ranked ids back to their documents. Candidates the engine did not score are
+/// dropped, as in the pre-split filter.
+fn lexical_results(
+    strategy: SearchStrategy,
+    vector_results: &[SearchResult],
+    query: &str,
+    limit: usize,
+) -> Vec<RagSearchResult> {
+    let search_engine = indexed_engine(vector_results);
+    let strategy_results = match strategy {
+        SearchStrategy::Bm25 => search_engine.search_bm25(query, limit),
+        SearchStrategy::Fuzzy => search_engine.search_fuzzy(query, limit),
+        SearchStrategy::Hybrid => {
+            // Combine semantic and BM25 using hybrid search
+            let semantic_scores: Vec<_> = vector_results
+                .iter()
+                .map(|hit| (hit.document.id.clone(), hit.score))
+                .collect();
+            let weights = HybridWeights::default();
+            search_engine.search_hybrid(query, &semantic_scores, &weights, limit)
+        }
+        // Semantic is ranked before the engine runs.
+        SearchStrategy::Semantic => Vec::new(),
+    };
+    strategy_results
+        .iter()
+        .filter_map(|(id, score)| {
+            vector_results
+                .iter()
+                .find(|hit| hit.document.id == *id)
+                .map(|hit| to_rag_result(hit, *score))
+        })
+        .collect()
+}
+
+/// Convert one ranked vector-store hit into the wire search result.
+fn to_rag_result(hit: &SearchResult, score: f32) -> RagSearchResult {
+    RagSearchResult {
+        id: hit.document.id.clone(),
+        content: hit.document.content.clone(),
+        score,
+        metadata: hit.document.metadata.clone(),
+    }
 }
 
 // ============================================================================

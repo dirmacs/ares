@@ -31,6 +31,8 @@ jobs:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           # 90b-vision stalls on NIM (zero stream events, 90s timeout); 11b answers in ~0.5s.
           NVIDIA_VISION_MODEL: meta/llama-3.2-11b-vision-instruct
+          # 550b stalls on NIM (sustained 90s CALL_TIMEOUT + 503 storms); 11b answers in ~0.3s.
+          NVIDIA_CHAT_MODEL: meta/llama-3.2-11b-vision-instruct
         run: |
           if [ -z "${NVIDIA_API_KEY}" ]; then
             echo "::warning::NVIDIA_API_KEY secret is not set; live tests will SKIP"

@@ -341,124 +341,10 @@ pub async fn search(
     let scoped_collection = user_scoped_collection(&claims.sub, &payload.collection);
 
     // Get services
-    let config = ctx
-        .get::<crate::overlay::AresConfigManager>()
-        .expect("not provided")
-        .config();
-    let vector_path = &config.rag.vector.vector_path;
-    let vector_store = vector_store_from_ctx(&ctx, vector_path).await?;
+    let vector_store = collection_store(&ctx, &scoped_collection, &payload.collection).await?;
 
-    // Check collection exists
-    if !vector_store.collection_exists(&scoped_collection).await? {
-        return Err(HttpError::from(AppError::NotFound(format!(
-            "Collection '{}' not found",
-            payload.collection
-        ))));
-    }
-
-    // Parse search strategy
-    let strategy: SearchStrategy = payload
-        .strategy
-        .as_ref()
-        .map(|s| s.parse())
-        .transpose()?
-        .unwrap_or(SearchStrategy::Semantic);
-
-    // Generate query embedding
-    let embeddings = embed_for_rag(&ctx, std::slice::from_ref(&payload.query)).await?;
-    let query_embedding = embeddings
-        .into_iter()
-        .next()
-        .ok_or_else(|| AppError::Internal("No embedding generated".to_string()))?;
-
-    // Perform vector search
-    let vector_results = vector_store
-        .search(
-            &scoped_collection,
-            &query_embedding,
-            payload.limit * 2, // Fetch extra for filtering/reranking
-            payload.threshold,
-        )
-        .await?;
-
-    // Rank the candidates for the requested strategy
-    let mut results = rank_results(strategy, &vector_results, &payload.query, payload.limit);
-
-    // Apply reranking if requested.
-    #[cfg(feature = "local-embeddings")]
-    let reranked = if payload.rerank && !results.is_empty() {
-        // Parse reranker model
-        let model_type: RerankerModelType = payload
-            .reranker_model
-            .as_ref()
-            .map(|s| s.parse())
-            .transpose()?
-            .unwrap_or_default();
-
-        // Create reranker with config
-        let config = RerankerConfig {
-            model: model_type,
-            ..Default::default()
-        };
-        let reranker = Reranker::new(config);
-
-        // Prepare results for reranking: (id, content, score)
-        let rerank_input: Vec<_> = results
-            .iter()
-            .map(|r| (r.id.clone(), r.content.clone(), r.score))
-            .collect();
-
-        // Rerank results
-        let reranked_results = reranker
-            .rerank(&payload.query, &rerank_input, Some(payload.limit))
-            .await
-            .map_err(|e| AppError::Internal(format!("Reranking failed: {}", e)))?;
-
-        // Convert to RagSearchResult
-        results = reranked_results
-            .into_iter()
-            .filter_map(|rr| {
-                results
-                    .iter()
-                    .find(|r| r.id == rr.id)
-                    .map(|r| RagSearchResult {
-                        id: r.id.clone(),
-                        content: r.content.clone(),
-                        score: rr.final_score,
-                        metadata: r.metadata.clone(),
-                    })
-            })
-            .collect();
-        true
-    } else {
-        false
-    };
-    #[cfg(not(feature = "local-embeddings"))]
-    let reranked = if payload.rerank && !results.is_empty() {
-        let input: Vec<_> = results
-            .iter()
-            .map(|r| (r.id.clone(), r.content.clone(), r.score))
-            .collect();
-        let reranked_results =
-            ares_rag::rerank_with_llm(&ctx, &payload.query, &input, payload.limit).await?;
-        results = reranked_results
-            .into_iter()
-            .filter_map(|rr| {
-                results
-                    .iter()
-                    .find(|r| r.id == rr.id)
-                    .map(|r| RagSearchResult {
-                        id: r.id.clone(),
-                        content: r.content.clone(),
-                        score: rr.final_score,
-                        metadata: r.metadata.clone(),
-                    })
-            })
-            .collect();
-        true
-    } else {
-        false
-    };
+    let (results, strategy, reranked) =
+        run_rag_search(&ctx, &vector_store, &scoped_collection, &payload).await?;
 
     let total = results.len();
     let strategy_name = format!("{:?}", strategy).to_lowercase();
@@ -516,6 +402,169 @@ async fn ensure_rag_allowed(ctx: &Arc<Context>, claims: &Claims, collection: &st
         ))));
     }
     Ok(())
+}
+
+/// Resolve the vector store for a scoped collection and fail closed when the
+/// collection does not exist (same NotFound error as the inline check).
+async fn collection_store(
+    ctx: &Arc<Context>,
+    scoped_collection: &str,
+    collection: &str,
+) -> Result<Arc<AresVectorStore>> {
+    let config = ctx
+        .get::<crate::overlay::AresConfigManager>()
+        .expect("not provided")
+        .config();
+    let vector_path = &config.rag.vector.vector_path;
+    let vector_store = vector_store_from_ctx(ctx, vector_path).await?;
+    if !vector_store.collection_exists(scoped_collection).await? {
+        return Err(HttpError::from(AppError::NotFound(format!(
+            "Collection '{}' not found",
+            collection
+        ))));
+    }
+    Ok(vector_store)
+}
+
+/// Embed the query and return its vector; a missing vector stays an internal
+/// error, as before the split.
+async fn embed_query(ctx: &Arc<Context>, payload: &RagSearchRequest) -> Result<Vec<f32>> {
+    let embedding = embed_for_rag(ctx, std::slice::from_ref(&payload.query))
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::Internal("No embedding generated".to_string()))?;
+    Ok(embedding)
+}
+
+/// Parse the requested strategy, embed the query, fetch vector candidates,
+/// rank them, and rerank when requested. Returns the ranked results, the
+/// parsed strategy for the response label, and whether reranking ran.
+async fn run_rag_search(
+    ctx: &Arc<Context>,
+    vector_store: &Arc<AresVectorStore>,
+    scoped_collection: &str,
+    payload: &RagSearchRequest,
+) -> Result<(Vec<RagSearchResult>, SearchStrategy, bool)> {
+    // Parse search strategy
+    let strategy: SearchStrategy = payload
+        .strategy
+        .as_ref()
+        .map(|s| s.parse())
+        .transpose()?
+        .unwrap_or(SearchStrategy::Semantic);
+
+    // Generate query embedding
+    let query_embedding = embed_query(ctx, payload).await?;
+
+    // Perform vector search
+    let vector_results = vector_store
+        .search(
+            scoped_collection,
+            &query_embedding,
+            payload.limit * 2, // Fetch extra for filtering/reranking
+            payload.threshold,
+        )
+        .await?;
+
+    // Rank the candidates for the requested strategy
+    let mut results = rank_results(strategy, &vector_results, &payload.query, payload.limit);
+
+    // Apply reranking if requested.
+    let reranked = rerank_results(ctx, payload, &mut results).await?;
+    Ok((results, strategy, reranked))
+}
+
+/// Apply the cfg-selected reranker to `results` in place. Returns false when
+/// reranking was not requested or there is nothing to rank.
+#[cfg(feature = "local-embeddings")]
+async fn rerank_results(
+    _ctx: &Arc<Context>,
+    payload: &RagSearchRequest,
+    results: &mut Vec<RagSearchResult>,
+) -> Result<bool> {
+    if !payload.rerank || results.is_empty() {
+        return Ok(false);
+    }
+
+    // Parse reranker model
+    let model_type: RerankerModelType = payload
+        .reranker_model
+        .as_ref()
+        .map(|s| s.parse())
+        .transpose()?
+        .unwrap_or_default();
+
+    // Create reranker with config
+    let config = RerankerConfig {
+        model: model_type,
+        ..Default::default()
+    };
+    let reranker = Reranker::new(config);
+
+    // Prepare results for reranking: (id, content, score)
+    let rerank_input: Vec<_> = results
+        .iter()
+        .map(|r| (r.id.clone(), r.content.clone(), r.score))
+        .collect();
+
+    // Rerank results
+    let reranked_results = reranker
+        .rerank(&payload.query, &rerank_input, Some(payload.limit))
+        .await
+        .map_err(|e| AppError::Internal(format!("Reranking failed: {}", e)))?;
+
+    // Convert to RagSearchResult
+    *results = reranked_results
+        .into_iter()
+        .filter_map(|rr| {
+            results
+                .iter()
+                .find(|r| r.id == rr.id)
+                .map(|r| RagSearchResult {
+                    id: r.id.clone(),
+                    content: r.content.clone(),
+                    score: rr.final_score,
+                    metadata: r.metadata.clone(),
+                })
+        })
+        .collect();
+    Ok(true)
+}
+
+/// Apply the cfg-selected reranker to `results` in place. Returns false when
+/// reranking was not requested or there is nothing to rank.
+#[cfg(not(feature = "local-embeddings"))]
+async fn rerank_results(
+    ctx: &Arc<Context>,
+    payload: &RagSearchRequest,
+    results: &mut Vec<RagSearchResult>,
+) -> Result<bool> {
+    if !payload.rerank || results.is_empty() {
+        return Ok(false);
+    }
+
+    let input: Vec<_> = results
+        .iter()
+        .map(|r| (r.id.clone(), r.content.clone(), r.score))
+        .collect();
+    let reranked_results =
+        ares_rag::rerank_with_llm(ctx, &payload.query, &input, payload.limit).await?;
+    *results = reranked_results
+        .into_iter()
+        .filter_map(|rr| {
+            results
+                .iter()
+                .find(|r| r.id == rr.id)
+                .map(|r| RagSearchResult {
+                    id: r.id.clone(),
+                    content: r.content.clone(),
+                    score: rr.final_score,
+                    metadata: r.metadata.clone(),
+                })
+        })
+        .collect();
+    Ok(true)
 }
 
 /// Rank the vector-store candidates for the requested strategy. Semantic keeps

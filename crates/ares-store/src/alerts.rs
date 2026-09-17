@@ -158,7 +158,7 @@ mod alert_tests {
     fn unreachable_postgres_pool() -> PgPool {
         PgPoolOptions::new()
             .max_connections(1)
-            .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/nope")
+            .connect_lazy(crate::postgres::UNAVAILABLE_POSTGRES_URL)
             .expect("connect_lazy should not fail for malformed URLs")
     }
 

@@ -18,7 +18,7 @@ pub const DEFAULT_POSTGRES_URL: &str = "postgres://postgres:postgres@localhost:5
 /// Points at a Unix-socket directory that does not exist: a query on the stub
 /// pool fails immediately with a connection error. No server is dialed and no
 /// credentials are sent, so test runs leave no auth failures in the server log.
-const UNAVAILABLE_POSTGRES_URL: &str =
+pub(crate) const UNAVAILABLE_POSTGRES_URL: &str =
     "postgres://postgres@%2Ftmp%2Fares-store-no-test-server/ares_test";
 
 /// Default pool size for production connections.

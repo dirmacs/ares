@@ -200,116 +200,24 @@ pub fn watch_many_with(
         tokio::sync::watch::channel::<Option<crate::stamp::ReloadOutcome>>(None);
     let barrier = Arc::new(SettleBarrier { rx: barrier_rx });
     let task = tokio::spawn(async move {
-        let debounce = WATCH_DEBOUNCE;
         // Content stamps from the previous dispatch, seeded lazily per event
         // path: watched targets include directories (agents/*.toon), so any
         // pre-seeded snapshot would be wrong for files not yet on disk.
-        let stamps: parking_lot::Mutex<
-            std::collections::HashMap<PathBuf, crate::stamp::FileStamp>,
-        > = parking_lot::Mutex::new(std::collections::HashMap::new());
+        let stamps = StampCache::default();
         while let Some(path) = rx.recv().await {
-            // DEFER-NOT-DROP: every received path lands in `pending`; nothing
-            // arriving inside the settle window is discarded. Sleep out the
-            // window once, then drain everything that queued behind the first
-            // event and apply one combined batch.
-            let mut pending = vec![path];
-            tokio::time::sleep(debounce).await;
-            while let Ok(p) = rx.try_recv() {
-                if !pending.iter().any(|e| e == &p) {
-                    pending.push(p);
-                }
-            }
-
-            // STAMP GATE: drop paths whose bytes match the stamp of their
-            // last dispatch (editor churn, touch, mtime-only noise). A
-            // missing file stamps as None — treated as changed so deletions
-            // propagate. Seeding happens here, per event path.
-            let mut changed: Vec<PathBuf> = Vec::with_capacity(pending.len());
-            {
-                let mut cache = stamps.lock();
-                for p in &pending {
-                    let fresh = crate::stamp::FileStamp::of_path(p);
-                    let unchanged = match (&cache.get(p), &fresh) {
-                        (Some(old), Some(new)) => old.matches(new),
-                        _ => false,
-                    };
-                    if unchanged {
-                        continue;
-                    }
-                    match fresh {
-                        Some(stamp) => {
-                            cache.insert(p.clone(), stamp);
-                        }
-                        // Deletion: forget the stale stamp so a later recreate
-                        // re-fires instead of matching the ghost entry.
-                        None => {
-                            cache.remove(p);
-                        }
-                    }
-                    changed.push(p.clone());
-                }
-            }
+            let changed = settle_watch_batch(&mut rx, &stamps, path, WATCH_DEBOUNCE, tid).await;
             if changed.is_empty() {
-                tracing::debug!(tid = ?tid, "Cordis watch batch settled with no content change; skipping dispatch");
                 continue;
             }
-
-            // MODULE GRAPH FAN-OUT: explicit file/plugin edges beside the
-            // service-level TypeId BFS below. Each changed path maps to its
-            // file stem as a module key; when a `ModuleGraph` is provided on
-            // ctx its transitive dependents reload exactly once per settled
-            // batch. No graph registered → zero cost, TypeId path unchanged.
-            if let Some(graph) = ctx_clone.get::<crate::module_graph::ModuleGraph>() {
-                let keys: Vec<String> = changed
-                    .iter()
-                    .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
-                    .collect();
-                if !keys.is_empty() {
-                    let outcome = graph.change_many(&ctx_clone, &keys);
-                    tracing::info!(
-                        outcome = %outcome.summary(),
-                        "Cordis module-graph fan-out applied"
-                    );
-                }
-            }
-
-            tracing::info!(
-                paths = ?changed.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
-                tid = ?tid,
-                "Cordis config change detected, notifying dependents"
-            );
-            #[cfg(feature = "hmr")]
-            for p in &changed {
-                match crate::hmr::apply_plugin_so_if_dylib(&ctx_clone, p) {
-                    Ok(true) => {
-                        tracing::info!(path = %p.display(), "HMR dylib applied via libloading");
-                    }
-                    Ok(false) => {}
-                    Err(e) => {
-                        tracing::error!(error = %e, path = %p.display(), "HMR dylib apply failed");
-                    }
-                }
-            }
-            // Classified reload: when the batch touched the provided entries
-            // program (`CurrentEntries`), the watcher itself drives the
-            // hoisted parse→apply→classify flow so callbacks and the settle
-            // barrier carry the REAL outcome. Other watchers (overlay TOON /
-            // ares.toml) publish NoChange.
-            let mut outcome = crate::stamp::ReloadOutcome::NoChange;
-            if let Some(entries_path) = entries_program_touched(&ctx_clone, &changed) {
-                outcome = crate::reload::reload_entries_from_disk(&ctx_clone, &entries_path).await;
-                tracing::info!(outcome = %outcome.summary(), "Cordis watch batch settled");
-            }
-            on_change(&ctx_clone, &changed, &outcome);
-            let _ = barrier_tx.send(Some(outcome));
-            // Ensure reflect knows ctx for BFS async refresh (spawned internally)
-            reflect_clone.set_context(&ctx_clone);
-            reflect_clone.notify(tid);
-            // Also drive the epoch-aware path directly for callers that hold ctx
-            // (the `notify` above already spawns refresh, but awaiting here
-            // proves reload without restart in tests).
-            reflect_clone.notify_with_ctx(tid, &ctx_clone).await;
-            tracing::info!("Configuration hot-reloaded successfully via Cordis watch");
+            dispatch_watch_batch(
+                &ctx_clone,
+                &reflect_clone,
+                tid,
+                changed,
+                &on_change,
+                &barrier_tx,
+            )
+            .await;
         }
     });
 
@@ -325,6 +233,141 @@ pub fn watch_many_with(
         _task: task,
         barrier,
     })
+}
+
+/// Content stamp cached from each event path's previous dispatch, compared
+/// per settled batch by [`settle_watch_batch`].
+type StampCache = parking_lot::Mutex<std::collections::HashMap<PathBuf, crate::stamp::FileStamp>>;
+
+/// Settle one watcher batch: sleep out the debounce window once, drain every
+/// path that queued behind the first event, then drop paths whose bytes match
+/// the stamp cached from their previous dispatch (editor churn, touch,
+/// mtime-only noise). A missing file stamps as None and stays in the batch so
+/// deletions propagate. Returns the paths whose content actually changed.
+async fn settle_watch_batch(
+    rx: &mut mpsc::UnboundedReceiver<PathBuf>,
+    stamps: &StampCache,
+    path: PathBuf,
+    debounce: Duration,
+    tid: TypeId,
+) -> Vec<PathBuf> {
+    // DEFER-NOT-DROP: every received path lands in `pending`; nothing
+    // arriving inside the settle window is discarded. Sleep out the
+    // window once, then drain everything that queued behind the first
+    // event and apply one combined batch.
+    let mut pending = vec![path];
+    tokio::time::sleep(debounce).await;
+    while let Ok(p) = rx.try_recv() {
+        if !pending.iter().any(|e| e == &p) {
+            pending.push(p);
+        }
+    }
+
+    // STAMP GATE: drop paths whose bytes match the stamp of their
+    // last dispatch (editor churn, touch, mtime-only noise). A
+    // missing file stamps as None — treated as changed so deletions
+    // propagate. Seeding happens here, per event path.
+    let mut changed: Vec<PathBuf> = Vec::with_capacity(pending.len());
+    {
+        let mut cache = stamps.lock();
+        for p in &pending {
+            let fresh = crate::stamp::FileStamp::of_path(p);
+            let unchanged = match (&cache.get(p), &fresh) {
+                (Some(old), Some(new)) => old.matches(new),
+                _ => false,
+            };
+            if unchanged {
+                continue;
+            }
+            match fresh {
+                Some(stamp) => {
+                    cache.insert(p.clone(), stamp);
+                }
+                // Deletion: forget the stale stamp so a later recreate
+                // re-fires instead of matching the ghost entry.
+                None => {
+                    cache.remove(p);
+                }
+            }
+            changed.push(p.clone());
+        }
+    }
+    if changed.is_empty() {
+        tracing::debug!(
+            tid = ?tid,
+            "Cordis watch batch settled with no content change; skipping dispatch"
+        );
+    }
+    changed
+}
+
+/// Fan a settled batch out: module-graph dependents, optional HMR dylib
+/// apply, classified entries reload, the `on_change` callback, then reflect
+/// notify with the batch outcome published to the settle barrier.
+async fn dispatch_watch_batch(
+    ctx: &Arc<Context>,
+    reflect: &Arc<ReflectService>,
+    tid: TypeId,
+    changed: Vec<PathBuf>,
+    on_change: &WatchOnChange,
+    barrier_tx: &tokio::sync::watch::Sender<Option<crate::stamp::ReloadOutcome>>,
+) {
+    // MODULE GRAPH FAN-OUT: explicit file/plugin edges beside the
+    // service-level TypeId BFS below. Each changed path maps to its
+    // file stem as a module key; when a `ModuleGraph` is provided on
+    // ctx its transitive dependents reload exactly once per settled
+    // batch. No graph registered → zero cost, TypeId path unchanged.
+    if let Some(graph) = ctx.get::<crate::module_graph::ModuleGraph>() {
+        let keys: Vec<String> = changed
+            .iter()
+            .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+            .collect();
+        if !keys.is_empty() {
+            let outcome = graph.change_many(ctx, &keys);
+            tracing::info!(
+                outcome = %outcome.summary(),
+                "Cordis module-graph fan-out applied"
+            );
+        }
+    }
+
+    tracing::info!(
+        paths = ?changed.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        tid = ?tid,
+        "Cordis config change detected, notifying dependents"
+    );
+    #[cfg(feature = "hmr")]
+    for p in &changed {
+        match crate::hmr::apply_plugin_so_if_dylib(ctx, p) {
+            Ok(true) => {
+                tracing::info!(path = %p.display(), "HMR dylib applied via libloading");
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::error!(error = %e, path = %p.display(), "HMR dylib apply failed");
+            }
+        }
+    }
+    // Classified reload: when the batch touched the provided entries
+    // program (`CurrentEntries`), the watcher itself drives the
+    // hoisted parse→apply→classify flow so callbacks and the settle
+    // barrier carry the REAL outcome. Other watchers (overlay TOON /
+    // ares.toml) publish NoChange.
+    let mut outcome = crate::stamp::ReloadOutcome::NoChange;
+    if let Some(entries_path) = entries_program_touched(ctx, &changed) {
+        outcome = crate::reload::reload_entries_from_disk(ctx, &entries_path).await;
+        tracing::info!(outcome = %outcome.summary(), "Cordis watch batch settled");
+    }
+    on_change(ctx, &changed, &outcome);
+    let _ = barrier_tx.send(Some(outcome));
+    // Ensure reflect knows ctx for BFS async refresh (spawned internally)
+    reflect.set_context(ctx);
+    reflect.notify(tid);
+    // Also drive the epoch-aware path directly for callers that hold ctx
+    // (the `notify` above already spawns refresh, but awaiting here
+    // proves reload without restart in tests).
+    reflect.notify_with_ctx(tid, ctx).await;
+    tracing::info!("Configuration hot-reloaded successfully via Cordis watch");
 }
 
 /// Whether the settled batch touched the provided Cordis entries program;

@@ -602,7 +602,27 @@ async fn assert_converged_consumer(
 /// intermediate transition map: consumer `Inactive` before any provider,
 /// still `Inactive` with only one provider present, `Active` after both.
 pub async fn order_confluence_of_registrations() -> Result<(), String> {
-    // Order A: P1, P2, C.
+    let (epoch_a, pair_a) = run_order_a().await?;
+
+    let (epoch_b, pair_b) = run_order_b().await?;
+
+    if epoch_a != epoch_b {
+        return Err(format!(
+            "confluence violated: epoch A '{epoch_a}' != epoch B '{epoch_b}'"
+        ));
+    }
+    if pair_b.a != pair_a.a || pair_b.b != pair_a.b || pair_b.ready != pair_a.ready {
+        return Err(format!(
+            "confluence violated: projections differ ({:?} vs {:?})",
+            *pair_a, *pair_b
+        ));
+    }
+    Ok(())
+}
+
+/// Order A: providers P1, P2 register before consumer C converges.
+/// Returns the converged consumer's epoch and projection.
+async fn run_order_a() -> Result<(String, Arc<MtPair>), String> {
     let (ca, ra, _fa) = base_root();
     ra.register(&ca, MtP1Plugin, ())
         .map_err(|e| format!("A/P1: {e}"))?;
@@ -625,8 +645,13 @@ pub async fn order_confluence_of_registrations() -> Result<(), String> {
     if !(pair_a.ready && pair_a.a == 7 && pair_a.b == 11) {
         return Err(format!("A: wrong projection {pair_a:?}"));
     }
+    Ok((epoch_a, pair_a))
+}
 
-    // Order B: C, P1, P2.
+/// Order B: consumer C registers first and walks `Inactive` -> `Inactive`
+/// (one provider) -> `Active` as P1 then P2 land. Returns the converged
+/// consumer's epoch and projection.
+async fn run_order_b() -> Result<(String, Arc<MtPair>), String> {
     let (cb, rb, fb) = base_root();
     let fid_b = rb
         .register(&cb, MtPairPlugin, ())
@@ -669,19 +694,7 @@ pub async fn order_confluence_of_registrations() -> Result<(), String> {
     }
     let epoch_b = fib_b.epoch();
     let pair_b = cb.get::<MtPair>().ok_or("B: pair value missing")?;
-
-    if epoch_a != epoch_b {
-        return Err(format!(
-            "confluence violated: epoch A '{epoch_a}' != epoch B '{epoch_b}'"
-        ));
-    }
-    if pair_b.a != pair_a.a || pair_b.b != pair_a.b || pair_b.ready != pair_a.ready {
-        return Err(format!(
-            "confluence violated: projections differ ({:?} vs {:?})",
-            *pair_a, *pair_b
-        ));
-    }
-    Ok(())
+    Ok((epoch_b, pair_b))
 }
 
 // ---------------------------------------------------------------------------

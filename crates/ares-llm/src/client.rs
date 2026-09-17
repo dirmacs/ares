@@ -709,6 +709,28 @@ fn genai_from_config(
     model_override: Option<&str>,
     params: ModelParams,
 ) -> Result<GenaiProvider> {
+    if let ProviderConfig::OpenAI { .. } | ProviderConfig::Azure { .. } = config {
+        return openai_family_provider(config, model_override, params);
+    }
+    if let ProviderConfig::Anthropic { .. } | ProviderConfig::Bedrock { .. } = config {
+        return anthropic_family_provider(config, model_override, params);
+    }
+    if let ProviderConfig::Vertex { .. } = config {
+        return vertex_provider(config, model_override, params);
+    }
+    if let ProviderConfig::Ollama { .. } = config {
+        return local_provider(config, model_override, params);
+    }
+    fallback_provider(config, model_override, params)
+}
+
+/// OpenAI-protocol provider: direct OpenAI or Azure Foundry.
+#[cfg(feature = "genai")]
+fn openai_family_provider(
+    config: &ProviderConfig,
+    model_override: Option<&str>,
+    params: ModelParams,
+) -> Result<GenaiProvider> {
     match config {
         ProviderConfig::OpenAI {
             api_key_env,
@@ -739,6 +761,18 @@ fn genai_from_config(
                 azure_foundry_headers(&api_key),
             ))
         }
+        other => unreachable!("openai_family_provider on {}", other.type_name()),
+    }
+}
+
+/// Anthropic-protocol provider: direct Anthropic or AWS Bedrock.
+#[cfg(feature = "genai")]
+fn anthropic_family_provider(
+    config: &ProviderConfig,
+    model_override: Option<&str>,
+    params: ModelParams,
+) -> Result<GenaiProvider> {
+    match config {
         ProviderConfig::Anthropic {
             api_key_env,
             default_model,
@@ -777,92 +811,145 @@ fn genai_from_config(
                 custom_index: None,
             })
         }
-        ProviderConfig::Ollama {
-            base_url,
-            default_model,
-            ..
-        } => Ok(GenaiProvider {
-            kind: AdapterKind::Ollama,
-            api_key: None,
-            endpoint: Some(base_url.clone()),
-            model: pick_model(model_override, default_model),
-            params,
-            headers: HashMap::new(),
-            region: None,
-            vertex_project: None,
-            vertex_location: None,
-            custom_index: None,
-        }),
-        ProviderConfig::Vertex {
-            api_key_env,
-            project_env,
-            location_env,
-            default_model,
-        } => {
-            let api_key = require_env(api_key_env, "Vertex API key")?;
-            let project = std::env::var(project_env).ok();
-            let location = std::env::var(location_env).ok();
-            Ok(GenaiProvider {
-                kind: AdapterKind::Vertex,
-                api_key: Some(api_key),
-                endpoint: None,
-                model: pick_model(model_override, default_model),
-                params,
-                headers: HashMap::new(),
-                region: None,
-                vertex_project: project,
-                vertex_location: location,
-                custom_index: None,
-            })
-        }
-        ProviderConfig::Custom {
-            index,
-            endpoint,
-            api_key_env,
-            default_model,
-        } => {
-            let api_key = match api_key_env {
-                Some(env) if !env.is_empty() => Some(require_env(env, "Custom API key")?),
-                _ => std::env::var(format!("GENAI_{index}_API_KEY")).ok(),
-            };
-            Ok(GenaiProvider {
-                kind: AdapterKind::Custom(*index),
-                api_key,
-                endpoint: Some(endpoint.clone()),
-                model: pick_model(model_override, default_model),
-                params,
-                headers: HashMap::new(),
-                region: None,
-                vertex_project: None,
-                vertex_location: None,
-                custom_index: Some(*index),
-            })
-        }
-        other => {
-            let (kind, api_key_env, api_base, default_model) = simple_genai_fields(other);
-            let optional_key = matches!(kind, AdapterKind::Omlx);
-            let api_key = if optional_key {
-                std::env::var(api_key_env).ok().filter(|s| !s.is_empty())
-            } else {
-                Some(require_env(
-                    api_key_env,
-                    &format!("{} API key", other.type_name()),
-                )?)
-            };
-            Ok(GenaiProvider {
-                kind,
-                api_key,
-                endpoint: api_base.filter(|s| !s.is_empty()),
-                model: pick_model(model_override, default_model),
-                params,
-                headers: HashMap::new(),
-                region: None,
-                vertex_project: None,
-                vertex_location: None,
-                custom_index: None,
-            })
-        }
+        other => unreachable!("anthropic_family_provider on {}", other.type_name()),
     }
+}
+
+/// Google Vertex AI provider (project and location come from the env vars).
+#[cfg(feature = "genai")]
+fn vertex_provider(
+    config: &ProviderConfig,
+    model_override: Option<&str>,
+    params: ModelParams,
+) -> Result<GenaiProvider> {
+    let ProviderConfig::Vertex {
+        api_key_env,
+        project_env,
+        location_env,
+        default_model,
+    } = config
+    else {
+        unreachable!("vertex_provider on {}", config.type_name())
+    };
+    let api_key = require_env(api_key_env, "Vertex API key")?;
+    let project = std::env::var(project_env).ok();
+    let location = std::env::var(location_env).ok();
+    Ok(GenaiProvider {
+        kind: AdapterKind::Vertex,
+        api_key: Some(api_key),
+        endpoint: None,
+        model: pick_model(model_override, default_model),
+        params,
+        headers: HashMap::new(),
+        region: None,
+        vertex_project: project,
+        vertex_location: location,
+        custom_index: None,
+    })
+}
+
+/// Local Ollama server provider (no API key).
+#[cfg(feature = "genai")]
+fn local_provider(
+    config: &ProviderConfig,
+    model_override: Option<&str>,
+    params: ModelParams,
+) -> Result<GenaiProvider> {
+    let ProviderConfig::Ollama {
+        base_url,
+        default_model,
+        ..
+    } = config
+    else {
+        unreachable!("local_provider on {}", config.type_name())
+    };
+    Ok(GenaiProvider {
+        kind: AdapterKind::Ollama,
+        api_key: None,
+        endpoint: Some(base_url.clone()),
+        model: pick_model(model_override, default_model),
+        params,
+        headers: HashMap::new(),
+        region: None,
+        vertex_project: None,
+        vertex_location: None,
+        custom_index: None,
+    })
+}
+
+/// Bring-your-own OpenAI-compatible endpoint (`custom` config kind).
+#[cfg(feature = "genai")]
+fn custom_provider(
+    index: u8,
+    endpoint: &str,
+    api_key_env: Option<&str>,
+    default_model: &str,
+    model_override: Option<&str>,
+    params: ModelParams,
+) -> Result<GenaiProvider> {
+    let api_key = match api_key_env {
+        Some(env) if !env.is_empty() => Some(require_env(env, "Custom API key")?),
+        _ => std::env::var(format!("GENAI_{index}_API_KEY")).ok(),
+    };
+    Ok(GenaiProvider {
+        kind: AdapterKind::Custom(index),
+        api_key,
+        endpoint: Some(endpoint.to_string()),
+        model: pick_model(model_override, default_model),
+        params,
+        headers: HashMap::new(),
+        region: None,
+        vertex_project: None,
+        vertex_location: None,
+        custom_index: Some(index),
+    })
+}
+
+/// Fallback constructor for `custom` and the table-driven kinds.
+#[cfg(feature = "genai")]
+fn fallback_provider(
+    config: &ProviderConfig,
+    model_override: Option<&str>,
+    params: ModelParams,
+) -> Result<GenaiProvider> {
+    if let ProviderConfig::Custom {
+        index,
+        endpoint,
+        api_key_env,
+        default_model,
+    } = config
+    {
+        return custom_provider(
+            *index,
+            endpoint,
+            api_key_env.as_deref(),
+            default_model,
+            model_override,
+            params,
+        );
+    }
+    let (kind, api_key_env, api_base, default_model) = simple_genai_fields(config);
+    let optional_key = matches!(kind, AdapterKind::Omlx);
+    let api_key = if optional_key {
+        std::env::var(api_key_env).ok().filter(|s| !s.is_empty())
+    } else {
+        Some(require_env(
+            api_key_env,
+            &format!("{} API key", config.type_name()),
+        )?)
+    };
+    Ok(GenaiProvider {
+        kind,
+        api_key,
+        endpoint: api_base.filter(|s| !s.is_empty()),
+        model: pick_model(model_override, default_model),
+        params,
+        headers: HashMap::new(),
+        region: None,
+        vertex_project: None,
+        vertex_location: None,
+        custom_index: None,
+    })
 }
 
 #[cfg(feature = "genai")]

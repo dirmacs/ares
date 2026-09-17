@@ -101,6 +101,24 @@ impl GenaiClient {
         if capture_tools {
             opts = opts.with_capture_tool_calls(true);
         }
+        opts = self.apply_sampling(opts, hints);
+        opts = apply_response_format(opts, hints);
+        opts = self.apply_reasoning(opts, hints);
+        if let Some(key) = hints.prompt_cache_key.as_ref() {
+            opts = opts.with_prompt_cache_key(key.clone());
+        }
+        if let Some(cc) = hints.cache_control {
+            opts = opts.with_cache_control(map_cache(cc));
+        }
+        if !self.provider.headers.is_empty() {
+            opts = opts.with_extra_headers(self.provider.headers.clone());
+        }
+        self.apply_extra_body(opts, hints)
+    }
+
+    /// Token budget and sampling knobs: a per-call `max_tokens` wins over
+    /// the provider default, then temperature, top-p, and stop sequences.
+    fn apply_sampling(&self, mut opts: ChatOptions, hints: &GenerationHints) -> ChatOptions {
         let max_tokens = hints.max_tokens.or(self.provider.params.max_tokens);
         if let Some(max) = max_tokens {
             opts = opts.with_max_tokens(max);
@@ -111,28 +129,18 @@ impl GenaiClient {
         if let Some(top_p) = self.provider.params.top_p {
             opts = opts.with_top_p(f64::from(top_p));
         }
-        if let Some(stops) = self.provider.params.stop.as_ref() {
-            if !stops.is_empty() {
-                opts = opts.with_stop_sequences(stops.clone());
-            }
+        if let Some(stops) = self.provider.params.stop.as_ref().filter(|s| !s.is_empty()) {
+            opts = opts.with_stop_sequences(stops.clone());
         }
-        if hints.json_mode {
-            opts = opts.with_response_format(ChatResponseFormat::JsonMode);
-        }
-        if let Some(grammar) = hints.guided_grammar.as_deref() {
-            if let Ok(schema) = serde_json::from_str::<serde_json::Value>(grammar) {
-                if schema.get("type").is_some() {
-                    opts = opts.with_response_format(ChatResponseFormat::JsonSpec(JsonSpec::new(
-                        "guided", schema,
-                    )));
-                }
-            }
-        }
-        // Reasoning knobs: per-call hints win, provider params fill the
-        // gaps. An effort keyword maps natively where the adapter has the
-        // knob (OpenAI, Anthropic, Gemini tiers). A bare budget becomes a
-        // numeric Budget effort for the adapters with that concept. Unknown
-        // keywords send nothing.
+        opts
+    }
+
+    /// Reasoning knobs: per-call hints win, provider params fill the
+    /// gaps. An effort keyword maps natively where the adapter has the
+    /// knob (OpenAI, Anthropic, Gemini tiers). A bare budget becomes a
+    /// numeric Budget effort for the adapters with that concept. Unknown
+    /// keywords send nothing.
+    fn apply_reasoning(&self, mut opts: ChatOptions, hints: &GenerationHints) -> ChatOptions {
         let effort = hints
             .reasoning_effort
             .as_deref()
@@ -153,15 +161,12 @@ impl GenaiClient {
         if let Some(effort) = effort {
             opts = opts.with_reasoning_effort(effort);
         }
-        if let Some(key) = hints.prompt_cache_key.as_ref() {
-            opts = opts.with_prompt_cache_key(key.clone());
-        }
-        if let Some(cc) = hints.cache_control {
-            opts = opts.with_cache_control(map_cache(cc));
-        }
-        if !self.provider.headers.is_empty() {
-            opts = opts.with_extra_headers(self.provider.headers.clone());
-        }
+        opts
+    }
+
+    /// Extra body keys the typed options cannot carry: penalties, thinking
+    /// suppression, and raw (non-schema) guided grammars.
+    fn apply_extra_body(&self, mut opts: ChatOptions, hints: &GenerationHints) -> ChatOptions {
         let mut extra = serde_json::Map::new();
         if let Some(fp) = self.provider.params.frequency_penalty {
             extra.insert("frequency_penalty".into(), serde_json::json!(fp));
@@ -175,17 +180,15 @@ impl GenaiClient {
                 serde_json::json!({ "enable_thinking": false }),
             );
         }
-        if let Some(grammar) = hints.guided_grammar.as_deref() {
-            if serde_json::from_str::<serde_json::Value>(grammar)
-                .ok()
-                .and_then(|v| v.get("type").cloned())
-                .is_none()
-            {
-                extra.insert(
-                    "guided_grammar".into(),
-                    serde_json::Value::String(grammar.to_string()),
-                );
-            }
+        if let Some(grammar) = hints
+            .guided_grammar
+            .as_deref()
+            .filter(|g| guided_json_schema(g).is_none())
+        {
+            extra.insert(
+                "guided_grammar".into(),
+                serde_json::Value::String(grammar.to_string()),
+            );
         }
         if !extra.is_empty() {
             opts = opts.with_extra_body(serde_json::Value::Object(extra));
@@ -706,6 +709,28 @@ fn map_cache(cc: CacheControl) -> GenaiCache {
         CacheControl::Ephemeral5m => GenaiCache::Ephemeral5m,
         CacheControl::Ephemeral24h => GenaiCache::Ephemeral24h,
     }
+}
+
+/// Response format: JSON mode, then a guided JSON Schema when the grammar
+/// parses as one (the later call wins).
+fn apply_response_format(mut opts: ChatOptions, hints: &GenerationHints) -> ChatOptions {
+    if hints.json_mode {
+        opts = opts.with_response_format(ChatResponseFormat::JsonMode);
+    }
+    if let Some(schema) = hints.guided_grammar.as_deref().and_then(guided_json_schema) {
+        opts = opts.with_response_format(ChatResponseFormat::JsonSpec(JsonSpec::new(
+            "guided", schema,
+        )));
+    }
+    opts
+}
+
+/// Parse `grammar` as a guided JSON Schema: a JSON object carrying a `type`
+/// key. Non-schema grammars travel verbatim through `extra_body` instead.
+fn guided_json_schema(grammar: &str) -> Option<serde_json::Value> {
+    serde_json::from_str::<serde_json::Value>(grammar)
+        .ok()
+        .filter(|value| value.get("type").is_some())
 }
 
 fn map_error(err: genai::Error) -> AppError {

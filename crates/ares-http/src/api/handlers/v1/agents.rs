@@ -140,9 +140,10 @@ pub async fn run_agent(
     let usage_ctx = usage.clone().map(|Extension(u)| u);
     // Open the tenant realm when TenantRealms is on ctx, then intercept TenantContext.
     let state_ctx = ares_agent::request_tenant_ctx(&state_ctx, tc.clone());
-    let state_ctx = match usage {
-        Some(Extension(u)) => state_ctx.with_intercept(u),
-        None => state_ctx,
+    let state_ctx = if let Some(Extension(u)) = usage {
+        state_ctx.with_intercept(u)
+    } else {
+        state_ctx
     };
 
     // Emergency stop
@@ -182,238 +183,11 @@ pub async fn run_agent(
     )
     .await
     .ok();
-    let config_source = if tenant_row.is_some() {
-        "tenant-db"
-    } else {
-        "system"
-    };
-    let config_version = tenant_row
+    let (config_source, config_version) = agent_config_provenance(tenant_row.as_ref());
+    let skill_id = tenant_row
         .as_ref()
-        .map(|row| format!("tenant-db:{}", row.updated_at));
+        .and_then(|row| row.config.get("skill_id").and_then(|v| v.as_str()));
 
-    // Skill-based agent execution
-    if let Some(skill_id) = tenant_row
-        .as_ref()
-        .and_then(|row| row.config.get("skill_id").and_then(|v| v.as_str()))
-    {
-        let run_id = uuid::Uuid::new_v4().to_string();
-        state_ctx
-            .get::<crate::active_runs::ActiveRuns>()
-            .expect("not provided")
-            .start(crate::active_runs::ActiveRun {
-                run_id: run_id.clone(),
-                tenant_id: tc.tenant_id.clone(),
-                agent_name: name.clone(),
-                started_at: chrono::Utc::now().timestamp(),
-                status: "running".to_string(),
-                current_step: 0,
-                total_steps: 0,
-                last_update: chrono::Utc::now().timestamp(),
-                tool_name: Some(format!("skill:{}", skill_id)),
-                model: None,
-                is_catchup: false,
-                request_source: Some("api_v1_agent_run".to_string()),
-                pipeline_id: None,
-                schedule_id: None,
-                trigger_id: None,
-            });
-        // Pre-insert the parent BEFORE any call row: FKs in
-        // 016_run_history_detailed.sql are immediate, so the skill engine's
-        // awaited insert_llm_call/insert_tool_call rows require this id first.
-        let skill_metadata = agent_runs::AgentRunMetadata {
-            workspace_id: runtime_workspace_id.clone(),
-            session_id: Some(agent_context.session_id.clone()),
-            request_source: Some("api_v1_agent_run".to_string()),
-            product: None,
-            agent_config_source: Some(config_source.to_string()),
-            agent_config_version: config_version.clone(),
-            eruka_binding_id: None,
-            eruka_context_hit: false,
-            eruka_read_count: 0,
-            eruka_write_count: 0,
-            pipeline_id: None,
-            schedule_id: None,
-            trigger_id: None,
-        };
-        let pool = state_ctx
-            .get::<ares_store::TenantDb>()
-            .expect("not provided")
-            .pool()
-            .clone();
-        agent_runs::insert_agent_run_with_id_and_metadata(
-            &pool,
-            &run_id,
-            &tc.tenant_id,
-            &name,
-            None,
-            "running",
-            0,
-            0,
-            0,
-            None,
-            "skill",
-            "skill",
-            false,
-            Some(&skill_metadata),
-        )
-        .await?;
-        // Resolve no-retain once per branch; the guard reuses it in Drop and
-        // the UPDATE below reuses it for the error close-out.
-        let no_retain = tenant_no_retain(&pool, &tc.tenant_id).await;
-        let mut run_guard = RunCompletionGuard {
-            pool: pool.clone(),
-            run_id: run_id.clone(),
-            completed: false,
-            no_retain,
-        };
-        let obs = Arc::new(RunObservability {
-            run_id: run_id.clone(),
-            tenant_id: tc.tenant_id.clone(),
-            agent_name: name.clone(),
-            pool: pool.clone(),
-        });
-        let skill_result = state_ctx
-            .get::<ares_agent::skills::SkillEngine>()
-            .expect("not provided")
-            .execute_skill(skill_id, &tc.tenant_id, input.clone(), &run_id, &state_ctx)
-            .await;
-        let duration_ms = start.elapsed().as_millis() as u64;
-        let skill_status = if skill_result.is_ok() {
-            "completed"
-        } else {
-            "error"
-        };
-        state_ctx
-            .get::<crate::active_runs::ActiveRuns>()
-            .expect("not provided")
-            .finish(&run_id, skill_status);
-
-        // Exactly one row per run: UPDATE the pre-inserted parent.
-        {
-            let dur = duration_ms as i64;
-            let status = if skill_result.is_ok() {
-                "completed"
-            } else {
-                "failed"
-            };
-            let (input_tokens, output_tokens) = skill_result
-                .as_ref()
-                .map(ares_agent::skills::skill_result_token_counts)
-                .unwrap_or((0, 0));
-            let err_msg =
-                redact_agent_run_error(no_retain, skill_result.as_ref().err().map(String::as_str));
-            sqlx::query(
-                "UPDATE agent_runs SET status = $2, input_tokens = $3, output_tokens = $4, duration_ms = $5, error = $6, updated_at = $7 WHERE id = $1",
-            )
-            .bind(&run_id)
-            .bind(status)
-            .bind(input_tokens)
-            .bind(output_tokens)
-            .bind(dur)
-            .bind(err_msg.as_deref())
-            .bind(Utc::now().timestamp())
-            .execute(&pool)
-            .await
-            .map_err(|e| HttpError::from(ares_types::types::AppError::Database(e.to_string())))?;
-            run_guard.disarm();
-            // Aggregate only after the parent exists; stays spawned, test polls.
-            let obs_for_spawn = obs.clone();
-            tokio::spawn(async move {
-                obs_for_spawn.aggregate_run_cost(dur).await;
-            });
-        }
-
-        let response_agent_id = name.clone();
-        // Skill counts aggregate nested reported usage; failures are zeroed.
-        let (response, input_tokens, output_tokens, metering_ok, metering_source) =
-            match skill_result {
-                Ok(context) => {
-                    let (input_tokens, output_tokens) =
-                        ares_agent::skills::skill_result_token_counts(&context);
-                    let total_tokens = (input_tokens + output_tokens).max(0) as u64;
-                    let response = V1AgentRun {
-                        id: run_id,
-                        agent_id: response_agent_id.clone(),
-                        status: "completed".to_string(),
-                        input: input.clone(),
-                        output: Some(context),
-                        error: None,
-                        started_at: Utc::now(),
-                        finished_at: Some(Utc::now()),
-                        duration_ms: Some(duration_ms),
-                        tokens_used: Some(total_tokens),
-                    };
-                    (
-                        response,
-                        input_tokens.max(0) as u64,
-                        output_tokens.max(0) as u64,
-                        true,
-                        "reported",
-                    )
-                }
-                Err(e) => {
-                    let response = V1AgentRun {
-                        id: run_id,
-                        agent_id: response_agent_id.clone(),
-                        status: "failed".to_string(),
-                        input: input.clone(),
-                        output: None,
-                        error: Some(e),
-                        started_at: Utc::now(),
-                        finished_at: Some(Utc::now()),
-                        duration_ms: Some(duration_ms),
-                        tokens_used: Some(0),
-                    };
-                    (response, 0u64, 0u64, false, "estimated")
-                }
-            };
-
-        if let Some(u) = usage_ctx.as_ref() {
-            u.record(metering_snapshot(
-                input_tokens as i64,
-                output_tokens as i64,
-                Some("skill".to_string()),
-                Some(response_agent_id.clone()),
-                Some("skill".to_string()),
-                metering_ok,
-                Some(metering_source.to_string()),
-            ));
-        }
-
-        let mut response = usage_response(
-            response,
-            input_tokens,
-            output_tokens,
-            "skill",
-            "skill",
-            &response_agent_id,
-            metering_ok,
-            metering_source,
-        );
-        set_header(
-            response.headers_mut(),
-            "x-agent-config-source",
-            config_source,
-        );
-        if let Some(config_version) = &config_version {
-            set_header(
-                response.headers_mut(),
-                "x-agent-config-version",
-                config_version,
-            );
-        }
-        if let Some(workspace_id) = &runtime_workspace_id {
-            set_header(
-                response.headers_mut(),
-                "x-runtime-workspace-id",
-                workspace_id,
-            );
-        }
-        return Ok(response);
-    }
-
-    // Run observability: the sink writes run_llm_calls/run_tool_calls rows keyed
-    // by run_id, so the agent_runs parent must exist first (FKs immediate).
     let run_id = uuid::Uuid::new_v4().to_string();
     let pool = state_ctx
         .get::<ares_store::TenantDb>()
@@ -426,37 +200,307 @@ pub async fn run_agent(
         agent_name: name.clone(),
         pool: pool.clone(),
     });
-    let mut runtime_context =
-        AgentRuntimeContext::new(tc.tenant_id.clone(), name.clone(), "api_v1_agent_run");
-    runtime_context.workspace_id = runtime_workspace_id.clone();
-    runtime_context.session_id = Some(agent_context.session_id.clone());
-
-    let eruka_context = state_ctx
-        .get::<ares_agent::ContextProviderHandle>()
-        .expect("not provided")
-        .0
-        .get_context_for_run(&runtime_context)
-        .await;
-    let eruka_context_hit = eruka_context.is_some();
-    let effective_message = if let Some(ctx) = eruka_context.as_deref() {
-        tracing::info!(
-            agent = %name,
-            tenant = %tc.tenant_id,
-            ctx_len = ctx.len(),
-            "External context injected into agent run"
-        );
-        format_message_with_context(ctx, &message)
-    } else {
-        message.clone()
+    let setup = AgentRunSetup {
+        tenant_id: tc.tenant_id,
+        agent_name: name,
+        input,
+        message,
+        agent_context,
+        runtime_workspace_id,
+        config_source,
+        config_version,
+        start,
+        run_id,
+        pool,
+        obs,
     };
+
+    let outcome = dispatch_agent_run(&state_ctx, &setup, skill_id).await?;
+    Ok(finish_agent_run(&setup, usage_ctx.as_ref(), outcome))
+}
+
+/// Shared inputs for the two `run_agent` execution paths. The handler builds
+/// it once after tenant scope and config lookup; each path owns its
+/// pre-inserted run row, close-out UPDATE, and outcome.
+struct AgentRunSetup {
+    tenant_id: String,
+    agent_name: String,
+    input: serde_json::Value,
+    message: String,
+    agent_context: AgentContext,
+    runtime_workspace_id: Option<String>,
+    config_source: &'static str,
+    config_version: Option<String>,
+    start: std::time::Instant,
+    run_id: String,
+    pool: sqlx::PgPool,
+    obs: Arc<RunObservability>,
+}
+
+/// One finished `run_agent` path: the wire response plus the metering fields
+/// the shared tail records and stamps.
+struct AgentRunOutcome {
+    run: V1AgentRun,
+    input_tokens: u64,
+    output_tokens: u64,
+    model_name: String,
+    provider_name: String,
+    counts_source: &'static str,
+    metering_ok: bool,
+    /// `x-agent-config-version` value. The failed configurable path reports
+    /// none, matching the headers it stamped before the split.
+    config_version_header: Option<String>,
+}
+
+/// Config provenance for the response headers and run metadata: `tenant-db`
+/// when a tenant agent row exists, the system catalog otherwise.
+fn agent_config_provenance(
+    row: Option<&tenant_agents::TenantAgent>,
+) -> (&'static str, Option<String>) {
+    match row {
+        Some(row) => ("tenant-db", Some(format!("tenant-db:{}", row.updated_at))),
+        None => ("system", None),
+    }
+}
+
+/// Dispatch one run to the skill path when the tenant config pins a skill id,
+/// else the configurable-agent path.
+async fn dispatch_agent_run(
+    state_ctx: &Arc<Context>,
+    setup: &AgentRunSetup,
+    skill_id: Option<&str>,
+) -> Result<AgentRunOutcome> {
+    match skill_id {
+        Some(skill_id) => run_skill_agent_path(state_ctx, setup, skill_id).await,
+        None => run_configurable_agent_path(state_ctx, setup).await,
+    }
+}
+
+/// Skill branch of `run_agent`: pre-inserted run row, no-retain guard, skill
+/// engine invoke, and the exactly-one-row close-out UPDATE.
+async fn run_skill_agent_path(
+    state_ctx: &Arc<Context>,
+    setup: &AgentRunSetup,
+    skill_id: &str,
+) -> Result<AgentRunOutcome> {
+    state_ctx
+        .get::<crate::active_runs::ActiveRuns>()
+        .expect("not provided")
+        .start(crate::active_runs::ActiveRun {
+            run_id: setup.run_id.clone(),
+            tenant_id: setup.tenant_id.clone(),
+            agent_name: setup.agent_name.clone(),
+            started_at: chrono::Utc::now().timestamp(),
+            status: "running".to_string(),
+            current_step: 0,
+            total_steps: 0,
+            last_update: chrono::Utc::now().timestamp(),
+            tool_name: Some(format!("skill:{}", skill_id)),
+            model: None,
+            is_catchup: false,
+            request_source: Some("api_v1_agent_run".to_string()),
+            pipeline_id: None,
+            schedule_id: None,
+            trigger_id: None,
+        });
+    // Pre-insert the parent BEFORE any call row: FKs in
+    // 016_run_history_detailed.sql are immediate, so the skill engine's
+    // awaited insert_llm_call/insert_tool_call rows require this id first.
+    let skill_metadata = agent_runs::AgentRunMetadata {
+        workspace_id: setup.runtime_workspace_id.clone(),
+        session_id: Some(setup.agent_context.session_id.clone()),
+        request_source: Some("api_v1_agent_run".to_string()),
+        product: None,
+        agent_config_source: Some(setup.config_source.to_string()),
+        agent_config_version: setup.config_version.clone(),
+        eruka_binding_id: None,
+        eruka_context_hit: false,
+        eruka_read_count: 0,
+        eruka_write_count: 0,
+        pipeline_id: None,
+        schedule_id: None,
+        trigger_id: None,
+    };
+    agent_runs::insert_agent_run_with_id_and_metadata(
+        &setup.pool,
+        &setup.run_id,
+        &setup.tenant_id,
+        &setup.agent_name,
+        None,
+        "running",
+        0,
+        0,
+        0,
+        None,
+        "skill",
+        "skill",
+        false,
+        Some(&skill_metadata),
+    )
+    .await?;
+    // Resolve no-retain once per branch; the guard reuses it in Drop and
+    // the UPDATE below reuses it for the error close-out.
+    let no_retain = tenant_no_retain(&setup.pool, &setup.tenant_id).await;
+    let mut run_guard = RunCompletionGuard {
+        pool: setup.pool.clone(),
+        run_id: setup.run_id.clone(),
+        completed: false,
+        no_retain,
+    };
+    let skill_result = state_ctx
+        .get::<ares_agent::skills::SkillEngine>()
+        .expect("not provided")
+        .execute_skill(
+            skill_id,
+            &setup.tenant_id,
+            setup.input.clone(),
+            &setup.run_id,
+            state_ctx,
+        )
+        .await;
+    let duration_ms = setup.start.elapsed().as_millis() as u64;
+    let (row_status, live_status) = if skill_result.is_ok() {
+        ("completed", "completed")
+    } else {
+        ("failed", "error")
+    };
+    state_ctx
+        .get::<crate::active_runs::ActiveRuns>()
+        .expect("not provided")
+        .finish(&setup.run_id, live_status);
+
+    // Exactly one row per run: UPDATE the pre-inserted parent.
+    let (input_tokens, output_tokens) = skill_result
+        .as_ref()
+        .map(ares_agent::skills::skill_result_token_counts)
+        .unwrap_or((0, 0));
+    let err_msg =
+        redact_agent_run_error(no_retain, skill_result.as_ref().err().map(String::as_str));
+    let duration_ms_i64 = duration_ms as i64;
+    sqlx::query(
+        "UPDATE agent_runs SET status = $2, input_tokens = $3, output_tokens = $4, duration_ms = $5, error = $6, updated_at = $7 WHERE id = $1",
+    )
+    .bind(&setup.run_id)
+    .bind(row_status)
+    .bind(input_tokens)
+    .bind(output_tokens)
+    .bind(duration_ms_i64)
+    .bind(err_msg.as_deref())
+    .bind(Utc::now().timestamp())
+    .execute(&setup.pool)
+    .await
+    .map_err(|e| HttpError::from(ares_types::types::AppError::Database(e.to_string())))?;
+    run_guard.disarm();
+    // Aggregate only after the parent exists; stays spawned, test polls.
+    let obs_for_spawn = setup.obs.clone();
+    tokio::spawn(async move {
+        obs_for_spawn.aggregate_run_cost(duration_ms_i64).await;
+    });
+
+    Ok(skill_run_outcome(setup, duration_ms, skill_result))
+}
+
+/// Shape a finished skill run: nested reported usage aggregates on success;
+/// failures zero the counts and carry the error text.
+fn skill_run_outcome(
+    setup: &AgentRunSetup,
+    duration_ms: u64,
+    result: std::result::Result<serde_json::Value, String>,
+) -> AgentRunOutcome {
+    let (raw_in, raw_out) = result
+        .as_ref()
+        .map(ares_agent::skills::skill_result_token_counts)
+        .unwrap_or((0, 0));
+    match result {
+        Ok(context) => AgentRunOutcome {
+            run: V1AgentRun {
+                id: setup.run_id.clone(),
+                agent_id: setup.agent_name.clone(),
+                status: "completed".to_string(),
+                input: setup.input.clone(),
+                output: Some(context),
+                error: None,
+                started_at: Utc::now(),
+                finished_at: Some(Utc::now()),
+                duration_ms: Some(duration_ms),
+                tokens_used: Some((raw_in + raw_out).max(0) as u64),
+            },
+            input_tokens: raw_in.max(0) as u64,
+            output_tokens: raw_out.max(0) as u64,
+            model_name: "skill".to_string(),
+            provider_name: "skill".to_string(),
+            counts_source: "reported",
+            metering_ok: true,
+            config_version_header: setup.config_version.clone(),
+        },
+        Err(error) => failed_run_outcome(
+            setup,
+            duration_ms,
+            error,
+            "skill",
+            "skill",
+            setup.config_version.clone(),
+        ),
+    }
+}
+
+/// Failed-run response + metering pieces: zeroed counts, the raw error text in
+/// the body, and the caller's model/provider labels.
+fn failed_run_outcome(
+    setup: &AgentRunSetup,
+    duration_ms: u64,
+    error: String,
+    model_name: &str,
+    provider_name: &str,
+    config_version_header: Option<String>,
+) -> AgentRunOutcome {
+    AgentRunOutcome {
+        run: V1AgentRun {
+            id: setup.run_id.clone(),
+            agent_id: setup.agent_name.clone(),
+            status: "failed".to_string(),
+            input: setup.input.clone(),
+            output: None,
+            error: Some(error),
+            started_at: Utc::now(),
+            finished_at: Some(Utc::now()),
+            duration_ms: Some(duration_ms),
+            tokens_used: Some(0),
+        },
+        input_tokens: 0,
+        output_tokens: 0,
+        model_name: model_name.to_string(),
+        provider_name: provider_name.to_string(),
+        counts_source: "estimated",
+        metering_ok: false,
+        config_version_header,
+    }
+}
+
+/// Configurable-agent branch of `run_agent`: ERUKA context injection, the
+/// pre-inserted run row, no-retain guard, real `Execute::run`, and close-out.
+async fn run_configurable_agent_path(
+    state_ctx: &Arc<Context>,
+    setup: &AgentRunSetup,
+) -> Result<AgentRunOutcome> {
+    let mut runtime_context = AgentRuntimeContext::new(
+        setup.tenant_id.clone(),
+        setup.agent_name.clone(),
+        "api_v1_agent_run",
+    );
+    runtime_context.workspace_id = setup.runtime_workspace_id.clone();
+    runtime_context.session_id = Some(setup.agent_context.session_id.clone());
+
+    let (effective_message, eruka_context_hit) =
+        contextual_run_message(state_ctx, setup, &runtime_context).await;
 
     state_ctx
         .get::<crate::active_runs::ActiveRuns>()
         .expect("not provided")
         .start(crate::active_runs::ActiveRun {
-            run_id: run_id.clone(),
-            tenant_id: tc.tenant_id.clone(),
-            agent_name: name.clone(),
+            run_id: setup.run_id.clone(),
+            tenant_id: setup.tenant_id.clone(),
+            agent_name: setup.agent_name.clone(),
             started_at: chrono::Utc::now().timestamp(),
             status: "running".to_string(),
             current_step: 0,
@@ -474,25 +518,25 @@ pub async fn run_agent(
     // run_llm_calls/run_tool_calls rows for this run_id during execution,
     // and those FKs are immediate. Awaited inline so no call row can race it.
     let llm_metadata = agent_runs::AgentRunMetadata {
-        workspace_id: runtime_workspace_id.clone(),
-        session_id: Some(agent_context.session_id.clone()),
+        workspace_id: setup.runtime_workspace_id.clone(),
+        session_id: Some(setup.agent_context.session_id.clone()),
         request_source: Some("api_v1_agent_run".to_string()),
         product: None,
-        agent_config_source: Some(config_source.to_string()),
-        agent_config_version: config_version.clone(),
+        agent_config_source: Some(setup.config_source.to_string()),
+        agent_config_version: setup.config_version.clone(),
         eruka_binding_id: None,
         eruka_context_hit,
-        eruka_read_count: if eruka_context_hit { 1 } else { 0 },
+        eruka_read_count: eruka_context_hit as i64,
         eruka_write_count: 0,
         pipeline_id: None,
         schedule_id: None,
         trigger_id: None,
     };
     agent_runs::insert_agent_run_with_id_and_metadata(
-        &pool,
-        &run_id,
-        &tc.tenant_id,
-        &name,
+        &setup.pool,
+        &setup.run_id,
+        &setup.tenant_id,
+        &setup.agent_name,
         None,
         "running",
         0,
@@ -508,10 +552,10 @@ pub async fn run_agent(
     // Resolve no-retain once per branch; the guard reuses it in Drop and the
     // failed UPDATE below reuses it for the error close-out. The completed
     // UPDATE sets error = NULL and needs no change.
-    let no_retain = tenant_no_retain(&pool, &tc.tenant_id).await;
+    let no_retain = tenant_no_retain(&setup.pool, &setup.tenant_id).await;
     let mut run_guard = RunCompletionGuard {
-        pool: pool.clone(),
-        run_id: run_id.clone(),
+        pool: setup.pool.clone(),
+        run_id: setup.run_id.clone(),
         completed: false,
         no_retain,
     };
@@ -519,210 +563,251 @@ pub async fn run_agent(
         .get::<ares_agent::Execute>()
         .ok_or_else(|| ares_types::types::AppError::Unavailable("Execute not provided".into()))?;
     let req = ares_agent::AgentRequest {
-        agent_name: name.clone(),
+        agent_name: setup.agent_name.clone(),
         message: effective_message.clone(),
-        history: agent_context.conversation_history.clone(),
+        history: setup.agent_context.conversation_history.clone(),
         ctx_provider: None,
-        run_id: Some(run_id.clone()),
-        observability: Some(obs.clone() as Arc<dyn ares_llm::observability::ObservabilitySink>),
+        run_id: Some(setup.run_id.clone()),
+        observability: Some(
+            setup.obs.clone() as Arc<dyn ares_llm::observability::ObservabilitySink>
+        ),
         ..Default::default()
     };
     let result = exec
-        .run(&req, &state_ctx)
+        .run(&req, state_ctx)
         .await
         .map(|exec_result| exec_result.response);
-    let duration_ms = start.elapsed().as_millis() as u64;
+    let duration_ms = setup.start.elapsed().as_millis() as u64;
 
     match result {
         Ok(response) => {
-            let counts_source = llm_counts_source(response.usage.as_ref()).to_string();
-            let (input_tokens, output_tokens) = llm_token_counts_u64(
-                response.usage.as_ref(),
+            complete_llm_run(
+                state_ctx,
+                setup,
+                &mut run_guard,
+                response,
                 &effective_message,
-                &response.content,
-            );
-
-            let model_name = response
-                .metadata
-                .as_ref()
-                .map(|m| m.model_name.clone())
-                .unwrap_or_else(|| "unknown".to_string());
-            let provider_name = response
-                .metadata
-                .as_ref()
-                .map(|m| m.provider_name.clone())
-                .unwrap_or_else(|| "unknown".to_string());
-            state_ctx
-                .get::<crate::active_runs::ActiveRuns>()
-                .expect("not provided")
-                .update_model(&run_id, Some(&model_name));
-            state_ctx
-                .get::<crate::active_runs::ActiveRuns>()
-                .expect("not provided")
-                .finish(&run_id, "completed");
-
-            // Exactly one row per run: UPDATE the pre-inserted parent.
-            {
-                let itok = input_tokens as i64;
-                let otok = output_tokens as i64;
-                let dur = duration_ms as i64;
-                sqlx::query(
-                    "UPDATE agent_runs SET status = 'completed', input_tokens = $2, output_tokens = $3, duration_ms = $4, error = NULL, model_name = $5, provider_name = $6, updated_at = $7 WHERE id = $1",
-                )
-                .bind(&run_id)
-                .bind(itok)
-                .bind(otok)
-                .bind(dur)
-                .bind(&model_name)
-                .bind(&provider_name)
-                .bind(Utc::now().timestamp())
-                .execute(&pool)
-                .await
-                .map_err(|e| HttpError::from(ares_types::types::AppError::Database(e.to_string())))?;
-                run_guard.disarm();
-                // Aggregate only after the parent exists; stays spawned, test polls.
-                let obs_for_spawn = obs.clone();
-                tokio::spawn(async move {
-                    obs_for_spawn.aggregate_run_cost(dur).await;
-                });
-            }
-
-            let response_agent_id = name.clone();
-            let response = V1AgentRun {
-                id: run_id,
-                agent_id: response_agent_id.clone(),
-                status: "completed".to_string(),
-                input,
-                output: Some(serde_json::json!({"response": response.content})),
-                error: None,
-                started_at: Utc::now(),
-                finished_at: Some(Utc::now()),
-                duration_ms: Some(duration_ms),
-                tokens_used: Some(input_tokens + output_tokens),
-            };
-
-            if let Some(u) = usage_ctx.as_ref() {
-                u.record(metering_snapshot(
-                    input_tokens as i64,
-                    output_tokens as i64,
-                    Some(model_name.clone()),
-                    Some(response_agent_id.clone()),
-                    Some(provider_name.clone()),
-                    true,
-                    Some(counts_source.clone()),
-                ));
-            }
-
-            let mut response = usage_response(
-                response,
-                input_tokens,
-                output_tokens,
-                &model_name,
-                &provider_name,
-                &response_agent_id,
-                true,
-                &counts_source,
-            );
-            set_header(
-                response.headers_mut(),
-                "x-agent-config-source",
-                config_source,
-            );
-            if let Some(config_version) = &config_version {
-                set_header(
-                    response.headers_mut(),
-                    "x-agent-config-version",
-                    config_version,
-                );
-            }
-            if let Some(workspace_id) = &runtime_workspace_id {
-                set_header(
-                    response.headers_mut(),
-                    "x-runtime-workspace-id",
-                    workspace_id,
-                );
-            }
-            Ok(response)
+                duration_ms,
+            )
+            .await
         }
-        Err(e) => {
-            state_ctx
-                .get::<crate::active_runs::ActiveRuns>()
-                .expect("not provided")
-                .finish(&run_id, "error");
-            // Exactly one row per run: UPDATE the pre-inserted parent.
-            {
-                let raw_err = e.to_string();
-                let err_msg = redact_agent_run_error(no_retain, Some(raw_err.as_str()));
-                let dur = duration_ms as i64;
-                sqlx::query(
-                    "UPDATE agent_runs SET status = 'failed', input_tokens = 0, output_tokens = 0, duration_ms = $2, error = $3, updated_at = $4 WHERE id = $1",
-                )
-                .bind(&run_id)
-                .bind(dur)
-                .bind(err_msg.as_deref())
-                .bind(Utc::now().timestamp())
-                .execute(&pool)
-                .await
-                .map_err(|e| HttpError::from(ares_types::types::AppError::Database(e.to_string())))?;
-                run_guard.disarm();
-                // Aggregate only after the parent exists; stays spawned, test polls.
-                let obs_for_spawn = obs.clone();
-                tokio::spawn(async move {
-                    obs_for_spawn.aggregate_run_cost(dur).await;
-                });
-            }
-
-            let response_agent_id = name.clone();
-            let response = V1AgentRun {
-                id: run_id,
-                agent_id: response_agent_id.clone(),
-                status: "failed".to_string(),
-                input,
-                output: None,
-                error: Some(e.to_string()),
-                started_at: Utc::now(),
-                finished_at: Some(Utc::now()),
-                duration_ms: Some(duration_ms),
-                tokens_used: Some(0),
-            };
-
-            if let Some(u) = usage_ctx.as_ref() {
-                u.record(metering_snapshot(
-                    0,
-                    0,
-                    Some("unknown".to_string()),
-                    Some(response_agent_id.clone()),
-                    Some("unknown".to_string()),
-                    false,
-                    Some("estimated".to_string()),
-                ));
-            }
-
-            let mut response = usage_response(
-                response,
-                0,
-                0,
-                "unknown",
-                "unknown",
-                &response_agent_id,
-                false,
-                "estimated",
-            );
-            set_header(
-                response.headers_mut(),
-                "x-agent-config-source",
-                config_source,
-            );
-            if let Some(workspace_id) = &runtime_workspace_id {
-                set_header(
-                    response.headers_mut(),
-                    "x-runtime-workspace-id",
-                    workspace_id,
-                );
-            }
-            Ok(response)
+        Err(error) => {
+            fail_llm_run(
+                state_ctx,
+                setup,
+                &mut run_guard,
+                no_retain,
+                error,
+                duration_ms,
+            )
+            .await
         }
     }
+}
+
+/// Fetch external (ERUKA) context for this run and fold it into the message.
+/// Returns the effective message and whether context was injected.
+async fn contextual_run_message(
+    state_ctx: &Arc<Context>,
+    setup: &AgentRunSetup,
+    runtime_context: &AgentRuntimeContext,
+) -> (String, bool) {
+    let eruka_context = state_ctx
+        .get::<ares_agent::ContextProviderHandle>()
+        .expect("not provided")
+        .0
+        .get_context_for_run(runtime_context)
+        .await;
+    let hit = eruka_context.is_some();
+    let message = if let Some(context) = eruka_context.as_deref() {
+        tracing::info!(
+            agent = %setup.agent_name,
+            tenant = %setup.tenant_id,
+            ctx_len = context.len(),
+            "External context injected into agent run"
+        );
+        format_message_with_context(context, &setup.message)
+    } else {
+        setup.message.clone()
+    };
+    (message, hit)
+}
+
+/// Success arm of the configurable path: resolve the reported counts and
+/// model, update `ActiveRuns`, and close the pre-inserted run row completed.
+async fn complete_llm_run(
+    state_ctx: &Arc<Context>,
+    setup: &AgentRunSetup,
+    guard: &mut RunCompletionGuard,
+    response: ares_agent::AgentResponse,
+    effective_message: &str,
+    duration_ms: u64,
+) -> Result<AgentRunOutcome> {
+    let counts_source = llm_counts_source(response.usage.as_ref());
+    let (input_tokens, output_tokens) = llm_token_counts_u64(
+        response.usage.as_ref(),
+        effective_message,
+        &response.content,
+    );
+    let model_name = response
+        .metadata
+        .as_ref()
+        .map(|m| m.model_name.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+    let provider_name = response
+        .metadata
+        .as_ref()
+        .map(|m| m.provider_name.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+    state_ctx
+        .get::<crate::active_runs::ActiveRuns>()
+        .expect("not provided")
+        .update_model(&setup.run_id, Some(&model_name));
+    state_ctx
+        .get::<crate::active_runs::ActiveRuns>()
+        .expect("not provided")
+        .finish(&setup.run_id, "completed");
+
+    // Exactly one row per run: UPDATE the pre-inserted parent.
+    let duration_ms_i64 = duration_ms as i64;
+    sqlx::query(
+        "UPDATE agent_runs SET status = 'completed', input_tokens = $2, output_tokens = $3, duration_ms = $4, error = NULL, model_name = $5, provider_name = $6, updated_at = $7 WHERE id = $1",
+    )
+    .bind(&setup.run_id)
+    .bind(input_tokens as i64)
+    .bind(output_tokens as i64)
+    .bind(duration_ms_i64)
+    .bind(&model_name)
+    .bind(&provider_name)
+    .bind(Utc::now().timestamp())
+    .execute(&setup.pool)
+    .await
+    .map_err(|e| HttpError::from(ares_types::types::AppError::Database(e.to_string())))?;
+    guard.disarm();
+    // Aggregate only after the parent exists; stays spawned, test polls.
+    let obs_for_spawn = setup.obs.clone();
+    tokio::spawn(async move {
+        obs_for_spawn.aggregate_run_cost(duration_ms_i64).await;
+    });
+
+    Ok(AgentRunOutcome {
+        run: V1AgentRun {
+            id: setup.run_id.clone(),
+            agent_id: setup.agent_name.clone(),
+            status: "completed".to_string(),
+            input: setup.input.clone(),
+            output: Some(serde_json::json!({"response": response.content})),
+            error: None,
+            started_at: Utc::now(),
+            finished_at: Some(Utc::now()),
+            duration_ms: Some(duration_ms),
+            tokens_used: Some(input_tokens + output_tokens),
+        },
+        input_tokens,
+        output_tokens,
+        model_name,
+        provider_name,
+        counts_source,
+        metering_ok: true,
+        config_version_header: setup.config_version.clone(),
+    })
+}
+
+/// Failure arm of the configurable path: terminal `ActiveRuns` update, the
+/// close-out row failed with the redacted error, and zeroed metering pieces.
+async fn fail_llm_run(
+    state_ctx: &Arc<Context>,
+    setup: &AgentRunSetup,
+    guard: &mut RunCompletionGuard,
+    no_retain: bool,
+    error: ares_types::types::AppError,
+    duration_ms: u64,
+) -> Result<AgentRunOutcome> {
+    state_ctx
+        .get::<crate::active_runs::ActiveRuns>()
+        .expect("not provided")
+        .finish(&setup.run_id, "error");
+
+    // Exactly one row per run: UPDATE the pre-inserted parent.
+    let raw_err = error.to_string();
+    let err_msg = redact_agent_run_error(no_retain, Some(raw_err.as_str()));
+    let duration_ms_i64 = duration_ms as i64;
+    sqlx::query(
+        "UPDATE agent_runs SET status = 'failed', input_tokens = 0, output_tokens = 0, duration_ms = $2, error = $3, updated_at = $4 WHERE id = $1",
+    )
+    .bind(&setup.run_id)
+    .bind(duration_ms_i64)
+    .bind(err_msg.as_deref())
+    .bind(Utc::now().timestamp())
+    .execute(&setup.pool)
+    .await
+    .map_err(|e| HttpError::from(ares_types::types::AppError::Database(e.to_string())))?;
+    guard.disarm();
+    // Aggregate only after the parent exists; stays spawned, test polls.
+    let obs_for_spawn = setup.obs.clone();
+    tokio::spawn(async move {
+        obs_for_spawn.aggregate_run_cost(duration_ms_i64).await;
+    });
+
+    Ok(failed_run_outcome(
+        setup,
+        duration_ms,
+        raw_err,
+        "unknown",
+        "unknown",
+        None,
+    ))
+}
+
+/// Shared tail of both `run_agent` paths: record the metering snapshot, build
+/// the metered JSON response, and stamp the config/workspace trace headers.
+fn finish_agent_run(
+    setup: &AgentRunSetup,
+    usage_ctx: Option<&crate::middleware::usage::UsageContext>,
+    outcome: AgentRunOutcome,
+) -> Response {
+    if let Some(u) = usage_ctx {
+        u.record(metering_snapshot(
+            outcome.input_tokens as i64,
+            outcome.output_tokens as i64,
+            Some(outcome.model_name.clone()),
+            Some(setup.agent_name.clone()),
+            Some(outcome.provider_name.clone()),
+            outcome.metering_ok,
+            Some(outcome.counts_source.to_string()),
+        ));
+    }
+
+    let mut response = usage_response(
+        outcome.run,
+        outcome.input_tokens,
+        outcome.output_tokens,
+        &outcome.model_name,
+        &outcome.provider_name,
+        &setup.agent_name,
+        outcome.metering_ok,
+        outcome.counts_source,
+    );
+    set_header(
+        response.headers_mut(),
+        "x-agent-config-source",
+        setup.config_source,
+    );
+    if let Some(config_version) = &outcome.config_version_header {
+        set_header(
+            response.headers_mut(),
+            "x-agent-config-version",
+            config_version,
+        );
+    }
+    if let Some(workspace_id) = &setup.runtime_workspace_id {
+        set_header(
+            response.headers_mut(),
+            "x-runtime-workspace-id",
+            workspace_id,
+        );
+    }
+    response
 }
 
 /// GET /v1/agents/{name}/runs — list runs for an agent

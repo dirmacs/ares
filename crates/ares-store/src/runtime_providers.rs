@@ -297,13 +297,9 @@ mod tests {
     use super::*;
     use sqlx::PgPool;
 
-    async fn create_test_pool() -> PgPool {
-        ares_test_support::pool().await
-    }
-
     #[tokio::test]
     async fn test_runtime_provider_crud() {
-        let pool = create_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let store = RuntimeProviderStore::new(&pool);
 
         // Clean up any leftover test row.
@@ -385,7 +381,7 @@ mod tests {
 
     #[tokio::test]
     async fn scoped_identity_allows_global_and_tenant_same_name() {
-        let pool = ares_test_support::pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         ensure_scoped_runtime_provider_index(&pool).await;
         let store = RuntimeProviderStore::new(&pool);
         let name = "test_shared_provider_scope";
@@ -459,7 +455,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_all_includes_global_and_tenant_scoped_providers() {
-        let pool = create_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let store = RuntimeProviderStore::new(&pool);
         let _ = store.delete("test_global_provider").await;
         let _ = store.delete("test_tenant_provider").await;

@@ -531,10 +531,6 @@ mod tests {
         assert!(validate_period("yearly").is_err());
     }
 
-    async fn try_test_pool() -> PgPool {
-        ares_test_support::pool().await
-    }
-
     #[test]
     fn compute_period_bounds_produces_valid_ranges() {
         let now = Utc::now();
@@ -559,7 +555,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_set_budget_resets_usage_when_period_changes() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let store = TokenBudgetStore::new(&pool);
         let tenant_id = format!("integration-token-budget-{}", uuid::Uuid::new_v4());
 

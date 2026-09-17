@@ -1076,11 +1076,6 @@ mod tests {
     #[cfg(feature = "postgres")]
     mod postgres_integration {
         use super::*;
-        use sqlx::PgPool;
-
-        async fn try_test_pool() -> PgPool {
-            ares_test_support::pool().await
-        }
 
         fn unique(prefix: &str) -> String {
             format!("{}-{}", prefix, uuid::Uuid::new_v4())
@@ -1088,7 +1083,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_new_remote_connects_with_valid_url() {
-            let pool = try_test_pool().await;
+            let (_lock, pool) = crate::test_db::pool().await;
             let row: (i32,) = sqlx::query_as("SELECT 1")
                 .fetch_one(&pool)
                 .await
@@ -1136,7 +1131,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_user_crud() {
-            let pool = try_test_pool().await;
+            let (_lock, pool) = crate::test_db::pool().await;
             let client = PostgresClient { pool };
             let id = unique("user");
             let email = format!("{}@test.com", unique("email"));
@@ -1176,7 +1171,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_session_lifecycle() {
-            let pool = try_test_pool().await;
+            let (_lock, pool) = crate::test_db::pool().await;
             let client = PostgresClient { pool };
             let user_id = unique("session-user");
             let email = format!("{}@test.com", unique("session-email"));
@@ -1237,7 +1232,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_conversation_and_messages() {
-            let pool = try_test_pool().await;
+            let (_lock, pool) = crate::test_db::pool().await;
             let client = PostgresClient { pool };
             let user_id = unique("conv-user");
             let email = format!("{}@test.com", unique("conv-email"));
@@ -1310,7 +1305,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_memory_facts_roundtrip() {
-            let pool = try_test_pool().await;
+            let (_lock, pool) = crate::test_db::pool().await;
             let client = PostgresClient { pool };
             let fact = MemoryFact {
                 id: unique("fact"),
@@ -1334,7 +1329,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_preferences_roundtrip() {
-            let pool = try_test_pool().await;
+            let (_lock, pool) = crate::test_db::pool().await;
             let client = PostgresClient { pool };
             let user_id = unique("pref-user");
             let pref = Preference {
@@ -1358,7 +1353,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_transaction_rollback() {
-            let pool = try_test_pool().await;
+            let (_lock, pool) = crate::test_db::pool().await;
             let mut tx = pool.begin().await.expect("begin transaction");
             let id = unique("tx-user");
             sqlx::query("INSERT INTO users (id, email, password_hash, name, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)")
@@ -1382,7 +1377,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_transaction_commit() {
-            let pool = try_test_pool().await;
+            let (_lock, pool) = crate::test_db::pool().await;
             let mut tx = pool.begin().await.expect("begin transaction");
             let id = unique("tx-user");
             sqlx::query("INSERT INTO users (id, email, password_hash, name, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)")
@@ -1406,7 +1401,7 @@ mod tests {
 
         #[tokio::test]
         async fn integration_conversation_snapshot_roundtrip() {
-            let pool = try_test_pool().await;
+            let (_lock, pool) = crate::test_db::pool().await;
             let client = PostgresClient { pool };
             let session_id = unique("snap-session");
 

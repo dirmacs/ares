@@ -193,6 +193,9 @@ impl cordis::Service for PostgresService {
     }
 }
 
+#[cfg(all(test, feature = "postgres"))]
+mod test_db;
+
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "ares-vector")]

@@ -325,10 +325,6 @@ mod tests {
     use super::*;
     use sqlx::PgPool;
 
-    async fn try_test_pool() -> PgPool {
-        ares_test_support::pool().await
-    }
-
     async fn cleanup_test_tenant(pool: &PgPool, tenant_id: &str) {
         let _ = sqlx::query("DELETE FROM tenant_tool_allowlist WHERE tenant_id = $1")
             .bind(tenant_id)
@@ -402,7 +398,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_allowlists_are_default_deny() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let tenant_id = test_tenant_id("default_deny");
         cleanup_test_tenant(&pool, &tenant_id).await;
 
@@ -422,7 +418,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_methods_return_enabled_rows_only() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let tenant_id = test_tenant_id("enabled_only");
         cleanup_test_tenant(&pool, &tenant_id).await;
 

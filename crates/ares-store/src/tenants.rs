@@ -1249,7 +1249,7 @@ mod tests {
     // ── Integration: api_keys.last_used_at heartbeat (032) ──────────────
 
     async fn live_tenant_db() -> TenantDb {
-        let pool = ares_test_support::pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         TenantDb::new(std::sync::Arc::new(crate::postgres::PostgresClient {
             pool,
         }))

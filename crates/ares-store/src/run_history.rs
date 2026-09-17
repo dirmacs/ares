@@ -1632,10 +1632,6 @@ mod tests {
     // Integration tests (require a live Postgres instance)
     // -------------------------------------------------------------------------
 
-    async fn try_test_pool() -> PgPool {
-        ares_test_support::pool().await
-    }
-
     /// Seed the tenant and agent_runs parents required by run-history FKs.
     async fn seed_integration_parents(pool: &PgPool, tenant_id: &str, run_id: &str) {
         let _ = sqlx::query(
@@ -1655,7 +1651,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_llm_call_crud_roundtrip() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let store = RunHistoryStore::new(&pool);
         seed_integration_parents(&pool, "tenant-integration", "run-integration-1").await;
 
@@ -1725,7 +1721,7 @@ mod tests {
     /// `cache_hit_stats` aggregates them per model.
     #[tokio::test]
     async fn integration_llm_call_cache_telemetry_roundtrip_and_stats() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let store = RunHistoryStore::new(&pool);
         seed_integration_parents(&pool, "tenant-integration", "run-integration-cache").await;
 
@@ -1802,7 +1798,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_tool_call_crud_roundtrip() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let store = RunHistoryStore::new(&pool);
         seed_integration_parents(&pool, "tenant-integration", "run-integration-2").await;
 
@@ -1869,7 +1865,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_insert_tool_call_validates_status() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let store = RunHistoryStore::new(&pool);
 
         let req = LogToolCallRequest {
@@ -1894,7 +1890,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_budget_crud_roundtrip() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let store = RunHistoryStore::new(&pool);
         let tenant_id = format!("integration-test-{}", uuid::Uuid::new_v4());
 
@@ -1941,7 +1937,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_alert_crud_roundtrip() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let store = RunHistoryStore::new(&pool);
         let id = format!("alert-{}", uuid::Uuid::new_v4());
 
@@ -2009,7 +2005,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_health_metrics_crud_roundtrip() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let store = RunHistoryStore::new(&pool);
         let id = format!("health-{}", uuid::Uuid::new_v4());
 
@@ -2244,7 +2240,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_no_retain_toggle_roundtrip_and_unknown_tenant() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let store = RunHistoryStore::new(&pool);
         let tenant_id = format!("no-retain-toggle-{}", uuid::Uuid::new_v4());
         let run_id = format!("no-retain-toggle-run-{}", uuid::Uuid::new_v4());
@@ -2297,11 +2293,24 @@ mod tests {
             raw.arguments.to_string().contains(canary),
             "flag off must store the raw payload"
         );
+
+        let _ = sqlx::query("DELETE FROM run_tool_calls WHERE tenant_id = $1")
+            .bind(&tenant_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM agent_runs WHERE id = $1")
+            .bind(&run_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM tenants WHERE id = $1")
+            .bind(&tenant_id)
+            .execute(&pool)
+            .await;
     }
 
     #[tokio::test]
     async fn integration_no_retain_tool_call_redacts_but_keeps_keying() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let store = RunHistoryStore::new(&pool);
         let tenant_id = format!("no-retain-tool-{}", uuid::Uuid::new_v4());
         let run_id = format!("no-retain-run-{}", uuid::Uuid::new_v4());
@@ -2387,7 +2396,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_no_retain_llm_call_redacts_but_keeps_keying() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let store = RunHistoryStore::new(&pool);
         let tenant_id = format!("no-retain-llm-{}", uuid::Uuid::new_v4());
         let run_id = format!("no-retain-run-{}", uuid::Uuid::new_v4());
@@ -2472,7 +2481,7 @@ mod tests {
 
     #[tokio::test]
     async fn integration_no_retain_flag_off_leaves_content_untouched() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let store = RunHistoryStore::new(&pool);
         let tenant_id = format!("no-retain-off-{}", uuid::Uuid::new_v4());
         let run_id = format!("no-retain-run-{}", uuid::Uuid::new_v4());

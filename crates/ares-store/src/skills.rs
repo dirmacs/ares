@@ -650,13 +650,9 @@ mod tests {
         assert!(validate_connector_request(&req).is_err());
     }
 
-    async fn try_test_pool() -> PgPool {
-        ares_test_support::pool().await
-    }
-
     #[tokio::test]
     async fn integration_update_connector_is_tenant_scoped() {
-        let pool = try_test_pool().await;
+        let (_lock, pool) = crate::test_db::pool().await;
         let store = ConnectorStore::new(&pool);
         let _ = sqlx::query("DELETE FROM connectors WHERE name LIKE 'integration-connector-%'")
             .execute(&pool)

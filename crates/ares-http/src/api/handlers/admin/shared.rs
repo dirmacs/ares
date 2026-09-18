@@ -1,3 +1,4 @@
+use super::AdminActor;
 pub use crate::overlay::BillingConfig;
 use crate::HttpError;
 use crate::Result;
@@ -1632,6 +1633,7 @@ pub async fn list_agent_versions_handler(
 pub async fn rollback_agent_handler(
     State(ctx): State<Arc<Context>>,
     Path((agent_id, version)): Path<(String, String)>,
+    actor: AdminActor,
 ) -> Result<Json<serde_json::Value>> {
     // Fetch the target version from DB
     let __pool_2 = ctx
@@ -1693,7 +1695,8 @@ pub async fn rollback_agent_handler(
             "agent",
             &aid,
             Some(&format!("Rolled back to version {}", ver)),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });

@@ -18,6 +18,7 @@ use sha2::Digest;
 
 pub async fn create_tenant(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Json(payload): Json<CreateTenantRequest>,
 ) -> Result<Json<TenantResponse>> {
     let tier = parse_tenant_tier(&payload.tier)?;
@@ -35,8 +36,16 @@ pub async fn create_tenant(
         .clone();
     let tid = tenant.id.clone();
     tokio::spawn(async move {
-        let _ =
-            audit_log::log_admin_action(&pool, "create_tenant", "tenant", &tid, None, None).await;
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "create_tenant",
+            "tenant",
+            &tid,
+            None,
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
     });
 
     Ok(Json(TenantResponse::from(tenant)))
@@ -70,6 +79,7 @@ pub async fn get_tenant(
 pub async fn create_api_key(
     State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
+    actor: AdminActor,
     Json(payload): Json<CreateApiKeyRequest>,
 ) -> Result<Json<serde_json::Value>> {
     if let Some(days) = payload.expires_in_days {
@@ -97,8 +107,16 @@ pub async fn create_api_key(
         .clone();
     let kid = api_key.id.clone();
     tokio::spawn(async move {
-        let _ =
-            audit_log::log_admin_action(&pool, "create_api_key", "api_key", &kid, None, None).await;
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "create_api_key",
+            "api_key",
+            &kid,
+            None,
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
     });
 
     Ok(Json(serde_json::json!({
@@ -115,6 +133,7 @@ pub async fn create_api_key(
 pub async fn revoke_api_key(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, key_id)): Path<(String, String)>,
+    actor: AdminActor,
 ) -> Result<Json<serde_json::Value>> {
     ctx.get::<ares_store::TenantDb>()
         .expect("not provided")
@@ -128,8 +147,16 @@ pub async fn revoke_api_key(
         .clone();
     let kid = key_id.clone();
     tokio::spawn(async move {
-        let _ =
-            audit_log::log_admin_action(&pool, "revoke_api_key", "api_key", &kid, None, None).await;
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "revoke_api_key",
+            "api_key",
+            &kid,
+            None,
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
     });
 
     Ok(Json(serde_json::json!({"revoked": true, "key_id": key_id})))
@@ -172,6 +199,7 @@ pub async fn get_tenant_usage(
 pub async fn update_tenant_quota(
     State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
+    actor: AdminActor,
     Json(payload): Json<UpdateQuotaRequest>,
 ) -> Result<Json<TenantResponse>> {
     let tier = parse_tenant_tier(&payload.tier)?;
@@ -202,7 +230,8 @@ pub async fn update_tenant_quota(
             "tenant",
             &tid,
             Some(&details),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -212,6 +241,7 @@ pub async fn update_tenant_quota(
 
 pub async fn provision_client(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Json(req): Json<ProvisionClientRequest>,
 ) -> Result<Json<ProvisionClientResponse>> {
     let tier = parse_tenant_tier(&req.tier)?;
@@ -274,7 +304,8 @@ pub async fn provision_client(
             "tenant",
             &tid,
             Some(&details),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -296,6 +327,7 @@ pub async fn provision_client(
 pub async fn delete_tenant(
     State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
+    actor: AdminActor,
 ) -> Result<Json<serde_json::Value>> {
     if let Some(realms) = ctx.get::<ares_store::TenantRealms>() {
         realms.dispose(&tenant_id).await;
@@ -313,8 +345,16 @@ pub async fn delete_tenant(
         .clone();
     let tid = tenant_id.clone();
     tokio::spawn(async move {
-        let _ =
-            audit_log::log_admin_action(&pool, "delete_tenant", "tenant", &tid, None, None).await;
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "delete_tenant",
+            "tenant",
+            &tid,
+            None,
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
     });
 
     Ok(Json(serde_json::json!({

@@ -98,6 +98,7 @@ pub async fn get_tenant_model_tier(
 pub async fn set_tenant_model_tier(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, tier_name)): Path<(String, String)>,
+    actor: AdminActor,
     Json(req): Json<db_tiers::SetTenantModelTierRequest>,
 ) -> Result<Json<db_tiers::TenantModelTier>> {
     if !ctx
@@ -133,7 +134,8 @@ pub async fn set_tenant_model_tier(
             "tenant_model_tier",
             &format!("{t_id}/{t_name}"),
             None,
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -144,6 +146,7 @@ pub async fn set_tenant_model_tier(
 pub async fn delete_tenant_model_tier(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, tier_name)): Path<(String, String)>,
+    actor: AdminActor,
 ) -> Result<StatusCode> {
     let __pool_7 = ctx
         .get::<ares_store::TenantDb>()
@@ -172,7 +175,8 @@ pub async fn delete_tenant_model_tier(
             "tenant_model_tier",
             &format!("{t_id}/{t_name}"),
             None,
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });

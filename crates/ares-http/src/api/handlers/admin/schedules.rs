@@ -1,6 +1,7 @@
 //! Admin schedules domain — cordis Phase6
 //! Bodies moved from `admin.rs` (190KB/5946 lines).
 
+use super::AdminActor;
 use crate::HttpError;
 use crate::Result;
 use ::cordis::Context;
@@ -60,6 +61,7 @@ pub async fn list_schedule_missed_runs(
 
 pub async fn create_schedule(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Json(req): Json<db_schedules::CreateScheduleRequest>,
 ) -> Result<Json<db_schedules::AgentSchedule>> {
     let __pool_3 = ctx
@@ -84,7 +86,8 @@ pub async fn create_schedule(
             "agent_schedule",
             &a_name,
             Some(&t_id),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -95,6 +98,7 @@ pub async fn create_schedule(
 pub async fn update_schedule(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
+    actor: AdminActor,
     Json(req): Json<db_schedules::CreateScheduleRequest>,
 ) -> Result<Json<db_schedules::AgentSchedule>> {
     let __pool_4 = ctx
@@ -122,7 +126,8 @@ pub async fn update_schedule(
             "agent_schedule",
             &a_name,
             Some(&t_id),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -133,6 +138,7 @@ pub async fn update_schedule(
 pub async fn delete_schedule(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
+    actor: AdminActor,
 ) -> Result<StatusCode> {
     let __pool_5 = ctx
         .get::<ares_store::TenantDb>()
@@ -160,7 +166,8 @@ pub async fn delete_schedule(
             "agent_schedule",
             &sid,
             None,
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -171,15 +178,17 @@ pub async fn delete_schedule(
 pub async fn update_tenant_schedule(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, id)): Path<(String, String)>,
+    actor: AdminActor,
     Json(mut req): Json<db_schedules::CreateScheduleRequest>,
 ) -> Result<Json<db_schedules::AgentSchedule>> {
     req.tenant_id = tenant_id.clone();
-    update_schedule(State(ctx), Path(id), Json(req)).await
+    update_schedule(State(ctx), Path(id), actor, Json(req)).await
 }
 
 pub async fn delete_tenant_schedule(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, id)): Path<(String, String)>,
+    actor: AdminActor,
 ) -> Result<StatusCode> {
     let __pool_6 = ctx
         .get::<ares_store::TenantDb>()
@@ -208,7 +217,8 @@ pub async fn delete_tenant_schedule(
             "agent_schedule",
             &sid,
             Some(&t_id),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });

@@ -1021,6 +1021,10 @@ pub async fn rotate_api_key(
     let pool = db.pool().clone();
     let new_id = api_key.id.clone();
     let old_id = key_id.clone();
+    // Tenant-surface rotation: the API key carries no user identity, so the
+    // tenant id is the closest real actor. No request headers are extracted
+    // on this handler, so the audit row keeps a NULL admin_ip.
+    let actor_id = tc.tenant_id.clone();
     tokio::spawn(async move {
         let details = format!("{{\"rotated_from\":\"{}\"}}", old_id);
         let _ = ares_store::audit_log::log_admin_action(
@@ -1030,6 +1034,7 @@ pub async fn rotate_api_key(
             &new_id,
             Some(&details),
             None,
+            Some(actor_id.as_str()),
         )
         .await;
     });

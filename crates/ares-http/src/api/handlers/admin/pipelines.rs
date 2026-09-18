@@ -1,6 +1,7 @@
 //! Admin pipelines domain — cordis Phase6
 //! Bodies moved from `admin.rs` (190KB/5946 lines).
 
+use super::AdminActor;
 use crate::HttpError;
 use crate::Result;
 use ::cordis::Context;
@@ -38,6 +39,7 @@ pub async fn list_pipelines(
 
 pub async fn create_pipeline(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Json(req): Json<db_schedules::CreatePipelineRequest>,
 ) -> Result<Json<db_schedules::AgentPipeline>> {
     let __pool_2 = ctx
@@ -62,7 +64,8 @@ pub async fn create_pipeline(
             "agent_pipeline",
             &link,
             Some(&t_id),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -87,6 +90,7 @@ pub async fn list_tenant_pipelines(
 pub async fn create_tenant_pipeline(
     State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
+    actor: AdminActor,
     Json(mut req): Json<db_schedules::CreatePipelineRequest>,
 ) -> Result<Json<db_schedules::AgentPipeline>> {
     req.tenant_id = tenant_id;
@@ -111,7 +115,8 @@ pub async fn create_tenant_pipeline(
             "agent_pipeline",
             &link,
             Some(&t_id),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -121,6 +126,7 @@ pub async fn create_tenant_pipeline(
 pub async fn update_tenant_pipeline(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, id)): Path<(String, String)>,
+    actor: AdminActor,
     Json(req): Json<db_schedules::CreatePipelineRequest>,
 ) -> Result<Json<db_schedules::AgentPipeline>> {
     let __pool_5 = ctx
@@ -150,7 +156,8 @@ pub async fn update_tenant_pipeline(
             "agent_pipeline",
             &link,
             Some(&t_id),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -161,6 +168,7 @@ pub async fn update_tenant_pipeline(
 pub async fn delete_tenant_pipeline(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, id)): Path<(String, String)>,
+    actor: AdminActor,
 ) -> Result<StatusCode> {
     let __pool_6 = ctx
         .get::<ares_store::TenantDb>()
@@ -186,7 +194,8 @@ pub async fn delete_tenant_pipeline(
             "agent_pipeline",
             &id,
             Some(&tenant_id),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });

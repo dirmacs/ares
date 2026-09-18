@@ -4,6 +4,12 @@ use crate::{
     db::postgres::UserAgent, db::traits::DatabaseClient, types::AppError,
     utils::toml_config::AgentConfig,
 };
+use crate::auth::middleware::AuthUser;
+use axum::{
+    extract::{Path, State},
+    response::{IntoResponse, Response},
+    Json,
+};
 use cordis::Context;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -160,14 +166,364 @@ pub async fn resolve_agent(
     resolve_from_candidates(user_agent, public_agent, system_config, &agent_name, now)
 }
 
-// Dummy stubs to fix routing
-pub async fn list_agents() {}
-pub async fn create_agent() {}
-pub async fn import_agent_toon() {}
-pub async fn get_agent() {}
-pub async fn update_agent() {}
-pub async fn delete_agent() {}
-pub async fn export_agent_toon() {}
+/// Row shape returned by [`UserAgentStore::list`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct UserAgentRecord {
+    /// Caller-scoped owner id (user or tenant, per provider).
+    pub owner: String,
+    /// Agent name unique within the owner scope.
+    pub name: String,
+    /// Display name.
+    pub display_name: Option<String>,
+    /// Short description.
+    pub description: Option<String>,
+    /// Model id.
+    pub model: String,
+    /// System prompt.
+    pub system_prompt: Option<String>,
+    /// Tool names.
+    pub tools: Vec<String>,
+    /// Max tool-call iterations.
+    pub max_tool_iterations: i32,
+    /// Whether tools may run in parallel.
+    pub parallel_tools: bool,
+    /// Whether the agent is public.
+    pub is_public: bool,
+    /// Extra provider-defined config.
+    pub extra: std::collections::HashMap<String, serde_json::Value>,
+}
+
+/// Create input accepted by [`UserAgentStore::create`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateUserAgent {
+    /// Caller-scoped owner id (user or tenant, per provider).
+    pub owner: String,
+    /// Agent name unique within the owner scope.
+    pub name: String,
+    /// Display name.
+    pub display_name: Option<String>,
+    /// Short description.
+    pub description: Option<String>,
+    /// Model id.
+    pub model: String,
+    /// System prompt.
+    pub system_prompt: Option<String>,
+    /// Tool names.
+    pub tools: Vec<String>,
+    /// Max tool-call iterations.
+    pub max_tool_iterations: i32,
+    /// Whether tools may run in parallel.
+    pub parallel_tools: bool,
+    /// Whether the agent is public.
+    pub is_public: bool,
+    /// Extra provider-defined config.
+    pub extra: std::collections::HashMap<String, serde_json::Value>,
+}
+
+/// Update input accepted by [`UserAgentStore::update`].
+/// `None` fields keep the stored value.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UpdateUserAgent {
+    /// Display name (`Some(None)` clears).
+    pub display_name: Option<Option<String>>,
+    /// Short description (`Some(None)` clears).
+    pub description: Option<Option<String>>,
+    /// Model id.
+    pub model: Option<String>,
+    /// System prompt (`Some(None)` clears).
+    pub system_prompt: Option<Option<String>>,
+    /// Tool names.
+    pub tools: Option<Vec<String>>,
+    /// Max tool-call iterations.
+    pub max_tool_iterations: Option<i32>,
+    /// Whether tools may run in parallel.
+    pub parallel_tools: Option<bool>,
+    /// Whether the agent is public.
+    pub is_public: Option<bool>,
+    /// Extra provider-defined config.
+    pub extra: Option<std::collections::HashMap<String, serde_json::Value>>,
+}
+
+/// Overridable backing store for the `/user/agents` endpoints.
+///
+/// Downstream binaries (for example ares-dirmacs) provide their own
+/// implementation on the request [`Context`] before the router runs, for
+/// example `ctx.provide(UserAgentStoreHandle::new(provider))`. With no
+/// provider the endpoints keep today's responses (empty list / 501 for
+/// writes), so the route table stays unchanged.
+#[async_trait::async_trait]
+pub trait UserAgentStore: Send + Sync + 'static {
+    /// List agents visible to `owner`.
+    async fn list(&self, owner: &str) -> crate::Result<Vec<UserAgentRecord>>;
+    /// Create one agent; provider validates name/model conflicts.
+    async fn create(&self, input: CreateUserAgent) -> crate::Result<UserAgentRecord>;
+    /// Fetch one agent by owner + name.
+    async fn get(&self, owner: &str, name: &str) -> crate::Result<UserAgentRecord>;
+    /// Update one agent by owner + name.
+    async fn update(
+        &self,
+        owner: &str,
+        name: &str,
+        patch: UpdateUserAgent,
+    ) -> crate::Result<UserAgentRecord>;
+    /// Delete one agent by owner + name. Returns true when a row was removed.
+    async fn delete(&self, owner: &str, name: &str) -> crate::Result<bool>;
+    /// Import one agent from a TOON document.
+    async fn import_toon(&self, owner: &str, toon: &str) -> crate::Result<UserAgentRecord>;
+    /// Export one agent as a TOON document.
+    async fn export_toon(&self, owner: &str, name: &str) -> crate::Result<String>;
+}
+
+/// Cordis handle for the process-wide [`UserAgentStore`].
+#[derive(Clone)]
+pub struct UserAgentStoreHandle(pub Arc<dyn UserAgentStore>);
+
+impl cordis::Service for UserAgentStoreHandle {
+    fn name(&self) -> &'static str {
+        "user_agent_store"
+    }
+    fn init(&self, _ctx: &Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+    fn check(&self) -> bool {
+        true
+    }
+}
+
+impl UserAgentStoreHandle {
+    /// Wrap a provider as a cordis service handle.
+    pub fn new(inner: Arc<dyn UserAgentStore>) -> Self {
+        Self(inner)
+    }
+    /// Borrow the inner provider.
+    pub fn inner(&self) -> &Arc<dyn UserAgentStore> {
+        &self.0
+    }
+}
+
+/// Default backing store: preserves today's stub behavior.
+struct DefaultUserAgentStore;
+
+#[async_trait::async_trait]
+impl UserAgentStore for DefaultUserAgentStore {
+    async fn list(&self, _owner: &str) -> crate::Result<Vec<UserAgentRecord>> {
+        Ok(Vec::new())
+    }
+    async fn create(&self, _input: CreateUserAgent) -> crate::Result<UserAgentRecord> {
+        Err(crate::HttpError::from(AppError::Unavailable(
+            "user agent store is not provided on this context".into(),
+        )))
+    }
+    async fn get(&self, _owner: &str, name: &str) -> crate::Result<UserAgentRecord> {
+        Err(crate::HttpError::from(AppError::NotFound(format!(
+            "Agent '{name}' not found"
+        ))))
+    }
+    async fn update(
+        &self,
+        _owner: &str,
+        name: &str,
+        _patch: UpdateUserAgent,
+    ) -> crate::Result<UserAgentRecord> {
+        Err(crate::HttpError::from(AppError::NotFound(format!(
+            "Agent '{name}' not found"
+        ))))
+    }
+    async fn delete(&self, _owner: &str, _name: &str) -> crate::Result<bool> {
+        Ok(false)
+    }
+    async fn import_toon(&self, _owner: &str, _toon: &str) -> crate::Result<UserAgentRecord> {
+        Err(crate::HttpError::from(AppError::Unavailable(
+            "user agent store is not provided on this context".into(),
+        )))
+    }
+    async fn export_toon(&self, _owner: &str, name: &str) -> crate::Result<String> {
+        Err(crate::HttpError::from(AppError::NotFound(format!(
+            "Agent '{name}' not found"
+        ))))
+    }
+}
+
+fn user_agent_store(ctx: &Arc<Context>) -> Arc<dyn UserAgentStore> {
+    ctx.get::<UserAgentStoreHandle>()
+        .map(|handle| Arc::clone(handle.inner()))
+        .unwrap_or_else(|| Arc::new(DefaultUserAgentStore))
+}
+
+fn user_agent_owner(ctx: &Arc<Context>, claims_sub: &str) -> String {
+    ares_agent::user_id_from_ctx(ctx, claims_sub)
+}
+
+fn user_agent_record_response(record: UserAgentRecord) -> UserAgentResponse {
+    let now = chrono::Utc::now().timestamp();
+    UserAgentResponse {
+        id: format!("{}-{}", record.owner, record.name),
+        name: record.name,
+        display_name: record.display_name,
+        description: record.description,
+        model: record.model,
+        system_prompt: record.system_prompt,
+        tools: record.tools,
+        max_tool_iterations: record.max_tool_iterations,
+        parallel_tools: record.parallel_tools,
+        is_public: record.is_public,
+        usage_count: 0,
+        average_rating: None,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+fn user_agent_create_input(owner: String, req: CreateUserAgentReq) -> CreateUserAgent {
+    CreateUserAgent {
+        owner,
+        name: req.name,
+        display_name: req.display_name,
+        description: req.description,
+        model: req.model,
+        system_prompt: req.system_prompt,
+        tools: req.tools,
+        max_tool_iterations: req.max_tool_iterations,
+        parallel_tools: req.parallel_tools,
+        is_public: req.is_public,
+        extra: req.extra,
+    }
+}
+
+/// GET /user/agents — list agents visible to the caller.
+/// Default (no provider): empty list, as before.
+pub async fn list_agents(
+    State(ctx): State<Arc<Context>>,
+    AuthUser(claims): AuthUser,
+) -> crate::Result<Json<Vec<UserAgentResponse>>> {
+    let owner = user_agent_owner(&ctx, &claims.sub);
+    let records = user_agent_store(&ctx).list(&owner).await?;
+    Ok(Json(
+        records.into_iter().map(user_agent_record_response).collect(),
+    ))
+}
+
+/// POST /user/agents — create one agent.
+/// Default (no provider): 503, as before (no store accepted writes).
+pub async fn create_agent(
+    State(ctx): State<Arc<Context>>,
+    AuthUser(claims): AuthUser,
+    Json(req): Json<CreateUserAgentReq>,
+) -> crate::Result<Json<UserAgentResponse>> {
+    let owner = user_agent_owner(&ctx, &claims.sub);
+    let record = user_agent_store(&ctx)
+        .create(user_agent_create_input(owner, req))
+        .await?;
+    Ok(Json(user_agent_record_response(record)))
+}
+
+/// POST /user/agents/import — import one agent from a TOON document.
+/// Default (no provider): 503, as before (no store accepted writes).
+pub async fn import_agent_toon(
+    State(ctx): State<Arc<Context>>,
+    AuthUser(claims): AuthUser,
+    body: String,
+) -> crate::Result<Json<UserAgentResponse>> {
+    let owner = user_agent_owner(&ctx, &claims.sub);
+    let record = user_agent_store(&ctx).import_toon(&owner, &body).await?;
+    Ok(Json(user_agent_record_response(record)))
+}
+
+/// GET /user/agents/{name} — fetch one agent.
+/// Default (no provider): 404, as before.
+pub async fn get_agent(
+    State(ctx): State<Arc<Context>>,
+    AuthUser(claims): AuthUser,
+    Path(name): Path<String>,
+) -> crate::Result<Json<UserAgentResponse>> {
+    let owner = user_agent_owner(&ctx, &claims.sub);
+    let record = user_agent_store(&ctx).get(&owner, &name).await?;
+    Ok(Json(user_agent_record_response(record)))
+}
+
+/// PUT /user/agents/{name} — update one agent.
+/// Default (no provider): 404, as before.
+pub async fn update_agent(
+    State(ctx): State<Arc<Context>>,
+    AuthUser(claims): AuthUser,
+    Path(name): Path<String>,
+    Json(req): Json<UpdateUserAgentReq>,
+) -> crate::Result<Json<UserAgentResponse>> {
+    let owner = user_agent_owner(&ctx, &claims.sub);
+    let record = user_agent_store(&ctx)
+        .update(&owner, &name, req.into_patch())
+        .await?;
+    Ok(Json(user_agent_record_response(record)))
+}
+
+/// DELETE /user/agents/{name} — delete one agent.
+/// Default (no provider): 404, as before (no store holds the name).
+pub async fn delete_agent(
+    State(ctx): State<Arc<Context>>,
+    AuthUser(claims): AuthUser,
+    Path(name): Path<String>,
+) -> crate::Result<Response> {
+    let owner = user_agent_owner(&ctx, &claims.sub);
+    let removed = user_agent_store(&ctx).delete(&owner, &name).await?;
+    if removed {
+        Ok(axum::http::StatusCode::NO_CONTENT.into_response())
+    } else {
+        Err(crate::HttpError::from(AppError::NotFound(format!(
+            "Agent '{name}' not found"
+        ))))
+    }
+}
+
+/// GET /user/agents/{name}/export — export one agent as TOON.
+/// Default (no provider): 404, as before.
+pub async fn export_agent_toon(
+    State(ctx): State<Arc<Context>>,
+    AuthUser(claims): AuthUser,
+    Path(name): Path<String>,
+) -> crate::Result<String> {
+    let owner = user_agent_owner(&ctx, &claims.sub);
+    user_agent_store(&ctx).export_toon(&owner, &name).await
+}
+
+/// Partial update body for `PUT /user/agents/{name}`.
+/// `None` fields keep the stored value; `Some(None)` clears an optional.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct UpdateUserAgentReq {
+    /// Display name (`Some(None)` clears).
+    pub display_name: Option<Option<String>>,
+    /// Short description (`Some(None)` clears).
+    pub description: Option<Option<String>>,
+    /// Model id.
+    pub model: Option<String>,
+    /// System prompt (`Some(None)` clears).
+    pub system_prompt: Option<Option<String>>,
+    /// Tool names.
+    pub tools: Option<Vec<String>>,
+    /// Max tool-call iterations.
+    pub max_tool_iterations: Option<i32>,
+    /// Whether tools may run in parallel.
+    pub parallel_tools: Option<bool>,
+    /// Whether the agent is public.
+    pub is_public: Option<bool>,
+    /// Extra provider-defined config.
+    pub extra: Option<std::collections::HashMap<String, serde_json::Value>>,
+}
+
+impl UpdateUserAgentReq {
+    fn into_patch(self) -> UpdateUserAgent {
+        UpdateUserAgent {
+            display_name: self.display_name,
+            description: self.description,
+            model: self.model,
+            system_prompt: self.system_prompt,
+            tools: self.tools,
+            max_tool_iterations: self.max_tool_iterations,
+            parallel_tools: self.parallel_tools,
+            is_public: self.is_public,
+            extra: self.extra,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -500,5 +856,94 @@ url = "postgres://localhost/ares"
         let decoded: AgentConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(original.model, decoded.model);
         assert_eq!(original.tools, decoded.tools);
+    }
+
+    fn test_record(owner: &str, name: &str) -> UserAgentRecord {
+        UserAgentRecord {
+            owner: owner.into(),
+            name: name.into(),
+            display_name: Some("Display".into()),
+            description: Some("Desc".into()),
+            model: "gpt-4o".into(),
+            system_prompt: Some("Be helpful".into()),
+            tools: vec!["search".into()],
+            max_tool_iterations: 5,
+            parallel_tools: false,
+            is_public: false,
+            extra: HashMap::new(),
+        }
+    }
+
+    struct StaticAgents(Vec<UserAgentRecord>);
+
+    #[async_trait::async_trait]
+    impl UserAgentStore for StaticAgents {
+        async fn list(&self, _owner: &str) -> crate::Result<Vec<UserAgentRecord>> {
+            Ok(self.0.clone())
+        }
+        async fn create(&self, input: CreateUserAgent) -> crate::Result<UserAgentRecord> {
+            Ok(test_record(&input.owner, &input.name))
+        }
+        async fn get(&self, owner: &str, name: &str) -> crate::Result<UserAgentRecord> {
+            Ok(test_record(owner, name))
+        }
+        async fn update(
+            &self,
+            owner: &str,
+            name: &str,
+            _patch: UpdateUserAgent,
+        ) -> crate::Result<UserAgentRecord> {
+            Ok(test_record(owner, name))
+        }
+        async fn delete(&self, _owner: &str, _name: &str) -> crate::Result<bool> {
+            Ok(true)
+        }
+        async fn import_toon(&self, owner: &str, _toon: &str) -> crate::Result<UserAgentRecord> {
+            Ok(test_record(owner, "imported"))
+        }
+        async fn export_toon(&self, _owner: &str, _name: &str) -> crate::Result<String> {
+            Ok("agent: exported".into())
+        }
+    }
+
+    fn root_ctx() -> Arc<Context> {
+        Context::new_root()
+    }
+
+    fn test_user() -> AuthUser {
+        AuthUser(ares_types::types::Claims {
+            sub: "tester".into(),
+            email: "tester@example.com".into(),
+            exp: 0,
+            iat: 0,
+            jti: String::new(),
+            tenant_id: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn default_list_returns_empty() {
+        let Json(agents) = list_agents(State(root_ctx()), test_user()).await.unwrap();
+        assert!(agents.is_empty());
+    }
+
+    #[tokio::test]
+    async fn default_get_returns_not_found() {
+        let err = get_agent(State(root_ctx()), test_user(), Path("ghost".into()))
+            .await
+            .unwrap_err();
+        assert!(format!("{err}").contains("ghost"));
+    }
+
+    #[tokio::test]
+    async fn injected_store_list_is_used() {
+        let ctx = root_ctx();
+        ctx.provide(UserAgentStoreHandle::new(Arc::new(StaticAgents(vec![
+            test_record("owner-1", "alpha"),
+        ]))));
+        let Json(agents) = list_agents(State(ctx), test_user()).await.unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].name, "alpha");
+        assert_eq!(agents[0].model, "gpt-4o");
     }
 }

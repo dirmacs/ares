@@ -10,12 +10,17 @@ pub enum TenantTier {
 }
 
 impl TenantTier {
+    /// Parses a tier label, case-insensitively.
+    ///
+    /// `starter` and `growth` are legacy ladder aliases of `dev` and `pro`:
+    /// live tenant rows carry these strings, so they must resolve to the
+    /// ladder tier instead of falling through to `None` (free limits).
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "free" => Some(TenantTier::Free),
-            "dev" => Some(TenantTier::Dev),
-            "pro" => Some(TenantTier::Pro),
+            "dev" | "starter" => Some(TenantTier::Dev),
+            "pro" | "growth" => Some(TenantTier::Pro),
             "enterprise" => Some(TenantTier::Enterprise),
             _ => None,
         }
@@ -349,6 +354,16 @@ mod tests {
             Some(TenantTier::Enterprise)
         );
         assert_eq!(TenantTier::from_str("unknown"), None);
+    }
+
+    #[test]
+    fn test_tier_from_str_accepts_legacy_ladder_aliases() {
+        // `starter`/`growth` are ladder labels written by older admin flows;
+        // they must resolve to dev/pro limits rather than fall back to free.
+        assert_eq!(TenantTier::from_str("starter"), Some(TenantTier::Dev));
+        assert_eq!(TenantTier::from_str("growth"), Some(TenantTier::Pro));
+        assert_eq!(TenantTier::from_str("Starter"), Some(TenantTier::Dev));
+        assert_eq!(TenantTier::from_str("GROWTH"), Some(TenantTier::Pro));
     }
 
     #[test]

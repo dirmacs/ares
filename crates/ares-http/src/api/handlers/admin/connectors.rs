@@ -8,6 +8,7 @@ use crate::Result;
 use ::cordis::Context;
 use ares_store::agent_runs;
 use ares_store::audit_log;
+use ares_store::run_history::{redact_agent_run_error, tenant_no_retain};
 use ares_store::skills as db_skills;
 use ares_types::types::AppError;
 use axum::{
@@ -242,13 +243,15 @@ pub async fn run_skill(
         .as_ref()
         .map(ares_agent::skills::skill_result_token_counts)
         .unwrap_or((0, 0));
-    let error_message = result.as_ref().err().cloned();
 
     let __pool_8 = ctx
         .get::<ares_store::TenantDb>()
         .expect("not provided")
         .pool()
         .clone();
+    // Redact the close-out error for tenants that opted into no-retain.
+    let no_retain = tenant_no_retain(&__pool_8, &tenant_id).await;
+    let error_message = redact_agent_run_error(no_retain, result.as_ref().err().map(String::as_str));
     sqlx::query(
         "UPDATE agent_runs
          SET status = $2, input_tokens = $3, output_tokens = $4,

@@ -5,6 +5,7 @@
 //! propagation.
 
 use ares_store::agent_runs::{self, AgentRunMetadata};
+use ares_store::run_history::{redact_agent_run_error, tenant_no_retain};
 use ares_store::schedules::EventTrigger;
 use cordis::Service;
 use std::sync::Arc;
@@ -425,7 +426,9 @@ impl TriggerService {
                         .as_ref()
                         .map(crate::skills::skill_result_token_counts)
                         .unwrap_or((0, 0));
-                    let err_msg = skill_result.as_ref().err().cloned();
+                    let no_retain = tenant_no_retain(&pool, &trigger.tenant_id).await;
+                    let err_msg =
+                        redact_agent_run_error(no_retain, skill_result.as_ref().err().map(String::as_str));
                     let _ = sqlx::query(
                         "UPDATE agent_runs SET status=$2, input_tokens=$3, output_tokens=$4, duration_ms=$5, error=$6 WHERE id=$1",
                     )
@@ -708,7 +711,9 @@ async fn execute_triggered_agent_legacy(
             .as_ref()
             .map(crate::skills::skill_result_token_counts)
             .unwrap_or((0, 0));
-        let error_message = skill_result.as_ref().err().cloned();
+        let no_retain = tenant_no_retain(&pool, &trigger.tenant_id).await;
+        let error_message =
+            redact_agent_run_error(no_retain, skill_result.as_ref().err().map(String::as_str));
 
         sqlx::query(
             "UPDATE agent_runs
@@ -924,6 +929,10 @@ async fn execute_triggered_agent_legacy(
             track_finish(app_state, &run_id, "error");
         }
     }
+
+    // Redact the close-out error for tenants that opted into no-retain.
+    let no_retain = tenant_no_retain(&pool, &trigger.tenant_id).await;
+    let error_msg = redact_agent_run_error(no_retain, error_msg.as_deref());
 
     sqlx::query(
         "UPDATE agent_runs
@@ -1169,6 +1178,110 @@ mod tests {
             .execute(app_state.get::<ares_store::TenantDb>().expect("db").pool())
             .await
             .expect("cleanup usage_events");
+    }
+
+    /// No-retain wiring: the regular-path close-out redacts the raw error for
+    /// tenants that opted in and keeps it raw otherwise. Strict fallbacks make
+    /// the engine fail instead of echoing, so a failed close-out is written.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn failed_close_out_redacts_error_only_for_no_retain_tenants() {
+        use ares_store::run_history::NO_RETAIN_REDACTED_TEXT;
+
+        let pool = ares_test_support::pool().await;
+        let app_state = Context::new_root();
+        app_state.provide(cordis::EventsService::new());
+        app_state.provide(ares_store::TenantDb::new(Arc::new(PostgresClient {
+            pool: pool.clone(),
+        })));
+        app_state.provide(crate::Execute::new().with_strict_fallbacks(true));
+        app_state.provide(crate::context_provider::ContextProviderHandle::new(
+            Arc::new(crate::context_provider::NoOpContextProvider),
+        ));
+
+        let retained_tenant = "tenant-noretain-closeout-keep";
+        let redacted_tenant = "tenant-noretain-closeout-redact";
+        for (tenant_id, no_retain) in [(retained_tenant, false), (redacted_tenant, true)] {
+            sqlx::query(
+                "INSERT INTO tenants (id, name, tier, created_at, updated_at, no_retain) \
+                 VALUES ($1, $1, 'free', 1, 1, $2) \
+                 ON CONFLICT (id) DO UPDATE SET no_retain = EXCLUDED.no_retain",
+            )
+            .bind(tenant_id)
+            .bind(no_retain)
+            .execute(&pool)
+            .await
+            .expect("seed tenant");
+            // A tenant agent without `skill_id` routes the trigger down the
+            // regular path, whose close-out writes the error under test.
+            sqlx::query(
+                "INSERT INTO tenant_agents \
+                 (id, tenant_id, agent_name, display_name, config, enabled, created_at, updated_at) \
+                 VALUES ($1, $2, $3, $3, '{}', true, 1, 1) \
+                 ON CONFLICT (tenant_id, agent_name) DO NOTHING",
+            )
+            .bind(format!("noretain-closeout-{tenant_id}"))
+            .bind(tenant_id)
+            .bind("target-noretain-closeout")
+            .execute(&pool)
+            .await
+            .expect("seed tenant agent");
+        }
+
+        for tenant_id in [retained_tenant, redacted_tenant] {
+            let trig = EventTrigger {
+                id: format!("noretain-closeout-{tenant_id}"),
+                tenant_id: tenant_id.to_string(),
+                name: "no-retain close-out probe".to_string(),
+                event_type: "webhook".to_string(),
+                event_config: serde_json::json!({}),
+                target_agent: "target-noretain-closeout".to_string(),
+                enabled: true,
+                created_at: 0,
+                updated_at: 0,
+            };
+            let outcome = execute_triggered_agent_legacy(&trig, "hello", &app_state).await;
+            assert!(outcome.is_err(), "expected fast failure without LLM");
+        }
+
+        let redacted: Option<String> = sqlx::query_scalar(
+            "SELECT error FROM agent_runs WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(redacted_tenant)
+        .fetch_one(&pool)
+        .await
+        .expect("redacted run row");
+        assert_eq!(redacted.as_deref(), Some(NO_RETAIN_REDACTED_TEXT));
+
+        let retained: Option<String> = sqlx::query_scalar(
+            "SELECT error FROM agent_runs WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(retained_tenant)
+        .fetch_one(&pool)
+        .await
+        .expect("retained run row");
+        assert!(
+            retained.is_some(),
+            "raw error must persist for retained tenants"
+        );
+        assert_ne!(retained.as_deref(), Some(NO_RETAIN_REDACTED_TEXT));
+
+        // Keep the shared ares_test DB clean for the rest of the suite.
+        for table in ["agent_runs", "usage_events"] {
+            sqlx::query(&format!(
+                "DELETE FROM {table} WHERE tenant_id LIKE 'tenant-noretain-closeout-%'"
+            ))
+            .execute(&pool)
+            .await
+            .expect("cleanup");
+        }
+        sqlx::query("DELETE FROM tenant_agents WHERE tenant_id LIKE 'tenant-noretain-closeout-%'")
+            .execute(&pool)
+            .await
+            .expect("cleanup tenant_agents");
+        sqlx::query("DELETE FROM tenants WHERE id LIKE 'tenant-noretain-closeout-%'")
+            .execute(&pool)
+            .await
+            .expect("cleanup tenants");
     }
 }
 

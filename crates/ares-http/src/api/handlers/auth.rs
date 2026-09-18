@@ -231,7 +231,8 @@ pub async fn refresh_token(
     let claims = ctx
         .get::<crate::auth::jwt::AuthService>()
         .expect("not provided")
-        .verify_token(refresh_token)?;
+        .verify_token(refresh_token)
+        .await?;
 
     // Hash the refresh token and validate it exists in the database
     let token_hash = ctx
@@ -346,6 +347,7 @@ mod tests {
 
     #[test]
     fn validate_register_input_does_not_depend_on_env() {
+        let _env_guard = crate::api::handlers::admin::shared::lock_admin_env();
         std::env::remove_var("DATABASE_URL");
         std::env::remove_var("JWT_SECRET");
         assert!(validate_register_input("user@example.com", "password123").is_ok());

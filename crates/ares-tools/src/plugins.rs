@@ -2,6 +2,8 @@
 //!
 //! Factories call `cordis::Context::plugin` via block_in_place + block_on.
 //! ToolRegistry and RuntimeToolRegistry are not provided as Services.
+//! A downstream binary provides [`ExtraStaticTools`] to add its own static
+//! tools without rebuilding the registry the factory owns.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -10,7 +12,7 @@ use serde_json::Value;
 
 use crate::config::ToolConfig;
 use crate::registry::ToolRegistry;
-use crate::{Calculator, CalculatorConfig, CalculatorService, ProviderWebSearch, Tools};
+use crate::{Calculator, CalculatorConfig, CalculatorService, ProviderWebSearch, Tool, Tools};
 
 fn block_on_plugin<S: cordis::Service + 'static>(
     ctx: &Arc<cordis::Context>,
@@ -84,6 +86,21 @@ fn parse_tool_configs(config: &Value) -> Result<HashMap<String, ToolConfig>, cor
     })
 }
 
+/// Static tools contributed by a downstream binary.
+///
+/// Provide this service on the context before the `Tools` plugin loads, for
+/// example `ctx.provide(ExtraStaticTools(tools))`. [`factory_tools`] merges
+/// the entries into the static registry right after the always-on tools, so
+/// runtime tools, connector tools, and the MCP bridge stay intact. With no
+/// provider, the factory behaves exactly as before.
+pub struct ExtraStaticTools(pub Vec<Arc<dyn Tool>>);
+
+impl cordis::Service for ExtraStaticTools {
+    fn name(&self) -> &'static str {
+        "extra_static_tools"
+    }
+}
+
 fn factory_tools(
     ctx: &Arc<cordis::Context>,
     config: &Value,
@@ -92,6 +109,12 @@ fn factory_tools(
     let mut tool_registry = ToolRegistry::with_config(&map);
 
     register_always_on_tools(&mut tool_registry);
+
+    if let Some(extra) = ctx.get::<ExtraStaticTools>() {
+        for tool in &extra.0 {
+            tool_registry.register(Arc::clone(tool));
+        }
+    }
 
     #[cfg(feature = "search-tools")]
     {
@@ -258,5 +281,47 @@ mod tests {
             "provider_web_search"
         );
         assert_eq!(registry.get("web_search").unwrap().name(), "web_search");
+    }
+
+    struct SeamTool;
+
+    #[async_trait::async_trait]
+    impl Tool for SeamTool {
+        fn name(&self) -> &str {
+            "seam_probe"
+        }
+
+        fn description(&self) -> &str {
+            "Tool contributed through ExtraStaticTools"
+        }
+
+        fn parameters_schema(&self) -> Value {
+            json!({ "type": "object", "properties": {} })
+        }
+
+        async fn execute(&self, _args: Value) -> ares_types::types::Result<Value> {
+            Ok(json!({ "seam": true }))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extra_static_tools_resolve_through_the_tools_service() {
+        let ctx = cordis::Context::new_root();
+        ctx.provide(ExtraStaticTools(vec![Arc::new(SeamTool) as Arc<dyn Tool>]));
+
+        factory_tools(&ctx, &Value::Null).expect("factory_tools should load");
+
+        let tools = ctx.get::<Tools>().expect("factory provides Tools");
+        let tool = tools
+            .resolve(&ctx, "seam_probe")
+            .expect("ExtraStaticTools entry should resolve through Tools");
+        assert_eq!(tool.name(), "seam_probe");
+        assert!(tools.list(&ctx).iter().any(|d| d.name == "seam_probe"));
+
+        // Without a provider the factory still builds the always-on registry.
+        let bare = cordis::Context::new_root();
+        factory_tools(&bare, &Value::Null).expect("factory_tools should load without extra tools");
+        let bare_tools = bare.get::<Tools>().expect("factory provides Tools");
+        assert!(bare_tools.resolve(&bare, "calculator").is_some());
     }
 }

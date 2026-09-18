@@ -5,6 +5,7 @@
 
 use crate::execution::Execute;
 use ares_store::agent_runs::{self, AgentRunMetadata};
+use ares_store::run_history::{redact_agent_run_error, tenant_no_retain};
 use ares_store::schedules::{compute_next_run, AgentSchedule, MissedRunAudit, ScheduleStore};
 use ares_store::PostgresClient;
 use chrono::{DateTime, Utc};
@@ -1131,6 +1132,8 @@ async fn execute_scheduled_agent(
         }
     };
 
+    // Redact the close-out error for tenants that opted into no-retain.
+    let no_retain = tenant_no_retain(&pool, &sched.tenant_id).await;
     let metadata = AgentRunMetadata {
         workspace_id: None,
         session_id: Some(run_id.clone()),
@@ -1146,6 +1149,7 @@ async fn execute_scheduled_agent(
         schedule_id: Some(sched.id.clone()),
         trigger_id: None,
     };
+    let error_msg = redact_agent_run_error(no_retain, error_msg.as_deref());
     if skill_run {
         sqlx::query(
             "UPDATE agent_runs SET status=$2, input_tokens=$3, output_tokens=$4, duration_ms=$5, error=$6 WHERE id=$1",

@@ -57,10 +57,21 @@ impl TenantDb {
 
         let mut tenants = Vec::new();
         for row in rows {
+            let id: String = row.get(0);
             let tier_str: String = row.get(2);
-            let tier = TenantTier::from_str(&tier_str).unwrap_or(TenantTier::Free);
+            let tier = match TenantTier::from_str(&tier_str) {
+                Some(tier) => tier,
+                None => {
+                    tracing::warn!(
+                        tenant_id = %id,
+                        tier = %tier_str,
+                        "Unknown tenants.tier value; applying free limits"
+                    );
+                    TenantTier::Free
+                }
+            };
             tenants.push(Tenant {
-                id: row.get(0),
+                id,
                 name: row.get(1),
                 tier,
                 created_at: row.get(3),
@@ -81,7 +92,17 @@ impl TenantDb {
 
         if let Some(row) = row {
             let tier_str: String = row.get(2);
-            let tier = TenantTier::from_str(&tier_str).unwrap_or(TenantTier::Free);
+            let tier = match TenantTier::from_str(&tier_str) {
+                Some(tier) => tier,
+                None => {
+                    tracing::warn!(
+                        tenant_id = %tenant_id,
+                        tier = %tier_str,
+                        "Unknown tenants.tier value; applying free limits"
+                    );
+                    TenantTier::Free
+                }
+            };
             Ok(Some(Tenant {
                 id: row.get(0),
                 name: row.get(1),
@@ -249,7 +270,17 @@ impl TenantDb {
             }
 
             let tenant_id: String = row.get(1);
-            let tier = TenantTier::from_str(&tier_str).unwrap_or(TenantTier::Free);
+            let tier = match TenantTier::from_str(&tier_str) {
+                Some(tier) => tier,
+                None => {
+                    tracing::warn!(
+                        tenant_id = %tenant_id,
+                        tier = %tier_str,
+                        "Unknown tenants.tier value; applying free limits"
+                    );
+                    TenantTier::Free
+                }
+            };
             let scopes = normalize_api_key_scope(Some(&scopes_raw));
 
             // Heartbeat `last_used_at` (032) on every successful verify.
@@ -1080,6 +1111,13 @@ mod tests {
     }
 
     #[test]
+    fn test_tenant_tier_from_str_legacy_ladder_aliases() {
+        assert_eq!(TenantTier::from_str("starter"), Some(TenantTier::Dev));
+        assert_eq!(TenantTier::from_str("growth"), Some(TenantTier::Pro));
+        assert_eq!(TenantTier::from_str("GROWTH"), Some(TenantTier::Pro));
+    }
+
+    #[test]
     fn test_tenant_tier_as_str_matches_serde_names() {
         for tier in [
             TenantTier::Free,
@@ -1314,6 +1352,45 @@ mod tests {
             .expect("get2");
         let ts2 = stamped2.last_used_at.expect("second stamp");
         assert!(ts2 >= ts, "second stamp {ts2} < first {ts}");
+
+        db.delete_tenant(&tenant.id).await.expect("cleanup");
+    }
+
+    // ── Integration: legacy ladder tier rows keep their limits ──────────
+
+    #[tokio::test]
+    async fn integration_verify_growth_tier_row_yields_pro_limits() {
+        let db = live_tenant_db().await;
+        let tenant = db
+            .create_tenant(
+                format!("tenant-growth-{}", uuid::Uuid::new_v4()),
+                TenantTier::Free,
+            )
+            .await
+            .expect("create tenant");
+        // Simulate a live row written with the pre-ladder "growth" label.
+        sqlx::query("UPDATE tenants SET tier = 'growth' WHERE id = $1")
+            .bind(&tenant.id)
+            .execute(db.pool())
+            .await
+            .expect("rewrite tier label");
+        let (_key_meta, raw_key) = db
+            .create_api_key(&tenant.id, "growth-key".into(), None, None)
+            .await
+            .expect("create key");
+
+        let ctx = db
+            .verify_api_key(&raw_key)
+            .await
+            .expect("verify")
+            .expect("must verify");
+        let pro = ares_types::models::tenant::TenantQuota::pro();
+        assert_eq!(ctx.tier, TenantTier::Pro);
+        assert_eq!(ctx.quota.tier, TenantTier::Pro);
+        assert_eq!(ctx.quota.requests_per_month, pro.requests_per_month);
+        assert_eq!(ctx.quota.requests_per_day, pro.requests_per_day);
+        assert_eq!(ctx.quota.tokens_per_month, pro.tokens_per_month);
+        assert_eq!(ctx.quota.max_agents, pro.max_agents);
 
         db.delete_tenant(&tenant.id).await.expect("cleanup");
     }

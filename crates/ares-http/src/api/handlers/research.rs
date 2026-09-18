@@ -20,7 +20,21 @@ async fn jwt_tenant_tier(ctx: &Arc<Context>, tenant_id: &str) -> ares_types::mod
     };
     match db.get_tenant(tenant_id).await {
         Ok(Some(tenant)) => tenant.tier,
-        _ => ares_types::models::TenantTier::Free,
+        Ok(None) => {
+            tracing::warn!(
+                tenant_id = %tenant_id,
+                "JWT tenant not found; defaulting to free tier"
+            );
+            ares_types::models::TenantTier::Free
+        }
+        Err(e) => {
+            tracing::warn!(
+                tenant_id = %tenant_id,
+                error = %e,
+                "JWT tenant lookup failed; defaulting to free tier"
+            );
+            ares_types::models::TenantTier::Free
+        }
     }
 }
 

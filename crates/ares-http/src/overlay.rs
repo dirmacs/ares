@@ -2625,6 +2625,7 @@ api_key_env = "API"
     fn test_database_config_serde_roundtrip() {
         let db = DatabaseConfig {
             url: "postgres://user:pass@host/db".into(),
+            max_connections: Some(12),
             qdrant: Some(QdrantConfig {
                 url: "http://qdrant:6333".into(),
                 api_key_env: Some("Q_KEY".into()),
@@ -2632,9 +2633,15 @@ api_key_env = "API"
         };
         let decoded: DatabaseConfig = toml::from_str(&toml::to_string(&db).unwrap()).unwrap();
         assert_eq!(decoded.url, "postgres://user:pass@host/db");
+        assert_eq!(decoded.max_connections, Some(12));
         let q = decoded.qdrant.unwrap();
         assert_eq!(q.url, "http://qdrant:6333");
         assert_eq!(q.api_key_env.as_deref(), Some("Q_KEY"));
+
+        // An absent pool ceiling stays `None` and is not serialized.
+        let bare: DatabaseConfig = toml::from_str("url = \"postgres://host/db\"").unwrap();
+        assert_eq!(bare.max_connections, None);
+        assert!(!toml::to_string(&bare).unwrap().contains("max_connections"));
     }
 
     #[test]

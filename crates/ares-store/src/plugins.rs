@@ -53,8 +53,13 @@ fn factory_store(
         };
 
     let url = crate::postgres::resolve_database_url(Some(&db.url));
-    let pg = block_on_async(crate::PostgresClient::new_remote(url, String::new()))
-        .map_err(|e| CordisError::Configuration(e.to_string()))?;
+    let max_connections = crate::postgres::resolve_max_connections(db.max_connections);
+    tracing::info!(max_connections, "Store connection pool size");
+    let pg = block_on_async(crate::PostgresClient::new_remote_with_max_connections(
+        url,
+        max_connections,
+    ))
+    .map_err(|e| CordisError::Configuration(e.to_string()))?;
     let pg_arc = Arc::new(pg);
     ctx.provide_arc(pg_arc.clone());
 

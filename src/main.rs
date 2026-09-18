@@ -1145,7 +1145,7 @@ async fn run_mcp_server(config_path: &std::path::Path) -> Result<(), Box<dyn std
     let config = AresConfig::load_unchecked(config_path_str)?;
 
     // Initialize database
-    let db = init_postgres_db(&config.database.url).await?;
+    let db = init_postgres_db(&config.database).await?;
     let pool = db.pool.clone();
     let tenant_db = Arc::new(ares_store::TenantDb::new(Arc::new(db)));
 
@@ -1163,11 +1163,15 @@ async fn run_mcp_server(config_path: &std::path::Path) -> Result<(), Box<dyn std
     Ok(())
 }
 
-/// Initialize PostgreSQL database
+/// Initialize PostgreSQL database from the `[database]` config section.
 #[cfg(feature = "postgres")]
-async fn init_postgres_db(url: &str) -> Result<PostgresClient, Box<dyn std::error::Error>> {
-    tracing::info!(database_url = %url, "Initializing PostgreSQL database");
-    Ok(PostgresClient::new_local(url).await?)
+async fn init_postgres_db(
+    db: &ares_store::DatabaseConfig,
+) -> Result<PostgresClient, Box<dyn std::error::Error>> {
+    let url = ares_store::postgres::resolve_database_url(Some(&db.url));
+    let max_connections = ares_store::postgres::resolve_max_connections(db.max_connections);
+    tracing::info!(database_url = %url, max_connections, "Initializing PostgreSQL database");
+    Ok(PostgresClient::new_remote_with_max_connections(url, max_connections).await?)
 }
 
 /// Build CORS layer from configuration

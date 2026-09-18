@@ -59,6 +59,7 @@ Secrets live in environment variables by name, never in `ares.toml`. Expiry valu
 | Field | Default | Meaning |
 |---|---|---|
 | `url` | `postgres://postgres:postgres@localhost:5432/ares` | PostgreSQL connection string. Holds tenants, agents, skills, run history, billing, and compaction snapshots. |
+| `max_connections` | none (resolves `DATABASE_MAX_CONNECTIONS`, then 20) | Maximum PostgreSQL pool connections. The 60 s scheduler tick and request traffic share this pool. |
 | `qdrant` | none | Optional `QdrantConfig` table for an external vector store. See RAG. |
 
 ### `[providers.*]` group

@@ -2,7 +2,7 @@
 //!
 //! The keys here protect nothing. Seeds are fixed so tests stay
 //! deterministic. The JWKS document and the signed token use the same
-//! canonical dirmacs-auth encoder that Eruka uses.
+//! issuer wire format that Eruka uses.
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -47,16 +47,16 @@ pub(crate) fn jwks_json(keys: &[(&str, &[u8; 32])]) -> String {
 }
 
 /// Claims with an `ares/admin` role, matching an enriched Eruka token.
-pub(crate) fn dirmacs_claims() -> dirmacs_auth::Claims {
+pub(crate) fn dirmacs_claims() -> crate::auth::jwks::IssuerClaims {
     let now = chrono::Utc::now().timestamp();
-    dirmacs_auth::Claims {
+    crate::auth::jwks::IssuerClaims {
         sub: "user-1".into(),
         email: "admin@example.com".into(),
         exp: now + 3600,
         iat: now,
         roles: Some(std::collections::HashMap::from([(
             "ares".to_string(),
-            vec![dirmacs_auth::RoleEntry {
+            vec![crate::auth::jwks::RoleEntry {
                 role: "admin".into(),
                 resource_id: None,
             }],
@@ -68,7 +68,7 @@ pub(crate) fn dirmacs_claims() -> dirmacs_auth::Claims {
 /// Signs the standard admin claims with the Ed25519 key derived from `seed`.
 pub(crate) fn eddsa_token(seed: u8, kid: Option<&str>) -> String {
     let pem = pem_for_seed(seed);
-    dirmacs_auth::encode_token_with_pem_key(&dirmacs_claims(), &pem, kid).expect("sign EdDSA")
+    crate::auth::jwks::encode_token_with_pem_key(&dirmacs_claims(), &pem, kid).expect("sign EdDSA")
 }
 
 /// HMAC token with a chosen `kid` and algorithm (wrong-secret attacks).

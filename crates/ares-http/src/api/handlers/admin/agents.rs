@@ -46,6 +46,7 @@ pub async fn list_tenant_agents_handler(
 pub async fn create_tenant_agent_handler(
     State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
+    actor: AdminActor,
     Json(req): Json<CreateTenantAgentRequest>,
 ) -> Result<Json<TenantAgent>> {
     let tools = ctx.get::<ares_tools::Tools>().expect("Tools not provided");
@@ -65,7 +66,16 @@ pub async fn create_tenant_agent_handler(
         .clone();
     let aid = agent.id.clone();
     tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(&pool, "create_agent", "agent", &aid, None, None).await;
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "create_agent",
+            "agent",
+            &aid,
+            None,
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
     });
 
     Ok(Json(agent))
@@ -97,6 +107,7 @@ fn split_merged_config_patch(
 pub async fn update_tenant_agent_handler(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name)): Path<(String, String)>,
+    actor: AdminActor,
     Json(mut req): Json<UpdateTenantAgentRequest>,
 ) -> Result<Json<TenantAgent>> {
     let __pool_3 = ctx
@@ -121,7 +132,16 @@ pub async fn update_tenant_agent_handler(
         .clone();
     let aid = agent.id.clone();
     tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(&pool, "update_agent", "agent", &aid, None, None).await;
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "update_agent",
+            "agent",
+            &aid,
+            None,
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
     });
 
     Ok(Json(agent))
@@ -130,6 +150,7 @@ pub async fn update_tenant_agent_handler(
 pub async fn delete_tenant_agent_handler(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name)): Path<(String, String)>,
+    actor: AdminActor,
 ) -> Result<StatusCode> {
     let __pool_4 = ctx
         .get::<ares_store::TenantDb>()
@@ -145,9 +166,16 @@ pub async fn delete_tenant_agent_handler(
         .clone();
     let resource_id = format!("{}:{}", tenant_id, agent_name);
     tokio::spawn(async move {
-        let _ =
-            audit_log::log_admin_action(&pool, "delete_agent", "agent", &resource_id, None, None)
-                .await;
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "delete_agent",
+            "agent",
+            &resource_id,
+            None,
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
     });
 
     Ok(StatusCode::NO_CONTENT)
@@ -189,6 +217,7 @@ pub async fn list_tenant_agent_versions_handler(
 pub async fn rollback_tenant_agent_version_handler(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name, version)): Path<(String, String, String)>,
+    actor: AdminActor,
 ) -> Result<Json<TenantAgent>> {
     let __pool_9 = ctx
         .get::<ares_store::TenantDb>()
@@ -211,7 +240,8 @@ pub async fn rollback_tenant_agent_version_handler(
             "agent",
             &resource_id,
             Some(&details),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -246,6 +276,7 @@ pub async fn get_agent(
 
 pub async fn create_agent(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Json(req): Json<CreateAgentRequest>,
 ) -> Result<Json<TenantAgent>> {
     let config = if let Some(tpl_id) = &req.template_id {
@@ -290,7 +321,16 @@ pub async fn create_agent(
         .clone();
     let aid = agent.id.clone();
     tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(&pool, "create_agent", "agent", &aid, None, None).await;
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "create_agent",
+            "agent",
+            &aid,
+            None,
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
     });
 
     Ok(Json(agent))
@@ -299,6 +339,7 @@ pub async fn create_agent(
 pub async fn update_agent(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name)): Path<(String, String)>,
+    actor: AdminActor,
     Json(mut req): Json<UpdateAgentRequest>,
 ) -> Result<Json<TenantAgent>> {
     let __pool_14 = ctx
@@ -329,7 +370,16 @@ pub async fn update_agent(
         .clone();
     let aid = agent.id.clone();
     tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(&pool, "update_agent", "agent", &aid, None, None).await;
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "update_agent",
+            "agent",
+            &aid,
+            None,
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
     });
 
     Ok(Json(agent))
@@ -338,6 +388,7 @@ pub async fn update_agent(
 pub async fn delete_agent(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name)): Path<(String, String)>,
+    actor: AdminActor,
 ) -> Result<StatusCode> {
     let __pool_15 = ctx
         .get::<ares_store::TenantDb>()
@@ -353,9 +404,16 @@ pub async fn delete_agent(
         .clone();
     let resource_id = format!("{}:{}", tenant_id, agent_name);
     tokio::spawn(async move {
-        let _ =
-            audit_log::log_admin_action(&pool, "delete_agent", "agent", &resource_id, None, None)
-                .await;
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "delete_agent",
+            "agent",
+            &resource_id,
+            None,
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
     });
 
     Ok(StatusCode::NO_CONTENT)
@@ -397,6 +455,7 @@ pub async fn get_agent_versions(
 pub async fn rollback_agent(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name, version)): Path<(String, String, String)>,
+    actor: AdminActor,
 ) -> Result<Json<TenantAgent>> {
     let __pool_20 = ctx
         .get::<ares_store::TenantDb>()
@@ -420,7 +479,8 @@ pub async fn rollback_agent(
             "agent",
             &resource_id,
             Some(&details),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -430,6 +490,7 @@ pub async fn rollback_agent(
 
 pub async fn create_agent_template_handler(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Json(req): Json<CreateTemplateRequest>,
 ) -> Result<Json<AgentTemplate>> {
     let __pool_21 = ctx
@@ -453,7 +514,8 @@ pub async fn create_agent_template_handler(
             "agent_template",
             &tid,
             None,
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -464,6 +526,7 @@ pub async fn create_agent_template_handler(
 pub async fn delete_agent_template_handler(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
+    actor: AdminActor,
 ) -> Result<StatusCode> {
     let __pool_22 = ctx
         .get::<ares_store::TenantDb>()
@@ -491,7 +554,8 @@ pub async fn delete_agent_template_handler(
             "agent_template",
             &id,
             None,
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -732,6 +796,7 @@ pub async fn get_emergency_stop_handler(
 /// When active, agent execution entrypoints are rejected with 503.
 pub async fn emergency_stop_handler(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Json(payload): Json<EmergencyStopRequest>,
 ) -> Result<Json<EmergencyStopStatus>> {
     ctx.get::<ares_agent::EmergencyStop>()
@@ -751,8 +816,16 @@ pub async fn emergency_stop_handler(
         .pool()
         .clone();
     tokio::spawn(async move {
-        let _ =
-            audit_log::log_admin_action(&pool, action, "platform", "all_agents", None, None).await;
+        let _ = audit_log::log_admin_action(
+            &pool,
+            action,
+            "platform",
+            "all_agents",
+            None,
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
     });
 
     Ok(Json(emergency_stop_status(payload.active)))

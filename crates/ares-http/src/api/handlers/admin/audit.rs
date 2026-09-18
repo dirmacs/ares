@@ -38,6 +38,7 @@ pub async fn list_alerts(
 pub async fn resolve_alert(
     State(ctx): State<Arc<Context>>,
     Path(alert_id): Path<String>,
+    actor: AdminActor,
     Json(payload): Json<ResolveAlertRequest>,
 ) -> Result<StatusCode> {
     let __pool_2 = ctx
@@ -53,8 +54,16 @@ pub async fn resolve_alert(
         .pool()
         .clone();
     tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(&pool, "resolve_alert", "alert", &alert_id, None, None)
-            .await;
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "resolve_alert",
+            "alert",
+            &alert_id,
+            None,
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
     });
 
     Ok(StatusCode::OK)
@@ -148,6 +157,7 @@ pub async fn list_agent_runs_handler(
 pub async fn create_agent_run_feedback_handler(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name, run_id)): Path<(String, String, String)>,
+    actor: AdminActor,
     Json(payload): Json<CreateAgentRunFeedbackRequest>,
 ) -> Result<Json<agent_feedback::AgentRunFeedback>> {
     let __pool_6 = ctx
@@ -189,7 +199,8 @@ pub async fn create_agent_run_feedback_handler(
             "agent_run",
             &tenant_id,
             Some(&details),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });

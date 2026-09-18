@@ -4,11 +4,11 @@ use sqlx::{PgPool, Row};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const INSERT_ADMIN_AUDIT_LOG_SQL: &str = "\
-INSERT INTO admin_audit_log (id, action, resource_type, resource_id, details, admin_ip, created_at)
- VALUES ($1, $2, $3, $4, $5, $6, $7)";
+INSERT INTO admin_audit_log (id, action, resource_type, resource_id, details, admin_ip, actor, created_at)
+ VALUES ($1, $2, $3, $4, $5, $6, $7, $8)";
 
 const LIST_ADMIN_AUDIT_LOG_SQL: &str = "\
-SELECT id, action, resource_type, resource_id, details, admin_ip, created_at
+SELECT id, action, resource_type, resource_id, details, admin_ip, actor, created_at
  FROM admin_audit_log ORDER BY created_at DESC, id ASC LIMIT $1 OFFSET $2";
 
 fn now_ts() -> i64 {
@@ -26,6 +26,10 @@ pub struct AuditLogEntry {
     pub resource_id: String,
     pub details: Option<String>,
     pub admin_ip: Option<String>,
+    /// Who performed the action: the JWT `sub` claim, or the literal
+    /// `admin_secret` for requests authenticated with the static
+    /// `X-Admin-Secret` header. NULL for rows written before migration 034.
+    pub actor: Option<String>,
     pub created_at: i64,
 }
 
@@ -36,6 +40,7 @@ pub async fn log_admin_action(
     resource_id: &str,
     details: Option<&str>,
     admin_ip: Option<&str>,
+    actor: Option<&str>,
 ) -> Result<()> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = now_ts();
@@ -47,6 +52,7 @@ pub async fn log_admin_action(
         .bind(resource_id)
         .bind(details)
         .bind(admin_ip)
+        .bind(actor)
         .bind(now)
         .execute(pool)
         .await
@@ -72,6 +78,7 @@ pub async fn list_audit_log(pool: &PgPool, limit: i64, offset: i64) -> Result<Ve
                 resource_id: row.get("resource_id"),
                 details: row.get("details"),
                 admin_ip: row.get("admin_ip"),
+                actor: row.get("actor"),
                 created_at: row.get("created_at"),
             })
         })
@@ -93,6 +100,7 @@ mod tests {
             resource_id: "t-abc".into(),
             details: None,
             admin_ip: None,
+            actor: None,
             created_at: 1_700_000_000,
         }
     }
@@ -105,6 +113,7 @@ mod tests {
             resource_id: "agent-9".into(),
             details: Some("removed stale config".into()),
             admin_ip: Some("203.0.113.10".into()),
+            actor: Some("admin-user".into()),
             created_at: 1_700_000_100,
         }
     }
@@ -157,6 +166,7 @@ mod tests {
         assert_eq!(restored.resource_id, entry.resource_id);
         assert_eq!(restored.details, None);
         assert_eq!(restored.admin_ip, None);
+        assert_eq!(restored.actor, None);
         assert_eq!(restored.created_at, entry.created_at);
     }
 
@@ -167,6 +177,7 @@ mod tests {
         let restored: AuditLogEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.details.as_deref(), Some("removed stale config"));
         assert_eq!(restored.admin_ip.as_deref(), Some("203.0.113.10"));
+        assert_eq!(restored.actor.as_deref(), Some("admin-user"));
         assert_eq!(restored.created_at, 1_700_000_100);
     }
 
@@ -181,6 +192,7 @@ mod tests {
             "resource_id",
             "details",
             "admin_ip",
+            "actor",
             "created_at",
         ] {
             assert!(json.get(key).is_some(), "missing key: {key}");
@@ -193,6 +205,7 @@ mod tests {
         let json = serde_json::to_value(&entry).unwrap();
         assert!(json["details"].is_null());
         assert!(json["admin_ip"].is_null());
+        assert!(json["actor"].is_null());
     }
 
     #[test]
@@ -212,6 +225,7 @@ mod tests {
             resource_id: String::new(),
             details: Some(String::new()),
             admin_ip: Some(String::new()),
+            actor: Some(String::new()),
             created_at: 0,
         };
         let restored: AuditLogEntry =
@@ -336,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn insert_sql_binds_all_seven_columns() {
+    fn insert_sql_binds_all_eight_columns() {
         for col in &[
             "id",
             "action",
@@ -344,6 +358,7 @@ mod tests {
             "resource_id",
             "details",
             "admin_ip",
+            "actor",
             "created_at",
         ] {
             assert!(
@@ -351,7 +366,7 @@ mod tests {
                 "missing column in INSERT: {col}"
             );
         }
-        assert!(INSERT_ADMIN_AUDIT_LOG_SQL.contains("$7"));
+        assert!(INSERT_ADMIN_AUDIT_LOG_SQL.contains("$8"));
     }
 
     #[test]
@@ -374,6 +389,7 @@ mod tests {
             "resource_id",
             "details",
             "admin_ip",
+            "actor",
             "created_at",
         ] {
             assert!(
@@ -404,7 +420,7 @@ mod tests {
     #[tokio::test]
     async fn log_admin_action_maps_execute_error_to_database() {
         let pool = unreachable_postgres_pool();
-        let err = log_admin_action(&pool, "create", "tenant", "t-1", None, None)
+        let err = log_admin_action(&pool, "create", "tenant", "t-1", None, None, None)
             .await
             .unwrap_err();
         matches::assert_matches!(err, AppError::Database(msg) if !msg.is_empty());

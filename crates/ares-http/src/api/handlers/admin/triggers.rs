@@ -1,6 +1,7 @@
 //! Admin triggers domain — cordis Phase6
 //! Bodies moved from `admin.rs` (190KB/5946 lines).
 
+use super::AdminActor;
 use crate::HttpError;
 use crate::Result;
 use ::cordis::Context;
@@ -38,6 +39,7 @@ pub async fn list_triggers(
 
 pub async fn create_trigger(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Json(req): Json<db_schedules::CreateTriggerRequest>,
 ) -> Result<Json<db_schedules::EventTrigger>> {
     let __pool_2 = ctx
@@ -62,7 +64,8 @@ pub async fn create_trigger(
             "event_trigger",
             &tr_name,
             Some(&t_id),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -73,6 +76,7 @@ pub async fn create_trigger(
 pub async fn delete_trigger(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
+    actor: AdminActor,
 ) -> Result<StatusCode> {
     let __pool_3 = ctx
         .get::<ares_store::TenantDb>()
@@ -94,9 +98,16 @@ pub async fn delete_trigger(
         .clone();
     let tid = id.clone();
     tokio::spawn(async move {
-        let _ =
-            audit_log::log_admin_action(&pool, "trigger_delete", "event_trigger", &tid, None, None)
-                .await;
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "trigger_delete",
+            "event_trigger",
+            &tid,
+            None,
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
     });
 
     Ok(StatusCode::NO_CONTENT)
@@ -119,6 +130,7 @@ pub async fn list_tenant_triggers(
 pub async fn create_tenant_trigger(
     State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
+    actor: AdminActor,
     Json(mut req): Json<db_schedules::CreateTriggerRequest>,
 ) -> Result<Json<db_schedules::EventTrigger>> {
     req.tenant_id = tenant_id;
@@ -144,7 +156,8 @@ pub async fn create_tenant_trigger(
             "event_trigger",
             &tr_name,
             Some(&t_id),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -155,6 +168,7 @@ pub async fn create_tenant_trigger(
 pub async fn update_tenant_trigger(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, id)): Path<(String, String)>,
+    actor: AdminActor,
     Json(mut req): Json<db_schedules::CreateTriggerRequest>,
 ) -> Result<Json<db_schedules::EventTrigger>> {
     req.tenant_id = tenant_id.clone();
@@ -185,7 +199,8 @@ pub async fn update_tenant_trigger(
             "event_trigger",
             &tr_name,
             Some(&t_id),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -196,6 +211,7 @@ pub async fn update_tenant_trigger(
 pub async fn delete_tenant_trigger(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, id)): Path<(String, String)>,
+    actor: AdminActor,
 ) -> Result<StatusCode> {
     let __pool_7 = ctx
         .get::<ares_store::TenantDb>()
@@ -222,7 +238,8 @@ pub async fn delete_tenant_trigger(
             "event_trigger",
             &id,
             Some(&tenant_id),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });

@@ -56,6 +56,7 @@ pub async fn get_skill(
 
 pub async fn create_skill(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Json(req): Json<db_skills::CreateSkillRequest>,
 ) -> Result<Json<db_skills::Skill>> {
     let __pool_3 = ctx
@@ -74,9 +75,16 @@ pub async fn create_skill(
     let t_id = skill.tenant_id.clone();
     let s_name = skill.name.clone();
     tokio::spawn(async move {
-        let _ =
-            audit_log::log_admin_action(&pool, "skill_create", "skill", &s_name, Some(&t_id), None)
-                .await;
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "skill_create",
+            "skill",
+            &s_name,
+            Some(&t_id),
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
     });
 
     Ok(Json(skill))
@@ -85,6 +93,7 @@ pub async fn create_skill(
 pub async fn update_skill(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
+    actor: AdminActor,
     Json(req): Json<db_skills::CreateSkillRequest>,
 ) -> Result<Json<db_skills::Skill>> {
     normalized_skill_tenant_id(&req.tenant_id)?;
@@ -107,9 +116,16 @@ pub async fn update_skill(
     let t_id = skill.tenant_id.clone();
     let s_name = skill.name.clone();
     tokio::spawn(async move {
-        let _ =
-            audit_log::log_admin_action(&pool, "skill_update", "skill", &s_name, Some(&t_id), None)
-                .await;
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "skill_update",
+            "skill",
+            &s_name,
+            Some(&t_id),
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
     });
 
     Ok(Json(skill))
@@ -119,6 +135,7 @@ pub async fn delete_skill(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
+    actor: AdminActor,
 ) -> Result<StatusCode> {
     let tenant_id = required_skill_tenant_id(&params)?.to_string();
     let __pool_5 = ctx
@@ -142,9 +159,16 @@ pub async fn delete_skill(
     let sid = id.clone();
     let t_id = tenant_id.clone();
     tokio::spawn(async move {
-        let _ =
-            audit_log::log_admin_action(&pool, "skill_delete", "skill", &sid, Some(&t_id), None)
-                .await;
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "skill_delete",
+            "skill",
+            &sid,
+            Some(&t_id),
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
     });
 
     Ok(StatusCode::NO_CONTENT)
@@ -274,6 +298,7 @@ pub async fn list_connectors(
 
 pub async fn create_connector(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Json(req): Json<db_skills::CreateConnectorRequest>,
 ) -> Result<Json<db_skills::Connector>> {
     let __pool_10 = ctx
@@ -298,7 +323,8 @@ pub async fn create_connector(
             "connector",
             &c_name,
             Some(&t_id),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -309,6 +335,7 @@ pub async fn create_connector(
 pub async fn update_connector(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
+    actor: AdminActor,
     Json(req): Json<db_skills::CreateConnectorRequest>,
 ) -> Result<Json<db_skills::Connector>> {
     let __pool_11 = ctx
@@ -336,7 +363,8 @@ pub async fn update_connector(
             "connector",
             &c_name,
             Some(&t_id),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -347,6 +375,7 @@ pub async fn update_connector(
 pub async fn delete_connector(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
+    actor: AdminActor,
 ) -> Result<StatusCode> {
     let __pool_12 = ctx
         .get::<ares_store::TenantDb>()
@@ -368,9 +397,16 @@ pub async fn delete_connector(
         .clone();
     let cid = id.clone();
     tokio::spawn(async move {
-        let _ =
-            audit_log::log_admin_action(&pool, "connector_delete", "connector", &cid, None, None)
-                .await;
+        let _ = audit_log::log_admin_action(
+            &pool,
+            "connector_delete",
+            "connector",
+            &cid,
+            None,
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
     });
 
     Ok(StatusCode::NO_CONTENT)
@@ -379,6 +415,7 @@ pub async fn delete_connector(
 pub async fn delete_tenant_connector(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, id)): Path<(String, String)>,
+    actor: AdminActor,
 ) -> Result<StatusCode> {
     let __pool_13 = ctx
         .get::<ares_store::TenantDb>()
@@ -407,7 +444,8 @@ pub async fn delete_tenant_connector(
             "connector",
             &cid,
             Some(&t_id),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -576,6 +614,7 @@ pub async fn list_oauth_credentials(
 pub async fn create_oauth_credential(
     State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
+    actor: AdminActor,
     Json(mut req): Json<ares_store::oauth_credentials::CreateOAuthCredentialRequest>,
 ) -> Result<Json<OAuthCredentialResponse>> {
     normalize_oauth_credential_request(tenant_id, &mut req)?;
@@ -601,7 +640,8 @@ pub async fn create_oauth_credential(
             "oauth_credential",
             &cred_id,
             Some(&t_id),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -612,6 +652,7 @@ pub async fn create_oauth_credential(
 pub async fn delete_oauth_credential(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, id)): Path<(String, String)>,
+    actor: AdminActor,
 ) -> Result<StatusCode> {
     let __pool_18 = ctx
         .get::<ares_store::TenantDb>()
@@ -638,7 +679,8 @@ pub async fn delete_oauth_credential(
             "oauth_credential",
             &id,
             Some(&tenant_id),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });

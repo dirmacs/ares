@@ -56,6 +56,7 @@ pub async fn get_runtime_tool(
 /// [`RuntimeToolRegistry`] is reloaded so agents see the tool immediately.
 pub async fn create_runtime_tool(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Json(req): Json<CreateRuntimeToolRequest>,
 ) -> Result<Json<serde_json::Value>> {
     validate_runtime_tool_execution_config(&req.tool_type, &req.execution_config)?;
@@ -91,7 +92,8 @@ pub async fn create_runtime_tool(
             "runtime_tool",
             &tool_id,
             Some(&details),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -109,6 +111,7 @@ pub async fn create_runtime_tool(
 pub async fn update_runtime_tool(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
+    actor: AdminActor,
     Json(req): Json<UpdateRuntimeToolRequest>,
 ) -> Result<Json<serde_json::Value>> {
     validate_runtime_tool_update_scope_preflight(&req)?;
@@ -143,7 +146,8 @@ pub async fn update_runtime_tool(
             "runtime_tool",
             &tool_id,
             Some(&details),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -160,6 +164,7 @@ pub async fn update_runtime_tool(
 pub async fn delete_runtime_tool(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
+    actor: AdminActor,
 ) -> Result<Json<serde_json::Value>> {
     let __pool_5 = ctx
         .get::<ares_store::TenantDb>()
@@ -189,7 +194,8 @@ pub async fn delete_runtime_tool(
             "runtime_tool",
             &tool_id,
             None,
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -204,6 +210,7 @@ pub async fn delete_runtime_tool(
 pub async fn test_runtime_tool(
     State(ctx): State<Arc<Context>>,
     Path(id): Path<String>,
+    actor: AdminActor,
     Json(req): Json<TestRuntimeToolRequest>,
 ) -> Result<Json<TestRuntimeToolResponse>> {
     let __pool_6 = ctx
@@ -274,7 +281,8 @@ pub async fn test_runtime_tool(
             "runtime_tool",
             &tool_id,
             Some(&details),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -315,6 +323,7 @@ pub async fn list_runtime_tool_versions(
 pub async fn rollback_runtime_tool(
     State(ctx): State<Arc<Context>>,
     Path((id, version)): Path<(String, i32)>,
+    actor: AdminActor,
 ) -> Result<Json<serde_json::Value>> {
     let __pool_8 = ctx
         .get::<ares_store::TenantDb>()
@@ -371,7 +380,8 @@ pub async fn rollback_runtime_tool(
             "runtime_tool",
             &tool_id,
             Some(&details),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });

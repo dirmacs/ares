@@ -18,6 +18,7 @@ use sha2::Digest;
 pub async fn upsert_fleet_provider(
     State(ctx): State<Arc<Context>>,
     Path(provider_name): Path<String>,
+    actor: AdminActor,
     Json(req): Json<FleetProviderUpsertRequest>,
 ) -> Result<Json<serde_json::Value>> {
     if provider_name.is_empty() {
@@ -51,7 +52,9 @@ pub async fn upsert_fleet_provider(
         )));
     }
 
-    let updated_by = "admin";
+    // Row identity comes from the admin request. The fallback keeps the old
+    // literal only for direct invocations that bypass admin middleware.
+    let updated_by = actor.audit_actor().unwrap_or("admin");
     let fallback_slice = req.fallback_providers.as_deref();
     let stored = store
         .upsert(
@@ -94,7 +97,8 @@ pub async fn upsert_fleet_provider(
             "fleet_provider",
             &name,
             Some(&details),
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });
@@ -115,6 +119,7 @@ pub async fn upsert_fleet_provider(
 pub async fn delete_fleet_provider(
     State(ctx): State<Arc<Context>>,
     Path(provider_name): Path<String>,
+    actor: AdminActor,
 ) -> Result<Json<serde_json::Value>> {
     let __pool_2 = ctx
         .get::<ares_store::TenantDb>()
@@ -150,7 +155,8 @@ pub async fn delete_fleet_provider(
             "fleet_provider",
             &name,
             None,
-            None,
+            actor.ip(),
+            actor.audit_actor(),
         )
         .await;
     });

@@ -2831,13 +2831,16 @@ pub async fn receive_webhook(
             ))));
         }
         if trigger.enabled {
+            let message = serde_json::to_string(&payload).unwrap_or_default();
+            // Payload content is retention-sensitive (tenants can opt into
+            // no-retain); log metadata only, never the body.
             tracing::info!(
                 trigger_id = %trigger_id,
+                tenant_id = %trigger.tenant_id,
                 agent = %trigger.target_agent,
-                payload = %payload,
+                payload_bytes = message.len(),
                 "Webhook received — triggering agent"
             );
-            let message = serde_json::to_string(&payload).unwrap_or_default();
             if let Err(e) =
                 ares_agent::trigger::execute_triggered_agent(&trigger, &message, &ctx).await
             {

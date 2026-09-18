@@ -1,6 +1,6 @@
 //! Cached JWKS fetch and verification for asymmetric (EdDSA / RS256) tokens.
 //!
-//! [`dirmacs_auth::JwksKeySet`] holds the verification logic and the
+//! [`JwksKeySet`] holds the verification logic and the
 //! algorithm-confusion protection. It has no HTTP client, so this module
 //! fetches the JWKS document, caches the parsed key set, and refreshes it:
 //!
@@ -10,10 +10,319 @@
 //!
 //! When the issuer is down, the last good key set keeps serving requests.
 //! Fetch logs carry the URL and the error only, never key material or tokens.
+//!
+//! The wire contract mirrors the issuer: [`IssuerClaims`] carries
+//! `sub`/`email`/`exp`/`iat` plus the optional `roles` map and
+//! `token_version`. [`UserContext`] is the validated result.
 
-use dirmacs_auth::{AuthError, JwksKeySet, UserContext};
+use jsonwebtoken::jwk::{
+    AlgorithmParameters, EllipticCurve, Jwk, JwkSet, KeyAlgorithm, KeyOperations, PublicKeyUse,
+};
+use jsonwebtoken::{
+    decode, decode_header, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
+};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
+
+// =============================================================================
+// Issuer wire contract (self-contained; no private registry dependency)
+// =============================================================================
+
+/// Errors from issuer-token operations.
+#[derive(Debug, thiserror::Error)]
+pub enum AuthError {
+    #[error("Invalid or expired token: {0}")]
+    InvalidToken(String),
+
+    #[error("Missing required role: {product}/{role}")]
+    InsufficientRole { product: String, role: String },
+
+    #[error("Token expired")]
+    Expired,
+
+    #[error("Invalid JWKS document: {0}")]
+    InvalidJwks(String),
+
+    #[error("Unknown signing key id: {0}")]
+    UnknownKid(String),
+}
+
+/// A role entry for a specific product.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoleEntry {
+    pub role: String,
+    #[serde(default)]
+    pub resource_id: Option<String>,
+}
+
+/// JWT claims structure — matches the issuer wire contract
+/// (`sub`/`email`/`exp`/`iat`/`roles`/`token_version`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssuerClaims {
+    /// User ID (UUID)
+    pub sub: String,
+    /// User email
+    pub email: String,
+    /// Expiration (Unix timestamp)
+    pub exp: i64,
+    /// Issued at (Unix timestamp)
+    pub iat: i64,
+    /// Platform roles (optional — enriched tokens only)
+    #[serde(default)]
+    pub roles: Option<HashMap<String, Vec<RoleEntry>>>,
+    /// Token version — incremented on password change to invalidate old JWTs.
+    #[serde(default)]
+    pub token_version: Option<i32>,
+}
+
+/// Validated user context — the result of successful auth.
+#[derive(Debug, Clone)]
+pub struct UserContext {
+    pub user_id: String,
+    pub email: String,
+    pub roles: HashMap<String, Vec<RoleEntry>>,
+    pub token_version: i32,
+}
+
+impl UserContext {
+    /// Check if user has a specific role for a product.
+    pub fn has_role(&self, product: &str, role: &str) -> bool {
+        self.roles
+            .get(product)
+            .map(|entries| entries.iter().any(|e| e.role == role))
+            .unwrap_or(false)
+    }
+
+    /// Check if user has any role for a product.
+    pub fn has_access(&self, product: &str) -> bool {
+        self.roles.contains_key(product)
+    }
+
+    /// Check if user can access a specific resource (e.g., tenant_id).
+    pub fn can_access_resource(&self, product: &str, resource_id: &str) -> bool {
+        self.roles
+            .get(product)
+            .map(|entries| {
+                entries.iter().any(|e| {
+                    // Admin role = access everything
+                    e.role == "admin"
+                        || e.role == "owner"
+                        || e.resource_id.as_deref() == Some(resource_id)
+                })
+            })
+            .unwrap_or(false)
+    }
+
+    /// Get all resource IDs the user can access for a product.
+    pub fn accessible_resources(&self, product: &str) -> Vec<String> {
+        self.roles
+            .get(product)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|e| e.resource_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Check if user is a platform admin (has admin role on 'admin' product).
+    pub fn is_platform_admin(&self) -> bool {
+        self.has_role("admin", "admin")
+    }
+}
+
+/// One key from the JWKS, ready for signature checks.
+#[derive(Debug, Clone)]
+struct VerifyingKey {
+    kid: Option<String>,
+    alg: Algorithm,
+    key: DecodingKey,
+}
+
+/// A parsed JWKS document that verifies EdDSA and RS256 tokens.
+#[derive(Debug, Clone)]
+pub struct JwksKeySet {
+    keys: Vec<VerifyingKey>,
+}
+
+impl JwksKeySet {
+    /// Parse a standard JWKS document (`{"keys": [...]}`, RFC 7517).
+    ///
+    /// The function fails on a malformed document. It also fails when the
+    /// document holds an `oct` key or no usable EdDSA or RS256 key. Keys
+    /// that declare another algorithm, and keys for encryption, are not
+    /// usable.
+    pub fn from_jwks_json(json: &str) -> Result<Self, AuthError> {
+        let parsed: JwkSet = serde_json::from_str(json)
+            .map_err(|e| AuthError::InvalidJwks(format!("JSON parse failed: {e}")))?;
+
+        let mut keys = Vec::new();
+        for jwk in &parsed.keys {
+            if let Some(key) = verifying_key_from_jwk(jwk)? {
+                keys.push(key);
+            }
+        }
+
+        if keys.is_empty() {
+            return Err(AuthError::InvalidJwks(
+                "no usable EdDSA or RS256 signing key".to_string(),
+            ));
+        }
+
+        Ok(Self { keys })
+    }
+
+    /// Verify a token against the key set and return the user context.
+    ///
+    /// A token with a `kid` must match the key with that `kid`. A token
+    /// without a `kid` must match a set with one key. The token algorithm
+    /// must be EdDSA or RS256. Expired tokens fail.
+    pub fn validate(&self, token: &str) -> Result<UserContext, AuthError> {
+        let header = decode_header(token).map_err(|e| AuthError::InvalidToken(e.to_string()))?;
+
+        // The header must name an algorithm of the asymmetric path. The
+        // header never selects key material and never weakens the check.
+        if !matches!(header.alg, Algorithm::EdDSA | Algorithm::RS256) {
+            return Err(AuthError::InvalidToken(format!(
+                "algorithm {:?} is not accepted by the JWKS path",
+                header.alg
+            )));
+        }
+
+        let verifying_key = match header.kid.as_deref() {
+            Some(kid) => self
+                .keys
+                .iter()
+                .find(|k| k.kid.as_deref() == Some(kid))
+                .ok_or_else(|| AuthError::UnknownKid(kid.to_string()))?,
+            None => match self.keys.as_slice() {
+                [only] => only,
+                _ => {
+                    return Err(AuthError::InvalidToken(
+                        "token has no kid and the key set does not hold one key".to_string(),
+                    ))
+                }
+            },
+        };
+
+        if verifying_key.alg != header.alg {
+            return Err(AuthError::InvalidToken(format!(
+                "algorithm {:?} does not match key algorithm {:?}",
+                header.alg, verifying_key.alg
+            )));
+        }
+
+        // Validation::new locks the algorithm list to one algorithm.
+        let mut validation = Validation::new(verifying_key.alg);
+        validation.leeway = 60; // 60 seconds clock skew tolerance
+
+        let token_data =
+            decode::<IssuerClaims>(token, &verifying_key.key, &validation).map_err(|e| {
+                if matches!(
+                    e.kind(),
+                    jsonwebtoken::errors::ErrorKind::ExpiredSignature
+                ) {
+                    AuthError::Expired
+                } else {
+                    AuthError::InvalidToken(e.to_string())
+                }
+            })?;
+
+        let claims = token_data.claims;
+
+        Ok(UserContext {
+            user_id: claims.sub,
+            email: claims.email,
+            roles: claims.roles.unwrap_or_default(),
+            token_version: claims.token_version.unwrap_or(0),
+        })
+    }
+}
+
+/// Map one JWK to a verification key. Key types outside this path return
+/// `None`. A symmetric key is an error.
+fn verifying_key_from_jwk(jwk: &Jwk) -> Result<Option<VerifyingKey>, AuthError> {
+    let alg = match &jwk.algorithm {
+        // A JWKS for signatures must never hold a shared secret.
+        AlgorithmParameters::OctetKey(_) => {
+            return Err(AuthError::InvalidJwks(
+                "symmetric (oct) key is not allowed".to_string(),
+            ))
+        }
+        AlgorithmParameters::OctetKeyPair(params) if params.curve == EllipticCurve::Ed25519 => {
+            Algorithm::EdDSA
+        }
+        AlgorithmParameters::RSA(_) => Algorithm::RS256,
+        // Other key types, for example EC, are not part of this path.
+        _ => return Ok(None),
+    };
+
+    // A key for encryption must not check signatures.
+    if !matches!(
+        jwk.common.public_key_use,
+        None | Some(PublicKeyUse::Signature)
+    ) {
+        return Ok(None);
+    }
+    // A key with declared operations must allow signature verify.
+    if let Some(ops) = &jwk.common.key_operations {
+        if !ops.iter().any(|op| matches!(op, KeyOperations::Verify)) {
+            return Ok(None);
+        }
+    }
+
+    // A declared algorithm must name the algorithm used here.
+    if let Some(declared) = &jwk.common.key_algorithm {
+        let matches_key_type = matches!(
+            (declared, alg),
+            (KeyAlgorithm::EdDSA, Algorithm::EdDSA) | (KeyAlgorithm::RS256, Algorithm::RS256)
+        );
+        if !matches_key_type {
+            return Err(AuthError::InvalidJwks(format!(
+                "key {:?} declares {declared:?} but its type maps to {alg:?}",
+                jwk.common.key_id
+            )));
+        }
+    }
+
+    let key = DecodingKey::from_jwk(jwk)
+        .map_err(|e| AuthError::InvalidJwks(format!("key parse failed: {e}")))?;
+
+    Ok(Some(VerifyingKey {
+        kid: jwk.common.key_id.clone(),
+        alg,
+        key,
+    }))
+}
+
+/// Encode claims into a JWT signed with an Ed25519 private key.
+///
+/// `pem_private` holds a PKCS#8 PEM key (`-----BEGIN PRIVATE KEY-----`).
+/// The JWT header carries `alg: EdDSA` and, when `kid` is some, the key
+/// id. Consumers check the token with [`JwksKeySet::validate`] and the
+/// public part of the same key.
+///
+/// Production code only verifies issuer tokens; this helper exists so tests
+/// can mint tokens with the same wire format the issuer produces.
+pub fn encode_token_with_pem_key(
+    claims: &IssuerClaims,
+    pem_private: &[u8],
+    kid: Option<&str>,
+) -> Result<String, AuthError> {
+    let key = EncodingKey::from_ed_pem(pem_private)
+        .map_err(|e| AuthError::InvalidToken(format!("Private key load failed: {}", e)))?;
+
+    let mut header = Header::new(Algorithm::EdDSA);
+    if let Some(kid) = kid {
+        header.kid = Some(kid.to_string());
+    }
+
+    encode(&header, claims, &key)
+        .map_err(|e| AuthError::InvalidToken(format!("Token encoding failed: {}", e)))
+}
 
 /// Default issuer JWKS endpoint (Eruka).
 pub const DEFAULT_JWKS_URL: &str = "https://eruka.dirmacs.com/.well-known/jwks.json";

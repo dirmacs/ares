@@ -95,7 +95,7 @@ pub(crate) fn has_admin_role(claims: &AdminClaims) -> bool {
 ///
 /// This is the JWKS-path twin of [`has_admin_role`]; both use the same
 /// product and role sets.
-pub(crate) fn user_context_has_admin_role(user: &dirmacs_auth::UserContext) -> bool {
+pub(crate) fn user_context_has_admin_role(user: &crate::auth::jwks::UserContext) -> bool {
     ADMIN_PRODUCTS
         .iter()
         .any(|product| user.has_role(product, "admin") || user.has_role(product, "super_admin"))
@@ -497,13 +497,14 @@ mod tests {
         let mut claims = dirmacs_claims();
         claims.roles = Some(std::collections::HashMap::from([(
             "ares".to_string(),
-            vec![dirmacs_auth::RoleEntry {
+            vec![crate::auth::jwks::RoleEntry {
                 role: "user".into(),
                 resource_id: None,
             }],
         )]));
-        let token = dirmacs_auth::encode_token_with_pem_key(&claims, &pem_for_seed(seed), Some(kid))
-            .expect("sign");
+        let token =
+            crate::auth::jwks::encode_token_with_pem_key(&claims, &pem_for_seed(seed), Some(kid))
+                .expect("sign");
         let response = app.oneshot(admin_test_request(&token)).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }

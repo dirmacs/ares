@@ -24,6 +24,23 @@ pub use sha2::{Digest, Sha256};
 pub use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Serializes tests that mutate the process-global `ADMIN_API_KEY` and
+/// `JWT_SECRET` env vars. The guard must span every awaited request,
+/// because the admin middleware reads those variables mid-await.
+#[cfg(test)]
+pub(crate) static ADMIN_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Acquires [`ADMIN_ENV_LOCK`] and recovers from poisoning.
+///
+/// One failing env test must not fail every later env test; each test
+/// sets or removes the variables it needs at the start.
+#[cfg(test)]
+pub(crate) fn lock_admin_env() -> std::sync::MutexGuard<'static, ()> {
+    ADMIN_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CreateTenantRequest {
     pub name: String,

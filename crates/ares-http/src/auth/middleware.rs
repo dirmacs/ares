@@ -83,7 +83,7 @@ pub async fn auth_middleware(auth_service: Arc<AuthService>, req: Request, next:
         });
 
     if let Some(token) = token {
-        match auth_service.verify_token(&token) {
+        match auth_service.verify_token(&token).await {
             Ok(claims) => {
                 let mut req = req;
                 if let Some(root) = req.extensions().get::<Arc<Context>>().cloned() {

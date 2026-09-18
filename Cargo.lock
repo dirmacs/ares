@@ -290,8 +290,11 @@ dependencies = [
  "async-trait",
  "axum 0.8.9",
  "axum-test",
+ "base64 0.22.1",
  "chrono",
+ "dirmacs-auth",
  "dotenvy",
+ "ed25519-dalek",
  "futures",
  "hex",
  "inventory",
@@ -3289,6 +3292,19 @@ dependencies = [
  "block-buffer 0.12.1",
  "const-oid 0.10.2",
  "crypto-common 0.2.2",
+]
+
+[[package]]
+name = "dirmacs-auth"
+version = "0.2.0"
+dependencies = [
+ "argon2",
+ "chrono",
+ "jsonwebtoken",
+ "rand 0.8.7",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

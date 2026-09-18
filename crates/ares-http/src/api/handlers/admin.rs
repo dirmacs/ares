@@ -74,19 +74,31 @@ pub(crate) struct RoleEntry {
     pub resource_id: Option<String>,
 }
 
+/// Products whose admin roles grant access to the ARES admin API.
+const ADMIN_PRODUCTS: [&str; 3] = ["admin", "ares", "eruka"];
+
+/// Roles that count as admin inside an accepted product.
+const ADMIN_ROLES: [&str; 2] = ["admin", "super_admin"];
+
 /// Check if JWT claims have admin or super_admin role in any of: "admin", "ares", "eruka".
 pub(crate) fn has_admin_role(claims: &AdminClaims) -> bool {
-    for product in ["admin", "ares", "eruka"] {
-        if let Some(entries) = claims.roles.get(product) {
-            if entries
+    ADMIN_PRODUCTS.iter().any(|product| {
+        claims.roles.get(*product).is_some_and(|entries| {
+            entries
                 .iter()
-                .any(|e| matches!(e.role.as_str(), "admin" | "super_admin"))
-            {
-                return true;
-            }
-        }
-    }
-    false
+                .any(|entry| ADMIN_ROLES.contains(&entry.role.as_str()))
+        })
+    })
+}
+
+/// Check whether a validated issuer user context holds a platform admin role.
+///
+/// This is the JWKS-path twin of [`has_admin_role`]; both use the same
+/// product and role sets.
+pub(crate) fn user_context_has_admin_role(user: &dirmacs_auth::UserContext) -> bool {
+    ADMIN_PRODUCTS
+        .iter()
+        .any(|product| user.has_role(product, "admin") || user.has_role(product, "super_admin"))
 }
 
 /// Identity of the admin request that passed [`admin_middleware`].
@@ -230,28 +242,21 @@ pub async fn admin_middleware(mut req: axum::extract::Request, next: Next) -> Re
             return next.run(req).await;
         }
     }
-    let jwt_secret = std::env::var("JWT_SECRET").unwrap_or_default();
-    if !jwt_secret.is_empty() {
-        if let Some(token) = admin_token_from_request(&req) {
-            let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
-            validation.leeway = 60;
-            if let Ok(data) = jsonwebtoken::decode::<AdminClaims>(
-                token,
-                &jsonwebtoken::DecodingKey::from_secret(jwt_secret.as_bytes()),
-                &validation,
-            ) {
-                if has_admin_role(&data.claims) {
-                    req.extensions_mut().insert(AdminActor {
-                        subject: Some(data.claims.sub.clone()),
-                        email: Some(data.claims.email.clone()),
-                        auth: Some("jwt"),
-                        client_ip,
-                    });
-                    return next.run(req).await;
-                }
-            }
+
+    // JWT path. The token header `alg` selects exactly one verification
+    // path: HS256 uses JWT_SECRET, EdDSA and RS256 use the issuer JWKS.
+    if let Some(token) = admin_token_from_request(&req) {
+        let jwks = req
+            .extensions()
+            .get::<Arc<crate::auth::jwks::JwksCache>>()
+            .cloned();
+        if let Some(mut actor) = admin_actor_from_token(&token, jwks).await {
+            actor.client_ip = client_ip;
+            req.extensions_mut().insert(actor);
+            return next.run(req).await;
         }
     }
+
     Response::builder()
         .status(StatusCode::UNAUTHORIZED)
         .header("Content-Type", "application/json")
@@ -260,6 +265,52 @@ pub async fn admin_middleware(mut req: axum::extract::Request, next: Next) -> Re
                 .into(),
         )
         .unwrap()
+}
+
+/// Build the admin identity from a request token when that token carries
+/// an admin role. Returns `None` for a bad signature, an unsupported
+/// algorithm, or a token without an admin role.
+///
+/// `jwks` is the injected key set; without one the shared env-configured
+/// cache serves the asymmetric path.
+async fn admin_actor_from_token(
+    token: &str,
+    jwks: Option<Arc<crate::auth::jwks::JwksCache>>,
+) -> Option<AdminActor> {
+    let header = jsonwebtoken::decode_header(token).ok()?;
+    match header.alg {
+        jsonwebtoken::Algorithm::HS256 => {
+            let jwt_secret = std::env::var("JWT_SECRET").unwrap_or_default();
+            if jwt_secret.is_empty() {
+                return None;
+            }
+            let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
+            validation.leeway = 60;
+            let data = jsonwebtoken::decode::<AdminClaims>(
+                token,
+                &jsonwebtoken::DecodingKey::from_secret(jwt_secret.as_bytes()),
+                &validation,
+            )
+            .ok()?;
+            has_admin_role(&data.claims).then(|| AdminActor {
+                subject: Some(data.claims.sub),
+                email: Some(data.claims.email),
+                auth: Some("jwt"),
+                client_ip: None,
+            })
+        }
+        jsonwebtoken::Algorithm::EdDSA | jsonwebtoken::Algorithm::RS256 => {
+            let jwks = jwks.unwrap_or_else(crate::auth::jwks::JwksCache::shared);
+            let user = jwks.validate(token).await.ok()?;
+            user_context_has_admin_role(&user).then(|| AdminActor {
+                subject: Some(user.user_id),
+                email: Some(user.email),
+                auth: Some("jwt"),
+                client_ip: None,
+            })
+        }
+        _ => None,
+    }
 }
 
 /// Merge all admin domain routers into one `Router<Arc<Context>>`.
@@ -375,5 +426,168 @@ mod tests {
             .unwrap();
         assert_eq!(actor.audit_actor(), Some("user-7"));
         assert_eq!(actor.ip(), Some("10.1.2.3"));
+    }
+
+    // -------------------------------------------------------------------------
+    // admin_middleware: dual verification (HS256 secret + EdDSA JWKS)
+    // -------------------------------------------------------------------------
+
+    async fn actor_handler(actor: AdminActor) -> String {
+        actor.audit_actor().unwrap_or_default().to_string()
+    }
+
+    /// App with the middleware under test and the JWKS cache injected, as
+    /// `create_router` wires it in production.
+    fn admin_test_app(jwks: Arc<crate::auth::jwks::JwksCache>) -> axum::Router {
+        axum::Router::new()
+            .route("/", axum::routing::get(actor_handler))
+            .layer(axum::middleware::from_fn(admin_middleware))
+            .layer(axum::middleware::from_fn(
+                move |mut req: axum::extract::Request, next: axum::middleware::Next| {
+                    let jwks = Arc::clone(&jwks);
+                    async move {
+                        req.extensions_mut().insert(jwks);
+                        next.run(req).await
+                    }
+                },
+            ))
+    }
+
+    fn admin_test_request(token: &str) -> axum::extract::Request {
+        Request::builder()
+            .uri("/")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    async fn response_body(response: axum::response::Response) -> String {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn admin_middleware_accepts_eddsa_admin_token_via_jwks() {
+        use crate::auth::test_keys::{eddsa_token, jwks_json, jwks_stub};
+        use tower::ServiceExt;
+
+        let seed = 21u8;
+        let kid = "eruka-admin-1";
+        let url = jwks_stub(jwks_json(&[(kid, &[seed; 32])])).await;
+        let app = admin_test_app(Arc::new(crate::auth::jwks::JwksCache::new(url)));
+
+        let token = eddsa_token(seed, Some(kid));
+        let response = app.oneshot(admin_test_request(&token)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_body(response).await, "user-1");
+    }
+
+    #[tokio::test]
+    async fn admin_middleware_rejects_eddsa_token_without_admin_role() {
+        use crate::auth::test_keys::{dirmacs_claims, jwks_json, jwks_stub, pem_for_seed};
+        use tower::ServiceExt;
+
+        let seed = 22u8;
+        let kid = "eruka-admin-2";
+        let url = jwks_stub(jwks_json(&[(kid, &[seed; 32])])).await;
+        let app = admin_test_app(Arc::new(crate::auth::jwks::JwksCache::new(url)));
+
+        let mut claims = dirmacs_claims();
+        claims.roles = Some(std::collections::HashMap::from([(
+            "ares".to_string(),
+            vec![dirmacs_auth::RoleEntry {
+                role: "user".into(),
+                resource_id: None,
+            }],
+        )]));
+        let token = dirmacs_auth::encode_token_with_pem_key(&claims, &pem_for_seed(seed), Some(kid))
+            .expect("sign");
+        let response = app.oneshot(admin_test_request(&token)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn admin_middleware_rejects_tampered_eddsa_token() {
+        use crate::auth::test_keys::{eddsa_token, jwks_json, jwks_stub};
+        use tower::ServiceExt;
+
+        let seed = 23u8;
+        let kid = "eruka-admin-3";
+        let url = jwks_stub(jwks_json(&[(kid, &[seed; 32])])).await;
+        let app = admin_test_app(Arc::new(crate::auth::jwks::JwksCache::new(url)));
+
+        let token = eddsa_token(seed, Some(kid));
+        let mut parts: Vec<String> = token.split('.').map(String::from).collect();
+        parts[1].push('x');
+        let response = app
+            .oneshot(admin_test_request(&parts.join(".")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn admin_middleware_keeps_hs256_and_admin_secret_paths() {
+        use crate::auth::test_keys::{eddsa_token, jwks_json, jwks_stub, rewrite_alg};
+        use tower::ServiceExt;
+
+        let env_guard = shared::lock_admin_env();
+        std::env::set_var("ADMIN_API_KEY", "test-admin-secret");
+        std::env::set_var("JWT_SECRET", "admin-test-secret-at-least-32-chars-long");
+
+        let seed = 24u8;
+        let kid = "eruka-admin-4";
+        let url = jwks_stub(jwks_json(&[(kid, &[seed; 32])])).await;
+        let app = admin_test_app(Arc::new(crate::auth::jwks::JwksCache::new(url)));
+
+        // X-Admin-Secret stays the first path.
+        let secret_req = Request::builder()
+            .uri("/")
+            .header("x-admin-secret", "test-admin-secret")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(secret_req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_body(response).await, "admin_secret");
+
+        // HS256 admin token: unchanged behavior.
+        let hs256_claims = serde_json::json!({
+            "sub": "hs256-admin",
+            "email": "admin@example.com",
+            "exp": chrono::Utc::now().timestamp() + 3600,
+            "iat": chrono::Utc::now().timestamp(),
+            "roles": { "ares": [{ "role": "admin" }] },
+        });
+        let hs256_token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+            &hs256_claims,
+            &jsonwebtoken::EncodingKey::from_secret(
+                b"admin-test-secret-at-least-32-chars-long",
+            ),
+        )
+        .expect("sign");
+        let response = app
+            .clone()
+            .oneshot(admin_test_request(&hs256_token))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_body(response).await, "hs256-admin");
+
+        // Downgrade attempt: an EdDSA token whose header now says HS256
+        // must not pass the HMAC path.
+        let downgraded = rewrite_alg(&eddsa_token(seed, Some(kid)), "HS256");
+        let response = app
+            .clone()
+            .oneshot(admin_test_request(&downgraded))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        std::env::remove_var("ADMIN_API_KEY");
+        std::env::remove_var("JWT_SECRET");
+        drop(env_guard);
     }
 }

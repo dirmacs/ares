@@ -210,7 +210,10 @@ fn factory_auth(
             auth_cfg.jwt_refresh_expiry,
         )
     };
-    tracing::info!("Auth service initialized");
+    // Startup JWKS fetch runs in the background; a slow issuer must not
+    // delay boot and the first asymmetric request retries on demand.
+    auth.warm_jwks();
+    tracing::info!("Auth service initialized; issuer JWKS warmup scheduled");
     block_on_plugin(ctx, auth)
 }
 

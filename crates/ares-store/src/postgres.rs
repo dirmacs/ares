@@ -22,7 +22,10 @@ pub(crate) const UNAVAILABLE_POSTGRES_URL: &str =
     "postgres://postgres@%2Ftmp%2Fares-store-no-test-server/ares_test";
 
 /// Default pool size for production connections.
-pub const DEFAULT_MAX_CONNECTIONS: u32 = 5;
+///
+/// Raised from 5 to 20: the 60 s scheduler tick shares this pool with
+/// request traffic at roughly 4-5 checkouts per LLM step.
+pub const DEFAULT_MAX_CONNECTIONS: u32 = 20;
 
 /// Returns the default PostgreSQL connection URL.
 pub fn default_postgres_url() -> String {
@@ -43,6 +46,28 @@ pub fn resolve_database_url(override_url: Option<&str>) -> String {
         }
     }
     std::env::var("DATABASE_URL").unwrap_or_else(|_| default_postgres_url())
+}
+
+/// Resolve the effective pool size: an explicit `[database] max_connections`
+/// wins, then `DATABASE_MAX_CONNECTIONS`, then [`DEFAULT_MAX_CONNECTIONS`].
+/// Values below 1 clamp to 1, the smallest pool sqlx can serve.
+pub fn resolve_max_connections(explicit: Option<u32>) -> u32 {
+    if let Some(value) = explicit {
+        return value.max(1);
+    }
+    if let Ok(raw) = std::env::var("DATABASE_MAX_CONNECTIONS") {
+        return match raw.trim().parse::<u32>() {
+            Ok(value) => value.max(1),
+            Err(_) => {
+                tracing::warn!(
+                    value = %raw,
+                    "Ignoring invalid DATABASE_MAX_CONNECTIONS; using the default pool size"
+                );
+                default_max_connections()
+            }
+        };
+    }
+    default_max_connections()
 }
 
 /// Parsed components of a `postgres://` or `postgresql://` connection string.
@@ -175,6 +200,18 @@ impl PostgresClient {
         let config = PostgresConfig {
             url,
             max_connections: default_max_connections(),
+        };
+        Self::connect_with_config(&config).await
+    }
+
+    /// Connect with an explicit pool ceiling (values below 1 clamp to 1).
+    pub async fn new_remote_with_max_connections(
+        url: String,
+        max_connections: u32,
+    ) -> Result<Self> {
+        let config = PostgresConfig {
+            url,
+            max_connections: max_connections.max(1),
         };
         Self::connect_with_config(&config).await
     }
@@ -783,6 +820,35 @@ mod tests {
     }
 
     #[test]
+    fn default_max_connections_pins_raised_ceiling() {
+        // Guards the 5 -> 20 raise: the 60 s scheduler tick shares the pool
+        // with request traffic at roughly 4-5 checkouts per LLM step.
+        assert_eq!(DEFAULT_MAX_CONNECTIONS, 20);
+    }
+
+    #[test]
+    fn resolve_max_connections_precedence_and_validation() {
+        std::env::remove_var("DATABASE_MAX_CONNECTIONS");
+        // Default when neither the config value nor the env var is set.
+        assert_eq!(resolve_max_connections(None), DEFAULT_MAX_CONNECTIONS);
+
+        // Env applies when the config value is absent.
+        std::env::set_var("DATABASE_MAX_CONNECTIONS", "12");
+        assert_eq!(resolve_max_connections(None), 12);
+
+        // Invalid env values fall back to the default.
+        std::env::set_var("DATABASE_MAX_CONNECTIONS", "lots");
+        assert_eq!(resolve_max_connections(None), DEFAULT_MAX_CONNECTIONS);
+
+        // Explicit config wins over the env var; zero clamps to one.
+        std::env::set_var("DATABASE_MAX_CONNECTIONS", "12");
+        assert_eq!(resolve_max_connections(Some(3)), 3);
+        assert_eq!(resolve_max_connections(Some(0)), 1);
+
+        std::env::remove_var("DATABASE_MAX_CONNECTIONS");
+    }
+
+    #[test]
     fn resolve_database_url_uses_database_url_env() {
         std::env::set_var("DATABASE_URL", "postgres://env-host/ares");
         assert_eq!(resolve_database_url(None), "postgres://env-host/ares");
@@ -1097,9 +1163,12 @@ mod tests {
                 url: ares_test_support::test_db_url(),
                 max_connections: 3,
             };
-            let client = PostgresClient::new_remote(config.url.clone(), String::new())
-                .await
-                .expect("connect");
+            let client = PostgresClient::new_remote_with_max_connections(
+                config.url.clone(),
+                config.max_connections,
+            )
+            .await
+            .expect("connect");
             // Exercise pool concurrency: fire 5 queries when max is 3
             let mut handles = Vec::new();
             for _ in 0..5 {

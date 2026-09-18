@@ -251,7 +251,8 @@ pub async fn run_skill(
         .clone();
     // Redact the close-out error for tenants that opted into no-retain.
     let no_retain = tenant_no_retain(&__pool_8, &tenant_id).await;
-    let error_message = redact_agent_run_error(no_retain, result.as_ref().err().map(String::as_str));
+    let error_message =
+        redact_agent_run_error(no_retain, result.as_ref().err().map(String::as_str));
     sqlx::query(
         "UPDATE agent_runs
          SET status = $2, input_tokens = $3, output_tokens = $4,

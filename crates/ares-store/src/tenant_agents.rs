@@ -84,8 +84,6 @@ pub struct TenantAgentConfig {
     pub parallel_tools: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    #[serde(default)]
-    pub sandbox: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -178,8 +176,6 @@ pub fn validate_tenant_config(value: &serde_json::Value) -> Result<TenantAgentCo
 
     let version = optional_trimmed_string(obj, "version")?;
 
-    let sandbox = optional_bool(obj, "sandbox")?.unwrap_or(false);
-
     let temperature = optional_f32_in_range(obj, "temperature", 0.0, 2.0, "0.0 and 2.0")?;
     let max_tokens = optional_positive_u32(obj, "max_tokens")?;
     let stop = optional_string_list(obj, "stop")?;
@@ -196,7 +192,6 @@ pub fn validate_tenant_config(value: &serde_json::Value) -> Result<TenantAgentCo
         max_tool_iterations,
         parallel_tools,
         version,
-        sandbox,
         temperature,
         max_tokens,
         stop,
@@ -1495,6 +1490,19 @@ mod tests {
         assert!(cfg.tools.is_empty());
         assert_eq!(cfg.max_tool_iterations, 5);
         assert!(!cfg.parallel_tools);
+    }
+
+    #[test]
+    fn tenant_agent_config_ignores_legacy_sandbox_key() {
+        // Stored JSONB written by an older dashboard still carries `sandbox`.
+        // The raw value keeps the key; validation and resolution must keep
+        // loading the config with the key present as an unknown field.
+        let with_legacy_key =
+            validate_tenant_config(&serde_json::json!({"model": "m", "sandbox": true}))
+                .expect("stored config with legacy sandbox key must load");
+        let without_key =
+            validate_tenant_config(&serde_json::json!({"model": "m"})).expect("valid");
+        assert_eq!(with_legacy_key, without_key);
     }
 
     #[test]

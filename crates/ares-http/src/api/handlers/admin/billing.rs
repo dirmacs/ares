@@ -213,9 +213,68 @@ pub async fn list_billing_model_rates(
     Ok(Json(model_rate_responses(&config.billing)))
 }
 
+/// Backing source for unit billing rates.
+///
+/// Downstream binaries (for example ares-dirmacs) provide their own
+/// implementation on the request [`Context`] before the router runs, for
+/// example `ctx.provide(UnitRateSourceHandle::new(provider))`. With no
+/// provider the endpoint keeps today's response (empty list), so the route
+/// table stays unchanged.
+#[async_trait::async_trait]
+pub trait UnitRateSource: Send + Sync + 'static {
+    /// List all configured unit rates.
+    async fn unit_rates(&self) -> crate::Result<Vec<UnitRateResponse>>;
+}
+
+/// Cordis handle for the process-wide [`UnitRateSource`].
+#[derive(Clone)]
+pub struct UnitRateSourceHandle(pub Arc<dyn UnitRateSource>);
+
+impl ::cordis::Service for UnitRateSourceHandle {
+    fn name(&self) -> &'static str {
+        "unit_rate_source"
+    }
+    fn init(&self, _ctx: &Arc<::cordis::Context>) -> ::cordis::ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+    fn check(&self) -> bool {
+        true
+    }
+}
+
+impl UnitRateSourceHandle {
+    /// Wrap a provider as a cordis service handle.
+    pub fn new(inner: Arc<dyn UnitRateSource>) -> Self {
+        Self(inner)
+    }
+    /// Borrow the inner provider.
+    pub fn inner(&self) -> &Arc<dyn UnitRateSource> {
+        &self.0
+    }
+}
+
+/// Default source: preserves today's stub behavior (empty list).
+struct DefaultUnitRateSource;
+
+#[async_trait::async_trait]
+impl UnitRateSource for DefaultUnitRateSource {
+    async fn unit_rates(&self) -> crate::Result<Vec<UnitRateResponse>> {
+        Ok(Vec::new())
+    }
+}
+
+fn unit_rate_source(ctx: &Arc<Context>) -> Arc<dyn UnitRateSource> {
+    ctx.get::<UnitRateSourceHandle>()
+        .map(|handle| Arc::clone(handle.inner()))
+        .unwrap_or_else(|| Arc::new(DefaultUnitRateSource))
+}
+
 /// List configured unit billing rates.
-pub async fn list_billing_unit_rates() -> Json<Vec<UnitRateResponse>> {
-    Json(Vec::new())
+/// Default (no provider): empty list, as before.
+pub async fn list_billing_unit_rates(
+    State(ctx): State<Arc<Context>>,
+) -> Result<Json<Vec<UnitRateResponse>>> {
+    Ok(Json(unit_rate_source(&ctx).unit_rates().await?))
 }
 
 /// Get a tenant budget.
@@ -459,3 +518,63 @@ pub fn routes() -> axum::Router<Arc<Context>> {
 
 // cordis Phase6: RouteSet Service — registered via build_routes(ctx)
 use ::cordis::Service;
+
+#[cfg(test)]
+mod unit_rate_source_tests {
+    use super::*;
+    use axum::extract::State;
+
+    fn test_rate() -> UnitRateResponse {
+        UnitRateResponse {
+            sku: "sku-1".into(),
+            unit_type: "token".into(),
+            provider: "acme".into(),
+            unit_name: "tokens".into(),
+            usd_per_unit: 0.5,
+            description: Some("half a dollar".into()),
+        }
+    }
+
+    struct StaticRates(Vec<UnitRateResponse>);
+
+    #[async_trait::async_trait]
+    impl UnitRateSource for StaticRates {
+        async fn unit_rates(&self) -> crate::Result<Vec<UnitRateResponse>> {
+            let mut out = Vec::with_capacity(self.0.len());
+            for rate in &self.0 {
+                out.push(UnitRateResponse {
+                    sku: rate.sku.clone(),
+                    unit_type: rate.unit_type.clone(),
+                    provider: rate.provider.clone(),
+                    unit_name: rate.unit_name.clone(),
+                    usd_per_unit: rate.usd_per_unit,
+                    description: rate.description.clone(),
+                });
+            }
+            Ok(out)
+        }
+    }
+
+    fn root_ctx() -> Arc<Context> {
+        Context::new_root()
+    }
+
+    #[tokio::test]
+    async fn default_source_returns_empty_list() {
+        let ctx = root_ctx();
+        let Json(rates) = list_billing_unit_rates(State(ctx)).await.unwrap();
+        assert!(rates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn injected_source_is_used() {
+        let ctx = root_ctx();
+        ctx.provide(UnitRateSourceHandle::new(Arc::new(StaticRates(vec![
+            test_rate(),
+        ]))));
+        let Json(rates) = list_billing_unit_rates(State(ctx)).await.unwrap();
+        assert_eq!(rates.len(), 1);
+        assert_eq!(rates[0].sku, "sku-1");
+        assert_eq!(rates[0].usd_per_unit, 0.5);
+    }
+}

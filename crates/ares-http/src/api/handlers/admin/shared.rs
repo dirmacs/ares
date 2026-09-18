@@ -107,7 +107,8 @@ impl From<UsageSummary> for UsageResponse {
     }
 }
 
-const INVALID_TIER_MSG: &str = "Invalid tier. Must be: free, dev, pro, or enterprise";
+const INVALID_TIER_MSG: &str =
+    "Invalid tier. Must be one of: free, dev, starter, pro, growth, or enterprise";
 
 /// Validates a tier string from admin request payloads.
 pub fn parse_tenant_tier(tier: &str) -> Result<TenantTier> {
@@ -1182,6 +1183,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_tenant_tier_accepts_legacy_ladder_aliases() {
+        assert!(matches!(
+            parse_tenant_tier("starter").unwrap(),
+            TenantTier::Dev
+        ));
+        assert!(matches!(
+            parse_tenant_tier("growth").unwrap(),
+            TenantTier::Pro
+        ));
+    }
+
+    #[test]
     fn parse_tenant_tier_rejects_unknown_tier_with_invalid_input() {
         let err = parse_tenant_tier("platinum").unwrap_err();
         assert!(matches!(err.0, AppError::InvalidInput(_)));
@@ -1473,8 +1486,9 @@ mod tests {
 
     #[test]
     fn invalid_tier_message_lists_allowed_values() {
-        assert!(INVALID_TIER_MSG.contains("free"));
-        assert!(INVALID_TIER_MSG.contains("enterprise"));
+        for tier in ["free", "dev", "starter", "pro", "growth", "enterprise"] {
+            assert!(INVALID_TIER_MSG.contains(tier), "missing {tier}");
+        }
     }
 
     #[test]

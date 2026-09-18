@@ -129,6 +129,7 @@ async fn create_test_app() -> Router {
         },
         database: TomlDatabaseConfig {
             url: "postgres://postgres:postgres@localhost:5432/ares_test".to_string(),
+            max_connections: None,
             qdrant: None,
         },
         nvidia: None,

@@ -59,5 +59,10 @@
 
 /// JWT token generation, validation, and password hashing services.
 pub mod jwt;
+/// Cached JWKS fetch and verification for EdDSA/RS256 tokens.
+pub mod jwks;
 /// Authentication middleware and extractors for protected routes.
 pub mod middleware;
+
+#[cfg(test)]
+pub(crate) mod test_keys;

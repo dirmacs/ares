@@ -1,5 +1,6 @@
 //! JWT token management and password hashing.
 
+use super::jwks::JwksCache;
 use ares_types::types::{AppError, Claims, Result, TokenResponse};
 use argon2::{
     password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
@@ -10,6 +11,7 @@ use jsonwebtoken::{
     decode, decode_header, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
 };
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use uuid::Uuid;
 
 // =============================================================================
@@ -47,6 +49,9 @@ pub enum JwtError {
     /// Malformed token, unsupported algorithm, or claim mismatch.
     #[error("invalid claims: {0}")]
     InvalidClaims(String),
+    /// Asymmetric (JWKS) verification failed or no key set is available.
+    #[error("jwks error: {0}")]
+    Jwks(String),
 }
 
 impl CustomClaims {
@@ -143,6 +148,43 @@ pub fn verify_signature(
         .map_err(jwt_decode_error)
 }
 
+/// Verify a token through the path its header `alg` selects.
+///
+/// `HS256` uses the HMAC `secret`. `EdDSA` and `RS256` use the cached
+/// JWKS key set. The header value selects one path and the paths never
+/// fall back to each other, so an attacker cannot downgrade a token.
+///
+/// The JWKS path enforces `exp` with the fixed 60-second leeway that
+/// [`JwksCache`] applies; the `leeway` argument applies to the HMAC path.
+pub async fn verify_any_signature(
+    token: &str,
+    secret: &[u8],
+    leeway: u64,
+    jwks: Option<&JwksCache>,
+) -> std::result::Result<Claims, JwtError> {
+    let header = decode_header(token).map_err(jwt_decode_error)?;
+    match header.alg {
+        Algorithm::HS256 => verify_signature(token, secret, leeway),
+        Algorithm::EdDSA | Algorithm::RS256 => {
+            let jwks = jwks.ok_or_else(|| {
+                JwtError::Jwks("no JWKS key set is configured for asymmetric tokens".into())
+            })?;
+            // The key set checks the header algorithm, the `kid`, the
+            // signature, and `exp`. The payload below re-reads the same
+            // bytes that the verified signature covers, into ARES claims.
+            jwks.validate(token)
+                .await
+                .map_err(|err| JwtError::Jwks(err.to_string()))?;
+            jsonwebtoken::dangerous::insecure_decode::<Claims>(token)
+                .map(|data| data.claims)
+                .map_err(jwt_decode_error)
+        }
+        other => Err(JwtError::InvalidClaims(format!(
+            "unsupported algorithm {other:?}, accepted: HS256, EdDSA, RS256"
+        ))),
+    }
+}
+
 /// Return the subject (`sub`) when present and non-empty.
 pub fn extract_subject(claims: &Claims) -> std::result::Result<&str, JwtError> {
     if claims.sub.trim().is_empty() {
@@ -210,6 +252,8 @@ pub struct AuthService {
     /// Leeway in seconds for token expiration validation (default: 60)
     /// This accounts for clock skew between servers.
     leeway: u64,
+    /// Key set for asymmetric (EdDSA / RS256) tokens from the issuer.
+    jwks: Arc<JwksCache>,
 }
 
 impl AuthService {
@@ -225,6 +269,7 @@ impl AuthService {
             access_expiry,
             refresh_expiry,
             leeway: 60, // Default 60-second leeway for clock skew
+            jwks: Arc::new(JwksCache::from_env()),
         }
     }
 
@@ -246,6 +291,29 @@ impl AuthService {
             access_expiry,
             refresh_expiry,
             leeway,
+            jwks: Arc::new(JwksCache::from_env()),
+        }
+    }
+
+    /// Replaces the JWKS key set used for EdDSA/RS256 tokens.
+    pub fn with_jwks(mut self, jwks: Arc<JwksCache>) -> Self {
+        self.jwks = jwks;
+        self
+    }
+
+    /// The JWKS key set used for EdDSA/RS256 tokens.
+    pub fn jwks(&self) -> Arc<JwksCache> {
+        Arc::clone(&self.jwks)
+    }
+
+    /// Schedules the startup JWKS fetch when a runtime is present.
+    ///
+    /// The fetch runs in the background, so plugin construction stays
+    /// fast and a slow issuer cannot block boot.
+    pub fn warm_jwks(&self) {
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let jwks = Arc::clone(&self.jwks);
+            handle.spawn(async move { jwks.warmup().await });
         }
     }
 
@@ -303,16 +371,20 @@ impl AuthService {
     }
 
     /// Verifies a JWT token and returns the claims.
-    pub fn verify_token(&self, token: &str) -> Result<Claims> {
-        self.verify_token_with_leeway(token, self.leeway)
+    pub async fn verify_token(&self, token: &str) -> Result<Claims> {
+        self.verify_token_with_leeway(token, self.leeway).await
     }
 
     /// Verifies a JWT token with a custom leeway (in seconds) for expiration checks.
     ///
     /// The leeway accounts for clock skew between servers. Default is 60 seconds.
     /// Use leeway of 0 for strict expiration checking (e.g., in tests).
-    pub fn verify_token_with_leeway(&self, token: &str, leeway: u64) -> Result<Claims> {
-        verify_signature(token, self.jwt_secret.as_bytes(), leeway).map_err(jwt_error_to_app_error)
+    /// Asymmetric tokens check expiration through the JWKS path, which has
+    /// a fixed 60-second leeway.
+    pub async fn verify_token_with_leeway(&self, token: &str, leeway: u64) -> Result<Claims> {
+        verify_any_signature(token, self.jwt_secret.as_bytes(), leeway, Some(&self.jwks))
+            .await
+            .map_err(jwt_error_to_app_error)
     }
 
     /// Hashes a token using SHA256 for secure storage.
@@ -735,31 +807,34 @@ mod tests {
         assert_ne!(tokens.access_token, tokens.refresh_token);
     }
 
-    #[test]
-    fn test_token_verification_success() {
+    #[tokio::test]
+    async fn test_token_verification_success() {
         let service = create_test_service();
         let tokens = service
             .generate_tokens("user-456", "user@test.com")
             .expect("generate");
-        let claims = service.verify_token(&tokens.access_token).expect("verify");
+        let claims = service
+            .verify_token(&tokens.access_token)
+            .await
+            .expect("verify");
         assert_eq!(claims.sub, "user-456");
         assert_eq!(claims.email, "user@test.com");
     }
 
-    #[test]
-    fn test_token_verification_invalid_token() {
+    #[tokio::test]
+    async fn test_token_verification_invalid_token() {
         let service = create_test_service();
-        assert!(service.verify_token("invalid.token.here").is_err());
+        assert!(service.verify_token("invalid.token.here").await.is_err());
     }
 
-    #[test]
-    fn test_token_verification_wrong_secret() {
+    #[tokio::test]
+    async fn test_token_verification_wrong_secret() {
         let service1 = AuthService::new("secret-one-that-is-32-chars-long".into(), 900, 604_800);
         let service2 = AuthService::new("secret-two-that-is-32-chars-long".into(), 900, 604_800);
         let tokens = service1
             .generate_tokens("user-789", "test@example.com")
             .expect("generate");
-        assert!(service2.verify_token(&tokens.access_token).is_err());
+        assert!(service2.verify_token(&tokens.access_token).await.is_err());
     }
 
     #[test]
@@ -778,8 +853,8 @@ mod tests {
         assert_ne!(service.hash_token("token-a"), service.hash_token("token-b"));
     }
 
-    #[test]
-    fn test_refresh_tokens_are_unique() {
+    #[tokio::test]
+    async fn test_refresh_tokens_are_unique() {
         let service = create_test_service();
         let tokens1 = service
             .generate_tokens("user-refresh-unique", "refresh@example.com")
@@ -790,20 +865,25 @@ mod tests {
         assert_ne!(tokens1.refresh_token, tokens2.refresh_token);
         let claims1 = service
             .verify_token(&tokens1.refresh_token)
+            .await
             .expect("verify");
         let claims2 = service
             .verify_token(&tokens2.refresh_token)
+            .await
             .expect("verify");
         assert_ne!(claims1.jti, claims2.jti);
     }
 
-    #[test]
-    fn test_claims_expiration() {
+    #[tokio::test]
+    async fn test_claims_expiration() {
         let service = create_test_service();
         let tokens = service
             .generate_tokens("user", "user@example.com")
             .expect("generate");
-        let claims = service.verify_token(&tokens.access_token).expect("verify");
+        let claims = service
+            .verify_token(&tokens.access_token)
+            .await
+            .expect("verify");
         let now = now_ts();
         assert!(claims.iat <= now && claims.iat >= now.saturating_sub(5));
         let expected_exp = claims.iat + 900;
@@ -811,22 +891,26 @@ mod tests {
         assert!(claims.exp <= expected_exp + 5);
     }
 
-    #[test]
-    fn test_jwt_encode_decode_roundtrip() {
+    #[tokio::test]
+    async fn test_jwt_encode_decode_roundtrip() {
         let service = create_test_service();
         let tokens = service
             .generate_tokens("roundtrip-user", "roundtrip@example.com")
             .expect("generate");
-        let access = service.verify_token(&tokens.access_token).expect("access");
+        let access = service
+            .verify_token(&tokens.access_token)
+            .await
+            .expect("access");
         let refresh = service
             .verify_token(&tokens.refresh_token)
+            .await
             .expect("refresh");
         assert_eq!(access.sub, "roundtrip-user");
         assert!(!refresh.jti.is_empty());
     }
 
-    #[test]
-    fn test_expired_token_rejected_with_zero_leeway() {
+    #[tokio::test]
+    async fn test_expired_token_rejected_with_zero_leeway() {
         let secret = TEST_SECRET.to_string();
         let service = AuthService::with_leeway(secret.clone(), 900, 604_800, 0);
         let expired_claims = Claims {
@@ -843,48 +927,115 @@ mod tests {
             &EncodingKey::from_secret(secret.as_bytes()),
         )
         .expect("encode");
-        assert!(service.verify_token_with_leeway(&expired_token, 0).is_err());
+        assert!(service
+            .verify_token_with_leeway(&expired_token, 0)
+            .await
+            .is_err());
     }
 
-    #[test]
-    fn test_claim_validation_rejects_tampered_payload() {
+    #[tokio::test]
+    async fn test_claim_validation_rejects_tampered_payload() {
         let service = create_test_service();
         let tokens = service
             .generate_tokens("user", "user@example.com")
             .expect("generate");
         let mut segments: Vec<String> = tokens.access_token.split('.').map(String::from).collect();
         segments[1].push('x');
-        assert!(service.verify_token(&segments.join(".")).is_err());
+        assert!(service.verify_token(&segments.join(".")).await.is_err());
     }
 
-    #[test]
-    fn test_access_token_claims_have_empty_jti() {
+    #[tokio::test]
+    async fn test_access_token_claims_have_empty_jti() {
         let service = create_test_service();
         let tokens = service
             .generate_tokens("user", "user@example.com")
             .expect("generate");
-        let claims = service.verify_token(&tokens.access_token).expect("verify");
+        let claims = service
+            .verify_token(&tokens.access_token)
+            .await
+            .expect("verify");
         assert!(claims.jti.is_empty());
     }
 
-    #[test]
-    fn auth_service_verify_maps_expired_to_auth_error() {
+    #[tokio::test]
+    async fn auth_service_verify_maps_expired_to_auth_error() {
         let claims = build_claims("u", "e@x.com", now_ts() - 300, -60, None);
         let token = sign_claims(&claims, test_secret()).expect("sign");
         let err = create_test_service()
             .verify_token_with_leeway(&token, 0)
+            .await
             .expect_err("expired");
         assert!(matches!(err, AppError::Auth(msg) if msg.contains("expired")));
     }
 
-    #[test]
-    fn auth_service_verify_maps_invalid_signature_to_auth_error() {
+    #[tokio::test]
+    async fn auth_service_verify_maps_invalid_signature_to_auth_error() {
         let claims = build_claims("u", "e@x.com", now_ts(), 60, None);
         let token = sign_claims(&claims, test_secret()).expect("sign");
         let err = AuthService::new("different-secret-32-chars-minimum!!".into(), 900, 604_800)
             .verify_token_with_leeway(&token, 0)
+            .await
             .expect_err("bad sig");
         assert!(matches!(err, AppError::Auth(msg) if msg.contains("invalid signature")));
+    }
+
+    // -------------------------------------------------------------------------
+    // dual verification: EdDSA via JWKS beside HS256
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn verify_token_accepts_eddsa_through_the_jwks_path() {
+        use crate::auth::test_keys::{dirmacs_claims, eddsa_token, jwks_json, jwks_stub};
+
+        let seed = 11u8;
+        let kid = "eruka-test-1";
+        let url = jwks_stub(jwks_json(&[(kid, &[seed; 32])])).await;
+        let service = create_test_service()
+            .with_jwks(Arc::new(super::JwksCache::new(url)));
+
+        let token = eddsa_token(seed, Some(kid));
+        let claims = service.verify_token(&token).await.expect("eddsa accepted");
+        assert_eq!(claims.sub, dirmacs_claims().sub);
+        assert_eq!(claims.email, dirmacs_claims().email);
+        assert!(claims.exp > now_ts());
+    }
+
+    #[tokio::test]
+    async fn verify_token_rejects_eddsa_signed_by_another_key() {
+        use crate::auth::test_keys::{eddsa_token, jwks_json, jwks_stub};
+
+        let url = jwks_stub(jwks_json(&[("eruka-test-1", &[11u8; 32])])).await;
+        let service = create_test_service().with_jwks(Arc::new(super::JwksCache::new(url)));
+
+        // Signed by seed 12, but the JWKS holds seed 11.
+        let token = eddsa_token(12, Some("eruka-test-1"));
+        assert!(service.verify_token(&token).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn verify_token_rejects_alg_confusion_attempts() {
+        use crate::auth::test_keys::{
+            eddsa_token, hs256_token, jwks_json, jwks_stub, rewrite_alg,
+        };
+
+        let seed = 11u8;
+        let kid = "eruka-test-1";
+        let url = jwks_stub(jwks_json(&[(kid, &[seed; 32])])).await;
+        let service = create_test_service().with_jwks(Arc::new(super::JwksCache::new(url)));
+
+        // HMAC token that names the asymmetric kid: the JWKS path must
+        // reject it, and the HMAC path cannot verify it with a public key.
+        let hs_token = hs256_token(&[seed; 32], Some(kid), Algorithm::HS256);
+        assert!(service.verify_token(&hs_token).await.is_err());
+
+        // Downgrade attempt: a real EdDSA token whose header now says
+        // HS256 must not pass the HMAC path.
+        let downgraded = rewrite_alg(&eddsa_token(seed, Some(kid)), "HS256");
+        assert!(service.verify_token(&downgraded).await.is_err());
+
+        // A symmetric token signed with the shared secret still passes.
+        let hs_ok = hs256_token(TEST_SECRET.as_bytes(), Some(kid), Algorithm::HS256);
+        assert!(service.verify_token(&hs_ok).await.is_ok());
     }
 
     #[test]

@@ -4,6 +4,18 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ---
 
+## Unreleased
+
+**Dual JWT verification: HS256 beside issuer EdDSA/RS256 through JWKS.**
+
+### Added
+
+- The admin middleware and the generic auth path accept EdDSA/RS256 tokens from the issuer
+  JWKS endpoint (`ERUKA_JWKS_URL`, default `https://eruka.dirmacs.com/.well-known/jwks.json`).
+  The key set fetches at startup, refreshes hourly, and refreshes once on an unknown `kid`;
+  a cached set serves through issuer downtime. HS256 through `JWT_SECRET` is unchanged. The
+  token header `alg` selects one path, so a token can never downgrade the check.
+
 ## 0.11.5 - 2026-09-16
 
 **Trace persistence, metering truth, key scopes, follow-up heartbeats.**

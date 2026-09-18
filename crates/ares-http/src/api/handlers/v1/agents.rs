@@ -247,8 +247,8 @@ struct AgentRunOutcome {
     provider_name: String,
     counts_source: &'static str,
     metering_ok: bool,
-    /// `x-agent-config-version` value. The failed configurable path reports
-    /// none, matching the headers it stamped before the split.
+    /// `x-agent-config-version` value. Every path reports the setup's
+    /// version, so success and failure responses carry the same header.
     config_version_header: Option<String>,
 }
 
@@ -433,26 +433,20 @@ fn skill_run_outcome(
             metering_ok: true,
             config_version_header: setup.config_version.clone(),
         },
-        Err(error) => failed_run_outcome(
-            setup,
-            duration_ms,
-            error,
-            "skill",
-            "skill",
-            setup.config_version.clone(),
-        ),
+        Err(error) => failed_run_outcome(setup, duration_ms, error, "skill", "skill"),
     }
 }
 
 /// Failed-run response + metering pieces: zeroed counts, the raw error text in
-/// the body, and the caller's model/provider labels.
+/// the body, and the caller's model/provider labels. The config version comes
+/// from the setup, so failures stamp the same `x-agent-config-version` header
+/// as successes.
 fn failed_run_outcome(
     setup: &AgentRunSetup,
     duration_ms: u64,
     error: String,
     model_name: &str,
     provider_name: &str,
-    config_version_header: Option<String>,
 ) -> AgentRunOutcome {
     AgentRunOutcome {
         run: V1AgentRun {
@@ -473,7 +467,7 @@ fn failed_run_outcome(
         provider_name: provider_name.to_string(),
         counts_source: "estimated",
         metering_ok: false,
-        config_version_header,
+        config_version_header: setup.config_version.clone(),
     }
 }
 
@@ -755,7 +749,6 @@ async fn fail_llm_run(
         raw_err,
         "unknown",
         "unknown",
-        None,
     ))
 }
 
@@ -1161,3 +1154,79 @@ pub fn routes() -> axum::Router<Arc<Context>> {
 
 // cordis Phase6: RouteSet Service
 use cordis::Service;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal setup for header-shaping tests: no database is touched because
+    /// `finish_agent_run` is called with no usage context.
+    fn test_setup(config_version: Option<&str>) -> AgentRunSetup {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgres://127.0.0.1:1/none")
+            .expect("lazy pool should not connect");
+        AgentRunSetup {
+            tenant_id: "tenant-1".into(),
+            agent_name: "agent-1".into(),
+            input: serde_json::json!({"message": "hi"}),
+            message: "hi".into(),
+            agent_context: AgentContext {
+                user_id: "user-1".into(),
+                session_id: "session-1".into(),
+                conversation_history: Vec::new(),
+                user_memory: None,
+            },
+            runtime_workspace_id: None,
+            config_source: "tenant-db",
+            config_version: config_version.map(str::to_string),
+            start: std::time::Instant::now(),
+            run_id: "run-1".into(),
+            pool: pool.clone(),
+            obs: Arc::new(RunObservability {
+                run_id: "run-1".into(),
+                tenant_id: "tenant-1".into(),
+                agent_name: "agent-1".into(),
+                pool,
+            }),
+        }
+    }
+
+    fn header_value(response: &Response, name: &str) -> Option<String> {
+        response
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+    }
+
+    #[tokio::test]
+    async fn failed_outcome_stamps_config_version_header() {
+        let setup = test_setup(Some("tenant-db:42"));
+        let outcome = failed_run_outcome(&setup, 7, "boom".into(), "unknown", "unknown");
+        assert_eq!(
+            outcome.config_version_header.as_deref(),
+            Some("tenant-db:42")
+        );
+
+        let response = finish_agent_run(&setup, None, outcome);
+        assert_eq!(
+            header_value(&response, "x-agent-config-version").as_deref(),
+            Some("tenant-db:42")
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_outcome_omits_header_without_config_version() {
+        let setup = test_setup(None);
+        let outcome = failed_run_outcome(&setup, 7, "boom".into(), "unknown", "unknown");
+        assert_eq!(outcome.config_version_header, None);
+
+        let response = finish_agent_run(&setup, None, outcome);
+        assert_eq!(header_value(&response, "x-agent-config-version"), None);
+        assert_eq!(
+            header_value(&response, "x-agent-config-source").as_deref(),
+            Some("tenant-db")
+        );
+    }
+}

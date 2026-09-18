@@ -427,8 +427,10 @@ impl TriggerService {
                         .map(crate::skills::skill_result_token_counts)
                         .unwrap_or((0, 0));
                     let no_retain = tenant_no_retain(&pool, &trigger.tenant_id).await;
-                    let err_msg =
-                        redact_agent_run_error(no_retain, skill_result.as_ref().err().map(String::as_str));
+                    let err_msg = redact_agent_run_error(
+                        no_retain,
+                        skill_result.as_ref().err().map(String::as_str),
+                    );
                     let _ = sqlx::query(
                         "UPDATE agent_runs SET status=$2, input_tokens=$3, output_tokens=$4, duration_ms=$5, error=$6 WHERE id=$1",
                     )

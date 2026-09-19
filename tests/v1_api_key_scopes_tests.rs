@@ -376,27 +376,31 @@ async fn ttl_persists_and_surfaces() {
 }
 
 #[tokio::test]
-async fn unknown_scopes_default_full() {
+async fn unknown_scopes_rejected_at_write() {
+    // Row 39: the scope vocabulary is closed at write time.
     let (server, tenant_db) = create_v1_test_server().await;
-    let (tenant_id, _) = provision_tenant(&tenant_db, "unknown-scope").await;
-    let (_, raw) = tenant_db
+    let (tenant_id, full_key) = provision_tenant(&tenant_db, "unknown-scope").await;
+
+    // Store-level rejection names the offending value.
+    let err = tenant_db
         .create_api_key(&tenant_id, "weird".into(), Some("weird".into()), None)
         .await
-        .expect("create weird-scope key");
-    let ctx = tenant_db
-        .verify_api_key(&raw)
-        .await
-        .expect("verify")
-        .expect("weird scope must verify");
-    assert_eq!(ctx.scopes, "full");
-    assert!(ctx.is_full_scope());
+        .expect_err("unknown scope must be rejected");
+    assert!(matches!(err, ares_types::types::AppError::InvalidInput(_)));
+    assert!(err.to_string().contains("weird"));
 
-    // HTTP: unknown-scope key behaves as full (list succeeds, not 403).
+    // HTTP rejection is a 400 that names the key.
     let resp = server
-        .get("/api/v1/agents")
-        .add_header("Authorization", format!("Bearer {}", raw))
+        .post("/api/v1/api-keys")
+        .add_header("Authorization", format!("Bearer {}", full_key))
+        .json(&json!({"name": "weird", "scopes": "weird"}))
         .await;
-    assert_eq!(resp.status_code(), 200);
+    assert_eq!(resp.status_code(), 400);
+    let body: Value = resp.json();
+    assert!(
+        body.to_string().contains("weird"),
+        "400 body names the bad scope: {body}"
+    );
 }
 
 #[tokio::test]
@@ -590,4 +594,145 @@ async fn admin_revoke_404_plus_audit() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     assert!(found, "revoke must write an audit row");
+}
+
+#[tokio::test]
+async fn v1_key_lifecycle_writes_audit_rows_with_actor() {
+    // Row 19: mint, rotate and revoke on the tenant surface each write an
+    // admin_audit_log row. The tenant id is the actor (keys carry no user
+    // identity); the forwarding address is captured when present.
+    let (server, tenant_db) = create_v1_test_server().await;
+    let (tenant_id, full_key) = provision_tenant(&tenant_db, "v1-audit").await;
+
+    // Mint through the v1 route.
+    let minted = server
+        .post("/api/v1/api-keys")
+        .add_header("Authorization", format!("Bearer {}", full_key))
+        .add_header("x-forwarded-for", "203.0.113.7, 10.0.0.1")
+        .json(&json!({"name": "audit-lifecycle"}))
+        .await;
+    assert_eq!(minted.status_code(), 200);
+    let minted_body: Value = minted.json();
+    let minted_id = minted_body["key"]["id"]
+        .as_str()
+        .expect("minted key id")
+        .to_string();
+
+    // Rotate it.
+    let rotated = server
+        .post(&format!("/api/v1/api-keys/{}/rotate", minted_id))
+        .add_header("Authorization", format!("Bearer {}", full_key))
+        .json(&json!({}))
+        .await;
+    assert_eq!(rotated.status_code(), 200);
+    let rotated_body: Value = rotated.json();
+    let rotated_id = rotated_body["key"]["id"]
+        .as_str()
+        .expect("rotated key id")
+        .to_string();
+
+    // Revoke the rotated key.
+    let revoked = server
+        .delete(&format!("/api/v1/api-keys/{}", rotated_id))
+        .add_header("Authorization", format!("Bearer {}", full_key))
+        .await;
+    assert_eq!(revoked.status_code(), 204);
+
+    // One audit row per lifecycle action, each naming the tenant as actor
+    // (poll briefly; handlers spawn the inserts).
+    for (action, resource) in [
+        ("create_api_key", &minted_id),
+        ("rotate_api_key", &rotated_id),
+        ("revoke_api_key", &rotated_id),
+    ] {
+        let mut row: Option<(Option<String>, Option<String>)> = None;
+        for _ in 0..40 {
+            row = sqlx::query_as(
+                "SELECT actor, admin_ip FROM admin_audit_log WHERE action = $1 AND resource_id = $2 ORDER BY created_at DESC LIMIT 1",
+            )
+            .bind(action)
+            .bind(resource)
+            .fetch_optional(tenant_db.pool())
+            .await
+            .expect("audit select");
+            if row.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let (actor, admin_ip) = row.unwrap_or_else(|| panic!("missing audit row for {action}"));
+        assert_eq!(
+            actor.as_deref(),
+            Some(tenant_id.as_str()),
+            "actor for {action}"
+        );
+        if action == "create_api_key" {
+            assert_eq!(
+                admin_ip.as_deref(),
+                Some("203.0.113.7"),
+                "mint must capture the forwarding address"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn run_scope_is_least_privilege_and_unknown_scope_rejected() {
+    // Row 39: a `run` key reaches agent runs only; mint/rotate/revoke/purge
+    // are denied. Unknown scopes are rejected at write time.
+    let (server, tenant_db) = create_v1_test_server().await;
+    let (tenant_id, full_key) = provision_tenant(&tenant_db, "run-scope").await;
+    insert_tenant_agent(&tenant_db, &tenant_id, "runner", "run-scope-prompt").await;
+
+    // Unknown scope is rejected at write (400).
+    let bad = server
+        .post("/api/v1/api-keys")
+        .add_header("Authorization", format!("Bearer {}", full_key))
+        .json(&json!({"name": "bad-scope", "scopes": "banana"}))
+        .await;
+    assert_eq!(bad.status_code(), 400);
+
+    // Run-scoped key with a TTL.
+    let made = server
+        .post("/api/v1/api-keys")
+        .add_header("Authorization", format!("Bearer {}", full_key))
+        .json(&json!({"name": "runner-key", "scopes": "run", "expires_in_days": 30}))
+        .await;
+    assert_eq!(made.status_code(), 200);
+    let made_body: Value = made.json();
+    assert_eq!(made_body["key"]["scopes"], "run");
+    let run_key_id = made_body["key"]["id"].as_str().expect("id").to_string();
+    let run_key = made_body["secret"].as_str().expect("secret").to_string();
+
+    // The agent run route works with the run key.
+    let run = server
+        .post("/api/v1/agents/runner/run")
+        .add_header("Authorization", format!("Bearer {}", run_key))
+        .json(&json!({"message": "hello"}))
+        .await;
+    assert_eq!(run.status_code(), 200);
+
+    // Key management and data purge are denied for the run key.
+    let mint = server
+        .post("/api/v1/api-keys")
+        .add_header("Authorization", format!("Bearer {}", run_key))
+        .json(&json!({"name": "should-fail"}))
+        .await;
+    assert_eq!(mint.status_code(), 403);
+    let rotate = server
+        .post(&format!("/api/v1/api-keys/{}/rotate", run_key_id))
+        .add_header("Authorization", format!("Bearer {}", run_key))
+        .json(&json!({}))
+        .await;
+    assert_eq!(rotate.status_code(), 403);
+    let revoke = server
+        .delete(&format!("/api/v1/api-keys/{}", run_key_id))
+        .add_header("Authorization", format!("Bearer {}", run_key))
+        .await;
+    assert_eq!(revoke.status_code(), 403);
+    let purge = server
+        .delete("/api/v1/tenant/data")
+        .add_header("Authorization", format!("Bearer {}", run_key))
+        .await;
+    assert_eq!(purge.status_code(), 403);
 }

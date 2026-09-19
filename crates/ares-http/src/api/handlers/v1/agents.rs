@@ -14,7 +14,7 @@ use ares_types::models::TenantContext;
 use ares_types::types::AgentContext;
 use axum::{
     extract::{Extension, Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::Response,
     Json,
 };
@@ -172,7 +172,10 @@ pub async fn run_agent(
     // Execute agent with timing
     let start = std::time::Instant::now();
     let state_ctx = ares_agent::tenant_scope(&state_ctx, &tc.tenant_id);
-    let tenant_row = tenant_agents::get_tenant_agent(
+    // AR-1 fail-closed: the run route executes the tenant's own row. A
+    // missing row is a typed not-found — never a fallthrough to a same-named
+    // community or system agent.
+    let tenant_row = match tenant_agents::get_tenant_agent(
         &state_ctx
             .get::<ares_store::TenantDb>()
             .expect("not provided")
@@ -182,7 +185,15 @@ pub async fn run_agent(
         &name,
     )
     .await
-    .ok();
+    {
+        Ok(row) => Some(row),
+        Err(ares_types::types::AppError::NotFound(_)) => {
+            return Err(HttpError::from(ares_types::types::AppError::NotFound(
+                format!("Agent '{}' not found for tenant '{}'", name, tc.tenant_id),
+            )))
+        }
+        Err(e) => return Err(HttpError::from(e)),
+    };
     let (config_source, config_version) = agent_config_provenance(tenant_row.as_ref());
     let skill_id = tenant_row
         .as_ref()
@@ -565,6 +576,7 @@ async fn run_configurable_agent_path(
         observability: Some(
             setup.obs.clone() as Arc<dyn ares_llm::observability::ObservabilitySink>
         ),
+        require_tenant_agent: true,
         ..Default::default()
     };
     let result = exec
@@ -930,6 +942,7 @@ pub async fn create_api_key(
     State(state_ctx): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
     usage: Option<Extension<crate::middleware::usage::UsageContext>>,
+    headers: HeaderMap,
     Json(payload): Json<CreateApiKeyRequest>,
 ) -> Result<Json<CreateApiKeyResponse>> {
     let tc = extract_tenant(ctx)?;
@@ -957,6 +970,30 @@ pub async fn create_api_key(
         )
         .await?;
 
+    // Tenant-surface mint: the key carries no user identity, so the tenant id
+    // is the closest real actor; the client address comes from the forwarding
+    // headers when present (Caddy sets X-Forwarded-For at the edge).
+    let pool = state_ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
+    let key_id = api_key.id.clone();
+    let actor_id = tc.tenant_id.clone();
+    let client_ip = crate::api::handlers::v1::shared::client_ip_from_headers(&headers);
+    tokio::spawn(async move {
+        let _ = ares_store::audit_log::log_admin_action(
+            &pool,
+            "create_api_key",
+            "api_key",
+            &key_id,
+            None,
+            client_ip.as_deref(),
+            Some(actor_id.as_str()),
+        )
+        .await;
+    });
+
     Ok(Json(CreateApiKeyResponse {
         key: V1ApiKey {
             id: api_key.id,
@@ -982,6 +1019,7 @@ pub async fn rotate_api_key(
     ctx: Option<Extension<TenantContext>>,
     usage: Option<Extension<crate::middleware::usage::UsageContext>>,
     Path(key_id): Path<String>,
+    headers: HeaderMap,
     Json(payload): Json<RotateApiKeyRequest>,
 ) -> Result<Json<CreateApiKeyResponse>> {
     let tc = extract_tenant(ctx)?;
@@ -1015,9 +1053,10 @@ pub async fn rotate_api_key(
     let new_id = api_key.id.clone();
     let old_id = key_id.clone();
     // Tenant-surface rotation: the API key carries no user identity, so the
-    // tenant id is the closest real actor. No request headers are extracted
-    // on this handler, so the audit row keeps a NULL admin_ip.
+    // tenant id is the closest real actor; the client address comes from the
+    // forwarding headers when present (Caddy sets X-Forwarded-For at the edge).
     let actor_id = tc.tenant_id.clone();
+    let client_ip = crate::api::handlers::v1::shared::client_ip_from_headers(&headers);
     tokio::spawn(async move {
         let details = format!("{{\"rotated_from\":\"{}\"}}", old_id);
         let _ = ares_store::audit_log::log_admin_action(
@@ -1026,7 +1065,7 @@ pub async fn rotate_api_key(
             "api_key",
             &new_id,
             Some(&details),
-            None,
+            client_ip.as_deref(),
             Some(actor_id.as_str()),
         )
         .await;
@@ -1052,6 +1091,7 @@ pub async fn revoke_api_key(
     ctx: Option<Extension<TenantContext>>,
     usage: Option<Extension<crate::middleware::usage::UsageContext>>,
     Path(key_id): Path<String>,
+    headers: HeaderMap,
 ) -> Result<StatusCode> {
     let tc = extract_tenant(ctx)?;
     // Open the tenant realm when TenantRealms is on ctx, then intercept TenantContext.
@@ -1060,11 +1100,29 @@ pub async fn revoke_api_key(
         Some(Extension(u)) => state_ctx.with_intercept(u),
         None => state_ctx,
     };
-    state_ctx
+    let db = state_ctx
         .get::<ares_store::TenantDb>()
-        .expect("not provided")
-        .revoke_api_key(&tc.tenant_id, &key_id)
-        .await?;
+        .expect("not provided");
+    db.revoke_api_key(&tc.tenant_id, &key_id).await?;
+    // Tenant-surface revoke: the key carries no user identity, so the tenant id
+    // is the closest real actor; the client address comes from the forwarding
+    // headers when present (Caddy sets X-Forwarded-For at the edge).
+    let pool = db.pool().clone();
+    let revoked_id = key_id.clone();
+    let actor_id = tc.tenant_id.clone();
+    let client_ip = crate::api::handlers::v1::shared::client_ip_from_headers(&headers);
+    tokio::spawn(async move {
+        let _ = ares_store::audit_log::log_admin_action(
+            &pool,
+            "revoke_api_key",
+            "api_key",
+            &revoked_id,
+            None,
+            client_ip.as_deref(),
+            Some(actor_id.as_str()),
+        )
+        .await;
+    });
     Ok(StatusCode::NO_CONTENT)
 }
 

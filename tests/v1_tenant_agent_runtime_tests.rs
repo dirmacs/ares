@@ -535,13 +535,12 @@ async fn store_rejects_tenant_agent_config_without_model() {
 }
 
 #[tokio::test]
-async fn test_v1_run_agent_executes_registry_config_via_execute() {
-    // /v1/agents/:name/run delegates to Execute::run (registry/system tier);
-    // tenant_agents overrides are a stream-path feature.
+async fn test_v1_run_agent_executes_tenant_config_over_registry() {
+    // AR-1: /v1/agents/:name/run executes the tenant's own row. A name that
+    // also exists in the registry must NOT leak the file config.
     let (server, tenant_db) = create_v1_test_server().await;
     let (tenant_id, api_key) = provision_tenant(&tenant_db, "run-agent").await;
     insert_tenant_agent(&tenant_db, &tenant_id, "product", "run-agent-tenant-prompt").await;
-    let _ = tenant_id;
 
     let response = server
         .post("/api/v1/agents/product/run")
@@ -554,10 +553,120 @@ async fn test_v1_run_agent_executes_registry_config_via_execute() {
     assert_eq!(response.status_code(), 200);
     let body: Value = response.json();
     assert_eq!(body["agent_id"], "product");
+    assert_eq!(body["status"], "completed");
     assert_eq!(
         body["output"]["response"],
-        "SYSTEM_PROMPT=registry-product-prompt"
+        "SYSTEM_PROMPT=run-agent-tenant-prompt"
     );
+}
+
+#[tokio::test]
+async fn test_v1_run_agent_runs_agent_only_in_tenant_agents() {
+    // AR-1: an agent that exists only in tenant_agents resolves and runs with
+    // its stored prompt and model.
+    let (server, tenant_db) = create_v1_test_server().await;
+    let (tenant_id, api_key) = provision_tenant(&tenant_db, "tenant-only").await;
+    insert_tenant_agent(
+        &tenant_db,
+        &tenant_id,
+        "tenant-only-bot",
+        "tenant-only-prompt",
+    )
+    .await;
+
+    let response = server
+        .post("/api/v1/agents/tenant-only-bot/run")
+        .add_header("Authorization", format!("Bearer {}", api_key))
+        .json(&json!({
+            "message": "hello"
+        }))
+        .await;
+
+    assert_eq!(response.status_code(), 200);
+    let body: Value = response.json();
+    assert_eq!(body["agent_id"], "tenant-only-bot");
+    assert_eq!(body["status"], "completed");
+    assert_eq!(
+        body["output"]["response"],
+        "SYSTEM_PROMPT=tenant-only-prompt"
+    );
+}
+
+#[tokio::test]
+async fn test_v1_run_agent_missing_row_fails_closed() {
+    // AR-1: a missing tenant row is a typed not-found. "product" exists in
+    // the registry; the run must still refuse instead of executing it.
+    let (server, tenant_db) = create_v1_test_server().await;
+    let (tenant_id, api_key) = provision_tenant(&tenant_db, "run-missing").await;
+
+    let response = server
+        .post("/api/v1/agents/product/run")
+        .add_header("Authorization", format!("Bearer {}", api_key))
+        .json(&json!({
+            "message": "hello"
+        }))
+        .await;
+
+    assert_eq!(response.status_code(), 404);
+    let body: String = response.text();
+    assert!(body.contains("not found"), "body: {body}");
+    // The request never reached execution: no run row may exist.
+    let runs: (i64,) = sqlx::query_as("SELECT count(*) FROM agent_runs WHERE tenant_id = $1")
+        .bind(&tenant_id)
+        .fetch_one(tenant_db.pool())
+        .await
+        .expect("count agent_runs");
+    assert_eq!(runs.0, 0, "no run may start for a missing tenant agent");
+}
+
+#[tokio::test]
+async fn admin_versions_get_writes_nothing() {
+    // Row 22: a GET must not seed version rows. A legacy row without history
+    // returns an empty list and leaves the table unchanged.
+    let (server, tenant_db) = create_v1_test_server().await;
+    let (tenant_id, _api_key) = provision_tenant(&tenant_db, "versions-readonly").await;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs() as i64;
+    // Insert directly: a row with no agent_config_versions history.
+    sqlx::query(
+        "INSERT INTO tenant_agents (id, tenant_id, agent_name, display_name, description, config, enabled, created_at, updated_at) VALUES ($1, $2, $3, $4, NULL, $5, true, $6, $6)",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(&tenant_id)
+    .bind("legacy-agent")
+    .bind("Legacy Agent")
+    .bind(json!({"model": "default", "system_prompt": "legacy"}))
+    .bind(now)
+    .execute(tenant_db.pool())
+    .await
+    .expect("insert legacy agent");
+
+    std::env::set_var("ADMIN_API_KEY", "test-admin-secret-versions");
+    let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_config_versions")
+        .fetch_one(tenant_db.pool())
+        .await
+        .expect("count before");
+    let response = server
+        .get(&format!(
+            "/api/admin/tenants/{}/agents/legacy-agent/versions",
+            tenant_id
+        ))
+        .add_header("x-admin-secret", "test-admin-secret-versions")
+        .await;
+    assert_eq!(response.status_code(), 200);
+    let body: Value = response.json();
+    assert_eq!(
+        body.as_array().map(|rows| rows.len()),
+        Some(0),
+        "no seed row may appear for a legacy agent"
+    );
+    let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_config_versions")
+        .fetch_one(tenant_db.pool())
+        .await
+        .expect("count after");
+    assert_eq!(before, after, "GET must not write");
 }
 
 #[tokio::test]
@@ -584,7 +693,7 @@ async fn test_v1_run_agent_persists_trace_rows() {
     assert_eq!(body["agent_id"], "product");
     assert_eq!(
         body["output"]["response"],
-        "SYSTEM_PROMPT=registry-product-prompt"
+        "SYSTEM_PROMPT=run-trace-tenant-prompt"
     );
     let run_id = body["id"]
         .as_str()

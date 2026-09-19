@@ -82,9 +82,34 @@ pub async fn auth_middleware(auth_service: Arc<AuthService>, req: Request, next:
             })
         });
 
+    // Claim shape comes from the Eruka issuer:
+    // `roles: {product: [{role, resource_id}]}`. Only tokens carrying an
+    // ARES product role may pass this middleware.
+    #[derive(serde::Deserialize)]
+    struct TokenRoles {
+        #[serde(default)]
+        roles: Option<std::collections::HashMap<String, Vec<crate::auth::jwks::RoleEntry>>>,
+    }
+    fn token_has_ares_role(token: &str) -> bool {
+        jsonwebtoken::dangerous::insecure_decode::<TokenRoles>(token)
+            .map(|data| {
+                data.claims.roles.is_some_and(|roles| {
+                    roles.get("ares").is_some_and(|entries| !entries.is_empty())
+                })
+            })
+            .unwrap_or(false)
+    }
+
     if let Some(token) = token {
         match auth_service.verify_token(&token).await {
             Ok(claims) => {
+                if !token_has_ares_role(&token) {
+                    return Response::builder()
+                        .status(StatusCode::FORBIDDEN)
+                        .header("Content-Type", "application/json")
+                        .body(r#"{"error":"forbidden: token lacks an ARES product role"}"#.into())
+                        .unwrap();
+                }
                 let mut req = req;
                 if let Some(root) = req.extensions().get::<Arc<Context>>().cloned() {
                     let tenant = match resolve_jwt_tenant(&root, &claims).await {
@@ -230,10 +255,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_middleware_valid_token() {
+        let secret = "test-secret-key-that-is-at-least-32-chars";
         let auth_service = create_test_auth_service();
-        let tokens = auth_service
-            .generate_tokens("user-123", "test@example.com")
-            .expect("should generate tokens");
+        let token = encode_roles_token(secret, None, ares_roles());
 
         let app = create_test_app(auth_service);
 
@@ -241,7 +265,74 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/protected")
-                    .header("Authorization", format!("Bearer {}", tokens.access_token))
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn middleware_token_without_roles_is_forbidden() {
+        let secret = "test-secret-key-that-is-at-least-32-chars";
+        let auth_service = create_test_auth_service();
+        let token = encode_roles_token(secret, None, serde_json::json!({}));
+        let app = create_test_app(auth_service);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/protected")
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn middleware_token_with_only_other_product_is_forbidden() {
+        let secret = "test-secret-key-that-is-at-least-32-chars";
+        let auth_service = create_test_auth_service();
+        let token = encode_roles_token(
+            secret,
+            None,
+            serde_json::json!({ "eruka": [{ "role": "user" }] }),
+        );
+        let app = create_test_app(auth_service);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/protected")
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn middleware_token_with_ares_role_passes_to_handler() {
+        let secret = "test-secret-key-that-is-at-least-32-chars";
+        let auth_service = create_test_auth_service();
+        let token = encode_roles_token(secret, None, ares_roles());
+        let app = create_test_app(auth_service);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/protected")
+                    .header("Authorization", format!("Bearer {token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -587,13 +678,37 @@ mod tests {
         assert_eq!(tc.tenant_id, "acme");
     }
 
-    fn encode_tenant_token(secret: &str, tenant_id: &str) -> String {
+    /// HS256 test token carrying a `roles` map in the Eruka issuer shape
+    /// (`roles: {product: [{role, resource_id}]}`).
+    fn encode_roles_token(
+        secret: &str,
+        tenant_id: Option<&str>,
+        roles: serde_json::Value,
+    ) -> String {
+        let claims = sample_claims("user-1", tenant_id);
+        let payload = serde_json::json!({
+            "sub": claims.sub,
+            "email": claims.email,
+            "exp": claims.exp,
+            "iat": claims.iat,
+            "jti": claims.jti,
+            "tenant_id": tenant_id,
+            "roles": roles,
+        });
         jsonwebtoken::encode(
             &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
-            &sample_claims("user-1", Some(tenant_id)),
+            &payload,
             &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()),
         )
-        .expect("sign tenant token")
+        .expect("sign roles token")
+    }
+
+    fn ares_roles() -> serde_json::Value {
+        serde_json::json!({ "ares": [{ "role": "user" }] })
+    }
+
+    fn encode_tenant_token(secret: &str, tenant_id: &str) -> String {
+        encode_roles_token(secret, Some(tenant_id), ares_roles())
     }
 
     fn create_test_app_with_ctx(auth_service: Arc<AuthService>, ctx: Arc<Context>) -> Router {

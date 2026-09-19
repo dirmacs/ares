@@ -16,9 +16,9 @@ use ares_store::tenant_agents::{
     create_tenant_agent as db_create_tenant_agent, deep_merge_config,
     delete_tenant_agent as db_delete_tenant_agent, get_tenant_agent as db_get_tenant_agent,
     list_agent_templates, list_tenant_agent_versions, list_tenant_agents as db_list_tenant_agents,
-    record_tenant_agent_version, rollback_tenant_agent_version,
-    update_tenant_agent as db_update_tenant_agent, AgentTemplate, AgentTemplateStore,
-    CreateTemplateRequest, CreateTenantAgentRequest, TenantAgent, UpdateTenantAgentRequest,
+    rollback_tenant_agent_version, update_tenant_agent as db_update_tenant_agent, AgentTemplate,
+    AgentTemplateStore, CreateTemplateRequest, CreateTenantAgentRequest, TenantAgent,
+    UpdateTenantAgentRequest,
 };
 use ares_types::types::{AgentContext, AppError};
 use axum::{
@@ -190,27 +190,15 @@ pub async fn list_tenant_agent_versions_handler(
         .expect("not provided")
         .pool()
         .clone();
-    let agent = db_get_tenant_agent(&__pool_5, &tenant_id, &agent_name).await?;
+    // GET is read-only (row 22): no seeding write here. The lookup still 404s
+    // for unknown agents; a row without version history returns an empty list.
+    let _agent = db_get_tenant_agent(&__pool_5, &tenant_id, &agent_name).await?;
     let __pool_6 = ctx
         .get::<ares_store::TenantDb>()
         .expect("not provided")
         .pool()
         .clone();
-    let mut records = list_tenant_agent_versions(&__pool_6, &tenant_id, &agent_name, 50).await?;
-    if records.is_empty() {
-        let __pool_7 = ctx
-            .get::<ares_store::TenantDb>()
-            .expect("not provided")
-            .pool()
-            .clone();
-        record_tenant_agent_version(&__pool_7, &agent, "admin_seed").await?;
-        let __pool_8 = ctx
-            .get::<ares_store::TenantDb>()
-            .expect("not provided")
-            .pool()
-            .clone();
-        records = list_tenant_agent_versions(&__pool_8, &tenant_id, &agent_name, 50).await?;
-    }
+    let records = list_tenant_agent_versions(&__pool_6, &tenant_id, &agent_name, 50).await?;
     Ok(Json(records))
 }
 
@@ -428,27 +416,15 @@ pub async fn get_agent_versions(
         .expect("not provided")
         .pool()
         .clone();
-    let agent = db_get_tenant_agent(&__pool_16, &tenant_id, &agent_name).await?;
+    // GET is read-only (row 22): no seeding write here. The lookup still 404s
+    // for unknown agents; a row without version history returns an empty list.
+    let _agent = db_get_tenant_agent(&__pool_16, &tenant_id, &agent_name).await?;
     let __pool_17 = ctx
         .get::<ares_store::TenantDb>()
         .expect("not provided")
         .pool()
         .clone();
-    let mut records = list_tenant_agent_versions(&__pool_17, &tenant_id, &agent_name, 50).await?;
-    if records.is_empty() {
-        let __pool_18 = ctx
-            .get::<ares_store::TenantDb>()
-            .expect("not provided")
-            .pool()
-            .clone();
-        record_tenant_agent_version(&__pool_18, &agent, "admin_seed").await?;
-        let __pool_19 = ctx
-            .get::<ares_store::TenantDb>()
-            .expect("not provided")
-            .pool()
-            .clone();
-        records = list_tenant_agent_versions(&__pool_19, &tenant_id, &agent_name, 50).await?;
-    }
+    let records = list_tenant_agent_versions(&__pool_17, &tenant_id, &agent_name, 50).await?;
     Ok(Json(records))
 }
 

@@ -39,6 +39,27 @@ pub fn set_header(headers: &mut axum::http::HeaderMap, name: &'static str, value
     }
 }
 
+/// Client address for audit rows on tenant-surface routes: the first
+/// `X-Forwarded-For` hop when present, else `X-Real-IP`. `None` when neither
+/// header is set (loopback and direct calls).
+pub fn client_ip_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
+    let forwarded = headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|hop| !hop.is_empty())
+        .map(str::to_string);
+    forwarded.or_else(|| {
+        headers
+            .get("x-real-ip")
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|hop| !hop.is_empty())
+            .map(str::to_string)
+    })
+}
+
 pub fn normalize_page(page: Option<u32>) -> u32 {
     page.unwrap_or(1).max(1)
 }

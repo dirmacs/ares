@@ -358,6 +358,8 @@ impl Execute {
         let execute = self.clone();
         let ctx_owned = Arc::clone(ctx);
         let orig = req.clone();
+        let failure_slot = crate::typed_error_slot();
+        let slot_in = failure_slot.clone();
         let out = events
             .waterfall_around(
                 cordis::events_catalog::ev::AGENT_RUN.to_string(),
@@ -384,12 +386,16 @@ impl Execute {
                             "agent_name": er.agent_name,
                             "run_id": er.run_id,
                         })),
-                        Err(e) => Err(CordisError::Fiber(e.to_string())),
+                        Err(e) => {
+                            let msg = e.to_string();
+                            *slot_in.lock() = Some((msg.clone(), e));
+                            Err(CordisError::Fiber(msg))
+                        }
                     }
                 },
             )
             .await
-            .map_err(|e| AppError::Internal(e.to_string()))?;
+            .map_err(|e| crate::preserved_or_wrapped(e, &failure_slot))?;
         if out.get("deny").and_then(|v| v.as_bool()) == Some(true) {
             let reason = out
                 .get("reason")

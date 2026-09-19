@@ -469,25 +469,6 @@ where
     }
 }
 
-/// Recover the core's typed [`AppError`] when the waterfall handed back
-/// exactly the fiber error the core produced.
-///
-/// [`CordisError`] carries strings only, so the typed error travels in a
-/// side slot and the fiber message proves provenance. Any listener rewrite
-/// of the error falls back to the wrapped [`AppError::Internal`], which
-/// keeps the pre-existing behavior for every no-match case.
-fn preserved_or_wrapped(
-    err: CordisError,
-    slot: &parking_lot::Mutex<Option<(String, AppError)>>,
-) -> AppError {
-    if let Some((msg, app)) = slot.lock().take() {
-        if matches!(&err, CordisError::Fiber(m) if m == &msg) {
-            return app;
-        }
-    }
-    AppError::Internal(err.to_string())
-}
-
 impl ConfigurableAgent {
     /// Create a new configurable agent from TOML config
     ///
@@ -968,8 +949,7 @@ Handle employee info, policies, and benefits."#
                 .collect(),
         })
         .unwrap_or(serde_json::Value::Null);
-        let failure_slot: Arc<parking_lot::Mutex<Option<(String, AppError)>>> =
-            Arc::new(parking_lot::Mutex::new(None));
+        let failure_slot = crate::typed_error_slot();
         let slot_in = failure_slot.clone();
         let out = run_events_waterfall(
             &events,
@@ -989,7 +969,7 @@ Handle employee info, policies, and benefits."#
             },
         )
         .await
-        .map_err(|e| preserved_or_wrapped(e, &failure_slot))?;
+        .map_err(|e| crate::preserved_or_wrapped(e, &failure_slot))?;
         self.generate_attempt_from_payload(out, cordis::events_catalog::ev::LLM_GENERATE)
     }
 
@@ -1070,8 +1050,7 @@ Handle employee info, policies, and benefits."#
                 .collect(),
         })
         .unwrap_or(serde_json::Value::Null);
-        let failure_slot: Arc<parking_lot::Mutex<Option<(String, AppError)>>> =
-            Arc::new(parking_lot::Mutex::new(None));
+        let failure_slot = crate::typed_error_slot();
         let slot_in = failure_slot.clone();
         let out = run_events_waterfall(
             &events,
@@ -1104,7 +1083,7 @@ Handle employee info, policies, and benefits."#
             },
         )
         .await
-        .map_err(|e| preserved_or_wrapped(e, &failure_slot))?;
+        .map_err(|e| crate::preserved_or_wrapped(e, &failure_slot))?;
         self.generate_attempt_from_payload(out, cordis::events_catalog::ev::LLM_GENERATE_TOOLS)
     }
 

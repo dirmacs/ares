@@ -93,8 +93,10 @@ pub use external_context::ExternalContext;
 pub use plugins::register_plugins;
 
 use ares_llm::client::TokenUsage;
-use ares_types::types::{AgentContext, AgentType, Result};
+use ares_types::types::{AgentContext, AgentType, AppError, Result};
 use async_trait::async_trait;
+use cordis::CordisError;
+use std::sync::Arc;
 
 // Re-export commonly used types
 pub use configurable::ConfigurableAgent;
@@ -134,4 +136,69 @@ pub trait Agent: Send + Sync {
 
     /// Get the agent type
     fn agent_type(&self) -> AgentType;
+}
+
+/// Side slot that carries a typed [`AppError`] across a cordis waterfall.
+///
+/// [`CordisError`] carries strings only, so errors are stringified on their
+/// way through waterfall machinery. A core stores the typed error here
+/// before converting; [`preserved_or_wrapped`] adopts it back when the
+/// returned fiber proves provenance.
+pub(crate) type TypedErrorSlot = parking_lot::Mutex<Option<(String, AppError)>>;
+
+/// Create an empty [`TypedErrorSlot`] for one waterfall call.
+pub(crate) fn typed_error_slot() -> Arc<TypedErrorSlot> {
+    Arc::new(parking_lot::Mutex::new(None))
+}
+
+/// Recover the core's typed [`AppError`] when the waterfall handed back
+/// exactly the fiber error the core produced.
+///
+/// The fiber message proves provenance; any listener rewrite of the error
+/// falls back to the wrapped [`AppError::Internal`], which keeps the
+/// pre-existing behavior for every no-match case.
+pub(crate) fn preserved_or_wrapped(err: CordisError, slot: &TypedErrorSlot) -> AppError {
+    if let Some((msg, app)) = slot.lock().take() {
+        if matches!(&err, CordisError::Fiber(m) if m == &msg) {
+            return app;
+        }
+    }
+    AppError::Internal(err.to_string())
+}
+
+#[cfg(test)]
+mod typed_error_slot_tests {
+    use super::*;
+
+    #[test]
+    fn adopts_matching_fiber() {
+        let slot = typed_error_slot();
+        *slot.lock() = Some(("boom".to_string(), AppError::RateLimited("q".to_string())));
+        let err = preserved_or_wrapped(CordisError::Fiber("boom".to_string()), &slot);
+        assert!(
+            matches!(err, AppError::RateLimited(_)),
+            "matching fiber must adopt the typed error; got {err:?}"
+        );
+    }
+
+    #[test]
+    fn wraps_when_fiber_differs() {
+        let slot = typed_error_slot();
+        *slot.lock() = Some(("boom".to_string(), AppError::Unavailable("q".to_string())));
+        let err = preserved_or_wrapped(CordisError::Fiber("other".to_string()), &slot);
+        assert!(
+            matches!(err, AppError::Internal(_)),
+            "a rewritten fiber falls back to the wrapped error; got {err:?}"
+        );
+    }
+
+    #[test]
+    fn wraps_when_slot_empty() {
+        let slot = typed_error_slot();
+        let err = preserved_or_wrapped(CordisError::Fiber("x".to_string()), &slot);
+        assert!(
+            matches!(err, AppError::Internal(_)),
+            "an empty slot falls back to the wrapped error; got {err:?}"
+        );
+    }
 }

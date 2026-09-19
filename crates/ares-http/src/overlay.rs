@@ -254,6 +254,9 @@ pub enum ConfigError {
     WatchError(#[from] notify::Error),
 }
 
+/// Minimum length for a configured JWT secret (256 bits = 32 bytes).
+pub(crate) const JWT_SECRET_MIN_LENGTH: usize = 32;
+
 impl AresConfig {
     /// Load configuration from a TOML file
     ///
@@ -305,9 +308,11 @@ impl AresConfig {
             .and_then(|()| self.detect_circular_references())
     }
 
-    /// Validate that the auth and database env vars exist at boot.
+    /// Validate that the API key and database env vars exist at boot.
+    /// The JWT secret is optional: absence disables HS256 (JWKS/asymmetric
+    /// only); a present-but-short secret still errors via `jwt_secret()`,
+    /// which `factory_auth` propagates.
     fn validate_env_vars(&self) -> Result<(), ConfigError> {
-        self.validate_env_var(&self.auth.jwt_secret_env)?;
         self.validate_env_var(&self.auth.api_key_env)?;
         if let Some(env) = self
             .database
@@ -600,16 +605,6 @@ impl AresConfig {
         std::env::var(env_name).ok()
     }
 
-    /// Minimum length for JWT secret (256 bits = 32 bytes)
-    const JWT_SECRET_MIN_LENGTH: usize = 32;
-
-    /// Get the JWT secret from the environment
-    ///
-    /// # Errors
-    /// Returns an error if:
-    /// - The environment variable is not set
-    /// - The secret is shorter than 32 characters (256 bits)
-    ///
     /// Get names of configured MCP clients (from mcps directory .toon files).
     /// Used by validation to allow MCP bridge tool names in agent configs.
     pub fn mcp_client_names(&self) -> Vec<String> {
@@ -638,21 +633,32 @@ impl AresConfig {
             .unwrap_or_default()
     }
 
-    pub fn jwt_secret(&self) -> Result<String, ConfigError> {
-        let secret = self
-            .resolve_env(&self.auth.jwt_secret_env)
-            .ok_or_else(|| ConfigError::MissingEnvVar(self.auth.jwt_secret_env.clone()))?;
+    /// Get the JWT secret from the environment
+    ///
+    /// Returns `Ok(None)` when the environment variable is unset or empty.
+    /// `None` means HS256 is disabled by configuration: only asymmetric
+    /// JWKS tokens are accepted.
+    ///
+    /// # Errors
+    /// Returns an error if the secret is present but shorter than
+    /// [`JWT_SECRET_MIN_LENGTH`] characters (256 bits).
+    pub fn jwt_secret(&self) -> Result<Option<String>, ConfigError> {
+        let secret = match self.resolve_env(&self.auth.jwt_secret_env) {
+            None => return Ok(None),
+            Some(s) if s.is_empty() => return Ok(None),
+            Some(s) => s,
+        };
 
-        if secret.len() < Self::JWT_SECRET_MIN_LENGTH {
+        if secret.len() < JWT_SECRET_MIN_LENGTH {
             return Err(ConfigError::ValidationError(format!(
                 "JWT_SECRET must be at least {} characters for security (current: {} chars). \
                  Use a cryptographically random string, e.g.: openssl rand -base64 32",
-                Self::JWT_SECRET_MIN_LENGTH,
+                JWT_SECRET_MIN_LENGTH,
                 secret.len()
             )));
         }
 
-        Ok(secret)
+        Ok(Some(secret))
     }
 
     /// Get the API key from the environment
@@ -1888,10 +1894,11 @@ model = "m"
     // ---- Validation edge cases ----
 
     #[test]
-    fn test_validation_missing_jwt_env_var() {
+    fn test_validation_missing_jwt_env_var_is_accepted_when_disabled() {
         // SAFETY: single-threaded test, unique env key per test; alternatives: temp_env crate, serial_test with global mutex, OnceLock isolation — retained unsafe for minimal dependencies and existing isolated key convention
         unsafe {
             std::env::remove_var("MISSING_JWT_ENV_FOR_TEST");
+            std::env::set_var("TEST_API_KEY", "test-api-key");
         }
         let content = r#"
 [server]
@@ -1901,8 +1908,7 @@ api_key_env = "TEST_API_KEY"
 [database]
 "#;
         let config: AresConfig = toml::from_str(content).unwrap();
-        let err = config.validate().unwrap_err();
-        assert!(matches!(err, ConfigError::MissingEnvVar(_)));
+        assert!(config.validate().is_ok());
     }
 
     #[test]
@@ -2326,6 +2332,26 @@ api_key_env = "API_KEY"
     }
 
     #[test]
+    fn test_jwt_secret_empty_string_disables_hs256() {
+        let config: AresConfig = toml::from_str(
+            r#"
+[server]
+[auth]
+jwt_secret_env = "EMPTY_JWT_SECRET"
+api_key_env = "API_KEY"
+[database]
+"#,
+        )
+        .unwrap();
+        // SAFETY: single-threaded test, unique env key per test; alternatives: temp_env crate, serial_test with global mutex, OnceLock isolation — retained unsafe for minimal dependencies and existing isolated key convention
+        unsafe {
+            std::env::set_var("EMPTY_JWT_SECRET", "");
+        }
+        let result = config.jwt_secret();
+        assert!(matches!(result, Ok(None)));
+    }
+
+    #[test]
     fn test_jwt_secret_missing_env_var() {
         let config: AresConfig = toml::from_str(
             r#"
@@ -2342,7 +2368,7 @@ api_key_env = "API_KEY"
             std::env::remove_var("NONEXISTENT_JWT_99999");
         }
         let result = config.jwt_secret();
-        assert!(matches!(result, Err(ConfigError::MissingEnvVar(_))));
+        assert!(matches!(result, Ok(None)));
     }
 
     #[test]
@@ -2368,7 +2394,7 @@ api_key_env = "API_KEY"
         assert!(result.is_ok());
         assert_eq!(
             result.unwrap(),
-            "a-very-long-secret-that-is-definitely-32-chars"
+            Some("a-very-long-secret-that-is-definitely-32-chars".to_string())
         );
     }
 

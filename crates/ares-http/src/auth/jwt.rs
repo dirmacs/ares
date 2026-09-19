@@ -132,6 +132,11 @@ pub fn verify_signature(
     secret: &[u8],
     leeway: u64,
 ) -> std::result::Result<Claims, JwtError> {
+    if secret.is_empty() {
+        return Err(JwtError::InvalidClaims(
+            "HS256 verification is disabled: no HMAC secret is configured".into(),
+        ));
+    }
     let header = decode_header(token).map_err(jwt_decode_error)?;
     if header.alg != Algorithm::HS256 {
         return Err(JwtError::InvalidClaims(format!(
@@ -233,6 +238,11 @@ fn jwt_error_to_app_error(err: JwtError) -> AppError {
 }
 
 fn sign_claims(claims: &Claims, secret: &[u8]) -> std::result::Result<String, JwtError> {
+    if secret.is_empty() {
+        return Err(JwtError::InvalidClaims(
+            "JWT signing is not configured: no HMAC secret".into(),
+        ));
+    }
     encode(
         &Header::new(Algorithm::HS256),
         claims,
@@ -694,6 +704,40 @@ mod tests {
     fn verify_signature_rejects_malformed_token() {
         let err = verify_signature("not-a-jwt", test_secret(), 0).unwrap_err();
         assert!(matches!(err, JwtError::InvalidClaims(_)));
+    }
+
+    #[test]
+    fn verify_signature_empty_secret_rejects_real_token() {
+        let claims = build_claims("u", "e@x.com", now_ts(), 900, None);
+        let token = sign_claims(&claims, test_secret()).expect("sign");
+        let err = verify_signature(&token, b"", 0).unwrap_err();
+        assert!(matches!(err, JwtError::InvalidClaims(_)));
+        assert!(err.to_string().contains("disabled"));
+    }
+
+    #[tokio::test]
+    async fn auth_service_empty_secret_verify_token_fails_closed() {
+        let real = create_test_service();
+        let tokens = real
+            .generate_tokens("user-1", "u@example.com")
+            .expect("generate");
+        let empty = AuthService::new(String::new(), 900, 604_800);
+        // A token signed with an empty key must not verify either.
+        let empty_claims = build_claims("u", "e@x.com", now_ts(), 900, None);
+        let empty_token = encode(
+            &Header::new(Algorithm::HS256),
+            &empty_claims,
+            &EncodingKey::from_secret(b""),
+        )
+        .expect("encode empty-key token");
+        assert!(empty.verify_token(&tokens.access_token).await.is_err());
+        assert!(empty.verify_token(&empty_token).await.is_err());
+    }
+
+    #[test]
+    fn generate_tokens_empty_secret_is_error() {
+        let empty = AuthService::new(String::new(), 900, 604_800);
+        assert!(empty.generate_tokens("user-1", "u@example.com").is_err());
     }
 
     // -------------------------------------------------------------------------

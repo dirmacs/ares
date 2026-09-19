@@ -454,9 +454,7 @@ pub struct AllowRagSourceRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::handlers::admin::{
-        admin_token_from_request, has_admin_role, runtime_tool_capabilities, AdminClaims, RoleEntry,
-    };
+    use crate::api::handlers::admin::{admin_token_from_request, runtime_tool_capabilities};
     use crate::overlay::ModelPricingConfig;
 
     fn run(provider_name: &str, model_name: &str) -> agent_runs::AgentRun {
@@ -946,23 +944,6 @@ mod tests {
         assert_eq!(estimate.total_cost_usd, Some(0.0175));
     }
 
-    fn admin_claims(roles: HashMap<String, Vec<RoleEntry>>) -> AdminClaims {
-        AdminClaims {
-            sub: "admin-user".into(),
-            email: "admin@example.com".into(),
-            exp: 9_999_999_999,
-            iat: 1_700_000_000,
-            roles,
-        }
-    }
-
-    fn role_entry(role: &str) -> RoleEntry {
-        RoleEntry {
-            role: role.into(),
-            resource_id: None,
-        }
-    }
-
     #[test]
     fn admin_token_from_request_decodes_query_token() {
         let req = axum::extract::Request::builder()
@@ -986,27 +967,6 @@ mod tests {
             admin_token_from_request(&req).as_deref(),
             Some("header-token")
         );
-    }
-
-    #[test]
-    fn has_admin_role_accepts_super_admin_in_ares_product() {
-        let mut roles = HashMap::new();
-        roles.insert("ares".into(), vec![role_entry("super_admin")]);
-        assert!(has_admin_role(&admin_claims(roles)));
-    }
-
-    #[test]
-    fn has_admin_role_accepts_admin_in_eruka_product() {
-        let mut roles = HashMap::new();
-        roles.insert("eruka".into(), vec![role_entry("admin")]);
-        assert!(has_admin_role(&admin_claims(roles)));
-    }
-
-    #[test]
-    fn has_admin_role_rejects_non_admin_roles() {
-        let mut roles = HashMap::new();
-        roles.insert("admin".into(), vec![role_entry("viewer")]);
-        assert!(!has_admin_role(&admin_claims(roles)));
     }
 
     #[test]
@@ -1154,43 +1114,6 @@ mod tests {
     }
 
     #[test]
-    fn admin_claims_deserializes_roles_map() {
-        let json = r#"{
-            "sub":"user-1",
-            "email":"admin@example.com",
-            "exp":9999999999,
-            "iat":1700000000,
-            "roles":{
-                "ares":[{"role":"admin","resource_id":null}]
-            }
-        }"#;
-        let claims: AdminClaims = serde_json::from_str(json).unwrap();
-        assert_eq!(claims.sub, "user-1");
-        assert_eq!(claims.email, "admin@example.com");
-        assert!(has_admin_role(&claims));
-    }
-
-    #[test]
-    fn admin_claims_default_empty_roles_when_omitted() {
-        let json = r#"{
-            "sub":"user-2",
-            "email":"viewer@example.com",
-            "exp":9999999999,
-            "iat":1700000000
-        }"#;
-        let claims: AdminClaims = serde_json::from_str(json).unwrap();
-        assert!(claims.roles.is_empty());
-        assert!(!has_admin_role(&claims));
-    }
-
-    #[test]
-    fn has_admin_role_accepts_admin_in_admin_product() {
-        let mut roles = HashMap::new();
-        roles.insert("admin".into(), vec![role_entry("admin")]);
-        assert!(has_admin_role(&admin_claims(roles)));
-    }
-
-    #[test]
     fn parse_tenant_tier_accepts_case_insensitive_values() {
         assert!(matches!(parse_tenant_tier("PRO").unwrap(), TenantTier::Pro));
         assert!(matches!(
@@ -1251,35 +1174,6 @@ mod tests {
         assert_eq!(estimate.input_cost_usd, Some(5.0));
         assert_eq!(estimate.output_cost_usd, None);
         assert_eq!(estimate.total_cost_usd, None);
-    }
-
-    #[test]
-    fn has_admin_role_rejects_empty_roles_map() {
-        assert!(!has_admin_role(&admin_claims(HashMap::new())));
-    }
-
-    #[test]
-    fn has_admin_role_rejects_admin_in_unlisted_product() {
-        let mut roles = HashMap::new();
-        roles.insert("other".into(), vec![role_entry("admin")]);
-        assert!(!has_admin_role(&admin_claims(roles)));
-    }
-
-    #[test]
-    fn has_admin_role_accepts_super_admin_in_admin_product() {
-        let mut roles = HashMap::new();
-        roles.insert("admin".into(), vec![role_entry("super_admin")]);
-        assert!(has_admin_role(&admin_claims(roles)));
-    }
-
-    #[test]
-    fn has_admin_role_rejects_multiple_non_admin_roles() {
-        let mut roles = HashMap::new();
-        roles.insert(
-            "ares".into(),
-            vec![role_entry("viewer"), role_entry("editor")],
-        );
-        assert!(!has_admin_role(&admin_claims(roles)));
     }
 
     #[test]
@@ -1491,14 +1385,6 @@ mod tests {
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["agents_created"][0], "a1");
-    }
-
-    #[test]
-    fn role_entry_deserializes_resource_id() {
-        let entry: RoleEntry =
-            serde_json::from_str(r#"{"role":"admin","resource_id":"res-1"}"#).unwrap();
-        assert_eq!(entry.role, "admin");
-        assert_eq!(entry.resource_id.as_deref(), Some("res-1"));
     }
 
     #[test]

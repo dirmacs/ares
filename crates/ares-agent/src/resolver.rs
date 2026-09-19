@@ -1,4 +1,6 @@
-//! Tenant agent runtime resolver — 3-tier hierarchy: user → community → system config.
+//! Agent runtime resolver — community public → system config tiers. The
+//! tenant tier (`tenant_agents`) is applied by `Execute::run` before this
+//! resolver runs, for requests that set `require_tenant_agent` (AR-1).
 
 use crate::AgentConfig;
 use ares_store::postgres::UserAgent;
@@ -66,8 +68,13 @@ use cordis::{CordisError, Service};
 
 use crate::registry::AgentRegistry;
 
-/// Unified agent resolver — single place that resolves agents with ordered
-/// precedence `tenant_db tenant_agents → community public → system AgentRegistry`.
+/// Shared agent resolver — resolves agents with ordered precedence
+/// `community public → system AgentRegistry`.
+///
+/// A request that requires the tenant's own config is resolved from
+/// `tenant_agents` by `Execute::run` before this resolver is consulted: a
+/// present row wins and a missing row is a typed not-found, never a
+/// fallthrough to a name-colliding community or system agent.
 ///
 /// Crate-private resolver. Production callers go through `Execute::run`.
 /// Per-tenant isolation: `crate::tenant_scope(ctx, tenant_id)` (`Tools` + `Execute`).
@@ -336,6 +343,7 @@ mod tests {
         assert_eq!(AgentSource::User.as_str(), "user");
         assert_eq!(AgentSource::Community.as_str(), "community");
         assert_eq!(AgentSource::System.as_str(), "system");
+        assert_eq!(AgentSource::Tenant.as_str(), "tenant");
     }
 
     #[test]
@@ -400,6 +408,7 @@ mod tests {
             AgentSource::User,
             AgentSource::Community,
             AgentSource::System,
+            AgentSource::Tenant,
         ] {
             let json = serde_json::to_string(&source).unwrap();
             let decoded: AgentSource = serde_json::from_str(&json).unwrap();

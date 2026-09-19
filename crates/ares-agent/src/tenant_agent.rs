@@ -283,7 +283,7 @@ fn tenant_config_version(config: &serde_json::Value, updated_at: i64) -> String 
         .unwrap_or_else(|| format!("tenant-db:{}", updated_at))
 }
 
-async fn load_tenant_agent_config(
+pub(crate) async fn load_tenant_agent_config(
     pool: &PgPool,
     tenant_id: &str,
     agent_name: &str,

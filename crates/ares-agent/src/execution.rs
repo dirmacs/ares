@@ -40,6 +40,8 @@ pub enum AgentSource {
     User,
     Community,
     System,
+    /// The tenant's own `tenant_agents` row (AR-1 run-route tier).
+    Tenant,
 }
 
 impl AgentSource {
@@ -48,6 +50,7 @@ impl AgentSource {
             Self::User => "user",
             Self::Community => "community",
             Self::System => "system",
+            Self::Tenant => "tenant",
         }
     }
 }
@@ -104,6 +107,11 @@ pub struct AgentRequest {
     /// tool calls write `run_llm_calls`/`run_tool_calls` rows for `run_id`
     /// through this sink (same `ObservabilitySink` trait the skill engine uses).
     pub observability: Option<Arc<dyn ares_llm::observability::ObservabilitySink>>,
+    /// AR-1: when true, execution must use the tenant's own `tenant_agents`
+    /// row. A missing row is a typed not-found; a disabled or invalid row is
+    /// a typed error. No fallthrough to a same-named community or system
+    /// agent. The v1 run route sets this; other callers keep the fallback.
+    pub require_tenant_agent: bool,
 }
 
 /// Internal marker for skill-triggered executions.
@@ -596,17 +604,53 @@ impl Execute {
             .clone()
             .or_else(|| ctx.get::<crate::registry::AgentRegistry>());
         let registry = registry_owned.as_ref()?;
-        let resolver = ctx.get::<crate::resolver::Resolver>().or_else(|| {
-            crate::resolver::Resolver::from_ctx(ctx, Arc::clone(registry)).map(Arc::new)
-        })?;
-        let resolved = resolver.resolve(ctx, &req.agent_name).await;
-        let (user_agent, source) = match resolved {
-            Ok(v) => v,
-            Err(e) => return Some(Err(e)),
-        };
         let user_id = user_id_from_ctx(ctx, "");
+        let tenant_db = ctx.get::<ares_store::TenantDb>()?;
+        let fleet_secrets = ctx.get::<ares_store::FleetSecrets>()?;
 
-        let mut config = crate::configurable::agent_config_from_user_agent(&user_agent);
+        // AR-1 tenant tier: a request that requires the tenant's own row reads
+        // `tenant_agents` first. A present row wins over community/system
+        // agents; a missing row is a typed not-found and a disabled or
+        // invalid row is a typed error — never a fallthrough to a same-named
+        // agent from another source.
+        let tenant_config = if req.require_tenant_agent && !user_id.is_empty() {
+            match crate::tenant_agent::load_tenant_agent_config(
+                tenant_db.pool(),
+                &user_id,
+                &req.agent_name,
+            )
+            .await
+            {
+                Ok(Some((config, _config_version, _config_json))) => Some(config),
+                Ok(None) => {
+                    return Some(Err(AppError::NotFound(format!(
+                        "Agent '{}' not found for tenant '{}'",
+                        req.agent_name, user_id
+                    ))))
+                }
+                Err(e) => return Some(Err(e)),
+            }
+        } else {
+            None
+        };
+
+        let (mut config, source) = match tenant_config {
+            Some(config) => (config, AgentSource::Tenant),
+            None => {
+                let resolver = ctx.get::<crate::resolver::Resolver>().or_else(|| {
+                    crate::resolver::Resolver::from_ctx(ctx, Arc::clone(registry)).map(Arc::new)
+                })?;
+                let resolved = resolver.resolve(ctx, &req.agent_name).await;
+                let (user_agent, source) = match resolved {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                };
+                (
+                    crate::configurable::agent_config_from_user_agent(&user_agent),
+                    source,
+                )
+            }
+        };
         if let (Some(policy), Some(ovr)) = (
             ctx.get::<ares_llm::TenantModelPolicy>(),
             ctx.get::<ModelOverride>(),
@@ -619,9 +663,6 @@ impl Execute {
             tracing::info!(model=%ovr.model, agent=%req.agent_name, "model overridden via Cordis intercept");
             config.model = ovr.model.clone();
         }
-
-        let tenant_db = ctx.get::<ares_store::TenantDb>()?;
-        let fleet_secrets = ctx.get::<ares_store::FleetSecrets>()?;
 
         let mut agent = match registry
             .create_agent_from_config_with_fallbacks(

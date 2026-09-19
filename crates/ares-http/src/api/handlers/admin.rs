@@ -564,9 +564,7 @@ mod tests {
         let hs256_token = jsonwebtoken::encode(
             &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
             &hs256_claims,
-            &jsonwebtoken::EncodingKey::from_secret(
-                b"admin-test-secret-at-least-32-chars-long",
-            ),
+            &jsonwebtoken::EncodingKey::from_secret(b"admin-test-secret-at-least-32-chars-long"),
         )
         .expect("sign");
         let response = app

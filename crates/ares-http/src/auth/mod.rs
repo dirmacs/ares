@@ -57,10 +57,10 @@
 //! jwt_expiry_hours = 24           # Token validity duration
 //! ```
 
-/// JWT token generation, validation, and password hashing services.
-pub mod jwt;
 /// Cached JWKS fetch and verification for EdDSA/RS256 tokens.
 pub mod jwks;
+/// JWT token generation, validation, and password hashing services.
+pub mod jwt;
 /// Authentication middleware and extractors for protected routes.
 pub mod middleware;
 

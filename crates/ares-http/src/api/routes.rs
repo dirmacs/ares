@@ -1085,15 +1085,24 @@ mod tests {
     #[tokio::test]
     async fn create_router_exposes_loop_routes_behind_jwt() {
         let state = test_app_state();
-        let tokens = state
-            .get::<crate::auth::jwt::AuthService>()
-            .expect("not provided")
-            .generate_tokens("user-1", "user@example.com")
-            .expect("tokens");
+        // Same secret `test_app_state` installs in the AuthService. The token
+        // carries the ARES product claim, which `auth_middleware` requires.
+        let token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+            &serde_json::json!({
+                "sub": "user-1",
+                "email": "user@example.com",
+                "exp": chrono::Utc::now().timestamp() + 3600,
+                "iat": chrono::Utc::now().timestamp(),
+                "roles": { "ares": [{ "role": "user" }] },
+            }),
+            &jsonwebtoken::EncodingKey::from_secret(b"test-secret-at-least-32-characters-long"),
+        )
+        .expect("tokens");
         let server = test_server(state);
         let response = server
             .get("/loops")
-            .add_header("authorization", format!("Bearer {}", tokens.access_token))
+            .add_header("authorization", format!("Bearer {token}"))
             .await;
         response.assert_status_ok();
     }

@@ -1087,6 +1087,54 @@ pub async fn clone_templates_for_tenant(
     list_tenant_agents(pool, tenant_id).await
 }
 
+/// Point a stored tenant agent at a different model.
+///
+/// The patched config passes the closed-schema validation (row 21) before
+/// the write, so provisioning cannot seed a row that later write paths
+/// reject.
+pub async fn set_tenant_agent_model(
+    pool: &PgPool,
+    tenant_id: &str,
+    agent_name: &str,
+    model: &str,
+) -> Result<()> {
+    let row =
+        sqlx::query("SELECT config FROM tenant_agents WHERE tenant_id = $1 AND agent_name = $2")
+            .bind(tenant_id)
+            .bind(agent_name)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+    let Some(row) = row else {
+        return Err(AppError::NotFound(format!(
+            "tenant agent {agent_name} not found"
+        )));
+    };
+    let mut config: serde_json::Value = row.get("config");
+    let Some(obj) = config.as_object_mut() else {
+        return Err(AppError::InvalidInput(format!(
+            "tenant agent {agent_name} config is not an object"
+        )));
+    };
+    obj.insert(
+        "model".to_string(),
+        serde_json::Value::String(model.to_string()),
+    );
+    validate_tenant_config(&config)?;
+    sqlx::query(
+        "UPDATE tenant_agents SET config = $3, updated_at = $4
+         WHERE tenant_id = $1 AND agent_name = $2",
+    )
+    .bind(tenant_id)
+    .bind(agent_name)
+    .bind(&config)
+    .bind(now_ts())
+    .execute(pool)
+    .await
+    .map_err(|e| AppError::Database(e.to_string()))?;
+    Ok(())
+}
+
 // =============================================================================
 // Seed default templates
 // =============================================================================

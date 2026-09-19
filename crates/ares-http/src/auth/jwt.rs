@@ -990,8 +990,7 @@ mod tests {
         let seed = 11u8;
         let kid = "eruka-test-1";
         let url = jwks_stub(jwks_json(&[(kid, &[seed; 32])])).await;
-        let service = create_test_service()
-            .with_jwks(Arc::new(super::JwksCache::new(url)));
+        let service = create_test_service().with_jwks(Arc::new(super::JwksCache::new(url)));
 
         let token = eddsa_token(seed, Some(kid));
         let claims = service.verify_token(&token).await.expect("eddsa accepted");
@@ -1014,9 +1013,7 @@ mod tests {
 
     #[tokio::test]
     async fn verify_token_rejects_alg_confusion_attempts() {
-        use crate::auth::test_keys::{
-            eddsa_token, hs256_token, jwks_json, jwks_stub, rewrite_alg,
-        };
+        use crate::auth::test_keys::{eddsa_token, hs256_token, jwks_json, jwks_stub, rewrite_alg};
 
         let seed = 11u8;
         let kid = "eruka-test-1";

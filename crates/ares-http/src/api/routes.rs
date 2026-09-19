@@ -639,15 +639,13 @@ pub fn create_router(
             get(crate::api::handlers::admin::list_pipelines)
                 .post(crate::api::handlers::admin::create_pipeline),
         )
-        .layer(middleware::from_fn(
-            move |mut req: Request, next: Next| {
-                let jwks = admin_jwks.clone();
-                async move {
-                    req.extensions_mut().insert(jwks);
-                    crate::api::handlers::admin::admin_middleware(req, next).await
-                }
-            },
-        ));
+        .layer(middleware::from_fn(move |mut req: Request, next: Next| {
+            let jwks = admin_jwks.clone();
+            async move {
+                req.extensions_mut().insert(jwks);
+                crate::api::handlers::admin::admin_middleware(req, next).await
+            }
+        }));
 
     // External API: authenticated via API key (for client apps, CLI, MCP)
     // Client-specific business logic lives in the client's own portal backend, not here.
@@ -903,8 +901,8 @@ mod route_path_tests {
 // env var mid-await, so scoping it earlier would reintroduce the race.
 #[allow(clippy::await_holding_lock)]
 mod tests {
-    use crate::api::handlers::admin::shared::lock_admin_env;
     use super::*;
+    use crate::api::handlers::admin::shared::lock_admin_env;
     use crate::config::{AuthConfig, ServerConfig};
     use crate::overlay::{
         AgentConfig, AresConfig, BillingConfig, DatabaseConfig, DynamicConfigPaths, ModelConfig,

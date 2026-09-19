@@ -1,10 +1,10 @@
+use crate::auth::middleware::AuthUser;
 use crate::HttpError;
 use crate::Result;
 use crate::{
     db::postgres::UserAgent, db::traits::DatabaseClient, types::AppError,
     utils::toml_config::AgentConfig,
 };
-use crate::auth::middleware::AuthUser;
 use axum::{
     extract::{Path, State},
     response::{IntoResponse, Response},
@@ -399,7 +399,10 @@ pub async fn list_agents(
     let owner = user_agent_owner(&ctx, &claims.sub);
     let records = user_agent_store(&ctx).list(&owner).await?;
     Ok(Json(
-        records.into_iter().map(user_agent_record_response).collect(),
+        records
+            .into_iter()
+            .map(user_agent_record_response)
+            .collect(),
     ))
 }
 

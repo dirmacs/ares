@@ -221,10 +221,7 @@ impl JwksKeySet {
 
         let token_data =
             decode::<IssuerClaims>(token, &verifying_key.key, &validation).map_err(|e| {
-                if matches!(
-                    e.kind(),
-                    jsonwebtoken::errors::ErrorKind::ExpiredSignature
-                ) {
+                if matches!(e.kind(), jsonwebtoken::errors::ErrorKind::ExpiredSignature) {
                     AuthError::Expired
                 } else {
                     AuthError::InvalidToken(e.to_string())
@@ -398,8 +395,7 @@ impl JwksCache {
 
     /// Process-wide cache for callers that hold no injected instance.
     pub fn shared() -> Arc<Self> {
-        static SHARED: LazyLock<Arc<JwksCache>> =
-            LazyLock::new(|| Arc::new(JwksCache::from_env()));
+        static SHARED: LazyLock<Arc<JwksCache>> = LazyLock::new(|| Arc::new(JwksCache::from_env()));
         Arc::clone(&SHARED)
     }
 
@@ -504,8 +500,8 @@ impl JwksCache {
             .text()
             .await
             .map_err(|err| JwksError::Fetch(err.to_string()))?;
-        let keys = JwksKeySet::from_jwks_json(&body)
-            .map_err(|err| JwksError::Fetch(err.to_string()))?;
+        let keys =
+            JwksKeySet::from_jwks_json(&body).map_err(|err| JwksError::Fetch(err.to_string()))?;
 
         let mut state = self.state.write().await;
         state.keys = Some(keys.clone());

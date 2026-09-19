@@ -76,6 +76,10 @@ pub struct V1AgentRun {
     pub input: serde_json::Value,
     pub output: Option<serde_json::Value>,
     pub error: Option<String>,
+    /// Coarse failure class for failed runs (`llm_error`, `provider_error`,
+    /// `unavailable`, `rate_limited`, `internal_error`). The wire `error`
+    /// text stays generic; this field carries the class.
+    pub reason_code: Option<String>,
     pub started_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
     pub duration_ms: Option<u64>,

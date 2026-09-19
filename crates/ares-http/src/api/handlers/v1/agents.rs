@@ -431,6 +431,7 @@ fn skill_run_outcome(
                 input: setup.input.clone(),
                 output: Some(context),
                 error: None,
+                reason_code: None,
                 started_at: Utc::now(),
                 finished_at: Some(Utc::now()),
                 duration_ms: Some(duration_ms),
@@ -444,18 +445,38 @@ fn skill_run_outcome(
             metering_ok: true,
             config_version_header: setup.config_version.clone(),
         },
-        Err(error) => failed_run_outcome(setup, duration_ms, error, "skill", "skill"),
+        Err(_error) => failed_run_outcome(setup, duration_ms, "internal_error", "skill", "skill"),
     }
 }
 
-/// Failed-run response + metering pieces: zeroed counts, the raw error text in
-/// the body, and the caller's model/provider labels. The config version comes
-/// from the setup, so failures stamp the same `x-agent-config-version` header
-/// as successes.
+/// Generic wire text for failed runs. The raw error stays in the server logs
+/// and in the database copy (raw when `no_retain` is off, the marker when it
+/// is on); the body only carries the class through `reason_code`.
+const FAILED_RUN_MESSAGE: &str = "The run failed. See reason_code.";
+
+/// Coarse failure class for the wire. Local mapping, not `AppError::code()`:
+/// that collapses `Unavailable` and `RateLimited` into `InternalError`, and
+/// callers need the difference.
+fn failure_reason_code(error: &ares_types::types::AppError) -> &'static str {
+    use ares_types::types::AppError;
+    match error {
+        AppError::LLM(_) => "llm_error",
+        AppError::External(_) => "provider_error",
+        AppError::Unavailable(_) => "unavailable",
+        AppError::RateLimited(_) => "rate_limited",
+        _ => "internal_error",
+    }
+}
+
+/// Failed-run response + metering pieces: zeroed counts, generic wire error
+/// text plus the failure class, and the caller's model/provider labels. The
+/// config version comes from the setup, so failures stamp the same
+/// `x-agent-config-version` header as successes. HTTP stays 200: consumers
+/// read `status`, which matches the documented eHB envelope behavior.
 fn failed_run_outcome(
     setup: &AgentRunSetup,
     duration_ms: u64,
-    error: String,
+    reason_code: &str,
     model_name: &str,
     provider_name: &str,
 ) -> AgentRunOutcome {
@@ -466,7 +487,8 @@ fn failed_run_outcome(
             status: "failed".to_string(),
             input: setup.input.clone(),
             output: None,
-            error: Some(error),
+            error: Some(FAILED_RUN_MESSAGE.to_string()),
+            reason_code: Some(reason_code.to_string()),
             started_at: Utc::now(),
             finished_at: Some(Utc::now()),
             duration_ms: Some(duration_ms),
@@ -704,6 +726,7 @@ async fn complete_llm_run(
             input: setup.input.clone(),
             output: Some(serde_json::json!({"response": response.content})),
             error: None,
+            reason_code: None,
             started_at: Utc::now(),
             finished_at: Some(Utc::now()),
             duration_ms: Some(duration_ms),
@@ -758,7 +781,7 @@ async fn fail_llm_run(
     Ok(failed_run_outcome(
         setup,
         duration_ms,
-        raw_err,
+        failure_reason_code(&error),
         "unknown",
         "unknown",
     ))
@@ -1261,7 +1284,7 @@ mod tests {
     #[tokio::test]
     async fn failed_outcome_stamps_config_version_header() {
         let setup = test_setup(Some("tenant-db:42"));
-        let outcome = failed_run_outcome(&setup, 7, "boom".into(), "unknown", "unknown");
+        let outcome = failed_run_outcome(&setup, 7, "llm_error", "unknown", "unknown");
         assert_eq!(
             outcome.config_version_header.as_deref(),
             Some("tenant-db:42")
@@ -1277,7 +1300,7 @@ mod tests {
     #[tokio::test]
     async fn failed_outcome_omits_header_without_config_version() {
         let setup = test_setup(None);
-        let outcome = failed_run_outcome(&setup, 7, "boom".into(), "unknown", "unknown");
+        let outcome = failed_run_outcome(&setup, 7, "llm_error", "unknown", "unknown");
         assert_eq!(outcome.config_version_header, None);
 
         let response = finish_agent_run(&setup, None, outcome);
@@ -1286,5 +1309,69 @@ mod tests {
             header_value(&response, "x-agent-config-source").as_deref(),
             Some("tenant-db")
         );
+    }
+
+    #[test]
+    fn failure_reason_codes_map_locally() {
+        use ares_types::types::AppError;
+        assert_eq!(failure_reason_code(&AppError::LLM("x".into())), "llm_error");
+        assert_eq!(
+            failure_reason_code(&AppError::External("x".into())),
+            "provider_error"
+        );
+        assert_eq!(
+            failure_reason_code(&AppError::Unavailable("x".into())),
+            "unavailable"
+        );
+        assert_eq!(
+            failure_reason_code(&AppError::RateLimited("x".into())),
+            "rate_limited"
+        );
+        assert_eq!(
+            failure_reason_code(&AppError::Internal("x".into())),
+            "internal_error"
+        );
+        assert_eq!(
+            failure_reason_code(&AppError::Database("x".into())),
+            "internal_error"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_run_wire_body_hides_provider_text() {
+        let setup = test_setup(None);
+        let secret = "provider said: sk-live-12345";
+        let outcome = failed_run_outcome(
+            &setup,
+            7,
+            failure_reason_code(&ares_types::types::AppError::LLM(secret.to_string())),
+            "unknown",
+            "unknown",
+        );
+
+        let response = finish_agent_run(&setup, None, outcome);
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let text = String::from_utf8(body.to_vec()).expect("utf8");
+        assert!(!text.contains("sk-live-12345"));
+        assert!(!text.contains("provider said"));
+        let json: serde_json::Value = serde_json::from_str(&text).expect("json body");
+        assert_eq!(json["status"], "failed");
+        assert_eq!(json["reason_code"], "llm_error");
+        assert_eq!(json["error"], FAILED_RUN_MESSAGE);
+    }
+
+    #[test]
+    fn redaction_contract_for_db_copy() {
+        use ares_store::run_history::redact_agent_run_error;
+        assert_eq!(
+            redact_agent_run_error(false, Some("raw boom")).as_deref(),
+            Some("raw boom")
+        );
+        let redacted = redact_agent_run_error(true, Some("raw boom")).expect("redacted");
+        assert_ne!(redacted, "raw boom");
+        assert!(!redacted.contains("raw boom"));
     }
 }

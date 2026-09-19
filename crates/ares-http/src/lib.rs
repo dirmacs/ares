@@ -179,36 +179,60 @@ fn factory_auth(
     config: &serde_json::Value,
 ) -> std::result::Result<cordis::FiberId, CordisError> {
     use crate::auth::jwt::AuthService;
-    let auth = if let Some(mgr) = ctx.get::<AresConfigManager>() {
-        let cfg = mgr.config();
-        let jwt_secret = cfg.jwt_secret().map_err(|e| {
-            CordisError::Configuration(format!("JWT_SECRET environment variable must be set: {e}"))
-        })?;
-        AuthService::new(
-            jwt_secret,
-            cfg.auth.jwt_access_expiry,
-            cfg.auth.jwt_refresh_expiry,
-        )
-    } else {
-        let auth_cfg: AuthConfig =
-            if config.is_null() || config.as_object().is_some_and(|o| o.is_empty()) {
-                AuthConfig::default()
-            } else {
-                serde_json::from_value(config.clone()).map_err(|e| {
-                    CordisError::Configuration(format!("invalid AuthService config: {e}"))
-                })?
+    use crate::overlay::JWT_SECRET_MIN_LENGTH;
+    // `None` means the HMAC secret is absent or empty: HS256 is then disabled
+    // and only asymmetric JWKS tokens verify. A present-but-short secret stays
+    // a configuration error.
+    let (jwt_secret, env_name, access_expiry, refresh_expiry) =
+        if let Some(mgr) = ctx.get::<AresConfigManager>() {
+            let cfg = mgr.config();
+            let secret = cfg.jwt_secret().map_err(|e| {
+                CordisError::Configuration(format!("invalid JWT secret configuration: {e}"))
+            })?;
+            (
+                secret,
+                cfg.auth.jwt_secret_env.clone(),
+                cfg.auth.jwt_access_expiry,
+                cfg.auth.jwt_refresh_expiry,
+            )
+        } else {
+            let auth_cfg: AuthConfig =
+                if config.is_null() || config.as_object().is_some_and(|o| o.is_empty()) {
+                    AuthConfig::default()
+                } else {
+                    serde_json::from_value(config.clone()).map_err(|e| {
+                        CordisError::Configuration(format!("invalid AuthService config: {e}"))
+                    })?
+                };
+            let secret = match std::env::var(&auth_cfg.jwt_secret_env) {
+                Err(_) => None,
+                Ok(secret) if secret.is_empty() => None,
+                Ok(secret) if secret.len() < JWT_SECRET_MIN_LENGTH => {
+                    return Err(CordisError::Configuration(format!(
+                        "invalid JWT secret configuration ({}): JWT_SECRET must be at least {} \
+                         characters for security (current: {} chars)",
+                        auth_cfg.jwt_secret_env,
+                        JWT_SECRET_MIN_LENGTH,
+                        secret.len()
+                    )));
+                }
+                Ok(secret) => Some(secret),
             };
-        let jwt_secret = std::env::var(&auth_cfg.jwt_secret_env).map_err(|_| {
-            CordisError::Configuration(format!(
-                "JWT_SECRET environment variable must be set ({})",
-                auth_cfg.jwt_secret_env
-            ))
-        })?;
-        AuthService::new(
-            jwt_secret,
-            auth_cfg.jwt_access_expiry,
-            auth_cfg.jwt_refresh_expiry,
-        )
+            (
+                secret,
+                auth_cfg.jwt_secret_env.clone(),
+                auth_cfg.jwt_access_expiry,
+                auth_cfg.jwt_refresh_expiry,
+            )
+        };
+    let auth = match jwt_secret {
+        Some(secret) => AuthService::new(secret, access_expiry, refresh_expiry),
+        None => {
+            tracing::warn!(
+                "{env_name} is unset or empty; HS256 tokens will be rejected (JWKS/asymmetric only)"
+            );
+            AuthService::new(String::new(), access_expiry, refresh_expiry)
+        }
     };
     // Startup JWKS fetch runs in the background; a slow issuer must not
     // delay boot and the first asymmetric request retries on demand.

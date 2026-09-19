@@ -190,6 +190,7 @@ pub fn agent_run_row_to_v1(r: agent_runs::AgentRun) -> V1AgentRun {
         input: serde_json::json!({"tokens": r.input_tokens}),
         output: Some(serde_json::json!({"tokens": r.output_tokens})),
         error: r.error,
+        reason_code: None,
         started_at: ts_to_dt(r.created_at),
         finished_at: Some(ts_to_dt(r.created_at + (r.duration_ms / 1000))),
         duration_ms: Some(r.duration_ms as u64),
@@ -571,6 +572,7 @@ mod tests {
             input: serde_json::json!({"prompt": "hi"}),
             output: Some(serde_json::json!({"text": "hello"})),
             error: None,
+            reason_code: None,
             started_at: started,
             finished_at: Some(started + chrono::Duration::seconds(2)),
             duration_ms: Some(2000),
@@ -980,6 +982,7 @@ mod tests {
             input: serde_json::json!({}),
             output: None,
             error: Some("boom".into()),
+            reason_code: Some("llm_error".into()),
             started_at: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
             finished_at: None,
             duration_ms: None,
@@ -987,6 +990,7 @@ mod tests {
         };
         let json = serde_json::to_value(&run).expect("serialize");
         assert_eq!(json["error"], "boom");
+        assert_eq!(json["reason_code"], "llm_error");
         assert!(json["output"].is_null());
     }
 

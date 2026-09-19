@@ -71,8 +71,6 @@ utoipa-swagger-ui = { version = "9.0.2", features = ["axum"], optional = true }
 
 jsonwebtoken = { version = "10.3.0", features = ["use_pem", "rust_crypto"] }
 argon2 = "0.5.3"
-# Canonical DIRMACS auth leaf: JWKS key-set verification (EdDSA/RS256).
-dirmacs-auth = { path = "/opt/dirmacs-auth" }
 
 sqlx = { workspace = true, optional = true }
 inventory = { workspace = true, optional = true }

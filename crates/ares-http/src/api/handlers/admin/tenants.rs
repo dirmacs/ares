@@ -7,8 +7,10 @@ use std::sync::Arc;
 
 use crate::HttpError;
 use crate::Result;
+use ares_llm::provider_registry::ModelInfo;
 use ares_store::audit_log;
-use ares_store::tenant_agents::clone_templates_for_tenant;
+use ares_store::tenant_agents::{clone_templates_for_tenant, set_tenant_agent_model};
+use ares_store::tenant_allowlist::TenantAllowlistStore;
 use ares_types::types::AppError;
 use axum::{
     extract::{Path, State},
@@ -246,6 +248,16 @@ pub async fn provision_client(
 ) -> Result<Json<ProvisionClientResponse>> {
     let tier = parse_tenant_tier(&req.tier)?;
 
+    // Validate before any side effect: a rejected TTL must not leave a
+    // half-provisioned tenant behind.
+    if let Some(days) = req.expires_in_days {
+        if !(1..=3650).contains(&days) {
+            return Err(HttpError::from(AppError::InvalidInput(
+                "expires_in_days must be between 1 and 3650".to_string(),
+            )));
+        }
+    }
+
     // product_type is used only to select which agent templates to clone into tenant_agents.
     // It does NOT create product-specific DB tables — client domain data lives in the client's own backend.
     let product_type = req.product_type.to_lowercase();
@@ -256,22 +268,95 @@ pub async fn provision_client(
         .create_tenant(req.name, tier)
         .await?;
 
-    let agents = clone_templates_for_tenant(
-        &ctx.get::<ares_store::TenantDb>()
-            .expect("not provided")
-            .pool()
-            .clone(),
-        &tenant.id,
-        &product_type,
-    )
-    .await?;
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
 
-    if let Some(days) = req.expires_in_days {
-        if !(1..=3650).contains(&days) {
-            return Err(HttpError::from(AppError::InvalidInput(
-                "expires_in_days must be between 1 and 3650".to_string(),
-            )));
+    let agents = clone_templates_for_tenant(&pool, &tenant.id, &product_type).await?;
+
+    // Row 34: a provisioned tenant must be runnable without a second pass.
+    // With a provider spec the tenant gets its own runtime provider and every
+    // cloned agent targets it by name; without one, template models that do
+    // not resolve fall back to the config alias `fast`. The resolved model
+    // ids join the tenant allowlist, which the run path enforces.
+    let mut provider_name: Option<String> = None;
+    if let Some(spec) = &req.provider {
+        validate_provider_spec(spec)?;
+        RuntimeProviderStore::new(&pool)
+            .upsert(&CreateRuntimeProviderRequest {
+                tenant_id: Some(tenant.id.clone()),
+                name: spec.name.clone(),
+                display_name: spec
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| spec.name.clone()),
+                provider_type: spec
+                    .provider_type
+                    .clone()
+                    .unwrap_or_else(|| "openai-compatible".to_string()),
+                api_base: spec.api_base.clone(),
+                auth_type: spec
+                    .auth_type
+                    .clone()
+                    .unwrap_or_else(|| "api_key".to_string()),
+                default_model: Some(spec.default_model.clone()),
+                headers: spec.headers.clone(),
+                request_transform: None,
+                response_transform: None,
+                enabled: Some(true),
+            })
+            .await?;
+        // Without the reload the running Llm registry cannot see the row and
+        // the first run fails resolution.
+        reload_runtime_provider_registry(&ctx).await?;
+        provider_name = Some(spec.name.clone());
+    }
+
+    let known_models: Vec<ModelInfo> = ctx
+        .get::<ares_llm::Llm>()
+        .map(|llm| llm.list_models())
+        .unwrap_or_default();
+    let mut allowlist: Vec<String> = req.allowed_models.clone().unwrap_or_default();
+    for agent in &agents {
+        let current = agent
+            .config
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let target = if provider_name.is_some() {
+            provider_name.clone()
+        } else if known_models
+            .iter()
+            .any(|m| m.name == current || m.model == current)
+        {
+            None
+        } else if known_models.iter().any(|m| m.name == "fast") {
+            Some("fast".to_string())
+        } else {
+            None
+        };
+        if let Some(model) = &target {
+            set_tenant_agent_model(&pool, &tenant.id, &agent.agent_name, model).await?;
         }
+        let final_model = target.as_deref().unwrap_or(current);
+        if let Some(resolved) = known_models
+            .iter()
+            .find(|m| m.name == final_model || m.model == final_model)
+        {
+            allowlist.push(resolved.model.clone());
+        }
+    }
+    if let Some(spec) = &req.provider {
+        allowlist.push(spec.default_model.clone());
+    }
+    allowlist.sort();
+    allowlist.dedup();
+    for model_id in &allowlist {
+        TenantAllowlistStore::new(&pool)
+            .allow_model(&tenant.id, model_id)
+            .await?;
     }
     // TTL choice: `expires_in_days=None` mints a never-expiring key (documented
     // here); pass `Some(days)` for a time-boxed provisioned key.
@@ -286,11 +371,6 @@ pub async fn provision_client(
         )
         .await?;
 
-    let pool = ctx
-        .get::<ares_store::TenantDb>()
-        .expect("not provided")
-        .pool()
-        .clone();
     let tid = tenant.id.clone();
     let details = format!(
         "{{\"product_type\":\"{}\",\"tier\":\"{}\"}}",
@@ -321,7 +401,25 @@ pub async fn provision_client(
         agents_created: agents.into_iter().map(|a| a.agent_name).collect(),
         expires_at: api_key.expires_at,
         scopes: ares_types::normalize_api_key_scope(Some(&api_key.scopes)),
+        allowed_models: allowlist,
+        provider: provider_name,
     }))
+}
+
+/// Reject provider specs that would write a row the run path cannot resolve.
+fn validate_provider_spec(spec: &ProvisionProviderSpec) -> Result<()> {
+    if spec.name.trim().is_empty() || spec.api_base.trim().is_empty() {
+        return Err(HttpError::from(AppError::InvalidInput(
+            "provider name and api_base must not be empty".to_string(),
+        )));
+    }
+    if spec.default_model.trim().is_empty() {
+        return Err(HttpError::from(AppError::InvalidInput(
+            "provider default_model must not be empty: it resolves the provider and joins the allowlist"
+                .to_string(),
+        )));
+    }
+    Ok(())
 }
 
 pub async fn delete_tenant(

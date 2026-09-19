@@ -717,6 +717,10 @@ pub async fn rollback_tenant_agent_version(
     })?;
 
     let snapshot = tenant_agent_from_snapshot(record.get("config_json"))?;
+    // Closed schema (row 21): a rollback must not reintroduce keys that the
+    // write paths reject. Fail loudly instead of arming the merged-update
+    // freeze.
+    validate_tenant_config(&snapshot.config)?;
     if snapshot.tenant_id != tenant_id || snapshot.agent_name != agent_name {
         return Err(AppError::InvalidInput(format!(
             "Version '{}' does not belong to tenant agent '{}'",
@@ -1059,6 +1063,9 @@ pub async fn clone_templates_for_tenant(
     let now = now_ts();
 
     for tpl in &templates {
+        // Closed schema (row 21): a dirty template row must not seed tenant
+        // rows that the write paths then reject.
+        validate_tenant_config(&tpl.config)?;
         let id = uuid::Uuid::new_v4().to_string();
         sqlx::query(
             "INSERT INTO tenant_agents (id, tenant_id, agent_name, display_name, description, config, enabled, created_at, updated_at)

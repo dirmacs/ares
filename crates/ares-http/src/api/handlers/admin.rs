@@ -380,7 +380,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // admin_middleware: dual verification (HS256 secret + EdDSA JWKS)
+    // admin_middleware: admin secret header + EdDSA JWKS
     // -------------------------------------------------------------------------
 
     async fn actor_handler(actor: AdminActor) -> String {

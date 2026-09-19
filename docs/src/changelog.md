@@ -4,9 +4,9 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ---
 
-## Unreleased
+## 0.11.6 - 2026-09-19
 
-**Dual JWT verification: HS256 beside issuer EdDSA/RS256 through JWKS.**
+**Self-contained JWKS auth, overridable billing and user-agent endpoints.**
 
 ### Added
 
@@ -15,6 +15,26 @@ All notable changes to ARES are documented here. This project follows [Semantic 
   The key set fetches at startup, refreshes hourly, and refreshes once on an unknown `kid`;
   a cached set serves through issuer downtime. HS256 through `JWT_SECRET` is unchanged. The
   token header `alg` selects one path, so a token can never downgrade the check.
+- `ExtraStaticTools` seam in `ares-tools`: downstream binaries register extra static tools
+  beside the built-in set.
+- Billing admin rates accept a `UnitRateSource` provider on the request context; with no
+  provider the endpoint keeps the current empty-list response, so the route table is unchanged.
+- The `/user/agents` endpoints run behind an overridable `UserAgentStore` provider on the
+  request context (previously stub handlers); with no provider they keep the current responses.
+- The admin actor is recorded on audit rows; failed agent runs carry the
+  `x-agent-config-version` stamp.
+
+### Fixed
+
+- The DB pool ceiling is wired through and raised; `TomlDatabaseConfig` literals accept
+  `max_connections`.
+- Legacy `growth`/`starter` tiers are accepted.
+- `no_retain` redaction extends to error close-outs and webhook logs.
+
+### Changed
+
+- JWKS verification is vendored into `ares-http`; the private `dirmacs-auth` path
+  dependency is gone, so every published crate builds from public sources.
 
 ## 0.11.5 - 2026-09-16
 

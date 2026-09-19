@@ -1196,6 +1196,17 @@ pub async fn delete_tenant_data(
             .unwrap_or_default();
     let keys_deleted = key_rows.len() as i64;
 
+    // Purge tenant end-user records (email + password hash + external ids).
+    // Row 7: the table is owned by the wrapper signup path; the tenant purge
+    // path must reach it too.
+    let user_rows: Vec<i64> =
+        sqlx::query_scalar("DELETE FROM tenant_users WHERE tenant_id = $1 RETURNING 1")
+            .bind(tid)
+            .fetch_all(&pool)
+            .await
+            .unwrap_or_default();
+    let users_deleted = user_rows.len() as i64;
+
     // Also clear monthly cache
     let _ = sqlx::query("DELETE FROM monthly_usage_cache WHERE tenant_id = $1")
         .bind(tid)
@@ -1208,7 +1219,8 @@ pub async fn delete_tenant_data(
         "usage_events_deleted": usage_deleted,
         "agent_runs_deleted": runs_deleted,
         "api_keys_revoked": keys_deleted,
-        "note": "Tenant account retained. All operational data purged per GDPR Article 17."
+        "tenant_users_deleted": users_deleted,
+        "note": "Tenant account retained. All operational and end-user data purged per GDPR Article 17."
     })))
 }
 

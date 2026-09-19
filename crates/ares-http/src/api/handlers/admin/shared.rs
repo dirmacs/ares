@@ -199,6 +199,28 @@ pub fn parse_agent_config_tool_names(
 // Provision Client
 // =============================================================================
 
+/// Optional provider spec for [`ProvisionClientRequest`].
+///
+/// When present, provisioning writes a tenant-scoped runtime provider row,
+/// reloads the Llm registry, and points every cloned agent at the provider
+/// by name (the probe-tenant pattern). `headers` must reference the key by
+/// environment name (`{"api_key_env": "NAME"}`), never a literal secret.
+#[derive(Debug, Deserialize)]
+pub struct ProvisionProviderSpec {
+    pub name: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub provider_type: Option<String>,
+    pub api_base: String,
+    #[serde(default)]
+    pub auth_type: Option<String>,
+    #[serde(default)]
+    pub headers: Option<serde_json::Value>,
+    /// Model id the provider serves. Resolution and the allowlist use it.
+    pub default_model: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ProvisionClientRequest {
     pub name: String,
@@ -212,6 +234,15 @@ pub struct ProvisionClientRequest {
     /// Optional scope for the provisioned key (`full`/`ingest`). Defaults to `full`.
     #[serde(default)]
     pub scopes: Option<String>,
+    /// Optional runtime provider to create for the tenant. Without it the
+    /// cloned agents keep a template model that resolves, else fall back to
+    /// the config alias `fast`.
+    #[serde(default)]
+    pub provider: Option<ProvisionProviderSpec>,
+    /// Extra model ids to allowlist. The resolved models of the cloned
+    /// agents join this set automatically.
+    #[serde(default)]
+    pub allowed_models: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -226,6 +257,10 @@ pub struct ProvisionClientResponse {
     pub agents_created: Vec<String>,
     pub expires_at: Option<i64>,
     pub scopes: String,
+    /// Every model id written to the tenant allowlist, sorted and deduped.
+    pub allowed_models: Vec<String>,
+    /// Provider name when a provider spec was supplied.
+    pub provider: Option<String>,
 }
 
 // =============================================================================
@@ -1195,6 +1230,29 @@ mod tests {
         assert_eq!(req.tier, "pro");
         assert_eq!(req.product_type, "ares");
         assert_eq!(req.api_key_name, "bootstrap");
+        assert!(req.provider.is_none());
+        assert!(req.allowed_models.is_none());
+    }
+
+    #[test]
+    fn provision_client_request_deserializes_provider_spec() {
+        let req: ProvisionClientRequest = serde_json::from_str(
+            r#"{
+                "name":"Acme","tier":"pro","product_type":"ares","api_key_name":"bootstrap",
+                "provider":{
+                    "name":"acme-groq","api_base":"https://api.groq.com/openai/v1",
+                    "headers":{"api_key_env":"ACME_GROQ_KEY"},"default_model":"openai/gpt-oss-20b"
+                },
+                "allowed_models":["openai/gpt-oss-20b"]
+            }"#,
+        )
+        .unwrap();
+        let provider = req.provider.expect("provider spec");
+        assert_eq!(provider.name, "acme-groq");
+        assert_eq!(provider.default_model, "openai/gpt-oss-20b");
+        assert!(provider.display_name.is_none());
+        assert_eq!(provider.headers.unwrap()["api_key_env"], "ACME_GROQ_KEY");
+        assert_eq!(req.allowed_models.unwrap(), vec!["openai/gpt-oss-20b"]);
     }
 
     #[test]
@@ -1382,9 +1440,13 @@ mod tests {
             agents_created: vec!["a1".into()],
             expires_at: None,
             scopes: "full".into(),
+            allowed_models: vec!["fast".into()],
+            provider: Some("acme-groq".into()),
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["agents_created"][0], "a1");
+        assert_eq!(json["allowed_models"][0], "fast");
+        assert_eq!(json["provider"], "acme-groq");
     }
 
     #[test]

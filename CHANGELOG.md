@@ -4,6 +4,39 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ---
 
+## 0.11.7 - 2026-09-19
+
+**Fail-closed tenant runs, closed key scopes, tamper-evident config history.**
+
+### Added
+
+- The tenant run route resolves the agent from `tenant_agents` only and fails
+  closed: a missing row returns a typed 404, a disabled row returns a typed
+  error, and no registry fallback runs. The chat route keeps its documented
+  behavior.
+- API-key scope `run` joins `full` and `ingest`. Mint rejects unknown scopes
+  with a 400 that names the valid set; verification denies unknown values
+  instead of treating them as `full`.
+- Key mint, rotate, and revoke on the v1 admin surface write audit rows that
+  carry the actor and the client IP (`X-Forwarded-For` first hop, else
+  `X-Real-IP`).
+
+### Fixed
+
+- Admin version `GET`s no longer write `admin_seed` audit rows; the change
+  source is a code-owned enum (`admin_create`, `admin_update`, `rollback`).
+- Tenant agent config keys are validated against a closed set; an unknown key
+  is rejected with a 400 naming the key. Rollback and template-clone writers
+  validate the stored config, so a snapshot cannot reintroduce a retired key,
+  and 17 legacy snapshots were cleaned across nested and flat shapes.
+- `no_retain` defaults to ON for every tenant, including tenants created later
+  (migration `035`).
+
+### Changed
+
+- The run route requires the tenant agent row (AR-1); system-agent fallback is
+  gone from that route.
+
 ## 0.11.6 - 2026-09-19
 
 **Self-contained JWKS auth, overridable billing and user-agent endpoints.**

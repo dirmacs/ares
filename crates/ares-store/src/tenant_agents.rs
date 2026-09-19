@@ -148,10 +148,45 @@ pub fn tenant_agent_not_found_error(agent_name: &str, tenant_id: &str) -> AppErr
     ))
 }
 
+/// Closed config schema (row 21). Every key a write may carry is listed
+/// here; anything else is rejected naming the key so a stale dashboard or
+/// bundle cannot store an inert flag silently (the `sandbox` precedent).
+/// `skill_id` and `allowed_tools` are runtime-consumed keys without a
+/// parsed field on [`TenantAgentConfig`], so they stay in the set.
+pub const TENANT_CONFIG_KNOWN_KEYS: [&str; 14] = [
+    "model",
+    "system_prompt",
+    "tools",
+    "allowed_tools",
+    "max_tool_iterations",
+    "parallel_tools",
+    "version",
+    "temperature",
+    "max_tokens",
+    "stop",
+    "top_p",
+    "frequency_penalty",
+    "presence_penalty",
+    "skill_id",
+];
+
 pub fn validate_tenant_config(value: &serde_json::Value) -> Result<TenantAgentConfig> {
     let obj = value.as_object().ok_or_else(|| {
         AppError::InvalidInput("Tenant agent config must be a JSON object".into())
     })?;
+
+    let unknown: Vec<&str> = obj
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !TENANT_CONFIG_KNOWN_KEYS.contains(key))
+        .collect();
+    if !unknown.is_empty() {
+        return Err(AppError::InvalidInput(format!(
+            "Unknown tenant agent config key(s): {}. Allowed keys: {}",
+            unknown.join(", "),
+            TENANT_CONFIG_KNOWN_KEYS.join(", ")
+        )));
+    }
 
     let model = obj
         .get("model")
@@ -457,8 +492,10 @@ pub fn prepare_create_tenant_agent(req: &CreateTenantAgentRequest) -> Result<Vec
 /// Object patches spread over `current`: present keys replace, absent keys
 /// keep their stored value. An explicit `null` clears the key (removes it
 /// from the merged object). A non-object patch replaces `current` wholesale
-/// (shape validation then rejects it). Unknown keys are preserved from both
-/// sides. An empty array is a present value, so `"tools": []` clears tools.
+/// (shape validation then rejects it). Unknown keys are preserved by the
+/// merge, and validation rejects them (row 21 closed schema), so stored rows
+/// must be clean of keys outside `TENANT_CONFIG_KNOWN_KEYS`. An empty array
+/// is a present value, so `"tools": []` clears tools.
 pub fn deep_merge_config(
     current: &serde_json::Value,
     patch: &serde_json::Value,
@@ -572,10 +609,31 @@ fn tenant_agent_from_snapshot(snapshot: serde_json::Value) -> Result<TenantAgent
     })
 }
 
+/// Canonical `agent_config_versions.change_source` values owned by code
+/// paths. Every store write names its source through this enum so the column
+/// stays a closed vocabulary for rows written by code (rows written by direct
+/// SQL before this change are not retroactively renamed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentConfigChangeSource {
+    AdminCreate,
+    AdminUpdate,
+    Rollback { from_version: String },
+}
+
+impl AgentConfigChangeSource {
+    pub fn as_str(&self) -> String {
+        match self {
+            Self::AdminCreate => "admin_create".to_string(),
+            Self::AdminUpdate => "admin_update".to_string(),
+            Self::Rollback { from_version } => format!("rollback:{from_version}"),
+        }
+    }
+}
+
 pub async fn record_tenant_agent_version(
     pool: &PgPool,
     agent: &TenantAgent,
-    change_source: &str,
+    change_source: AgentConfigChangeSource,
 ) -> Result<crate::agent_versions::AgentVersionRecord> {
     let agent_id = tenant_agent_version_key(&agent.tenant_id, &agent.agent_name);
     let version = tenant_agent_snapshot_version(agent);
@@ -601,7 +659,7 @@ pub async fn record_tenant_agent_version(
     .bind(&agent_id)
     .bind(&version)
     .bind(&config_json)
-    .bind(change_source)
+    .bind(change_source.as_str())
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;
@@ -698,7 +756,9 @@ pub async fn rollback_tenant_agent_version(
     let restored = agent_from_row(&row);
     let restored_version = tenant_agent_snapshot_version(&restored);
     let restored_snapshot = tenant_agent_snapshot(&restored);
-    let change_source = format!("rollback:{}", version);
+    let change_source = AgentConfigChangeSource::Rollback {
+        from_version: version.to_string(),
+    };
 
     sqlx::query("UPDATE agent_config_versions SET is_active = false WHERE agent_id = $1")
         .bind(&agent_id)
@@ -714,7 +774,7 @@ pub async fn rollback_tenant_agent_version(
     .bind(&agent_id)
     .bind(&restored_version)
     .bind(&restored_snapshot)
-    .bind(&change_source)
+    .bind(change_source.as_str())
     .execute(&mut *tx)
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;
@@ -810,7 +870,7 @@ pub async fn create_tenant_agent(
         .map_err(|e| AppError::Database(e.to_string()))?;
 
     let agent = get_tenant_agent(pool, tenant_id, &req.agent_name).await?;
-    record_tenant_agent_version(pool, &agent, "admin_create").await?;
+    record_tenant_agent_version(pool, &agent, AgentConfigChangeSource::AdminCreate).await?;
     Ok(agent)
 }
 
@@ -846,7 +906,7 @@ pub async fn update_tenant_agent(
     .map_err(|e| AppError::Database(e.to_string()))?;
 
     let agent = get_tenant_agent(pool, tenant_id, agent_name).await?;
-    record_tenant_agent_version(pool, &agent, "admin_update").await?;
+    record_tenant_agent_version(pool, &agent, AgentConfigChangeSource::AdminUpdate).await?;
     Ok(agent)
 }
 
@@ -1493,16 +1553,25 @@ mod tests {
     }
 
     #[test]
-    fn tenant_agent_config_ignores_legacy_sandbox_key() {
-        // Stored JSONB written by an older dashboard still carries `sandbox`.
-        // The raw value keeps the key; validation and resolution must keep
-        // loading the config with the key present as an unknown field.
-        let with_legacy_key =
-            validate_tenant_config(&serde_json::json!({"model": "m", "sandbox": true}))
-                .expect("stored config with legacy sandbox key must load");
-        let without_key =
-            validate_tenant_config(&serde_json::json!({"model": "m"})).expect("valid");
-        assert_eq!(with_legacy_key, without_key);
+    fn validate_tenant_config_rejects_unknown_key() {
+        // Row 21: closed schema. A stale dashboard write must fail naming the
+        // key instead of storing it silently (the `sandbox` precedent).
+        let err = validate_tenant_config(&serde_json::json!({"model": "m", "sandbox": true}))
+            .expect_err("unknown key must be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("sandbox"), "error names the key: {msg}");
+        assert!(msg.contains("Unknown tenant agent config key"));
+    }
+
+    #[test]
+    fn validate_tenant_config_accepts_runtime_consumed_keys() {
+        let cfg = validate_tenant_config(&serde_json::json!({
+            "model": "m",
+            "skill_id": "onboard",
+            "allowed_tools": ["calculator"]
+        }))
+        .expect("runtime-consumed keys stay valid");
+        assert_eq!(cfg.model, "m");
     }
 
     #[test]
@@ -1916,6 +1985,25 @@ mod tests {
     fn tenant_agent_disabled_error_message_contains_ids() {
         let msg = tenant_agent_disabled_error("bot", "tenant-x").to_string();
         assert!(msg.contains("bot") && msg.contains("tenant-x"));
+    }
+
+    #[test]
+    fn agent_config_change_source_labels_are_closed() {
+        assert_eq!(
+            super::AgentConfigChangeSource::AdminCreate.as_str(),
+            "admin_create"
+        );
+        assert_eq!(
+            super::AgentConfigChangeSource::AdminUpdate.as_str(),
+            "admin_update"
+        );
+        assert_eq!(
+            super::AgentConfigChangeSource::Rollback {
+                from_version: "v3".into()
+            }
+            .as_str(),
+            "rollback:v3"
+        );
     }
 
     #[test]

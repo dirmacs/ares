@@ -133,6 +133,7 @@ impl Tenant {
 
 pub const API_KEY_SCOPE_FULL: &str = "full";
 pub const API_KEY_SCOPE_INGEST: &str = "ingest";
+pub const API_KEY_SCOPE_RUN: &str = "run";
 
 /// Maximum TTL for API keys in days (about 10 years).
 pub const API_KEY_MAX_TTL_DAYS: u32 = 3650;
@@ -144,8 +145,41 @@ pub fn normalize_api_key_scope(raw: Option<&str>) -> String {
     match raw.map(str::trim) {
         Some(API_KEY_SCOPE_FULL) => API_KEY_SCOPE_FULL.to_string(),
         Some(API_KEY_SCOPE_INGEST) => API_KEY_SCOPE_INGEST.to_string(),
+        Some(API_KEY_SCOPE_RUN) => API_KEY_SCOPE_RUN.to_string(),
         _ => API_KEY_SCOPE_FULL.to_string(),
     }
+}
+
+/// Validates a raw scopes value on a write path (create/rotate).
+///
+/// `None` or empty means the default `full`. A value outside the closed
+/// vocabulary is `Err` naming the valid values so callers can answer 400.
+pub fn validate_api_key_scope(raw: Option<&str>) -> std::result::Result<String, String> {
+    match raw.map(str::trim) {
+        None | Some("") => Ok(API_KEY_SCOPE_FULL.to_string()),
+        Some(API_KEY_SCOPE_FULL) => Ok(API_KEY_SCOPE_FULL.to_string()),
+        Some(API_KEY_SCOPE_INGEST) => Ok(API_KEY_SCOPE_INGEST.to_string()),
+        Some(API_KEY_SCOPE_RUN) => Ok(API_KEY_SCOPE_RUN.to_string()),
+        Some(other) => Err(format!(
+            "Unknown scope '{other}'. Valid values: full, ingest, run"
+        )),
+    }
+}
+
+/// Scope carried into `TenantContext` at verify time. Known values pass
+/// through; `None`/empty (legacy NULL column) defaults to `full`; an unknown
+/// stored value is kept as-is so the endpoint gate denies it (fail closed).
+pub fn effective_api_key_scope(raw: Option<&str>) -> String {
+    match raw.map(str::trim) {
+        None | Some("") => API_KEY_SCOPE_FULL.to_string(),
+        Some(scope) => scope.to_string(),
+    }
+}
+
+/// True for agent-run paths, with or without the router prefix stripped:
+/// `/agents/{name}/run` and `*/v1/agents/{name}/run`.
+pub fn is_agent_run_path(path: &str) -> bool {
+    path.ends_with("/run") && (path.starts_with("/agents/") || path.contains("/v1/agents/"))
 }
 
 fn default_api_key_scope() -> String {
@@ -278,7 +312,7 @@ impl TenantContext {
             tier,
             quota,
             api_key_id: Some(api_key_id),
-            scopes: normalize_api_key_scope(Some(&scopes)),
+            scopes: effective_api_key_scope(Some(&scopes)),
         }
     }
 
@@ -288,8 +322,8 @@ impl TenantContext {
     }
 
     /// Least-privilege check: `full` allows every endpoint, `ingest` allows
-    /// only `POST */v1/usage/events`. Unknown scopes normalize to `full`
-    /// at verify time, so this only sees `full` or `ingest`.
+    /// only `POST */v1/usage/events`, `run` allows only `POST` agent run
+    /// routes (`*/v1/agents/{name}/run`). Unknown scopes deny (fail closed).
     pub fn allows_endpoint(&self, method: &str, path: &str) -> bool {
         if self.is_full_scope() {
             return true;
@@ -300,7 +334,10 @@ impl TenantContext {
             return method.eq_ignore_ascii_case("POST")
                 && (path == "/usage/events" || path.ends_with("/v1/usage/events"));
         }
-        // Defensive: unknown scopes fail closed here; verify normalizes to full.
+        if self.scopes == API_KEY_SCOPE_RUN {
+            return method.eq_ignore_ascii_case("POST") && is_agent_run_path(path);
+        }
+        // Unknown scopes fail closed: no endpoint is allowed.
         false
     }
 
@@ -599,8 +636,29 @@ mod tests {
         assert_eq!(normalize_api_key_scope(Some("")), "full");
         assert_eq!(normalize_api_key_scope(Some("full")), "full");
         assert_eq!(normalize_api_key_scope(Some("ingest")), "ingest");
+        assert_eq!(normalize_api_key_scope(Some("run")), "run");
         assert_eq!(normalize_api_key_scope(Some("weird")), "full");
         assert_eq!(normalize_api_key_scope(Some("  ingest  ")), "ingest");
+    }
+
+    #[test]
+    fn validate_scope_accepts_closed_vocabulary_and_rejects_unknown() {
+        assert_eq!(validate_api_key_scope(None).unwrap(), "full");
+        assert_eq!(validate_api_key_scope(Some(" ")).unwrap(), "full");
+        assert_eq!(validate_api_key_scope(Some("full")).unwrap(), "full");
+        assert_eq!(validate_api_key_scope(Some("ingest")).unwrap(), "ingest");
+        assert_eq!(validate_api_key_scope(Some("run")).unwrap(), "run");
+        let err = validate_api_key_scope(Some("banana")).unwrap_err();
+        assert!(err.contains("banana"), "error names the bad value: {err}");
+        assert!(err.contains("full") && err.contains("ingest") && err.contains("run"));
+    }
+
+    #[test]
+    fn effective_scope_keeps_unknown_for_fail_closed_gate() {
+        assert_eq!(effective_api_key_scope(None), "full");
+        assert_eq!(effective_api_key_scope(Some("")), "full");
+        assert_eq!(effective_api_key_scope(Some("run")), "run");
+        assert_eq!(effective_api_key_scope(Some("banana")), "banana");
     }
 
     #[test]
@@ -618,6 +676,22 @@ mod tests {
         assert!(ingest.allows_endpoint("POST", "/api/v1/usage/events"));
         assert!(ingest.allows_endpoint("POST", "/usage/events"));
         assert!(!ingest.allows_endpoint("GET", "/usage/events"));
+        let run = TenantContext::with_key("t".into(), TenantTier::Free, "k".into(), "run".into());
+        assert!(run.allows_endpoint("POST", "/agents/companion/run"));
+        assert!(run.allows_endpoint("POST", "/v1/agents/companion/run"));
+        assert!(!run.allows_endpoint("POST", "/v1/agents/companion/sandbox-run"));
+        assert!(!run.allows_endpoint("POST", "/v1/api-keys"));
+        assert!(!run.allows_endpoint("DELETE", "/v1/api-keys/k1"));
+        assert!(!run.allows_endpoint("POST", "/v1/api-keys/k1/rotate"));
+        assert!(!run.allows_endpoint("DELETE", "/v1/tenant/data"));
+        assert!(!run.allows_endpoint("POST", "/v1/usage/events"));
+        assert!(!run.allows_endpoint("GET", "/v1/agents"));
+        assert!(!run.allows_endpoint("GET", "/v1/agents/companion/run"));
+        let unknown =
+            TenantContext::with_key("t".into(), TenantTier::Free, "k".into(), "banana".into());
+        assert!(!unknown.is_full_scope());
+        assert!(!unknown.allows_endpoint("POST", "/v1/agents/companion/run"));
+        assert!(!unknown.allows_endpoint("GET", "/health"));
     }
 
     #[test]

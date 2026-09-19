@@ -449,9 +449,9 @@ fn skill_run_outcome(
     }
 }
 
-/// Generic wire text for failed runs. The raw error stays in the server logs
-/// and in the database copy (raw when `no_retain` is off, the marker when it
-/// is on); the body only carries the class through `reason_code`.
+/// Generic wire text for failed runs. The raw error survives only in the
+/// database copy (raw when `no_retain` is off, the marker when it is on); the
+/// body carries the class through `reason_code` and nothing else.
 const FAILED_RUN_MESSAGE: &str = "The run failed. See reason_code.";
 
 /// Coarse failure class for the wire. Local mapping, not `AppError::code()`:

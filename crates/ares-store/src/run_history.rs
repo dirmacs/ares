@@ -294,8 +294,8 @@ impl<'a> RunHistoryStore<'a> {
     /// When the tenant opted into no-retain (`tenants.no_retain`), content
     /// fields (`error_message`, `request_payload`, `response_payload`) persist
     /// the redaction marker instead of raw text. Ids, keying, token counts,
-    /// latency and status stay intact; default-off tenants are byte-identical
-    /// to before (the flag read adds no persisted bytes).
+    /// latency and status stay intact; tenants with approved retention store
+    /// raw content unchanged.
     pub async fn insert_llm_call(&self, req: &LogLlmCallRequest) -> Result<RunLlmCall> {
         validate_status(&req.status)?;
         let no_retain = tenant_no_retain(self.pool, &req.tenant_id).await;
@@ -430,7 +430,7 @@ impl<'a> RunHistoryStore<'a> {
     /// When the tenant opted into no-retain (`tenants.no_retain`), content
     /// fields (`arguments`, `result`, `error_message`) persist the redaction
     /// marker instead of raw text. Ids, keying, latency and status stay
-    /// intact; default-off tenants are byte-identical to before.
+    /// intact; tenants with approved retention store raw content unchanged.
     pub async fn insert_tool_call(&self, req: &LogToolCallRequest) -> Result<RunToolCall> {
         validate_status(&req.status)?;
         validate_tool_type(&req.tool_type)?;
@@ -1188,12 +1188,14 @@ pub fn no_retain_redacted_json() -> serde_json::Value {
     serde_json::json!({"redacted": "no-retain"})
 }
 
-/// Returns true when `tenant_id` opted into no-retain.
+/// Returns true when `tenant_id` redacts trace content.
 ///
-/// Reads the additive column `tenants.no_retain` (migration 029, default
-/// false). Unknown tenants return false. Pre-migration databases without
-/// the column return false so existing tenants stay byte-identical; any
-/// other lookup failure fails closed to true (redact rather than leak).
+/// Reads `tenants.no_retain` (migration 029; DEFAULT TRUE since migration
+/// 035, row 31). Retaining raw content is an explicit, owner-approved
+/// opt-out. Unknown tenants read as true: nothing has approved retention
+/// for them. Pre-migration databases without the column return false so
+/// existing tenants stay byte-identical; any other lookup failure fails
+/// closed to true (redact rather than leak).
 pub async fn tenant_no_retain(pool: &PgPool, tenant_id: &str) -> bool {
     match sqlx::query_scalar::<_, bool>("SELECT no_retain FROM tenants WHERE id = $1")
         .bind(tenant_id)
@@ -1201,7 +1203,7 @@ pub async fn tenant_no_retain(pool: &PgPool, tenant_id: &str) -> bool {
         .await
     {
         Ok(Some(v)) => v,
-        Ok(None) => false,
+        Ok(None) => true,
         Err(e) => {
             let msg = e.to_string();
             !(msg.contains("does not exist") || msg.contains("column"))
@@ -2246,8 +2248,8 @@ mod tests {
         let run_id = format!("no-retain-toggle-run-{}", uuid::Uuid::new_v4());
         let canary = "CANARY-TOGGLE-TEXT-9c2e";
 
-        // Unknown tenant reads as false (opt-in default).
-        assert!(!tenant_no_retain(&pool, "ghost-tenant-never-created").await);
+        // Unknown tenant reads as true: nothing approved retention for it.
+        assert!(tenant_no_retain(&pool, "ghost-tenant-never-created").await);
 
         // Flag on: content redacted.
         seed_no_retain_parents(&pool, &tenant_id, &run_id, true).await;

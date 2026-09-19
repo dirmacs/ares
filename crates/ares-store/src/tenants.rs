@@ -1,5 +1,7 @@
 use crate::PostgresClient;
-use ares_types::models::tenant::API_KEY_MAX_TTL_DAYS;
+use ares_types::models::tenant::{
+    effective_api_key_scope, validate_api_key_scope, API_KEY_MAX_TTL_DAYS,
+};
 use ares_types::types::{AppError, Result};
 use ares_types::{normalize_api_key_scope, ApiKey, Tenant, TenantContext, TenantTier};
 use chrono::{Datelike, Utc};
@@ -117,7 +119,8 @@ impl TenantDb {
 
     /// Creates an API key with least-privilege scope and optional TTL.
     ///
-    /// - `scopes`: `None`/unknown defaults to `full` (byte-identical legacy behavior).
+    /// - `scopes`: `None`/empty defaults to `full`; an unknown value is
+    ///   rejected with `InvalidInput` (row 39: closed vocabulary at write).
     /// - `expires_in_days`: `None` means never expires (provisioned keys document
     ///   this choice); `Some(d)` must be `1..=3650` else `InvalidInput`.
     pub async fn create_api_key(
@@ -127,7 +130,7 @@ impl TenantDb {
         scopes: Option<String>,
         expires_in_days: Option<u32>,
     ) -> Result<(ApiKey, String)> {
-        let scopes = normalize_api_key_scope(scopes.as_deref());
+        let scopes = validate_api_key_scope(scopes.as_deref()).map_err(AppError::InvalidInput)?;
         let expires_at = expires_at_from_days(expires_in_days)?;
         let id = uuid::Uuid::new_v4().to_string();
         let raw_key = generate_api_key();
@@ -229,7 +232,8 @@ impl TenantDb {
 
     /// Verifies a raw key and returns the tenant context with key identity
     /// plus scopes. Expired/revoked/unknown keys yield `Ok(None)` (caller
-    /// maps to 401). Unknown scope values normalize to `full`.
+    /// maps to 401). Unknown stored scope values are carried through so the
+    /// endpoint gate denies them (fail closed).
     /// On success stamps `api_keys.last_used_at` (032) with now (unix seconds).
     pub async fn verify_api_key(&self, raw_key: &str) -> Result<Option<TenantContext>> {
         let Some(key_prefix) = api_key_prefix(raw_key) else {
@@ -281,7 +285,7 @@ impl TenantDb {
                     TenantTier::Free
                 }
             };
-            let scopes = normalize_api_key_scope(Some(&scopes_raw));
+            let scopes = effective_api_key_scope(Some(&scopes_raw));
 
             // Heartbeat `last_used_at` (032) on every successful verify.
             // Best-effort: a stamp failure (e.g. migration not yet applied)

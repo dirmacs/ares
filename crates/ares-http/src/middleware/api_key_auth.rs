@@ -181,9 +181,12 @@ pub async fn api_key_auth_middleware(req: Request, next: Next) -> Response {
 }
 
 /// Pure scope gate for unit tests: `full` allows everything, `ingest`
-/// allows only `POST */v1/usage/events`.
+/// allows only `POST */v1/usage/events`, `run` allows only `POST` agent
+/// run routes. Unknown scopes deny.
 pub(crate) fn scope_allows(scopes: &str, method: &str, path: &str) -> bool {
-    use ares_types::models::tenant::{API_KEY_SCOPE_FULL, API_KEY_SCOPE_INGEST};
+    use ares_types::models::tenant::{
+        is_agent_run_path, API_KEY_SCOPE_FULL, API_KEY_SCOPE_INGEST, API_KEY_SCOPE_RUN,
+    };
     let scopes = scopes.trim();
     if scopes == API_KEY_SCOPE_FULL || scopes.is_empty() {
         return true;
@@ -193,9 +196,11 @@ pub(crate) fn scope_allows(scopes: &str, method: &str, path: &str) -> bool {
         return method.eq_ignore_ascii_case("POST")
             && (path == "/usage/events" || path.ends_with("/v1/usage/events"));
     }
-    // Unknown scopes normalize to `full` at verify time; fail open to full
-    // here so pre-normalized callers keep byte-identical behavior.
-    true
+    if scopes == API_KEY_SCOPE_RUN {
+        return method.eq_ignore_ascii_case("POST") && is_agent_run_path(path);
+    }
+    // Unknown scopes fail closed: no endpoint is allowed.
+    false
 }
 
 fn error_response(status: StatusCode, message: &str) -> Response {
@@ -427,9 +432,17 @@ mod tests {
         assert!(scope_allows("ingest", "POST", "/api/v1/usage/events"));
         assert!(scope_allows("ingest", "POST", "/usage/events"));
         assert!(!scope_allows("ingest", "GET", "/usage/events"));
-        // Unknown scopes normalize to full at verify; gate fails open here
-        // so pre-normalized callers keep byte-identical behavior.
-        assert!(scope_allows("weird", "POST", "/v1/agents/x/run"));
+        assert!(scope_allows("run", "POST", "/v1/agents/x/run"));
+        assert!(scope_allows("run", "POST", "/agents/x/run"));
+        assert!(!scope_allows("run", "GET", "/v1/agents/x/run"));
+        assert!(!scope_allows("run", "POST", "/v1/api-keys"));
+        assert!(!scope_allows("run", "POST", "/v1/api-keys/k/rotate"));
+        assert!(!scope_allows("run", "DELETE", "/v1/api-keys/k"));
+        assert!(!scope_allows("run", "DELETE", "/v1/tenant/data"));
+        assert!(!scope_allows("run", "POST", "/v1/usage/events"));
+        // Unknown scopes fail closed at the gate.
+        assert!(!scope_allows("weird", "POST", "/v1/agents/x/run"));
+        assert!(!scope_allows("weird", "GET", "/health"));
     }
 
     #[test]

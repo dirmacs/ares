@@ -175,7 +175,8 @@ pub fn create_router(
         )
         .route(
             "/admin/tenants/{tenant_id}",
-            get(crate::api::handlers::admin::get_tenant),
+            get(crate::api::handlers::admin::get_tenant)
+                .delete(crate::api::handlers::admin::delete_tenant),
         )
         .route(
             "/admin/tenants/{tenant_id}/api-keys",

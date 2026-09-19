@@ -1171,7 +1171,9 @@ pub async fn delete_tenant_data(
         .pool()
         .clone();
 
-    let usage_rows: Vec<i64> =
+    // RETURNING 1 yields INT4, not INT8 — decoding into i64 fails and the
+    // unwrap_or_default silently reports 0 deletes. Decode into i32.
+    let usage_rows: Vec<i32> =
         sqlx::query_scalar("DELETE FROM usage_events WHERE tenant_id = $1 RETURNING 1")
             .bind(tid)
             .fetch_all(&pool)
@@ -1179,7 +1181,7 @@ pub async fn delete_tenant_data(
             .unwrap_or_default();
     let usage_deleted = usage_rows.len() as i64;
 
-    let run_rows: Vec<i64> =
+    let run_rows: Vec<i32> =
         sqlx::query_scalar("DELETE FROM agent_runs WHERE tenant_id = $1 RETURNING 1")
             .bind(tid)
             .fetch_all(&pool)
@@ -1188,7 +1190,7 @@ pub async fn delete_tenant_data(
     let runs_deleted = run_rows.len() as i64;
 
     // Revoke all API keys (keeps account, deletes keys)
-    let key_rows: Vec<i64> =
+    let key_rows: Vec<i32> =
         sqlx::query_scalar("DELETE FROM api_keys WHERE tenant_id = $1 RETURNING 1")
             .bind(tid)
             .fetch_all(&pool)
@@ -1199,7 +1201,7 @@ pub async fn delete_tenant_data(
     // Purge tenant end-user records (email + password hash + external ids).
     // Row 7: the table is owned by the wrapper signup path; the tenant purge
     // path must reach it too.
-    let user_rows: Vec<i64> =
+    let user_rows: Vec<i32> =
         sqlx::query_scalar("DELETE FROM tenant_users WHERE tenant_id = $1 RETURNING 1")
             .bind(tid)
             .fetch_all(&pool)

@@ -469,6 +469,25 @@ where
     }
 }
 
+/// Recover the core's typed [`AppError`] when the waterfall handed back
+/// exactly the fiber error the core produced.
+///
+/// [`CordisError`] carries strings only, so the typed error travels in a
+/// side slot and the fiber message proves provenance. Any listener rewrite
+/// of the error falls back to the wrapped [`AppError::Internal`], which
+/// keeps the pre-existing behavior for every no-match case.
+fn preserved_or_wrapped(
+    err: CordisError,
+    slot: &parking_lot::Mutex<Option<(String, AppError)>>,
+) -> AppError {
+    if let Some((msg, app)) = slot.lock().take() {
+        if matches!(&err, CordisError::Fiber(m) if m == &msg) {
+            return app;
+        }
+    }
+    AppError::Internal(err.to_string())
+}
+
 impl ConfigurableAgent {
     /// Create a new configurable agent from TOML config
     ///
@@ -949,6 +968,9 @@ Handle employee info, policies, and benefits."#
                 .collect(),
         })
         .unwrap_or(serde_json::Value::Null);
+        let failure_slot: Arc<parking_lot::Mutex<Option<(String, AppError)>>> =
+            Arc::new(parking_lot::Mutex::new(None));
+        let slot_in = failure_slot.clone();
         let out = run_events_waterfall(
             &events,
             cordis::events_catalog::ev::LLM_GENERATE,
@@ -958,12 +980,16 @@ Handle employee info, policies, and benefits."#
                 let msgs = if parsed.is_empty() { orig } else { parsed };
                 match self.generate_with_history_direct(&msgs).await {
                     Ok(attempt) => Ok(attempt_to_generate_json(&attempt)),
-                    Err(e) => Err(CordisError::Fiber(e.to_string())),
+                    Err(e) => {
+                        let msg = e.to_string();
+                        *slot_in.lock() = Some((msg.clone(), e));
+                        Err(CordisError::Fiber(msg))
+                    }
                 }
             },
         )
         .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        .map_err(|e| preserved_or_wrapped(e, &failure_slot))?;
         self.generate_attempt_from_payload(out, cordis::events_catalog::ev::LLM_GENERATE)
     }
 
@@ -1044,6 +1070,9 @@ Handle employee info, policies, and benefits."#
                 .collect(),
         })
         .unwrap_or(serde_json::Value::Null);
+        let failure_slot: Arc<parking_lot::Mutex<Option<(String, AppError)>>> =
+            Arc::new(parking_lot::Mutex::new(None));
+        let slot_in = failure_slot.clone();
         let out = run_events_waterfall(
             &events,
             cordis::events_catalog::ev::LLM_GENERATE_TOOLS,
@@ -1066,12 +1095,16 @@ Handle employee info, policies, and benefits."#
                     .await
                 {
                     Ok(attempt) => Ok(attempt_to_generate_json(&attempt)),
-                    Err(e) => Err(CordisError::Fiber(e.to_string())),
+                    Err(e) => {
+                        let msg = e.to_string();
+                        *slot_in.lock() = Some((msg.clone(), e));
+                        Err(CordisError::Fiber(msg))
+                    }
                 }
             },
         )
         .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        .map_err(|e| preserved_or_wrapped(e, &failure_slot))?;
         self.generate_attempt_from_payload(out, cordis::events_catalog::ev::LLM_GENERATE_TOOLS)
     }
 
@@ -3246,29 +3279,45 @@ mod tests {
     // ============== Fallback tests ==============
 
     struct FailingMockLLM {
-        error_msg: String,
+        make: Box<dyn Fn() -> ares_types::types::AppError + Send + Sync>,
+    }
+
+    impl FailingMockLLM {
+        fn llm(msg: &str) -> Self {
+            let msg = msg.to_string();
+            Self {
+                make: Box::new(move || ares_types::types::AppError::LLM(msg.clone())),
+            }
+        }
+
+        fn rate_limited(msg: &str) -> Self {
+            let msg = msg.to_string();
+            Self {
+                make: Box::new(move || ares_types::types::AppError::RateLimited(msg.clone())),
+            }
+        }
     }
 
     #[async_trait]
     impl LLMClient for FailingMockLLM {
         async fn generate(&self, _: &str) -> Result<String> {
-            Err(ares_types::types::AppError::LLM(self.error_msg.clone()))
+            Err((self.make)())
         }
         async fn generate_with_system(&self, _: &str, _: &str) -> Result<String> {
-            Err(ares_types::types::AppError::LLM(self.error_msg.clone()))
+            Err((self.make)())
         }
         async fn generate_with_history(&self, _: &[(String, String)]) -> Result<LLMResponse> {
-            Err(ares_types::types::AppError::LLM(self.error_msg.clone()))
+            Err((self.make)())
         }
         async fn generate_with_tools(&self, _: &str, _: &[ToolDefinition]) -> Result<LLMResponse> {
-            Err(ares_types::types::AppError::LLM(self.error_msg.clone()))
+            Err((self.make)())
         }
         async fn generate_with_tools_and_history(
             &self,
             _: &[ares_llm::coordinator::ConversationMessage],
             _: &[ToolDefinition],
         ) -> Result<LLMResponse> {
-            Err(ares_types::types::AppError::LLM(self.error_msg.clone()))
+            Err((self.make)())
         }
         async fn stream(
             &self,
@@ -3299,9 +3348,7 @@ mod tests {
         let mut agent = ConfigurableAgent::with_params(
             "test",
             AgentType::Product,
-            Box::new(FailingMockLLM {
-                error_msg: "primary failed".to_string(),
-            }),
+            Box::new(FailingMockLLM::llm("primary failed")),
             "system".to_string(),
             None,
             None,
@@ -3336,9 +3383,7 @@ mod tests {
             false,
         );
 
-        let fallback = FailingMockLLM {
-            error_msg: "fallback should not run".to_string(),
-        };
+        let fallback = FailingMockLLM::llm("fallback should not run");
         agent.set_fallback_llms(vec![Box::new(fallback)]);
 
         let ctx = make_context();
@@ -3351,9 +3396,7 @@ mod tests {
         let mut agent = ConfigurableAgent::with_params(
             "test",
             AgentType::Product,
-            Box::new(FailingMockLLM {
-                error_msg: "primary failed".to_string(),
-            }),
+            Box::new(FailingMockLLM::llm("primary failed")),
             "system".to_string(),
             None,
             None,
@@ -3362,12 +3405,8 @@ mod tests {
         );
 
         agent.set_fallback_llms(vec![
-            Box::new(FailingMockLLM {
-                error_msg: "fallback-0 failed".to_string(),
-            }),
-            Box::new(FailingMockLLM {
-                error_msg: "fallback-1 failed".to_string(),
-            }),
+            Box::new(FailingMockLLM::llm("fallback-0 failed")),
+            Box::new(FailingMockLLM::llm("fallback-1 failed")),
         ]);
 
         let ctx = make_context();
@@ -3500,6 +3539,54 @@ mod tests {
         assert!(
             !generated.load(Ordering::SeqCst),
             "mock client must never be called when generate_tools handler skips next"
+        );
+    }
+
+    #[tokio::test]
+    async fn configurable_generate_preserves_typed_error_over_waterfall() {
+        // The cordis waterfall carries errors as strings; the agent must
+        // hand the caller the original typed error so failed-run
+        // classification (reason_code) stays truthful.
+        let ctx = Context::new_root();
+        let _events = ctx.provide(EventsService::new());
+        let mut agent = ConfigurableAgent::new(
+            "router",
+            &make_config(vec![], Some("system")),
+            Box::new(FailingMockLLM::llm("transport boom")),
+            None,
+        );
+        agent.bind_request_ctx(ctx);
+        let err = match Agent::execute(&agent, "x", &make_context()).await {
+            Ok(_) => panic!("expected the typed failure to propagate"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, ares_types::types::AppError::LLM(_)),
+            "typed error must survive the waterfall; got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn configurable_generate_tools_preserves_typed_error_over_waterfall() {
+        let ctx = Context::new_root();
+        let _events = ctx.provide(EventsService::new());
+        ctx.provide(ares_tools::Tools::from_static(Vec::<
+            Arc<dyn ares_tools::Tool>,
+        >::new()));
+        let mut agent = ConfigurableAgent::new(
+            "router",
+            &make_config(vec![], Some("system")),
+            Box::new(FailingMockLLM::rate_limited("429 upstream")),
+            None,
+        );
+        agent.bind_request_ctx(ctx);
+        let err = match Agent::execute(&agent, "x", &make_context()).await {
+            Ok(_) => panic!("expected the typed failure to propagate"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, ares_types::types::AppError::RateLimited(_)),
+            "typed error must survive the tools waterfall; got {err:?}"
         );
     }
 }

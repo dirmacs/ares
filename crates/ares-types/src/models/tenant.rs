@@ -741,6 +741,14 @@ mod tests {
             "/v1/journaling/prompt",
             "/v1/nav/turn",
             "/v1/chat",
+            // Non-/v1 prefixes ending in /assessment/next: a predicate that
+            // regresses to ends_with("/assessment/next") (dropping the /v1
+            // requirement) would wrongly accept every one of these.
+            "/v2/assessment/next",
+            "/api/v2/assessment/next",
+            "/other/assessment/next",
+            "/legacy/assessment/next",
+            "/v1x/assessment/next",
         ] {
             assert!(!run.allows_endpoint("POST", p), "run must refuse POST {p}");
         }

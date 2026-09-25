@@ -695,6 +695,53 @@ mod tests {
     }
 
     #[test]
+    fn run_scope_reaches_assessment_next_exactly() {
+        let run = TenantContext::with_key("t".into(), TenantTier::Free, "k".into(), "run".into());
+        assert!(run.allows_endpoint("POST", "/v1/assessment/next"));
+        assert!(run.allows_endpoint("POST", "/api/v1/assessment/next"));
+        assert!(run.allows_endpoint("POST", "/assessment/next"));
+    }
+
+    #[test]
+    fn run_scope_refuses_near_misses_of_assessment_next() {
+        let run = TenantContext::with_key("t".into(), TenantTier::Free, "k".into(), "run".into());
+        assert!(!run.allows_endpoint("GET", "/v1/assessment/next"));
+        assert!(!run.allows_endpoint("PUT", "/v1/assessment/next"));
+        assert!(!run.allows_endpoint("DELETE", "/v1/assessment/next"));
+        for p in [
+            "/v1/assessment",
+            "/v1/assessment/",
+            "/v1/assessment/next/",
+            "/v1/assessment/next/x",
+            "/v1/assessment/nextx",
+            "/v1/assessment/next2",
+            "/v1/assessment/other",
+            "/v1/assessmentnext",
+            "/next",
+            "/v1/next",
+            "/v1/recommend/rank",
+            "/v1/insights/phrase",
+            "/v1/journaling/prompt",
+            "/v1/nav/turn",
+            "/v1/chat",
+        ] {
+            assert!(!run.allows_endpoint("POST", p), "run must refuse POST {p}");
+        }
+    }
+
+    #[test]
+    fn other_scopes_unchanged_on_assessment_next() {
+        let full = TenantContext::new("t".into(), TenantTier::Free);
+        assert!(full.allows_endpoint("POST", "/v1/assessment/next"));
+        let ingest =
+            TenantContext::with_key("t".into(), TenantTier::Free, "k".into(), "ingest".into());
+        assert!(!ingest.allows_endpoint("POST", "/v1/assessment/next"));
+        let unknown =
+            TenantContext::with_key("t".into(), TenantTier::Free, "k".into(), "banana".into());
+        assert!(!unknown.allows_endpoint("POST", "/v1/assessment/next"));
+    }
+
+    #[test]
     fn test_tenant_context_serde_roundtrip() {
         let ctx = TenantContext::new("tenant-1".into(), TenantTier::Dev);
         let parsed: TenantContext =

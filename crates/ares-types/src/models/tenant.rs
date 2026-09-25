@@ -182,6 +182,20 @@ pub fn is_agent_run_path(path: &str) -> bool {
     path.ends_with("/run") && (path.starts_with("/agents/") || path.contains("/v1/agents/"))
 }
 
+/// True only for the contract's `POST /v1/assessment/next` (05 API-CONTRACT
+/// §6.1), with or without the router prefix stripped: `/assessment/next` or
+/// `*/v1/assessment/next`. Exact path, never a prefix — no trailing
+/// wildcard, no `contains`.
+///
+/// RELEASE target: this is a named, single-endpoint carve-out for the `run`
+/// scope, not a general widening. The recorded end state is a dedicated
+/// `compute` scope covering all five contract compute endpoints (05 §6.1-
+/// §6.5), so a key used only for the contract does not keep agent-run
+/// rights once the temp endpoint ends.
+pub fn is_contract_assessment_next_path(path: &str) -> bool {
+    path == "/assessment/next" || path.ends_with("/v1/assessment/next")
+}
+
 fn default_api_key_scope() -> String {
     API_KEY_SCOPE_FULL.to_string()
 }
@@ -323,7 +337,9 @@ impl TenantContext {
 
     /// Least-privilege check: `full` allows every endpoint, `ingest` allows
     /// only `POST */v1/usage/events`, `run` allows only `POST` agent run
-    /// routes (`*/v1/agents/{name}/run`). Unknown scopes deny (fail closed).
+    /// routes (`*/v1/agents/{name}/run`) plus the exact contract path
+    /// `*/v1/assessment/next` (`is_contract_assessment_next_path`).
+    /// Unknown scopes deny (fail closed).
     pub fn allows_endpoint(&self, method: &str, path: &str) -> bool {
         if self.is_full_scope() {
             return true;
@@ -335,7 +351,8 @@ impl TenantContext {
                 && (path == "/usage/events" || path.ends_with("/v1/usage/events"));
         }
         if self.scopes == API_KEY_SCOPE_RUN {
-            return method.eq_ignore_ascii_case("POST") && is_agent_run_path(path);
+            return method.eq_ignore_ascii_case("POST")
+                && (is_agent_run_path(path) || is_contract_assessment_next_path(path));
         }
         // Unknown scopes fail closed: no endpoint is allowed.
         false

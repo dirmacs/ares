@@ -182,25 +182,20 @@ pub async fn api_key_auth_middleware(req: Request, next: Next) -> Response {
 
 /// Pure scope gate for unit tests: `full` allows everything, `ingest`
 /// allows only `POST */v1/usage/events`, `run` allows only `POST` agent
-/// run routes. Unknown scopes deny.
+/// run routes plus the exact contract path `*/v1/assessment/next`.
+/// Unknown scopes deny. One scope table: this builds a `TenantContext`
+/// from its arguments and defers to `TenantContext::allows_endpoint`
+/// rather than keeping a second, independently-maintained table (the
+/// ruling's rejected option (c) — two sources of truth for authorisation).
 pub(crate) fn scope_allows(scopes: &str, method: &str, path: &str) -> bool {
-    use ares_types::models::tenant::{
-        is_agent_run_path, API_KEY_SCOPE_FULL, API_KEY_SCOPE_INGEST, API_KEY_SCOPE_RUN,
-    };
-    let scopes = scopes.trim();
-    if scopes == API_KEY_SCOPE_FULL || scopes.is_empty() {
-        return true;
-    }
-    if scopes == API_KEY_SCOPE_INGEST {
-        // Same nested-prefix rule as TenantContext::allows_endpoint.
-        return method.eq_ignore_ascii_case("POST")
-            && (path == "/usage/events" || path.ends_with("/v1/usage/events"));
-    }
-    if scopes == API_KEY_SCOPE_RUN {
-        return method.eq_ignore_ascii_case("POST") && is_agent_run_path(path);
-    }
-    // Unknown scopes fail closed: no endpoint is allowed.
-    false
+    use ares_types::models::{TenantContext, TenantTier};
+    TenantContext::with_key(
+        String::new(),
+        TenantTier::Free,
+        String::new(),
+        scopes.to_string(),
+    )
+    .allows_endpoint(method, path)
 }
 
 fn error_response(status: StatusCode, message: &str) -> Response {
@@ -443,6 +438,47 @@ mod tests {
         // Unknown scopes fail closed at the gate.
         assert!(!scope_allows("weird", "POST", "/v1/agents/x/run"));
         assert!(!scope_allows("weird", "GET", "/health"));
+    }
+
+    #[test]
+    fn scope_allows_agrees_with_tenant_context() {
+        let scopes = ["full", "ingest", "run", "banana", ""];
+        let methods = ["GET", "POST", "DELETE"];
+        let paths = [
+            "/v1/assessment/next",
+            "/api/v1/assessment/next",
+            "/assessment/next",
+            "/v1/assessment",
+            "/v1/assessment/",
+            "/v1/assessment/next/",
+            "/v1/assessment/next/x",
+            "/v1/assessment/nextx",
+            "/v1/assessment/next2",
+            "/v1/assessment/other",
+            "/v1/assessmentnext",
+            "/next",
+            "/v1/next",
+            "/v1/recommend/rank",
+            "/v1/insights/phrase",
+            "/v1/journaling/prompt",
+            "/v1/nav/turn",
+            "/v1/chat",
+            "/v1/agents/x/run",
+            "/v1/usage/events",
+        ];
+        for scope in scopes {
+            let ctx =
+                TenantContext::with_key("t".into(), TenantTier::Free, "k".into(), scope.into());
+            for method in methods {
+                for path in paths {
+                    assert_eq!(
+                        scope_allows(scope, method, path),
+                        ctx.allows_endpoint(method, path),
+                        "scope={scope:?} method={method} path={path} disagree"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

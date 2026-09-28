@@ -1,4 +1,4 @@
-// cordis Phase6: decomposed into admin/{tenants,agents,providers,tools,schedules,triggers,pipelines,billing,mcp,fleet_secrets,connectors,health,audit} — 13 modules
+// cordis Phase6: decomposed into admin/{tenants,agents,providers,tools,schedules,triggers,pipelines,billing,mcp,fleet_provider_keys,connectors,health,audit} — 13 modules
 //! Admin domain re-exports — cordis Phase6.
 //! Real compilation uses `src/api/handlers/admin.rs` as entry (`#[path = "admin.rs"]`).
 //! This file exists for `ls src/api/handlers/admin/*.rs` counting and documents target split.
@@ -14,7 +14,7 @@ pub mod triggers;
 pub mod pipelines;
 pub mod billing;
 pub mod mcp;
-pub mod fleet_secrets;
+pub mod fleet_provider_keys;
 pub mod connectors;
 pub mod health;
 pub mod audit;
@@ -32,7 +32,7 @@ pub use triggers::routes as triggers_routes;
 pub use pipelines::routes as pipelines_routes;
 pub use billing::routes as billing_routes;
 pub use mcp::routes as mcp_routes;
-pub use fleet_secrets::routes as fleet_secrets_routes;
+pub use fleet_provider_keys::routes as fleet_secrets_routes;
 pub use connectors::routes as connectors_routes;
 pub use health::routes as health_routes;
 pub use audit::routes as audit_routes;

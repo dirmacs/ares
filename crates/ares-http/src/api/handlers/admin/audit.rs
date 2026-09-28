@@ -53,18 +53,16 @@ pub async fn resolve_alert(
         .expect("not provided")
         .pool()
         .clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "resolve_alert",
-            "alert",
-            &alert_id,
-            None,
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "resolve_alert",
+        "alert",
+        &alert_id,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(StatusCode::OK)
 }
@@ -186,24 +184,22 @@ pub async fn create_agent_run_feedback_handler(
         .expect("not provided")
         .pool()
         .clone();
-    tokio::spawn(async move {
-        let details = serde_json::json!({
-            "agent_name": agent_name,
-            "run_id": run_id,
-            "feedback_id": feedback_id,
-        })
-        .to_string();
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "agent_run_feedback",
-            "agent_run",
-            &tenant_id,
-            Some(&details),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    let details = serde_json::json!({
+        "agent_name": agent_name,
+        "run_id": run_id,
+        "feedback_id": feedback_id,
+    })
+    .to_string();
+    audit_log::record(
+        &pool,
+        "agent_run_feedback",
+        "agent_run",
+        &tenant_id,
+        Some(&details),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(feedback))
 }
@@ -241,6 +237,7 @@ pub async fn list_tenant_allowed_tools(
 
 pub async fn add_tenant_allowed_tool(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Path(tenant_id): Path<String>,
     Json(req): Json<AllowToolRequest>,
 ) -> Result<Json<allowlist::TenantToolAllowlistItem>> {
@@ -251,11 +248,25 @@ pub async fn add_tenant_allowed_tool(
         .clone();
     let store = allowlist::TenantAllowlistStore::new(&__pool_9);
     let item = store.allow_tool(&tenant_id, &req.tool_name).await?;
+
+    let resource_id = format!("{}:{}", tenant_id, req.tool_name);
+    audit_log::record(
+        &__pool_9,
+        "add_tenant_allowed_tool",
+        "tenant_tool_allowlist",
+        &resource_id,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
+
     Ok(Json(item))
 }
 
 pub async fn delete_tenant_allowed_tool(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Path((tenant_id, tool_name)): Path<(String, String)>,
 ) -> Result<StatusCode> {
     let __pool_10 = ctx
@@ -271,6 +282,19 @@ pub async fn delete_tenant_allowed_tool(
             tool_name, tenant_id
         ))));
     }
+
+    let resource_id = format!("{}:{}", tenant_id, tool_name);
+    audit_log::record(
+        &__pool_10,
+        "delete_tenant_allowed_tool",
+        "tenant_tool_allowlist",
+        &resource_id,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -290,6 +314,7 @@ pub async fn list_tenant_allowed_models(
 
 pub async fn add_tenant_allowed_model(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Path(tenant_id): Path<String>,
     Json(req): Json<AllowModelRequest>,
 ) -> Result<Json<allowlist::TenantModelAllowlistItem>> {
@@ -300,11 +325,25 @@ pub async fn add_tenant_allowed_model(
         .clone();
     let store = allowlist::TenantAllowlistStore::new(&__pool_12);
     let item = store.allow_model(&tenant_id, &req.model_id).await?;
+
+    let resource_id = format!("{}:{}", tenant_id, req.model_id);
+    audit_log::record(
+        &__pool_12,
+        "add_tenant_allowed_model",
+        "tenant_model_allowlist",
+        &resource_id,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
+
     Ok(Json(item))
 }
 
 pub async fn delete_tenant_allowed_model(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Path((tenant_id, model_id)): Path<(String, String)>,
 ) -> Result<StatusCode> {
     let __pool_13 = ctx
@@ -320,6 +359,19 @@ pub async fn delete_tenant_allowed_model(
             model_id, tenant_id
         ))));
     }
+
+    let resource_id = format!("{}:{}", tenant_id, model_id);
+    audit_log::record(
+        &__pool_13,
+        "delete_tenant_allowed_model",
+        "tenant_model_allowlist",
+        &resource_id,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -339,6 +391,7 @@ pub async fn list_tenant_allowed_rag_sources(
 
 pub async fn add_tenant_allowed_rag_source(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Path(tenant_id): Path<String>,
     Json(req): Json<AllowRagSourceRequest>,
 ) -> Result<Json<allowlist::TenantRagAllowlistItem>> {
@@ -349,11 +402,25 @@ pub async fn add_tenant_allowed_rag_source(
         .clone();
     let store = allowlist::TenantAllowlistStore::new(&__pool_15);
     let item = store.allow_rag_source(&tenant_id, &req.rag_source).await?;
+
+    let resource_id = format!("{}:{}", tenant_id, req.rag_source);
+    audit_log::record(
+        &__pool_15,
+        "add_tenant_allowed_rag_source",
+        "tenant_rag_allowlist",
+        &resource_id,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
+
     Ok(Json(item))
 }
 
 pub async fn delete_tenant_allowed_rag_source(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Path((tenant_id, rag_source)): Path<(String, String)>,
 ) -> Result<StatusCode> {
     let __pool_16 = ctx
@@ -369,6 +436,19 @@ pub async fn delete_tenant_allowed_rag_source(
             rag_source, tenant_id
         ))));
     }
+
+    let resource_id = format!("{}:{}", tenant_id, rag_source);
+    audit_log::record(
+        &__pool_16,
+        "delete_tenant_allowed_rag_source",
+        "tenant_rag_allowlist",
+        &resource_id,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
+
     Ok(StatusCode::NO_CONTENT)
 }
 

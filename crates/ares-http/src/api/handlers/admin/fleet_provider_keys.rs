@@ -90,18 +90,16 @@ pub async fn upsert_fleet_provider(
         .pool()
         .clone();
     let name = provider_name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "fleet_provider_upsert",
-            "fleet_provider",
-            &name,
-            Some(&details),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "fleet_provider_upsert",
+        "fleet_provider",
+        &name,
+        Some(&details),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(serde_json::json!({
         "name": provider_name,
@@ -148,18 +146,16 @@ pub async fn delete_fleet_provider(
         .pool()
         .clone();
     let name = provider_name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "fleet_provider_delete",
-            "fleet_provider",
-            &name,
-            None,
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "fleet_provider_delete",
+        "fleet_provider",
+        &name,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(serde_json::json!({
         "name": provider_name,

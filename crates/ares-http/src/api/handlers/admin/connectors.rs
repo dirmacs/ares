@@ -75,18 +75,16 @@ pub async fn create_skill(
         .clone();
     let t_id = skill.tenant_id.clone();
     let s_name = skill.name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "skill_create",
-            "skill",
-            &s_name,
-            Some(&t_id),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "skill_create",
+        "skill",
+        &s_name,
+        Some(&t_id),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(skill))
 }
@@ -116,18 +114,16 @@ pub async fn update_skill(
         .clone();
     let t_id = skill.tenant_id.clone();
     let s_name = skill.name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "skill_update",
-            "skill",
-            &s_name,
-            Some(&t_id),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "skill_update",
+        "skill",
+        &s_name,
+        Some(&t_id),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(skill))
 }
@@ -159,18 +155,16 @@ pub async fn delete_skill(
         .clone();
     let sid = id.clone();
     let t_id = tenant_id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "skill_delete",
-            "skill",
-            &sid,
-            Some(&t_id),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "skill_delete",
+        "skill",
+        &sid,
+        Some(&t_id),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -320,18 +314,16 @@ pub async fn create_connector(
         .clone();
     let t_id = connector.tenant_id.clone();
     let c_name = connector.name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "connector_create",
-            "connector",
-            &c_name,
-            Some(&t_id),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "connector_create",
+        "connector",
+        &c_name,
+        Some(&t_id),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(connector))
 }
@@ -360,18 +352,16 @@ pub async fn update_connector(
         .clone();
     let t_id = connector.tenant_id.clone();
     let c_name = connector.name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "connector_update",
-            "connector",
-            &c_name,
-            Some(&t_id),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "connector_update",
+        "connector",
+        &c_name,
+        Some(&t_id),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(connector))
 }
@@ -400,18 +390,16 @@ pub async fn delete_connector(
         .pool()
         .clone();
     let cid = id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "connector_delete",
-            "connector",
-            &cid,
-            None,
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "connector_delete",
+        "connector",
+        &cid,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -441,18 +429,16 @@ pub async fn delete_tenant_connector(
         .clone();
     let cid = id.clone();
     let t_id = tenant_id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "connector_delete",
-            "connector",
-            &cid,
-            Some(&t_id),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "connector_delete",
+        "connector",
+        &cid,
+        Some(&t_id),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -637,18 +623,16 @@ pub async fn create_oauth_credential(
         .clone();
     let cred_id = credential.id.clone();
     let t_id = credential.tenant_id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "oauth_credential_create",
-            "oauth_credential",
-            &cred_id,
-            Some(&t_id),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "oauth_credential_create",
+        "oauth_credential",
+        &cred_id,
+        Some(&t_id),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(credential.into()))
 }
@@ -676,18 +660,16 @@ pub async fn delete_oauth_credential(
         .expect("not provided")
         .pool()
         .clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "oauth_credential_delete",
-            "oauth_credential",
-            &id,
-            Some(&tenant_id),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "oauth_credential_delete",
+        "oauth_credential",
+        &id,
+        Some(&tenant_id),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(StatusCode::NO_CONTENT)
 }

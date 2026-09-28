@@ -1667,18 +1667,16 @@ pub async fn rollback_agent_handler(
         .clone();
     let aid = agent_id.clone();
     let ver = version.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &__pool_3,
-            "agent_rollback",
-            "agent",
-            &aid,
-            Some(&format!("Rolled back to version {}", ver)),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &__pool_3,
+        "agent_rollback",
+        "agent",
+        &aid,
+        Some(&format!("Rolled back to version {}", ver)),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     tracing::info!(agent_id = %agent_id, version = %version, "Agent rolled back");
 

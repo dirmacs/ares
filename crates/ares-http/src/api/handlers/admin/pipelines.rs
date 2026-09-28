@@ -57,18 +57,16 @@ pub async fn create_pipeline(
         .clone();
     let t_id = pipeline.tenant_id.clone();
     let link = format!("{} -> {}", pipeline.source_agent, pipeline.target_agent);
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "pipeline_create",
-            "agent_pipeline",
-            &link,
-            Some(&t_id),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "pipeline_create",
+        "agent_pipeline",
+        &link,
+        Some(&t_id),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(pipeline))
 }
@@ -108,18 +106,16 @@ pub async fn create_tenant_pipeline(
         .clone();
     let t_id = pipeline.tenant_id.clone();
     let link = format!("{} -> {}", pipeline.source_agent, pipeline.target_agent);
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "pipeline_create",
-            "agent_pipeline",
-            &link,
-            Some(&t_id),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "pipeline_create",
+        "agent_pipeline",
+        &link,
+        Some(&t_id),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
     Ok(Json(pipeline))
 }
 
@@ -149,18 +145,16 @@ pub async fn update_tenant_pipeline(
         .clone();
     let t_id = pipeline.tenant_id.clone();
     let link = format!("{} -> {}", pipeline.source_agent, pipeline.target_agent);
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "pipeline_update",
-            "agent_pipeline",
-            &link,
-            Some(&t_id),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "pipeline_update",
+        "agent_pipeline",
+        &link,
+        Some(&t_id),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(pipeline))
 }
@@ -187,18 +181,16 @@ pub async fn delete_tenant_pipeline(
         .expect("not provided")
         .pool()
         .clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "pipeline_delete",
-            "agent_pipeline",
-            &id,
-            Some(&tenant_id),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "pipeline_delete",
+        "agent_pipeline",
+        &id,
+        Some(&tenant_id),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 

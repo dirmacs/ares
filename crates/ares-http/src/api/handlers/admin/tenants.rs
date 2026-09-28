@@ -37,18 +37,16 @@ pub async fn create_tenant(
         .pool()
         .clone();
     let tid = tenant.id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "create_tenant",
-            "tenant",
-            &tid,
-            None,
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "create_tenant",
+        "tenant",
+        &tid,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(TenantResponse::from(tenant)))
 }
@@ -108,18 +106,16 @@ pub async fn create_api_key(
         .pool()
         .clone();
     let kid = api_key.id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "create_api_key",
-            "api_key",
-            &kid,
-            None,
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "create_api_key",
+        "api_key",
+        &kid,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(serde_json::json!({
         "api_key": api_key,
@@ -148,18 +144,16 @@ pub async fn revoke_api_key(
         .pool()
         .clone();
     let kid = key_id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "revoke_api_key",
-            "api_key",
-            &kid,
-            None,
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "revoke_api_key",
+        "api_key",
+        &kid,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(serde_json::json!({"revoked": true, "key_id": key_id})))
 }
@@ -225,18 +219,16 @@ pub async fn update_tenant_quota(
         .clone();
     let tid = tenant_id.clone();
     let details = format!("{{\"new_tier\":\"{}\"}}", payload.tier);
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "update_quota",
-            "tenant",
-            &tid,
-            Some(&details),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "update_quota",
+        "tenant",
+        &tid,
+        Some(&details),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(TenantResponse::from(tenant)))
 }
@@ -377,18 +369,16 @@ pub async fn provision_client(
         product_type,
         tenant.tier.as_str()
     );
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "provision_client",
-            "tenant",
-            &tid,
-            Some(&details),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "provision_client",
+        "tenant",
+        &tid,
+        Some(&details),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(ProvisionClientResponse {
         tenant_id: tenant.id,
@@ -442,18 +432,16 @@ pub async fn delete_tenant(
         .pool()
         .clone();
     let tid = tenant_id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "delete_tenant",
-            "tenant",
-            &tid,
-            None,
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "delete_tenant",
+        "tenant",
+        &tid,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(serde_json::json!({
         "deleted": true,

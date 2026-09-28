@@ -1004,18 +1004,16 @@ pub async fn create_api_key(
     let key_id = api_key.id.clone();
     let actor_id = tc.tenant_id.clone();
     let client_ip = crate::api::handlers::v1::shared::client_ip_from_headers(&headers);
-    tokio::spawn(async move {
-        let _ = ares_store::audit_log::log_admin_action(
-            &pool,
-            "create_api_key",
-            "api_key",
-            &key_id,
-            None,
-            client_ip.as_deref(),
-            Some(actor_id.as_str()),
-        )
-        .await;
-    });
+    ares_store::audit_log::record(
+        &pool,
+        "create_api_key",
+        "api_key",
+        &key_id,
+        None,
+        client_ip.as_deref(),
+        Some(actor_id.as_str()),
+    )
+    .await;
 
     Ok(Json(CreateApiKeyResponse {
         key: V1ApiKey {
@@ -1080,19 +1078,17 @@ pub async fn rotate_api_key(
     // forwarding headers when present (Caddy sets X-Forwarded-For at the edge).
     let actor_id = tc.tenant_id.clone();
     let client_ip = crate::api::handlers::v1::shared::client_ip_from_headers(&headers);
-    tokio::spawn(async move {
-        let details = format!("{{\"rotated_from\":\"{}\"}}", old_id);
-        let _ = ares_store::audit_log::log_admin_action(
-            &pool,
-            "rotate_api_key",
-            "api_key",
-            &new_id,
-            Some(&details),
-            client_ip.as_deref(),
-            Some(actor_id.as_str()),
-        )
-        .await;
-    });
+    let details = format!("{{\"rotated_from\":\"{}\"}}", old_id);
+    ares_store::audit_log::record(
+        &pool,
+        "rotate_api_key",
+        "api_key",
+        &new_id,
+        Some(&details),
+        client_ip.as_deref(),
+        Some(actor_id.as_str()),
+    )
+    .await;
 
     Ok(Json(CreateApiKeyResponse {
         key: V1ApiKey {
@@ -1134,18 +1130,16 @@ pub async fn revoke_api_key(
     let revoked_id = key_id.clone();
     let actor_id = tc.tenant_id.clone();
     let client_ip = crate::api::handlers::v1::shared::client_ip_from_headers(&headers);
-    tokio::spawn(async move {
-        let _ = ares_store::audit_log::log_admin_action(
-            &pool,
-            "revoke_api_key",
-            "api_key",
-            &revoked_id,
-            None,
-            client_ip.as_deref(),
-            Some(actor_id.as_str()),
-        )
-        .await;
-    });
+    ares_store::audit_log::record(
+        &pool,
+        "revoke_api_key",
+        "api_key",
+        &revoked_id,
+        None,
+        client_ip.as_deref(),
+        Some(actor_id.as_str()),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 

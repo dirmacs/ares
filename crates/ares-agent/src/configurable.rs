@@ -882,6 +882,22 @@ Handle employee info, policies, and benefits."#
                     tenant_id, status.tokens_used, status.token_limit
                 )));
             }
+            // The dollar budget (`tenant_budgets`), on the same seam and with the same error
+            // type: a tenant whose recorded spend is at or over a set limit is refused before
+            // the model call. A tenant with no row, or a NULL daily limit, is not affected.
+            let history = ares_store::run_history::RunHistoryStore::new(db.pool());
+            if let Some(breach) = history
+                .usd_budget_breach(tenant_id, chrono::Utc::now())
+                .await?
+            {
+                return Err(AppError::RateLimited(format!(
+                    "Tenant {} {} USD budget exceeded ({} / {})",
+                    tenant_id,
+                    breach.period.as_str(),
+                    breach.spent_usd,
+                    breach.limit_usd
+                )));
+            }
         }
         Ok(())
     }

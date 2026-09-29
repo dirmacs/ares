@@ -94,6 +94,33 @@ pub struct TenantBudget {
     pub updated_at: i64,
 }
 
+/// Which of a tenant's dollar limits its recorded spend has reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsdBudgetPeriod {
+    /// `tenant_budgets.daily_limit_usd`, over the current UTC calendar day.
+    Daily,
+    /// `tenant_budgets.monthly_limit_usd`, over the current UTC calendar month.
+    Monthly,
+}
+
+impl UsdBudgetPeriod {
+    /// Lower-case name of the period, as used in the refusal text.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UsdBudgetPeriod::Daily => "daily",
+            UsdBudgetPeriod::Monthly => "monthly",
+        }
+    }
+}
+
+/// A dollar limit the tenant's recorded spend is at or over.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsdBudgetBreach {
+    pub period: UsdBudgetPeriod,
+    pub limit_usd: Decimal,
+    pub spent_usd: Decimal,
+}
+
 /// One persisted row in `budget_alerts`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BudgetAlert {
@@ -695,6 +722,47 @@ impl<'a> RunHistoryStore<'a> {
         Ok(res.rows_affected())
     }
 
+    /// The dollar limit the tenant's recorded spend is at or over at `now`, if any (item 2.12).
+    ///
+    /// `None` means nothing to enforce: the tenant has no `tenant_budgets` row, or its
+    /// spend is under every limit that is set (`daily_limit_usd` is nullable, and a NULL
+    /// daily limit is no daily limit). A tenant with no row costs one primary-key lookup.
+    ///
+    /// Spend is the sum of `run_llm_calls.estimated_cost_usd` for the tenant, over the
+    /// current UTC calendar month (and day). That is the table the run observability sink
+    /// writes, awaited, once per model call, before the next call's pre-flight, so a run's
+    /// own earlier calls are already in it. It is not `run_costs`: that table is filled by a
+    /// fire-and-forget aggregation after the run ends, and its upsert adds to the row.
+    /// Runs that attach no observability sink (trigger, pipeline, scheduler and streaming
+    /// runs today) record no `run_llm_calls` row, so their spend is not counted here.
+    ///
+    /// "At or over" refuses: the limit is a ceiling on recorded spend, checked before the
+    /// call, so a run's own cost (unknown until it returns) is not part of the check.
+    pub async fn usd_budget_breach(
+        &self,
+        tenant_id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Option<UsdBudgetBreach>> {
+        let Some(budget) = self.get_tenant_budget(tenant_id).await? else {
+            return Ok(None);
+        };
+        let (month_start, day_start) = usd_period_starts(now);
+        let row = sqlx::query(
+            "SELECT COALESCE(SUM(estimated_cost_usd), 0) AS month_spend, \
+                    COALESCE(SUM(estimated_cost_usd) FILTER (WHERE created_at >= $3), 0) AS day_spend \
+             FROM run_llm_calls WHERE tenant_id = $1 AND created_at >= $2",
+        )
+        .bind(tenant_id)
+        .bind(month_start)
+        .bind(day_start)
+        .fetch_one(self.pool)
+        .await
+        .map_err(sqlx_err)?;
+        let month_spend: Decimal = row.try_get("month_spend").map_err(sqlx_err)?;
+        let day_spend: Decimal = row.try_get("day_spend").map_err(sqlx_err)?;
+        Ok(usd_breach(&budget, month_spend, day_spend))
+    }
+
     // -------------------------------------------------------------------------
     // Alerts
     // -------------------------------------------------------------------------
@@ -1113,6 +1181,41 @@ fn row_to_tenant_budget(row: &sqlx::postgres::PgRow) -> Result<TenantBudget> {
     })
 }
 
+/// Unix seconds at UTC midnight of the first day of `now`'s month, and of `now`'s day.
+fn usd_period_starts(now: chrono::DateTime<chrono::Utc>) -> (i64, i64) {
+    use chrono::Datelike;
+    let today = now.date_naive();
+    let midnight = |d: chrono::NaiveDate| d.and_time(chrono::NaiveTime::MIN).and_utc().timestamp();
+    (
+        midnight(today.with_day(1).unwrap_or(today)),
+        midnight(today),
+    )
+}
+
+/// The limit `budget` has reached given the month's and the day's recorded spend.
+/// The monthly limit is checked first; a NULL daily limit is never reached.
+fn usd_breach(
+    budget: &TenantBudget,
+    month_spend: Decimal,
+    day_spend: Decimal,
+) -> Option<UsdBudgetBreach> {
+    if month_spend >= budget.monthly_limit_usd {
+        return Some(UsdBudgetBreach {
+            period: UsdBudgetPeriod::Monthly,
+            limit_usd: budget.monthly_limit_usd,
+            spent_usd: month_spend,
+        });
+    }
+    match budget.daily_limit_usd {
+        Some(limit) if day_spend >= limit => Some(UsdBudgetBreach {
+            period: UsdBudgetPeriod::Daily,
+            limit_usd: limit,
+            spent_usd: day_spend,
+        }),
+        _ => None,
+    }
+}
+
 fn row_to_budget_alert(row: &sqlx::postgres::PgRow) -> Result<BudgetAlert> {
     Ok(BudgetAlert {
         id: row.try_get("id").map_err(sqlx_err)?,
@@ -1385,6 +1488,84 @@ mod tests {
         let json = serde_json::to_string(&original).expect("serialize");
         let back: TenantBudget = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, original);
+    }
+
+    fn usd_test_budget(monthly: Decimal, daily: Option<Decimal>) -> TenantBudget {
+        TenantBudget {
+            tenant_id: "tenant-a".into(),
+            monthly_limit_usd: monthly,
+            daily_limit_usd: daily,
+            alert_threshold_pct: 80,
+            currency: "USD".into(),
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    #[test]
+    fn usd_period_starts_are_utc_midnights() {
+        use chrono::TimeZone;
+        let at = |y, mo, d, h, mi, s| chrono::Utc.with_ymd_and_hms(y, mo, d, h, mi, s).unwrap();
+
+        // Mid-month, mid-day: the month starts on the 1st, the day at today's midnight.
+        let (month, day) = usd_period_starts(at(2026, 9, 29, 15, 22, 7));
+        assert_eq!(month, at(2026, 9, 1, 0, 0, 0).timestamp());
+        assert_eq!(day, at(2026, 9, 29, 0, 0, 0).timestamp());
+
+        // The last second of the year still belongs to December's month and that day.
+        let (month, day) = usd_period_starts(at(2026, 12, 31, 23, 59, 59));
+        assert_eq!(month, at(2026, 12, 1, 0, 0, 0).timestamp());
+        assert_eq!(day, at(2026, 12, 31, 0, 0, 0).timestamp());
+
+        // The first instant of a month: the month and the day begin together.
+        let now = at(2026, 3, 1, 0, 0, 0);
+        assert_eq!(usd_period_starts(now), (now.timestamp(), now.timestamp()));
+    }
+
+    #[test]
+    fn usd_breach_is_at_or_over_the_limit() {
+        let monthly_only = usd_test_budget(dec!(10.00), None);
+        assert_eq!(usd_breach(&monthly_only, dec!(9.99), dec!(9.99)), None);
+        for spent in [dec!(10.00), dec!(10.000001), dec!(250)] {
+            assert_eq!(
+                usd_breach(&monthly_only, spent, Decimal::ZERO),
+                Some(UsdBudgetBreach {
+                    period: UsdBudgetPeriod::Monthly,
+                    limit_usd: dec!(10.00),
+                    spent_usd: spent,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn usd_breach_null_daily_limit_is_never_reached() {
+        // A large day's spend, under the monthly limit, with no daily limit set: no breach.
+        let monthly_only = usd_test_budget(dec!(1000.00), None);
+        assert_eq!(usd_breach(&monthly_only, dec!(500), dec!(500)), None);
+    }
+
+    #[test]
+    fn usd_breach_daily_limit_and_precedence() {
+        let both = usd_test_budget(dec!(100.00), Some(dec!(5.00)));
+        assert_eq!(usd_breach(&both, dec!(4.99), dec!(4.99)), None);
+        assert_eq!(
+            usd_breach(&both, dec!(20), dec!(5.00)),
+            Some(UsdBudgetBreach {
+                period: UsdBudgetPeriod::Daily,
+                limit_usd: dec!(5.00),
+                spent_usd: dec!(5.00),
+            })
+        );
+        // Both reached: the monthly limit is the one reported.
+        assert_eq!(
+            usd_breach(&both, dec!(100.00), dec!(6))
+                .expect("a breach")
+                .period,
+            UsdBudgetPeriod::Monthly
+        );
+        assert_eq!(UsdBudgetPeriod::Monthly.as_str(), "monthly");
+        assert_eq!(UsdBudgetPeriod::Daily.as_str(), "daily");
     }
 
     #[test]
@@ -1935,6 +2116,152 @@ mod tests {
             .await
             .expect("get after delete")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn integration_usd_budget_breach_windows() {
+        use chrono::TimeZone;
+        let (_lock, pool) = crate::test_db::pool().await;
+        let store = RunHistoryStore::new(&pool);
+        let tenant_id = format!("integration-test-usd-{}", uuid::Uuid::new_v4());
+        let other_id = format!("integration-test-usd-{}", uuid::Uuid::new_v4());
+        let run_id = format!("run-{}", uuid::Uuid::new_v4());
+        let other_run_id = format!("run-{}", uuid::Uuid::new_v4());
+        seed_integration_parents(&pool, &tenant_id, &run_id).await;
+        seed_integration_parents(&pool, &other_id, &other_run_id).await;
+
+        // A fixed clock: 2026-09-15 12:00 UTC.
+        let at = |d, h, mi| {
+            chrono::Utc
+                .with_ymd_and_hms(2026, 9, d, h, mi, 0)
+                .unwrap()
+                .timestamp()
+        };
+        let now = chrono::Utc.with_ymd_and_hms(2026, 9, 15, 12, 0, 0).unwrap();
+        let last_month = chrono::Utc
+            .with_ymd_and_hms(2026, 8, 31, 23, 59, 59)
+            .unwrap()
+            .timestamp();
+
+        let call = |tenant: &str, run: &str, cost: Decimal, created_at: i64| LogLlmCallRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            run_id: run.to_string(),
+            tenant_id: tenant.to_string(),
+            agent_name: "integration-test-agent".into(),
+            step_index: 0,
+            provider: "openai".into(),
+            model: "gpt-4o".into(),
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            estimated_cost_usd: cost,
+            latency_ms: 1,
+            cached_tokens: None,
+            total_time_ms: None,
+            status: "success".into(),
+            error_message: None,
+            request_payload: None,
+            response_payload: None,
+            created_at,
+        };
+        // This tenant: $100 last month (never counts), $4 earlier this month, then $3 at
+        // exactly today's midnight and $2.50 this morning: month $9.50, day $5.50.
+        for (cost, created_at) in [
+            (dec!(100.00), last_month),
+            (dec!(4.00), at(14, 12, 0)),
+            (dec!(3.00), at(15, 0, 0)),
+            (dec!(2.50), at(15, 11, 59)),
+        ] {
+            store
+                .insert_llm_call(&call(&tenant_id, &run_id, cost, created_at))
+                .await
+                .expect("insert this tenant's call");
+        }
+        // Another tenant's spend, today, must not be added to this tenant's.
+        store
+            .insert_llm_call(&call(&other_id, &other_run_id, dec!(50.00), at(15, 9, 0)))
+            .await
+            .expect("insert the other tenant's call");
+
+        let set = |monthly: Decimal, daily: Option<Decimal>| SetTenantBudgetRequest {
+            tenant_id: tenant_id.clone(),
+            monthly_limit_usd: monthly,
+            daily_limit_usd: daily,
+            alert_threshold_pct: 80,
+            currency: "USD".into(),
+        };
+
+        // No budget row: nothing to enforce, however large the spend.
+        assert_eq!(
+            store.usd_budget_breach(&tenant_id, now).await.unwrap(),
+            None
+        );
+
+        // Month spend is exactly $9.50: a $9.50 monthly limit is reached, $9.51 is not.
+        store
+            .set_tenant_budget(&set(dec!(9.50), None))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.usd_budget_breach(&tenant_id, now).await.unwrap(),
+            Some(UsdBudgetBreach {
+                period: UsdBudgetPeriod::Monthly,
+                limit_usd: dec!(9.50),
+                spent_usd: dec!(9.50),
+            })
+        );
+        store
+            .set_tenant_budget(&set(dec!(9.51), None))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.usd_budget_breach(&tenant_id, now).await.unwrap(),
+            None
+        );
+
+        // Day spend is exactly $5.50 (the $3 at midnight counts, yesterday's $4 does not).
+        store
+            .set_tenant_budget(&set(dec!(9.51), Some(dec!(5.50))))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.usd_budget_breach(&tenant_id, now).await.unwrap(),
+            Some(UsdBudgetBreach {
+                period: UsdBudgetPeriod::Daily,
+                limit_usd: dec!(5.50),
+                spent_usd: dec!(5.50),
+            })
+        );
+        store
+            .set_tenant_budget(&set(dec!(9.51), Some(dec!(5.51))))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.usd_budget_breach(&tenant_id, now).await.unwrap(),
+            None
+        );
+
+        // The same rows seen from the next month: the month's window has moved past them.
+        let next_month = chrono::Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
+        assert_eq!(
+            store
+                .usd_budget_breach(&tenant_id, next_month)
+                .await
+                .unwrap(),
+            None
+        );
+
+        // Cleanup
+        for id in [&tenant_id, &other_id] {
+            for sql in [
+                "DELETE FROM run_llm_calls WHERE tenant_id = $1",
+                "DELETE FROM agent_runs WHERE tenant_id = $1",
+                "DELETE FROM tenant_budgets WHERE tenant_id = $1",
+                "DELETE FROM tenants WHERE id = $1",
+            ] {
+                let _ = sqlx::query(sql).bind(id).execute(&pool).await;
+            }
+        }
     }
 
     #[tokio::test]

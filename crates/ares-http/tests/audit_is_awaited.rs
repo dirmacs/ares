@@ -1455,25 +1455,196 @@ fn chained_calls(c: &[char], from: usize, to: usize) -> Vec<(usize, String, usiz
     out
 }
 
-/// The routers written inline between `from` and `to`: `let NAME = Router::new()`.
-fn inline_routers(c: &[char], from: usize, to: usize) -> Vec<String> {
-    find_all(&c[from..to], "let")
+/// One `let`: where its keyword starts, the extent of its pattern, where its
+/// initializer starts (after the `=`, when it has one), where the statement
+/// ends, and the extent in which its binding is in scope.
+struct LetBinding {
+    at: usize,
+    pattern: (usize, usize),
+    init: Option<usize>,
+    end: usize,
+    scope: (usize, usize),
+}
+
+/// `(open, close)` of the innermost `{ .. }` around `pos`.
+fn enclosing_block(c: &[char], pos: usize) -> Option<(usize, usize)> {
+    let mut depth = 0i32;
+    for (k, &ch) in c[..pos].iter().enumerate().rev() {
+        match ch {
+            '}' => depth += 1,
+            '{' => {
+                if depth == 0 {
+                    return matching(c, k, '{', '}').map(|close| (k, close));
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The `let` whose keyword starts at `at`: `let PAT = INIT;`, `let PAT;`,
+/// `if let PAT = EXPR { .. }` or `while let PAT = EXPR { .. }`. A plain
+/// binding is in scope from the end of its statement to the end of its block;
+/// an `if let` / `while let` binding in its body.
+fn let_binding(c: &[char], at: usize) -> LetBinding {
+    let n = c.len();
+    let conditional = word_before(c, at).is_some_and(|(w, _)| w == "if" || w == "while");
+    let block = enclosing_block(c, at).unwrap_or((0, n));
+    // The pattern runs to the first `=` (not `==`, `=>`, `!=`, `<=`, `>=`) or
+    // `;` outside brackets.
+    let pat_start = skip_ws(c, at + 3);
+    let mut depth = 0i32;
+    let mut k = pat_start;
+    let mut eq = None;
+    while k < n {
+        match c[k] {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                if depth == 0 {
+                    break;
+                }
+                depth -= 1;
+            }
+            ';' if depth == 0 => break,
+            '=' if depth == 0
+                && !matches!(c.get(k + 1), Some('=' | '>'))
+                && !matches!(c[k - 1], '=' | '!' | '<' | '>') =>
+            {
+                eq = Some(k);
+                break;
+            }
+            _ => {}
+        }
+        k += 1;
+    }
+    let pattern = (pat_start, k);
+    let Some(eq) = eq else {
+        return LetBinding {
+            at,
+            pattern,
+            init: None,
+            end: k,
+            scope: (k, block.1),
+        };
+    };
+    // The statement ends at a `;` outside brackets; an `if let` / `while let`
+    // at the `{` of its body.
+    let mut depth = 0i32;
+    let mut end = n;
+    for (q, &ch) in c.iter().enumerate().skip(eq + 1) {
+        match ch {
+            '{' if conditional && depth == 0 => {
+                end = q;
+                break;
+            }
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                if depth == 0 {
+                    end = q;
+                    break;
+                }
+                depth -= 1;
+            }
+            ';' if depth == 0 => {
+                end = q;
+                break;
+            }
+            _ => {}
+        }
+    }
+    let scope = if conditional {
+        (end, matching(c, end, '{', '}').unwrap_or(n))
+    } else {
+        (end, block.1)
+    };
+    LetBinding {
+        at,
+        pattern,
+        init: Some(skip_ws(c, eq + 1)),
+        end,
+        scope,
+    }
+}
+
+/// Why the router `name`, taken by the `.merge(` or `.nest(` whose `.` is at
+/// `dot`, is one the inventory cannot see; `None` when it can see it: the
+/// most recent binding of `name` before the call, in the same function and
+/// in scope there, is `let [mut] name = Router::new()` written inside one of
+/// the two tables (`tables`), whose routes this parse reads, and `name` is
+/// not reassigned between that binding and the call.
+fn unreadable_router(
+    c: &[char],
+    fns: &[FnDef],
+    tables: &[(usize, usize)],
+    dot: usize,
+    name: &str,
+) -> Option<String> {
+    if name.is_empty()
+        || name.starts_with(|x: char| x.is_ascii_digit())
+        || !name.chars().all(is_ident)
+    {
+        return Some(
+            "is not a name bound in the two tables: write its routes inline in a table, or teach \
+             this parser to read it"
+                .to_string(),
+        );
+    }
+    let Some(f) = enclosing_fns(fns, dot).last().copied() else {
+        return Some("is not inside a function".to_string());
+    };
+    let binding = find_all(&c[f.open..dot], "let")
         .into_iter()
-        .filter_map(|at| {
-            let at = from + at;
-            let mut j = skip_ws(c, at + 3);
-            if ident_at(c, j) == "mut" {
-                j = skip_ws(c, j + 3);
-            }
-            let name = ident_at(c, j);
-            let eq = skip_ws(c, j + name.chars().count());
-            if name.is_empty() || c.get(eq) != Some(&'=') {
-                return None;
-            }
-            let rhs: String = c[skip_ws(c, eq + 1)..].iter().take(13).collect();
-            (rhs == "Router::new()").then_some(name)
-        })
-        .collect()
+        .map(|at| let_binding(c, f.open + at))
+        .filter(|b| !find_all(&c[b.pattern.0..b.pattern.1], name).is_empty())
+        .filter(|b| b.scope.0 < dot && dot < b.scope.1)
+        .max_by_key(|b| b.at);
+    let Some(b) = binding else {
+        return Some(format!(
+            "has no `let` binding in scope before it in `fn {}`",
+            f.name
+        ));
+    };
+    let line = line_of(c, b.at);
+    let pattern: String = c[b.pattern.0..b.pattern.1].iter().collect();
+    let pattern = pattern.trim();
+    let pattern = pattern
+        .strip_prefix("mut")
+        .filter(|rest| rest.starts_with(char::is_whitespace))
+        .map_or(pattern, str::trim_start);
+    let plain = pattern == name
+        || pattern.strip_prefix(name).is_some_and(|rest| {
+            let rest = rest.trim_start();
+            rest.starts_with(':') && !rest.starts_with("::")
+        });
+    let inline = b
+        .init
+        .is_some_and(|i| c[i..].iter().take(13).collect::<String>() == "Router::new()");
+    let in_table = tables.iter().any(|&(s, e)| s <= b.at && b.end <= e);
+    if !(plain && inline && in_table) {
+        return Some(format!(
+            "is bound at line {line} (its most recent binding before the call, in `fn {}`) to \
+             something other than `let {name} = Router::new()` inside the two tables",
+            f.name
+        ));
+    }
+    for p in find_all(&c[b.end..dot], name)
+        .into_iter()
+        .map(|p| b.end + p)
+    {
+        let after = skip_ws(c, p + name.chars().count());
+        if char_before(c, p) != Some('.')
+            && c.get(after) == Some(&'=')
+            && !matches!(c.get(after + 1), Some('=' | '>'))
+        {
+            return Some(format!(
+                "is reassigned at line {} after its binding at line {line}",
+                line_of(c, p)
+            ));
+        }
+    }
+    None
 }
 
 /// The mutating registrations of one `.route(path, method_router)` call whose
@@ -1588,17 +1759,7 @@ fn parse_route(c: &[char], orig: &[char], open: usize, close: usize) -> Vec<Muta
 fn mutating_routes(routes_src: &str) -> Vec<MutatingRoute> {
     let orig: Vec<char> = routes_src.chars().collect();
     let c = mask(routes_src);
-    let tables = [
-        (
-            "let admin_routes = Router::new()",
-            "admin_middleware(req, next)",
-        ),
-        (
-            "let v1_metered_routes = Router::new()",
-            "api_key_auth_middleware",
-        ),
-    ];
-    let segments: Vec<(&str, usize, usize)> = tables
+    let segments: Vec<(&str, usize, usize)> = TABLES
         .iter()
         .map(|&(start_marker, end_marker)| {
             let start = find_seq(&c, start_marker, 0)
@@ -1608,12 +1769,10 @@ fn mutating_routes(routes_src: &str) -> Vec<MutatingRoute> {
             (start_marker, start, end)
         })
         .collect();
-    // A `.merge(` or `.nest(` may only take a router written inline in the
-    // tables, whose routes this parse reads anyway.
-    let inline: Vec<String> = segments
-        .iter()
-        .flat_map(|&(_, s, e)| inline_routers(&c, s, e))
-        .collect();
+    // A `.merge(` or `.nest(` may only take a router whose binding is written
+    // inline in the tables, whose routes this parse reads anyway.
+    let extents: Vec<(usize, usize)> = segments.iter().map(|&(_, s, e)| (s, e)).collect();
+    let fns = fn_defs(&c);
 
     let mut out = Vec::new();
     for &(table, start, end) in &segments {
@@ -1635,11 +1794,10 @@ fn mutating_routes(routes_src: &str) -> Vec<MutatingRoute> {
                         .last()
                         .map(|&(s, e)| text_of(&orig, s, e))
                         .unwrap_or_default();
-                    if !inline.contains(&router) {
+                    if let Some(why) = unreadable_router(&c, &fns, &extents, dot, &router) {
                         panic!(
                             "routes.rs: `.{name}({})` in the table at `{table}` takes a router \
-                             the inventory cannot see: write its routes inline in the table, or \
-                             teach this parser to read it",
+                             the inventory cannot see: `{router}` {why}",
                             text_of(&orig, open + 1, close)
                         );
                     }

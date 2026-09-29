@@ -26,13 +26,17 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use ares_http::api::handlers::admin::billing::set_token_budget;
-use ares_http::api::handlers::admin::cordis::provide_cordis_service;
+use ares_http::api::handlers::admin::cordis::{
+    move_cordis_entry, patch_cordis_entry, provide_cordis_service,
+};
 use ares_http::api::handlers::admin::providers::{
     delete_runtime_provider, upsert_runtime_provider,
 };
 use ares_http::api::handlers::admin::shared::{
-    CreateRuntimeProviderRequest, RuntimeProviderScopeQuery, SetTokenBudgetRequest,
+    CreateRuntimeProviderRequest, ProvisionClientRequest, ProvisionProviderSpec,
+    RuntimeProviderScopeQuery, SetTokenBudgetRequest,
 };
+use ares_http::api::handlers::admin::tenants::provision_client;
 use ares_http::api::handlers::admin::{update_tenant_agent_handler, AdminActor};
 use ares_http::api::handlers::v1::{
     create_api_key, delete_tenant_data, revoke_api_key, rotate_api_key, CreateApiKeyRequest,
@@ -806,4 +810,288 @@ async fn rotate_audits_the_mint_when_the_revoke_fails() {
         rows_for_resource(&pool, &old_key.id).await.is_empty(),
         "no revoke row for a revoke that failed"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 1.16-FIX-2: writes that change state before a later step fails. The change
+// that did happen has its audit row, and the response is still the failure's
+// (status and body as before the fix).
+// ---------------------------------------------------------------------------
+
+/// A temp cordis program directory made read-only. Dropping it restores the
+/// mode and removes the directory, even when an assertion fails first.
+struct ReadOnlyEntriesDir(std::path::PathBuf);
+
+impl Drop for ReadOnlyEntriesDir {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Loader state on `ctx` (journal, registry, `CurrentEntries`) over a program
+/// file holding a group entry `grp` and a service entry `svc`, with `svc`
+/// journaled. The directory is then made read-only, so the handlers' atomic
+/// save (a temp file and a rename in the same directory) fails AFTER
+/// `Loader::move_entry` has re-keyed the journal and the live tree.
+fn read_only_entries(ctx: &Arc<Context>, grp: &str, svc: &str) -> ReadOnlyEntriesDir {
+    use std::os::unix::fs::PermissionsExt;
+    ctx.provide(cordis::ReflectService::new());
+    let journal = cordis::LoaderJournal::provide_new(ctx);
+    ctx.provide(cordis::RegistryService::new());
+
+    let dir = std::env::temp_dir().join(unique("t1116-cordis-entries"));
+    std::fs::create_dir_all(&dir).expect("temp entries dir");
+    let guard = ReadOnlyEntriesDir(dir.clone());
+    let path = dir.join("cordis-entries.toml");
+    std::fs::write(
+        &path,
+        format!(
+            "[[entry]]\nid = \"{grp}\"\nplugin = \"GroupMarker\"\ndisabled = false\n\n\
+             [entry.config]\n\n[[entry]]\nid = \"{svc}\"\nplugin = \"CalculatorService\"\n\
+             disabled = false\n\n[entry.config]\n"
+        ),
+    )
+    .expect("seed entries file");
+    let tree = cordis::loader::Loader::load_from_file(&path).expect("parse the seeded entries");
+    ctx.provide_arc(Arc::new(cordis::CurrentEntries {
+        tree: Arc::new(Mutex::new(tree)),
+        path,
+    }));
+    journal.upsert(svc, "CalculatorService", serde_json::json!({}), None);
+
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555))
+        .expect("make the entries dir read-only");
+    guard
+}
+
+/// The live move happened: the journal record and the live tree carry the
+/// new id, and the program file on disk is unchanged (the save failed).
+fn assert_moved_live_but_not_saved(
+    ctx: &Arc<Context>,
+    dir: &ReadOnlyEntriesDir,
+    file_before: &str,
+    old_id: &str,
+    new_id: &str,
+) {
+    let journal = ctx.get::<cordis::LoaderJournal>().expect("journal");
+    assert!(
+        journal.get(new_id).is_some() && journal.get(old_id).is_none(),
+        "the journal record was re-keyed {old_id} -> {new_id}"
+    );
+    let current = ctx.get::<cordis::CurrentEntries>().expect("CurrentEntries");
+    assert!(
+        current.tree.lock().unwrap().0.iter().any(|e| e.id == new_id),
+        "the live tree holds the moved entry {new_id}"
+    );
+    let file_after =
+        std::fs::read_to_string(dir.0.join("cordis-entries.toml")).expect("read the entries file");
+    assert_eq!(file_after, file_before, "the program file was not saved");
+}
+
+/// The body today's handlers return when the save fails: `applied` empty and
+/// the save's error, nothing else.
+fn assert_save_failure_body(status: StatusCode, body: &serde_json::Value) {
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(body["applied"], serde_json::json!([]), "{body}");
+    assert!(
+        body["error"].as_str().is_some_and(|e| !e.is_empty()),
+        "{body}"
+    );
+    assert_eq!(body.as_object().map(|o| o.len()), Some(2), "{body}");
+}
+
+#[tokio::test]
+async fn cordis_move_audits_the_live_move_when_the_save_fails() {
+    let Some((ctx, pool)) = live_ctx().await else {
+        return;
+    };
+    let grp = format!("grp{}", uuid::Uuid::new_v4().simple());
+    let svc = format!("svc{}", uuid::Uuid::new_v4().simple());
+    let dir = read_only_entries(&ctx, &grp, &svc);
+    let file_before =
+        std::fs::read_to_string(dir.0.join("cordis-entries.toml")).expect("read the entries file");
+
+    let (status, Json(body)) = move_cordis_entry(
+        State(ctx.clone()),
+        admin_actor(),
+        Path(svc.clone()),
+        Json(serde_json::json!({ "parent": grp })),
+    )
+    .await
+    .expect("move_cordis_entry response");
+
+    assert_save_failure_body(status, &body);
+    assert_moved_live_but_not_saved(&ctx, &dir, &file_before, &svc, &format!("{grp}:{svc}"));
+
+    // ... and the move has its audit row, though the response was an error.
+    let rows = rows_for_resource(&pool, &svc).await;
+    assert_eq!(
+        rows.len(),
+        1,
+        "the live move must have exactly one audit row even though the save failed, got {rows:?}"
+    );
+    assert_eq!(rows[0].action, "move_cordis_entry");
+    assert_eq!(rows[0].resource_type, "cordis_entry");
+    assert_eq!(rows[0].actor.as_deref(), Some("audit-test-admin"));
+    let details: serde_json::Value =
+        serde_json::from_str(rows[0].details.as_deref().expect("details")).expect("json details");
+    assert_eq!(details["parent"], serde_json::json!(grp));
+}
+
+#[tokio::test]
+async fn cordis_patch_audits_the_live_move_when_the_save_fails() {
+    let Some((ctx, pool)) = live_ctx().await else {
+        return;
+    };
+    let grp = format!("grp{}", uuid::Uuid::new_v4().simple());
+    let svc = format!("svc{}", uuid::Uuid::new_v4().simple());
+    let moved = format!("{grp}:{svc}");
+    let dir = read_only_entries(&ctx, &grp, &svc);
+    let file_before =
+        std::fs::read_to_string(dir.0.join("cordis-entries.toml")).expect("read the entries file");
+
+    let (status, Json(body)) = patch_cordis_entry(
+        State(ctx.clone()),
+        admin_actor(),
+        Path(svc.clone()),
+        Json(cordis::loader::EntryUpdate {
+            parent: Some(Some(grp.clone())),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("patch_cordis_entry response");
+
+    assert_save_failure_body(status, &body);
+    assert_moved_live_but_not_saved(&ctx, &dir, &file_before, &svc, &moved);
+
+    // ... and the patch (its move) has its audit row under the new id.
+    let rows = rows_for_resource(&pool, &moved).await;
+    assert_eq!(
+        rows.len(),
+        1,
+        "the live move must have exactly one audit row even though the save failed, got {rows:?}"
+    );
+    assert_eq!(rows[0].action, "patch_cordis_entry");
+    assert_eq!(rows[0].resource_type, "cordis_entry");
+    assert_eq!(rows[0].actor.as_deref(), Some("audit-test-admin"));
+    let details: serde_json::Value =
+        serde_json::from_str(rows[0].details.as_deref().expect("details")).expect("json details");
+    assert_eq!(details["fields"], serde_json::json!(["parent"]));
+    assert_eq!(details["previous_id"], serde_json::json!(svc));
+    assert!(
+        rows_for_resource(&pool, &svc).await.is_empty(),
+        "one row per patch, under the entry's new id"
+    );
+}
+
+fn provision_request(name: &str, provider: Option<ProvisionProviderSpec>) -> ProvisionClientRequest {
+    ProvisionClientRequest {
+        name: name.to_string(),
+        tier: "free".to_string(),
+        // Matches no agent template: nothing is cloned.
+        product_type: "audit-test-product".to_string(),
+        api_key_name: "audit-test-key".to_string(),
+        expires_in_days: None,
+        scopes: None,
+        provider,
+        allowed_models: None,
+    }
+}
+
+async fn tenant_ids_named(pool: &PgPool, name: &str) -> Vec<String> {
+    sqlx::query_scalar("SELECT id FROM tenants WHERE name = $1")
+        .bind(name)
+        .fetch_all(pool)
+        .await
+        .expect("tenant lookup")
+}
+
+/// `provision_client` creates the tenant, then validates the provider spec: an
+/// empty `api_base` answers 400 with the tenant already written.
+#[tokio::test]
+async fn provision_client_audits_the_tenant_when_a_later_step_fails() {
+    let Some((ctx, pool)) = live_ctx().await else {
+        return;
+    };
+    let name = unique("t1116-provision-fail");
+
+    let result = provision_client(
+        State(ctx.clone()),
+        admin_actor(),
+        Json(provision_request(
+            &name,
+            Some(ProvisionProviderSpec {
+                name: unique("audit-test-provider"),
+                display_name: None,
+                provider_type: None,
+                api_base: String::new(),
+                auth_type: None,
+                headers: None,
+                default_model: "audit-test-model".to_string(),
+            }),
+        )),
+    )
+    .await;
+
+    // Today's response: 400, the provider spec is rejected.
+    let Err(err) = result else {
+        panic!("an empty api_base must be rejected");
+    };
+    assert!(
+        matches!(&err.0, AppError::InvalidInput(m) if m == "provider name and api_base must not be empty"),
+        "unexpected error: {err:?}"
+    );
+    assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
+
+    // The tenant was written before the spec was validated ...
+    let ids = tenant_ids_named(&pool, &name).await;
+    assert_eq!(ids.len(), 1, "the tenant exists though provisioning failed");
+
+    // ... and its creation has its audit row.
+    let rows = rows_for_resource(&pool, &ids[0]).await;
+    assert_eq!(
+        rows.len(),
+        1,
+        "the tenant's creation must have exactly one audit row even though provisioning failed, \
+         got {rows:?}"
+    );
+    assert_eq!(rows[0].action, "create_tenant");
+    assert_eq!(rows[0].resource_type, "tenant");
+    assert_eq!(rows[0].actor.as_deref(), Some("audit-test-admin"));
+    let details: serde_json::Value =
+        serde_json::from_str(rows[0].details.as_deref().expect("details")).expect("json details");
+    assert_eq!(details["via"], serde_json::json!("provision_client"));
+}
+
+/// On success the tenant's creation row is followed by the provisioning row.
+#[tokio::test]
+async fn provision_client_audits_the_tenant_then_the_provisioning() {
+    let Some((ctx, pool)) = live_ctx().await else {
+        return;
+    };
+    let name = unique("t1116-provision-ok");
+
+    let resp = provision_client(
+        State(ctx.clone()),
+        admin_actor(),
+        Json(provision_request(&name, None)),
+    )
+    .await
+    .expect("provision_client response");
+    let tenant_id = resp.0.tenant_id.clone();
+
+    let rows = rows_for_resource(&pool, &tenant_id).await;
+    let actions: Vec<&str> = rows.iter().map(|r| r.action.as_str()).collect();
+    assert_eq!(
+        actions,
+        vec!["create_tenant", "provision_client"],
+        "rows: {rows:?}"
+    );
+    for row in &rows {
+        assert_eq!(row.resource_type, "tenant");
+        assert_eq!(row.actor.as_deref(), Some("audit-test-admin"));
+    }
 }

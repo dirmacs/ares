@@ -1016,3 +1016,294 @@ fn scanner_does_not_take_a_definition_or_a_longer_name_for_a_call() {
     assert!(s.sites.is_empty(), "{:?}", s.sites);
     assert!(s.defects.is_empty(), "{:?}", s.defects);
 }
+
+// ---------------------------------------------------------------------------
+// 1.16-FIX-2: the shapes gate round 2 compiled past the scan (a nested async
+// fn, an async closure, a macro; each first case below is the reviewer's own
+// sabotage, verbatim in shape), the helper they generalise to, and the route
+// inventory's silent skip of a handler that is not a plain path.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn scanner_flags_a_call_in_a_nested_fn() {
+    for (label, body) in [
+        // Gate round 2, `acknowledge_budget_alert`: a nested async fn, spawned.
+        (
+            "nested async fn, spawned",
+            format!(
+                "    async fn detached_audit(pool: PgPool) {{\n        {CALL}.await;\n    }}\n    \
+                 tokio::spawn(detached_audit(pool.clone()));"
+            ),
+        ),
+        (
+            "nested async fn, awaited",
+            format!(
+                "    async fn inline_audit(pool: &PgPool) {{\n        {CALL}.await;\n    }}\n    \
+                 inline_audit(&pool).await;"
+            ),
+        ),
+        (
+            "method of a type declared in the body",
+            format!(
+                "    struct Auditor(PgPool);\n    impl Auditor {{\n        async fn write(&self) {{\n            \
+                 let pool = &self.0;\n            {CALL}.await;\n        }}\n    }}\n    \
+                 Auditor(pool.clone()).write().await;"
+            ),
+        ),
+    ] {
+        let s = fixture(&body);
+        assert!(
+            s.defects.iter().any(|d| d.reason.contains("nested")),
+            "{label}: {:?}",
+            s.defects
+        );
+    }
+}
+
+#[test]
+fn scanner_flags_a_call_in_an_async_closure() {
+    for (label, body) in [
+        // Gate round 2, `reset_token_budget_period`: an async closure run in a spawn.
+        (
+            "async move || in a spawn",
+            format!(
+                "    let job = async move || {{\n        {CALL}.await;\n    }};\n    \
+                 tokio::spawn(async move {{ job().await }});"
+            ),
+        ),
+        (
+            "async ||",
+            format!("    let job = async || {{\n        {CALL}.await;\n    }};\n    job().await;"),
+        ),
+        (
+            "async |p|",
+            format!(
+                "    let job = async |p: PgPool| {{\n        {CALL}.await;\n    }};\n    \
+                 job(pool.clone()).await;"
+            ),
+        ),
+        (
+            "async move |p| with an expression body",
+            format!("    let job = async move |p: PgPool| {CALL}.await;\n    job(pool.clone()).await;"),
+        ),
+        (
+            "async move || with a return type",
+            format!(
+                "    let job = async move || -> () {{\n        {CALL}.await;\n    }};\n    job().await;"
+            ),
+        ),
+    ] {
+        let s = fixture(&body);
+        assert!(
+            s.defects.iter().any(|d| d.reason.contains("async` closure")),
+            "{label}: {:?}",
+            s.defects
+        );
+    }
+}
+
+#[test]
+fn scanner_flags_a_call_in_a_macro_invocation() {
+    for (label, body) in [
+        // Gate round 2, `delete_tenant_data`: a macro whose expansion spawns.
+        (
+            "macro_rules! wrapping a spawn",
+            format!(
+                "    macro_rules! in_background {{\n        ($($body:tt)*) => {{\n            \
+                 tokio::spawn(async move {{ $($body)* }})\n        }};\n    }}\n    \
+                 let _h = in_background!({CALL}.await;);"
+            ),
+        ),
+        (
+            "a call inside a macro_rules! body",
+            format!(
+                "    macro_rules! audit {{\n        () => {{\n            {CALL}.await\n        }};\n    }}\n    \
+                 audit!();"
+            ),
+        ),
+        ("tokio::join!", format!("    tokio::join!({CALL}, other());")),
+        ("square brackets", format!("    run![{CALL}.await];")),
+        ("braces", format!("    run! {{ {CALL}.await }}")),
+    ] {
+        let s = fixture(&body);
+        assert!(
+            s.defects
+                .iter()
+                .any(|d| d.reason.contains("inside the arguments of the macro")),
+            "{label}: {:?}",
+            s.defects
+        );
+    }
+}
+
+#[test]
+fn scanner_follows_a_function_that_audits_to_its_callers() {
+    let helper = format!("async fn audit_later(pool: PgPool) {{\n    {CALL}.await;\n}}\n");
+    let method = format!(
+        "struct Auditor(PgPool);\nimpl Auditor {{\n    async fn write(&self) {{\n        \
+         let pool = &self.0;\n        {CALL}.await;\n    }}\n}}\n"
+    );
+    for (label, src) in [
+        (
+            "spawned",
+            format!("{helper}pub async fn handler(pool: PgPool) {{\n    tokio::spawn(audit_later(pool.clone()));\n}}\n"),
+        ),
+        (
+            "not awaited",
+            format!("{helper}pub async fn handler(pool: PgPool) {{\n    let fut = audit_later(pool);\n    detach(fut);\n}}\n"),
+        ),
+        (
+            "in an async block",
+            format!("{helper}pub async fn handler(pool: PgPool) {{\n    let job = async move {{ audit_later(pool).await }};\n    tokio::spawn(job);\n}}\n"),
+        ),
+        (
+            "in a macro",
+            format!("{helper}pub async fn handler(pool: PgPool) {{\n    in_background!(audit_later(pool).await);\n}}\n"),
+        ),
+        (
+            "taken as a value",
+            format!("{helper}pub async fn handler(pool: PgPool) {{\n    let f = audit_later;\n    tokio::spawn(f(pool));\n}}\n"),
+        ),
+        (
+            "imported under another name",
+            format!("use self::audit_later as later;\n{helper}pub async fn handler(pool: PgPool) {{\n    tokio::spawn(later(pool));\n}}\n"),
+        ),
+        (
+            "through a second helper",
+            format!("{helper}async fn relay(pool: PgPool) {{\n    audit_later(pool).await;\n}}\npub async fn handler(pool: PgPool) {{\n    tokio::spawn(relay(pool));\n}}\n"),
+        ),
+        (
+            "a method, spawned",
+            format!("{method}pub async fn handler(a: Auditor) {{\n    tokio::spawn(async move {{ a.write().await }});\n}}\n"),
+        ),
+    ] {
+        let s = scan("fixture.rs", &src);
+        assert!(
+            s.defects
+                .iter()
+                .any(|d| d.reason.contains("a function that writes an audit row")),
+            "{label}: {:?}",
+            s.defects
+        );
+    }
+}
+
+#[test]
+fn scanner_lets_an_awaited_helper_a_route_registration_and_a_same_named_method_through() {
+    let s = scan(
+        "fixture.rs",
+        &format!(
+            "use super::tenants::{{audit_now, other}};\n\
+             async fn audit_now(pool: &PgPool) {{\n    {CALL}.await;\n}}\n\
+             pub async fn handler(pool: PgPool, store: Store) {{\n    \
+             store.audit_now(1).map(|x| x);\n    tracing::info!(\"before\");\n    \
+             audit_now(&pool).await;\n    \
+             audit_log::record(&pool, \"a\", \"b\", &format!(\"{{}}\", 1), None, None, None).await;\n}}\n\
+             pub fn routes() -> Router {{\n    Router::new()\n        \
+             .route(\"/x\", post(crate::api::handlers::admin::handler))\n        \
+             .route(\"/y\", get(audit_now).delete(handler))\n}}\n"
+        ),
+    );
+    assert_eq!(s.sites.len(), 2, "{:?}", s.sites);
+    assert!(s.defects.is_empty(), "{:?}", s.defects);
+}
+
+/// A small `create_router` with both tables and their markers; `/*EXTRA*/`
+/// marks where a test adds to the admin table.
+const ROUTES_FIXTURE: &str = r#"pub fn create_router() -> Router {
+    let admin_routes = Router::new()
+        .route(
+            "/admin/tenants",
+            post(crate::api::handlers::admin::create_tenant)
+                .get(crate::api::handlers::admin::list_tenants),
+        )
+        /*EXTRA*/
+        .layer(middleware::from_fn(move |req: Request, next: Next| async move {
+            crate::api::handlers::admin::admin_middleware(req, next).await
+        }));
+    let v1_metered_routes = Router::new()
+        .route("/chat", post(crate::api::handlers::v1::v1_chat));
+    let v1_routes = Router::new()
+        .merge(v1_metered_routes)
+        .route(
+            "/api-keys/{id}",
+            delete(crate::api::handlers::v1::revoke_api_key),
+        );
+    let v1_routes = v1_routes.layer(middleware::from_fn(
+        crate::middleware::api_key_auth::api_key_auth_middleware,
+    ));
+    public_routes.merge(admin_routes).nest("/v1", v1_routes)
+}
+"#;
+
+fn routes_with(extra: &str) -> String {
+    ROUTES_FIXTURE.replace("/*EXTRA*/", extra)
+}
+
+#[test]
+fn route_inventory_reads_both_tables_and_an_inline_merge() {
+    let got: Vec<String> = mutating_routes(&routes_with(""))
+        .iter()
+        .map(|r| format!("{} {} {}::{}", r.method, r.path, r.module, r.name))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            "POST /api/admin/tenants admin::create_tenant",
+            "POST /api/v1/chat v1::v1_chat",
+            "DELETE /api/v1/api-keys/{id} v1::revoke_api_key",
+        ]
+    );
+}
+
+#[test]
+#[should_panic(expected = "is not a plain path")]
+fn route_inventory_fails_closed_on_a_closure_handler() {
+    // Gate round 2's sabotage: a closure handler that writes and never audits.
+    mutating_routes(&routes_with(
+        r#".route(
+            "/admin/tenants/{id}/budget-wipe",
+            delete(
+                |axum::extract::State(ctx): axum::extract::State<Arc<Context>>,
+                 axum::extract::Path(id): axum::extract::Path<String>| async move {
+                    if let Some(db) = ctx.get::<TenantDb>() {
+                        let _ = sqlx::query("DELETE FROM tenant_budgets WHERE tenant_id = $1")
+                            .bind(id)
+                            .execute(db.pool())
+                            .await;
+                    }
+                    axum::http::StatusCode::NO_CONTENT
+                },
+            ),
+        )"#,
+    ));
+}
+
+#[test]
+#[should_panic(expected = "a router the inventory cannot see")]
+fn route_inventory_fails_closed_on_a_merge_it_cannot_see() {
+    mutating_routes(&routes_with(
+        ".merge(crate::api::handlers::admin::billing::routes())",
+    ));
+}
+
+#[test]
+#[should_panic(expected = "a router the inventory cannot see")]
+fn route_inventory_fails_closed_on_a_nest_it_cannot_see() {
+    mutating_routes(&routes_with(".nest(\"/extra\", extra_routes)"));
+}
+
+#[test]
+fn route_inventory_fails_closed_on_a_router_call_it_does_not_know() {
+    for extra in [
+        ".route(\"/admin/x\", any(crate::api::handlers::admin::wipe))",
+        ".route(\"/admin/x\", on(MethodFilter::DELETE, crate::api::handlers::admin::wipe))",
+        ".route(\"/admin/x\", wipe_router)",
+        ".route_service(\"/admin/x\", wipe_service)",
+        ".fallback(crate::api::handlers::admin::wipe)",
+    ] {
+        let src = routes_with(extra);
+        let read = std::panic::catch_unwind(|| mutating_routes(&src));
+        assert!(read.is_err(), "`{extra}` was read without complaint");
+    }
+}

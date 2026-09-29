@@ -115,9 +115,9 @@ pub async fn upsert_runtime_provider(
     let store = RuntimeProviderStore::new(&__pool_4);
     preserve_redacted_runtime_provider_secret(&store, &mut req).await?;
     let provider = store.upsert(&req).await?;
-    reload_runtime_provider_registry(&ctx).await?;
-    tracing::info!("Upserted runtime provider {}", provider.name);
 
+    // The upsert is the write. The registry reload below can still fail with
+    // the row already stored, so the row is audited first.
     let pool = ctx
         .get::<ares_store::TenantDb>()
         .expect("not provided")
@@ -133,6 +133,9 @@ pub async fn upsert_runtime_provider(
         actor.audit_actor(),
     )
     .await;
+
+    reload_runtime_provider_registry(&ctx).await?;
+    tracing::info!("Upserted runtime provider {}", provider.name);
 
     Ok(Json(provider.into()))
 }
@@ -158,9 +161,8 @@ pub async fn delete_runtime_provider(
             "runtime provider {name} not found"
         ))));
     }
-    reload_runtime_provider_registry(&ctx).await?;
-    tracing::info!("Deleted runtime provider {}", name);
-
+    // The delete is the write. The registry reload below can still fail with
+    // the row already gone, so the delete is audited first.
     let pool = ctx
         .get::<ares_store::TenantDb>()
         .expect("not provided")
@@ -176,6 +178,9 @@ pub async fn delete_runtime_provider(
         actor.audit_actor(),
     )
     .await;
+
+    reload_runtime_provider_registry(&ctx).await?;
+    tracing::info!("Deleted runtime provider {}", name);
 
     Ok(StatusCode::NO_CONTENT)
 }

@@ -20,6 +20,26 @@ fn once_text_stream(text: String) -> TokenStream {
     })
 }
 
+/// AR-1: the typed refusal for a request that requires the tenant's own agent when the
+/// tenant tier could not be reached at all: the runtime has no agent registry, no
+/// `TenantDb` or no `FleetSecrets` on the context, or is built without `postgres`.
+///
+/// `AppError::Unavailable` (HTTP 503) is the same variant family `strict_fallbacks` uses
+/// for "this runtime cannot serve the request, and will not substitute another path". The
+/// caller returns it instead of running `execute` / `execute_stream_fallback`, which would
+/// execute another agent under the same name.
+fn tenant_tier_unavailable_error(agent_name: &str) -> AppError {
+    tracing::error!(
+        agent = %agent_name,
+        "require_tenant_agent: the tenant agent tier is unavailable; refusing instead of \
+         falling through to another agent"
+    );
+    AppError::Unavailable(format!(
+        "require_tenant_agent: the tenant agent tier is unavailable for agent '{agent_name}'; \
+         refusing to run another agent"
+    ))
+}
+
 #[cfg(feature = "postgres")]
 struct PreparedResolvedAgent {
     agent: crate::ConfigurableAgent,
@@ -111,6 +131,12 @@ pub struct AgentRequest {
     /// row. A missing row is a typed not-found; a disabled or invalid row is
     /// a typed error. No fallthrough to a same-named community or system
     /// agent. The v1 run route sets this; other callers keep the fallback.
+    ///
+    /// The refusal also covers the cases where the tenant tier cannot be
+    /// reached: a context with no tenant id is `AppError::Auth`, and a runtime
+    /// without the agent registry, `TenantDb` or `FleetSecrets` (or built
+    /// without `postgres`) is `AppError::Unavailable`. On both `run` and
+    /// `run_stream`, such a request never executes another agent.
     pub require_tenant_agent: bool,
 }
 
@@ -512,6 +538,11 @@ impl Execute {
                 }
             }
         }
+        // AR-1: a request that requires the tenant's own agent never streams
+        // another agent. The resolved path returned `None` (or is not compiled in).
+        if req.require_tenant_agent {
+            return Err(tenant_tier_unavailable_error(&req.agent_name));
+        }
         self.execute_stream_fallback(req.clone(), ctx).await
     }
 
@@ -525,6 +556,12 @@ impl Execute {
         }
         if let Some(result) = self.try_run_resolved(req, ctx).await {
             return result;
+        }
+        // AR-1: a request that requires the tenant's own agent never runs another
+        // agent. The resolved path returned `None` (or is not compiled in), and
+        // `execute` below would run the generic agent under the same name.
+        if req.require_tenant_agent {
+            return Err(tenant_tier_unavailable_error(&req.agent_name));
         }
         let response = self.execute(req.clone(), ctx).await?;
         Ok(ExecutionResult {
@@ -618,8 +655,12 @@ impl Execute {
         // `tenant_agents` first. A present row wins over community/system
         // agents; a missing row is a typed not-found and a disabled or
         // invalid row is a typed error — never a fallthrough to a same-named
-        // agent from another source.
-        let tenant_config = if req.require_tenant_agent && !user_id.is_empty() {
+        // agent from another source. A context with no tenant id has no row to
+        // read: that is an auth error, not a licence to resolve another agent.
+        let tenant_config = if req.require_tenant_agent {
+            if user_id.is_empty() {
+                return Some(Err(AppError::Auth("Missing tenant context".to_string())));
+            }
             match crate::tenant_agent::load_tenant_agent_config(
                 tenant_db.pool(),
                 &user_id,
@@ -629,10 +670,10 @@ impl Execute {
             {
                 Ok(Some((config, _config_version, _config_json))) => Some(config),
                 Ok(None) => {
-                    return Some(Err(AppError::NotFound(format!(
-                        "Agent '{}' not found for tenant '{}'",
-                        req.agent_name, user_id
-                    ))))
+                    return Some(Err(crate::tenant_agent::tenant_agent_not_found_error(
+                        &req.agent_name,
+                        &user_id,
+                    )))
                 }
                 Err(e) => return Some(Err(e)),
             }

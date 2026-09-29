@@ -79,18 +79,16 @@ pub async fn create_schedule(
         .clone();
     let t_id = schedule.tenant_id.clone();
     let a_name = schedule.agent_name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "schedule_create",
-            "agent_schedule",
-            &a_name,
-            Some(&t_id),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "schedule_create",
+        "agent_schedule",
+        &a_name,
+        Some(&t_id),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(schedule))
 }
@@ -119,18 +117,16 @@ pub async fn update_schedule(
         .clone();
     let t_id = schedule.tenant_id.clone();
     let a_name = schedule.agent_name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "schedule_update",
-            "agent_schedule",
-            &a_name,
-            Some(&t_id),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "schedule_update",
+        "agent_schedule",
+        &a_name,
+        Some(&t_id),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(schedule))
 }
@@ -159,18 +155,16 @@ pub async fn delete_schedule(
         .pool()
         .clone();
     let sid = id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "schedule_delete",
-            "agent_schedule",
-            &sid,
-            None,
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "schedule_delete",
+        "agent_schedule",
+        &sid,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -210,18 +204,16 @@ pub async fn delete_tenant_schedule(
         .clone();
     let sid = id.clone();
     let t_id = tenant_id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "schedule_delete",
-            "agent_schedule",
-            &sid,
-            Some(&t_id),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "schedule_delete",
+        "agent_schedule",
+        &sid,
+        Some(&t_id),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(StatusCode::NO_CONTENT)
 }

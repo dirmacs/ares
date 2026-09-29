@@ -79,24 +79,22 @@ pub async fn create_runtime_tool(
     let tool_id = tool.id.clone();
     let tool_name = tool.name.clone();
     let tool_type = tool.tool_type.clone();
-    tokio::spawn(async move {
-        let details = serde_json::json!({
-            "name": tool_name,
-            "tool_type": tool_type,
-            "enabled": tool.enabled,
-        })
-        .to_string();
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "runtime_tool_create",
-            "runtime_tool",
-            &tool_id,
-            Some(&details),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    let details = serde_json::json!({
+        "name": tool_name,
+        "tool_type": tool_type,
+        "enabled": tool.enabled,
+    })
+    .to_string();
+    audit_log::record(
+        &pool,
+        "runtime_tool_create",
+        "runtime_tool",
+        &tool_id,
+        Some(&details),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(serde_json::json!({
         "id": tool.id,
@@ -138,19 +136,17 @@ pub async fn update_runtime_tool(
         .clone();
     let tool_id = id.clone();
     let new_version = tool.version;
-    tokio::spawn(async move {
-        let details = serde_json::json!({ "version": new_version }).to_string();
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "runtime_tool_update",
-            "runtime_tool",
-            &tool_id,
-            Some(&details),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    let details = serde_json::json!({ "version": new_version }).to_string();
+    audit_log::record(
+        &pool,
+        "runtime_tool_update",
+        "runtime_tool",
+        &tool_id,
+        Some(&details),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(serde_json::json!({
         "id": tool.id,
@@ -187,18 +183,16 @@ pub async fn delete_runtime_tool(
         .pool()
         .clone();
     let tool_id = id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "runtime_tool_delete",
-            "runtime_tool",
-            &tool_id,
-            None,
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "runtime_tool_delete",
+        "runtime_tool",
+        &tool_id,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(serde_json::json!({
         "id": id,
@@ -269,23 +263,21 @@ pub async fn test_runtime_tool(
         .pool()
         .clone();
     let tool_id = id.clone();
-    tokio::spawn(async move {
-        let details = serde_json::json!({
-            "ok": ok,
-            "latency_ms": latency_ms,
-        })
-        .to_string();
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "runtime_tool_test",
-            "runtime_tool",
-            &tool_id,
-            Some(&details),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    let details = serde_json::json!({
+        "ok": ok,
+        "latency_ms": latency_ms,
+    })
+    .to_string();
+    audit_log::record(
+        &pool,
+        "runtime_tool_test",
+        "runtime_tool",
+        &tool_id,
+        Some(&details),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(TestRuntimeToolResponse {
         ok,
@@ -368,23 +360,21 @@ pub async fn rollback_runtime_tool(
         .clone();
     let tool_id = id.clone();
     let new_version = updated.version;
-    tokio::spawn(async move {
-        let details = serde_json::json!({
-            "rolled_back_to": version,
-            "new_version": new_version,
-        })
-        .to_string();
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "runtime_tool_rollback",
-            "runtime_tool",
-            &tool_id,
-            Some(&details),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    let details = serde_json::json!({
+        "rolled_back_to": version,
+        "new_version": new_version,
+    })
+    .to_string();
+    audit_log::record(
+        &pool,
+        "runtime_tool_rollback",
+        "runtime_tool",
+        &tool_id,
+        Some(&details),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(serde_json::json!({
         "id": updated.id,

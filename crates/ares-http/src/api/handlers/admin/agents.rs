@@ -65,18 +65,16 @@ pub async fn create_tenant_agent_handler(
         .pool()
         .clone();
     let aid = agent.id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "create_agent",
-            "agent",
-            &aid,
-            None,
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "create_agent",
+        "agent",
+        &aid,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(agent))
 }
@@ -131,18 +129,16 @@ pub async fn update_tenant_agent_handler(
         .pool()
         .clone();
     let aid = agent.id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "update_agent",
-            "agent",
-            &aid,
-            None,
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "update_agent",
+        "agent",
+        &aid,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(agent))
 }
@@ -165,18 +161,16 @@ pub async fn delete_tenant_agent_handler(
         .pool()
         .clone();
     let resource_id = format!("{}:{}", tenant_id, agent_name);
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "delete_agent",
-            "agent",
-            &resource_id,
-            None,
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "delete_agent",
+        "agent",
+        &resource_id,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -221,18 +215,16 @@ pub async fn rollback_tenant_agent_version_handler(
         .clone();
     let resource_id = format!("{}:{}", tenant_id, agent_name);
     let details = format!("Rolled back tenant agent to version {}", version);
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "tenant_agent_rollback",
-            "agent",
-            &resource_id,
-            Some(&details),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "tenant_agent_rollback",
+        "agent",
+        &resource_id,
+        Some(&details),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(agent))
 }
@@ -308,18 +300,16 @@ pub async fn create_agent(
         .pool()
         .clone();
     let aid = agent.id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "create_agent",
-            "agent",
-            &aid,
-            None,
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "create_agent",
+        "agent",
+        &aid,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(agent))
 }
@@ -357,18 +347,16 @@ pub async fn update_agent(
         .pool()
         .clone();
     let aid = agent.id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "update_agent",
-            "agent",
-            &aid,
-            None,
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "update_agent",
+        "agent",
+        &aid,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(agent))
 }
@@ -391,18 +379,16 @@ pub async fn delete_agent(
         .pool()
         .clone();
     let resource_id = format!("{}:{}", tenant_id, agent_name);
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "delete_agent",
-            "agent",
-            &resource_id,
-            None,
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "delete_agent",
+        "agent",
+        &resource_id,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -448,18 +434,16 @@ pub async fn rollback_agent(
         .clone();
     let resource_id = format!("{}:{}", tenant_id, agent_name);
     let details = format!("Rolled back agent to version {}", version);
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "agent_rollback",
-            "agent",
-            &resource_id,
-            Some(&details),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "agent_rollback",
+        "agent",
+        &resource_id,
+        Some(&details),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(agent))
 }
@@ -483,18 +467,16 @@ pub async fn create_agent_template_handler(
         .pool()
         .clone();
     let tid = tpl.id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "create_agent_template",
-            "agent_template",
-            &tid,
-            None,
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "create_agent_template",
+        "agent_template",
+        &tid,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(tpl))
 }
@@ -523,18 +505,16 @@ pub async fn delete_agent_template_handler(
         .expect("not provided")
         .pool()
         .clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "delete_agent_template",
-            "agent_template",
-            &id,
-            None,
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "delete_agent_template",
+        "agent_template",
+        &id,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -791,18 +771,16 @@ pub async fn emergency_stop_handler(
         .expect("not provided")
         .pool()
         .clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            action,
-            "platform",
-            "all_agents",
-            None,
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        action,
+        "platform",
+        "all_agents",
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(emergency_stop_status(payload.active)))
 }

@@ -41,6 +41,26 @@ pub(crate) fn lock_admin_env() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// The pool an admin audit row is written through, or `None` when the context
+/// carries no `TenantDb` (logged at `error`, naming the action, never silent).
+///
+/// Production contexts always have one: the admin router is only built with it.
+/// Only the bare contexts that unit tests build lack it, and there the
+/// handler's response must not change either way. Callers still await
+/// `audit_log::record(..)` themselves, at the call site, before responding.
+pub(crate) fn audit_pool(ctx: &Arc<Context>, action: &str) -> Option<sqlx::PgPool> {
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .map(|db| db.pool().clone());
+    if pool.is_none() {
+        tracing::error!(
+            action,
+            "admin audit write skipped: no TenantDb on this context"
+        );
+    }
+    pool
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CreateTenantRequest {
     pub name: String,
@@ -1667,18 +1687,16 @@ pub async fn rollback_agent_handler(
         .clone();
     let aid = agent_id.clone();
     let ver = version.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &__pool_3,
-            "agent_rollback",
-            "agent",
-            &aid,
-            Some(&format!("Rolled back to version {}", ver)),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &__pool_3,
+        "agent_rollback",
+        "agent",
+        &aid,
+        Some(&format!("Rolled back to version {}", ver)),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     tracing::info!(agent_id = %agent_id, version = %version, "Agent rolled back");
 

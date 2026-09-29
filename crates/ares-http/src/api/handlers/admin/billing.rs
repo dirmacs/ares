@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use crate::HttpError;
 use crate::Result;
+use ares_store::audit_log;
 use ares_types::types::AppError;
 use axum::{
     extract::{Path, Query, State},
@@ -299,6 +300,7 @@ pub async fn get_tenant_budget(
 /// Set (upsert) a tenant budget.
 pub async fn set_tenant_budget(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Path(tenant_id): Path<String>,
     Json(mut req): Json<SetTenantBudgetRequest>,
 ) -> Result<Json<TenantBudget>> {
@@ -310,12 +312,32 @@ pub async fn set_tenant_budget(
     let store = RunHistoryStore::new(&__pool_12);
     req.tenant_id = tenant_id;
     let budget = store.set_tenant_budget(&req).await?;
+
+    let details = serde_json::json!({
+        "monthly_limit_usd": budget.monthly_limit_usd.to_string(),
+        "daily_limit_usd": budget.daily_limit_usd.map(|d| d.to_string()),
+        "alert_threshold_pct": budget.alert_threshold_pct,
+        "currency": &budget.currency,
+    })
+    .to_string();
+    audit_log::record(
+        &__pool_12,
+        "set_tenant_budget",
+        "tenant_budget",
+        &budget.tenant_id,
+        Some(&details),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
+
     Ok(Json(budget))
 }
 
 /// Delete a tenant budget.
 pub async fn delete_tenant_budget(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let __pool_13 = ctx
@@ -325,6 +347,20 @@ pub async fn delete_tenant_budget(
         .clone();
     let store = RunHistoryStore::new(&__pool_13);
     let rows = store.delete_tenant_budget(&tenant_id).await?;
+    // Only a delete that removed a row is a write; deleting an absent budget
+    // changes nothing and leaves nothing to audit.
+    if rows > 0 {
+        audit_log::record(
+            &__pool_13,
+            "delete_tenant_budget",
+            "tenant_budget",
+            &tenant_id,
+            None,
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
+    }
     Ok(Json(
         serde_json::json!({ "deleted": rows > 0, "tenant_id": tenant_id }),
     ))
@@ -352,6 +388,7 @@ pub async fn get_token_budget(
 /// Set the enforced token budget for a tenant.
 pub async fn set_token_budget(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Path(tenant_id): Path<String>,
     Json(req): Json<SetTokenBudgetRequest>,
 ) -> Result<Json<TokenBudget>> {
@@ -364,6 +401,23 @@ pub async fn set_token_budget(
     let budget = store
         .set_budget(&tenant_id, req.token_limit, &req.period)
         .await?;
+
+    let details = serde_json::json!({
+        "token_limit": budget.token_limit,
+        "period": &budget.period,
+    })
+    .to_string();
+    audit_log::record(
+        &__pool_15,
+        "set_token_budget",
+        "token_budget",
+        &tenant_id,
+        Some(&details),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
+
     Ok(Json(budget))
 }
 
@@ -385,6 +439,7 @@ pub async fn get_token_budget_status(
 /// Reset the current enforced token-budget period for a tenant.
 pub async fn reset_token_budget_period(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<BudgetStatus>> {
     let __pool_17 = ctx
@@ -394,6 +449,18 @@ pub async fn reset_token_budget_period(
         .clone();
     let store = TokenBudgetStore::new(&__pool_17);
     store.reset_period(&tenant_id).await?;
+    // The reset is the write; the status read below can still fail, so the
+    // row is written first.
+    audit_log::record(
+        &__pool_17,
+        "reset_token_budget_period",
+        "token_budget",
+        &tenant_id,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
     let status = store.check_budget(&tenant_id).await?;
     Ok(Json(status))
 }
@@ -434,6 +501,7 @@ pub async fn list_budget_alerts(
 /// Acknowledge a budget alert.
 pub async fn acknowledge_budget_alert(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Path(id): Path<String>,
     Json(req): Json<AcknowledgeBudgetAlertRequest>,
 ) -> Result<Json<BudgetAlert>> {
@@ -444,6 +512,23 @@ pub async fn acknowledge_budget_alert(
         .clone();
     let store = RunHistoryStore::new(&__pool_20);
     let alert = store.acknowledge_budget_alert(&id, &req).await?;
+
+    let details = serde_json::json!({
+        "tenant_id": &alert.tenant_id,
+        "acknowledged_by": &req.acknowledged_by,
+    })
+    .to_string();
+    audit_log::record(
+        &__pool_20,
+        "acknowledge_budget_alert",
+        "budget_alert",
+        &id,
+        Some(&details),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
+
     Ok(Json(alert))
 }
 

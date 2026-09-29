@@ -57,18 +57,16 @@ pub async fn create_trigger(
         .clone();
     let t_id = trigger.tenant_id.clone();
     let tr_name = trigger.name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "trigger_create",
-            "event_trigger",
-            &tr_name,
-            Some(&t_id),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "trigger_create",
+        "event_trigger",
+        &tr_name,
+        Some(&t_id),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(trigger))
 }
@@ -97,18 +95,16 @@ pub async fn delete_trigger(
         .pool()
         .clone();
     let tid = id.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "trigger_delete",
-            "event_trigger",
-            &tid,
-            None,
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "trigger_delete",
+        "event_trigger",
+        &tid,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -149,18 +145,16 @@ pub async fn create_tenant_trigger(
         .clone();
     let t_id = trigger.tenant_id.clone();
     let tr_name = trigger.name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "trigger_create",
-            "event_trigger",
-            &tr_name,
-            Some(&t_id),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "trigger_create",
+        "event_trigger",
+        &tr_name,
+        Some(&t_id),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(trigger))
 }
@@ -192,18 +186,16 @@ pub async fn update_tenant_trigger(
         .clone();
     let t_id = trigger.tenant_id.clone();
     let tr_name = trigger.name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "trigger_update",
-            "event_trigger",
-            &tr_name,
-            Some(&t_id),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "trigger_update",
+        "event_trigger",
+        &tr_name,
+        Some(&t_id),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(trigger))
 }
@@ -231,18 +223,16 @@ pub async fn delete_tenant_trigger(
         .expect("not provided")
         .pool()
         .clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "trigger_delete",
-            "event_trigger",
-            &id,
-            Some(&tenant_id),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "trigger_delete",
+        "event_trigger",
+        &id,
+        Some(&tenant_id),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(StatusCode::NO_CONTENT)
 }

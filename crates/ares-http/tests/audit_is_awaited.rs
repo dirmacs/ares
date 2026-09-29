@@ -6,23 +6,60 @@
 //! source text (no database, no network, no `include_str!` list to forget to
 //! extend: the whole of `crates/ares-http/src` is walked at run time).
 //!
-//! 1. `audit_is_awaited_on_every_admin_write`: every audit call site
-//!    (`audit_log::record(` and `log_admin_action(`) is `.await`ed exactly
-//!    where it is called, and does not sit inside the argument of any spawn
-//!    form (`tokio::spawn`, `tokio::task::spawn`, `spawn_blocking`,
-//!    `spawn_local`, `JoinSet::spawn`, any `.spawn(`), judged by the balanced
-//!    extent of the spawned argument, nor inside an `async` block that could
-//!    be spawned elsewhere. The test also asserts that it scanned at least a
-//!    stated number of sites (in total and per file), so it can never go
-//!    vacuous again: at `6aaf2da` a scan keyed on the old function name
-//!    matched 0 sites and a spawn-wrapped `record(...)` passed.
+//! 1. `audit_is_awaited_on_every_admin_write`. An audit call site is a call
+//!    of `audit_log::record(` or `log_admin_action(`. Every site is `.await`ed
+//!    exactly where it is called, in the body of a function that is not
+//!    nested inside another function, and sits in none of these:
+//!    - the argument of a spawn form (`tokio::spawn`, `tokio::task::spawn`,
+//!      `spawn_blocking`, `spawn_local`, `JoinSet::spawn`, any `.spawn(`),
+//!      judged by the balanced extent of the spawned argument;
+//!    - an `async` block or an `async` closure (`async ||`, `async move ||`,
+//!      `async |..|`): that future can be spawned or dropped elsewhere;
+//!    - the arguments of any macro invocation, a `macro_rules!` body
+//!      included: a macro can expand to a spawn. No macro is allowed, because
+//!      no audit call sits in one today;
+//!    - a `fn` or `async fn` nested inside another function's body.
+//!
+//!    The same rules hold, transitively, for every call of a function whose
+//!    body holds a site or a checked call: a helper that audits cannot be
+//!    spawned, left un-awaited, run in an async block, closure or macro, or
+//!    nested, by any caller. The one exception is a macro listed by name in
+//!    `CALLER_MACROS` (today only `assert!`, which evaluates its condition in
+//!    place; a unit test calls a handler inside it); a `macro_rules!` or an
+//!    `as` import that defines a listed name is itself a defect. Such a
+//!    function is named without being called
+//!    only as the plain-path handler of a route (`post(path::handler)`) or in
+//!    a `use` list (never renamed with `as`), and the writer itself is never
+//!    imported by a glob, a use list or `as`, where its calls could not be
+//!    found by name. The test also asserts that it scanned at least a stated
+//!    number of sites (in total and per file), so it can never go vacuous
+//!    again: at `6aaf2da` a scan keyed on the old function name matched 0
+//!    sites and a spawn-wrapped `record(...)` passed.
 //! 2. `every_mutating_admin_route_is_audited_or_exempt`: every mutating
 //!    (POST / PUT / PATCH / DELETE) route behind the admin middleware, and
 //!    every key-lifecycle route on `/v1`, reaches a handler that writes an
 //!    audit row, unless the handler is on an explicit, reasoned exemption
 //!    list (telemetry ingest, executions, read-only probes). A new admin
 //!    write with no audit call, or a handler that silently loses its call,
-//!    turns this red.
+//!    turns this red. The two route tables are read fail-closed: a handler
+//!    argument that is not a plain path (a closure, a variable), a method
+//!    router other than `get`, `post`, `put`, `patch`, `delete`, `head`,
+//!    `options` and `trace`, a router call other than `.route`, `.layer`,
+//!    `.route_layer`, `.merge` and `.nest`, and a `.merge(` or `.nest(` of a
+//!    router not written inline in the two tables each panic with the route
+//!    and the text, instead of being skipped.
+//!
+//! What a source scan does not prove, stated so nobody reads more into it:
+//! - calls are matched by name, not resolved: any function of the same name
+//!   in the crate counts as the same function (the scan errs towards
+//!   flagging), and method-call syntax (`x.name(`) is followed only when the
+//!   auditing function takes `self`;
+//! - macros are not expanded: an attribute macro that rewrites a function
+//!   body is invisible to it (`ares-http` defines none; a new one needs a new
+//!   dependency, which a diff shows);
+//! - it proves where the call is and that it is awaited, not what the row
+//!   says or that it follows the right write: `audit_writes_live.rs` tests
+//!   the rows.
 //!
 //! Base `1fa9d9c` had 54 `log_admin_action(` sites in `ares-http`, every one
 //! of the form `tokio::spawn(async move { let _ = log_admin_action(..).await; })`.
@@ -31,13 +68,16 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
-// Floors: counted on the HEAD of `v4-1.16` after 1.16-FIX-1. They are minimums
-// (adding a site or a route is fine; losing one is a regression).
+// Floors: counted on the HEAD of `v4-1.16` after 1.16-FIX-2 (79 after FIX-1;
+// FIX-2 adds the `create_tenant` row in `provision_client` and the second
+// `patch_cordis_entry` site, the one written before the save when a move ran).
+// They are minimums (adding a site or a route is fine; losing one is a
+// regression).
 // ---------------------------------------------------------------------------
 
 /// Total audit call sites under `crates/ares-http/src` (all `audit_log::record(`;
 /// no direct `log_admin_action(` call is left in this crate).
-const AUDIT_SITE_FLOOR: usize = 79;
+const AUDIT_SITE_FLOOR: usize = 81;
 
 /// Minimum sites per file that carries admin or key-lifecycle writes (the exact
 /// count on HEAD; the sum is `AUDIT_SITE_FLOOR`).
@@ -46,14 +86,14 @@ const PER_FILE_FLOOR: &[(&str, usize)] = &[
     ("api/handlers/admin/audit.rs", 8),
     ("api/handlers/admin/billing.rs", 5),
     ("api/handlers/admin/connectors.rs", 9),
-    ("api/handlers/admin/cordis.rs", 9),
+    ("api/handlers/admin/cordis.rs", 10),
     ("api/handlers/admin/fleet_provider_keys.rs", 2),
     ("api/handlers/admin/health.rs", 2),
     ("api/handlers/admin/pipelines.rs", 4),
     ("api/handlers/admin/providers.rs", 2),
     ("api/handlers/admin/schedules.rs", 4),
     ("api/handlers/admin/shared.rs", 1),
-    ("api/handlers/admin/tenants.rs", 6),
+    ("api/handlers/admin/tenants.rs", 7),
     ("api/handlers/admin/tools.rs", 5),
     ("api/handlers/admin/triggers.rs", 5),
     ("api/handlers/deploy.rs", 1),
@@ -345,25 +385,237 @@ fn spawn_extents(c: &[char]) -> Vec<(usize, usize, String)> {
     out
 }
 
-/// True when `pos` is lexically inside an `async { .. }` / `async move { .. }`
-/// block: such a block is a future that can be spawned, joined or dropped away
-/// from the call site.
-fn inside_async_block(c: &[char], pos: usize) -> bool {
-    let mut stack: Vec<usize> = Vec::new();
-    for (k, &ch) in c.iter().enumerate().take(pos) {
+/// The identifier that starts at `at` (empty when none does).
+fn ident_at(c: &[char], at: usize) -> String {
+    c.iter().skip(at).take_while(|&&x| is_ident(x)).collect()
+}
+
+/// The last non-whitespace character before `idx`, if any.
+fn char_before(c: &[char], idx: usize) -> Option<char> {
+    c[..idx.min(c.len())]
+        .iter()
+        .rev()
+        .find(|x| !x.is_whitespace())
+        .copied()
+}
+
+/// True when a `.await` follows the `)` at `close`.
+fn awaited_after(c: &[char], close: usize) -> bool {
+    let tail = skip_ws(c, close + 1);
+    c.get(tail) == Some(&'.') && ident_at(c, skip_ws(c, tail + 1)) == "await"
+}
+
+/// Where an expression that starts at `from` ends: the first `,` or `;`
+/// outside brackets, or the bracket that closes a group opened before `from`.
+fn expression_end(c: &[char], from: usize) -> usize {
+    let mut depth = 0i32;
+    for (k, &ch) in c.iter().enumerate().skip(from) {
         match ch {
-            '{' => stack.push(k),
-            '}' => {
-                stack.pop();
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                if depth == 0 {
+                    return k;
+                }
+                depth -= 1;
             }
+            ',' | ';' if depth == 0 => return k,
             _ => {}
         }
     }
-    stack.iter().any(|&b| match word_before(c, b) {
-        Some((w, _)) if w == "async" => true,
-        Some((w, at)) if w == "move" => word_before(c, at).is_some_and(|(p, _)| p == "async"),
-        _ => false,
-    })
+    c.len()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AsyncKind {
+    Block,
+    Closure,
+}
+
+/// `(start, end, kind)` of every `async { .. }` / `async move { .. }` block and
+/// every async closure (`async || ..`, `async move |x| ..`, with a block or an
+/// expression body): each is a future that can be spawned, joined or dropped
+/// away from where it is written. An unbalanced extent runs to the end of the
+/// file, the conservative reading.
+fn async_extents(c: &[char]) -> Vec<(usize, usize, AsyncKind)> {
+    let n = c.len();
+    let mut out = Vec::new();
+    for at in find_all(c, "async") {
+        let mut j = skip_ws(c, at + 5);
+        if ident_at(c, j) == "move" {
+            j = skip_ws(c, j + 4);
+        }
+        match c.get(j) {
+            Some('{') => {
+                let end = matching(c, j, '{', '}').unwrap_or(n);
+                out.push((at, end, AsyncKind::Block));
+            }
+            Some('|') => {
+                // The parameters: `||`, or up to the next `|` outside brackets.
+                let mut k = j + 1;
+                if c.get(k) != Some(&'|') {
+                    let mut depth = 0i32;
+                    while k < n {
+                        match c[k] {
+                            '(' | '[' | '{' => depth += 1,
+                            ')' | ']' | '}' => depth -= 1,
+                            '|' if depth == 0 => break,
+                            _ => {}
+                        }
+                        k += 1;
+                    }
+                }
+                let body = skip_ws(c, k + 1);
+                let end = if c.get(body) == Some(&'-') && c.get(body + 1) == Some(&'>') {
+                    // A return type: the body is the block that follows it.
+                    match (body..n).find(|&q| c[q] == '{') {
+                        Some(open) => matching(c, open, '{', '}').unwrap_or(n),
+                        None => n,
+                    }
+                } else if c.get(body) == Some(&'{') {
+                    matching(c, body, '{', '}').unwrap_or(n)
+                } else {
+                    expression_end(c, body)
+                };
+                out.push((at, end, AsyncKind::Closure));
+            }
+            // `async fn`, or `async` in any other position.
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Keywords that can stand before a `!` that is not a macro call
+/// (`return !ok`, `if !(a)`, `impl !Send`, `match !x`).
+const KEYWORDS: &[&str] = &[
+    "as", "async", "await", "box", "break", "const", "continue", "crate", "dyn", "else", "enum",
+    "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move",
+    "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true",
+    "type", "unsafe", "use", "where", "while", "yield",
+];
+
+/// `(open, close, name)` of every macro invocation: `name!(..)`, `name![..]`,
+/// `name!{..}`, `path::name!(..)`, and `macro_rules! name {..}` itself. The
+/// extent is the invocation's balanced delimiter; an unbalanced one runs to
+/// the end of the file.
+fn macro_extents(c: &[char]) -> Vec<(usize, usize, String)> {
+    let n = c.len();
+    let mut out = Vec::new();
+    for (i, &ch) in c.iter().enumerate() {
+        if ch != '!' || c.get(i + 1) == Some(&'=') {
+            continue;
+        }
+        let Some((name, _)) = word_before(c, i) else {
+            continue;
+        };
+        if KEYWORDS.contains(&name.as_str()) || name.starts_with(|x: char| x.is_ascii_digit()) {
+            continue;
+        }
+        let mut j = skip_ws(c, i + 1);
+        if name == "macro_rules" {
+            j = skip_ws(c, j + ident_at(c, j).chars().count());
+        }
+        let (o, cl) = match c.get(j) {
+            Some('(') => ('(', ')'),
+            Some('[') => ('[', ']'),
+            Some('{') => ('{', '}'),
+            _ => continue,
+        };
+        out.push((j, matching(c, j, o, cl).unwrap_or(n), name));
+    }
+    out
+}
+
+/// One `fn` with a body.
+#[derive(Debug, Clone)]
+struct FnDef {
+    name: String,
+    /// Offsets of the `{` and the `}` of its body.
+    open: usize,
+    close: usize,
+    /// Takes `self`, so its callers can use method-call syntax.
+    is_method: bool,
+}
+
+/// True when a parameter list starts with `self`, `&self`, `&mut self`,
+/// `&'a self`, `mut self` or `self: ..`.
+fn takes_self(params: &str) -> bool {
+    let mut t = params.trim_start().trim_start_matches('&').trim_start();
+    if let Some(rest) = t.strip_prefix('\'') {
+        t = rest.trim_start_matches(is_ident).trim_start();
+    }
+    if let Some(rest) = t.strip_prefix("mut") {
+        if rest.starts_with(char::is_whitespace) {
+            t = rest.trim_start();
+        }
+    }
+    t.strip_prefix("self")
+        .is_some_and(|rest| !rest.starts_with(is_ident))
+}
+
+/// Every `fn name(..) .. { .. }` in `c`. Declarations without a body and
+/// `fn(..)` pointer types are skipped.
+fn fn_defs(c: &[char]) -> Vec<FnDef> {
+    let n = c.len();
+    let mut out = Vec::new();
+    for pos in find_all(c, "fn") {
+        let name_at = skip_ws(c, pos + 2);
+        let name = ident_at(c, name_at);
+        if name.is_empty() {
+            continue;
+        }
+        let mut j = skip_ws(c, name_at + name.chars().count());
+        if c.get(j) == Some(&'<') {
+            // Generics; the `>` of a `->` inside a bound is not a closer.
+            let mut depth = 0i32;
+            let mut k = j;
+            while k < n {
+                match c[k] {
+                    '<' => depth += 1,
+                    '>' if c[k - 1] != '-' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                k += 1;
+            }
+            j = skip_ws(c, k + 1);
+        }
+        if c.get(j) != Some(&'(') {
+            continue;
+        }
+        let Some(params_end) = matching(c, j, '(', ')') else {
+            continue;
+        };
+        // The first `{` before any `;` after the parameter list is the body.
+        let Some(open) = (params_end..n).find(|&q| c[q] == '{' || c[q] == ';') else {
+            continue;
+        };
+        if c[open] != '{' {
+            continue;
+        }
+        let params: String = c[j + 1..params_end].iter().collect();
+        out.push(FnDef {
+            name,
+            open,
+            close: matching(c, open, '{', '}').unwrap_or(n),
+            is_method: takes_self(&params),
+        });
+    }
+    out
+}
+
+/// The functions whose bodies contain `pos`, outermost first.
+fn enclosing_fns(fns: &[FnDef], pos: usize) -> Vec<&FnDef> {
+    let mut v: Vec<&FnDef> = fns
+        .iter()
+        .filter(|f| f.open < pos && pos < f.close)
+        .collect();
+    v.sort_by_key(|f| f.open);
+    v
 }
 
 // ---------------------------------------------------------------------------
@@ -373,6 +625,16 @@ fn inside_async_block(c: &[char], pos: usize) -> bool {
 /// The two writers. `record` awaits the insert and logs a failure at `error`;
 /// `log_admin_action` is the raw insert it wraps.
 const WRITERS: [&str; 2] = ["audit_log::record", "log_admin_action"];
+
+/// The macros that a call of a function that writes an audit row may sit in,
+/// by name. An audit call site itself may sit in no macro: none does today.
+/// - `assert`: std's `assert!` evaluates its condition in place, so it cannot
+///   spawn or drop the call. The one such call today is a unit test in
+///   `admin/cordis.rs`: `assert!(provide_cordis_service(..).await.is_err())`.
+///
+/// A `macro_rules!` or an `as` import that defines one of these names is a
+/// defect, so the allowance cannot be borrowed by a macro of the same name.
+const CALLER_MACROS: &[&str] = &["assert"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Defect {
@@ -388,136 +650,426 @@ struct Scan {
     defects: Vec<Defect>,
 }
 
-fn scan(file: &str, src: &str) -> Scan {
-    let c = mask(src);
-    let spawns = spawn_extents(&c);
-    let mut result = Scan::default();
-    let mut defect = |pos: usize, reason: String| {
-        result.defects.push(Defect {
+/// The scan of a set of files: the audit call sites per file (files with none
+/// left out) and every defect.
+#[derive(Debug, Default)]
+struct CrateScan {
+    sites: BTreeMap<String, Vec<usize>>,
+    defects: Vec<Defect>,
+}
+
+/// One source file, masked, with every extent the rules need.
+struct Parsed {
+    file: String,
+    c: Vec<char>,
+    spawns: Vec<(usize, usize, String)>,
+    asyncs: Vec<(usize, usize, AsyncKind)>,
+    macros: Vec<(usize, usize, String)>,
+    fns: Vec<FnDef>,
+}
+
+impl Parsed {
+    fn new(file: &str, src: &str) -> Self {
+        let c = mask(src);
+        let spawns = spawn_extents(&c);
+        let asyncs = async_extents(&c);
+        let macros = macro_extents(&c);
+        let fns = fn_defs(&c);
+        Parsed {
             file: file.to_string(),
-            line: line_of(&c, pos),
+            c,
+            spawns,
+            asyncs,
+            macros,
+            fns,
+        }
+    }
+
+    fn defect(&self, out: &mut Vec<Defect>, pos: usize, reason: String) {
+        out.push(Defect {
+            file: self.file.clone(),
+            line: line_of(&self.c, pos),
             reason,
         });
+    }
+}
+
+/// The rules every checked call obeys: an audit call site, or a call of a
+/// function that writes an audit row. `what` names the call in the message;
+/// `pos` is where its callee's name starts and `close` is the `)` of its
+/// argument list; `allowed_macros` are the macros it may sit in (none for an
+/// audit call site). Returns the rules it breaks and the innermost function
+/// whose body holds it.
+fn check_call<'a>(
+    p: &'a Parsed,
+    what: &str,
+    pos: usize,
+    close: usize,
+    allowed_macros: &[&str],
+) -> (Vec<String>, Option<&'a FnDef>) {
+    let c = &p.c;
+    let mut reasons = Vec::new();
+
+    // Rule 1: not inside the argument of any spawn form.
+    if let Some((open, _, name)) = p.spawns.iter().find(|(o, cl, _)| *o < pos && pos < *cl) {
+        reasons.push(format!(
+            "{what} sits inside the argument of `{name}(` opened at line {}: the write is \
+             detached from the response",
+            line_of(c, *open)
+        ));
+    }
+
+    // Rule 2: awaited where it is called.
+    if !awaited_after(c, close) {
+        reasons.push(format!(
+            "{what} is not `.await`ed where it is called (handed to a helper, bound to a \
+             variable, or dropped)"
+        ));
+    }
+
+    // Rule 3: not inside an async block or an async closure.
+    for (start, end, kind) in &p.asyncs {
+        if *start < pos && pos < *end {
+            let shape = match kind {
+                AsyncKind::Block => "an `async` block",
+                AsyncKind::Closure => "an `async` closure",
+            };
+            reasons.push(format!(
+                "{what} sits inside {shape} (line {}): that future can be spawned or dropped \
+                 away from the response; await the call in the handler body",
+                line_of(c, *start)
+            ));
+        }
+    }
+
+    // Rule 4: not inside the arguments of any macro invocation.
+    for (open, end, name) in &p.macros {
+        if *open < pos && pos < *end && !allowed_macros.contains(&name.as_str()) {
+            reasons.push(format!(
+                "{what} sits inside the arguments of the macro `{name}!` opened at line {}: a \
+                 macro can expand to a spawn or drop the future",
+                line_of(c, *open)
+            ));
+        }
+    }
+
+    // Rule 5: in the body of a function that is not nested in another one.
+    let encl = enclosing_fns(&p.fns, pos);
+    match encl.as_slice() {
+        [] => reasons.push(format!("{what} is not inside any function body")),
+        [_] => {}
+        [.., outer, inner] => reasons.push(format!(
+            "{what} sits inside `fn {}`, which is nested in the body of `fn {}`: a nested \
+             function can be spawned or detached by its caller",
+            inner.name, outer.name
+        )),
+    }
+    (reasons, encl.last().copied())
+}
+
+/// True when `pos` starts the last segment of a plain path that is the only
+/// argument of a method router: `post(crate::api::handlers::admin::x)`.
+fn is_route_handler(c: &[char], pos: usize, name: &str) -> bool {
+    let mut end = skip_ws(c, pos + name.chars().count());
+    if c.get(end) == Some(&',') {
+        end = skip_ws(c, end + 1);
+    }
+    if c.get(end) != Some(&')') {
+        return false;
+    }
+    let mut start = pos;
+    while start > 0 && (is_ident(c[start - 1]) || c[start - 1] == ':') {
+        start -= 1;
+    }
+    while start > 0 && c[start - 1].is_whitespace() {
+        start -= 1;
+    }
+    start > 0
+        && c[start - 1] == '('
+        && word_before(c, start - 1).is_some_and(|(w, _)| METHOD_ROUTERS.contains(&w.as_str()))
+}
+
+/// True when `pos` names an item in a `use` declaration without renaming it
+/// (`use a::b::name;`, `use a::{name, other};`).
+fn is_plain_use(c: &[char], pos: usize, name: &str) -> bool {
+    let end = skip_ws(c, pos + name.chars().count());
+    if !matches!(c.get(end), Some(',' | '}' | ';')) {
+        return false;
+    }
+    // Walk back over the use tree, word by word, to the `use` keyword.
+    let mut k = pos;
+    loop {
+        while k > 0 && (c[k - 1].is_whitespace() || matches!(c[k - 1], ':' | ',' | '{')) {
+            k -= 1;
+        }
+        let e = k;
+        while k > 0 && is_ident(c[k - 1]) {
+            k -= 1;
+        }
+        if k == e {
+            return false;
+        }
+        if c[k..e].iter().collect::<String>() == "use" {
+            return true;
+        }
+    }
+}
+
+/// The audit writer imported where its calls could not be found by name:
+/// `audit_log::*`, `audit_log::{.., record, ..}`, `audit_log as ..`.
+fn writer_renames(c: &[char]) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    for pos in find_all(c, "audit_log") {
+        let j = skip_ws(c, pos + "audit_log".len());
+        if ident_at(c, j) == "as" {
+            out.push((
+                pos,
+                "the `audit_log` module is imported under another name: its `record(` calls \
+                 would not be found"
+                    .to_string(),
+            ));
+            continue;
+        }
+        if !(c.get(j) == Some(&':') && c.get(j + 1) == Some(&':')) {
+            continue;
+        }
+        let k = skip_ws(c, j + 2);
+        let hidden = match c.get(k) {
+            Some('*') => true,
+            Some('{') => {
+                let close = matching(c, k, '{', '}').unwrap_or(c.len());
+                let inner: String = c[k + 1..close].iter().collect();
+                inner.contains('*') || inner.split(|x: char| !is_ident(x)).any(|w| w == "record")
+            }
+            _ => false,
+        };
+        if hidden {
+            out.push((
+                pos,
+                "`audit_log::record` is imported by a glob or a use list: its calls would not be \
+                 found as `audit_log::record(`"
+                    .to_string(),
+            ));
+        }
+    }
+    out
+}
+
+/// Record `f` as a function that writes an audit row (by name, with whether
+/// one of that name takes `self`), and queue its callers for checking when it
+/// is new or newly a method.
+fn note_writer(f: Option<&FnDef>, writers: &mut BTreeMap<String, bool>, queue: &mut Vec<String>) {
+    let Some(f) = f else {
+        return;
     };
-    let mut sites: Vec<usize> = Vec::new();
+    match writers.get_mut(&f.name) {
+        None => {
+            writers.insert(f.name.clone(), f.is_method);
+            queue.push(f.name.clone());
+        }
+        Some(method) if f.is_method && !*method => {
+            *method = true;
+            queue.push(f.name.clone());
+        }
+        Some(_) => {}
+    }
+}
 
-    for writer in WRITERS {
-        for pos in find_all(&c, writer) {
-            // A definition (`fn log_admin_action(`) is not a call site.
-            if word_before(&c, pos).is_some_and(|(w, _)| w == "fn") {
-                continue;
-            }
-            let after = skip_ws(&c, pos + writer.chars().count());
-            if c.get(after) != Some(&'(') {
-                defect(
-                    pos,
-                    format!(
-                        "`{writer}` is referenced without being called: it could be handed to a \
-                         helper or spawned as a function value"
-                    ),
-                );
-                continue;
-            }
-            sites.push(pos);
+fn scan_files(files: &[(String, String)]) -> CrateScan {
+    let parsed: Vec<Parsed> = files.iter().map(|(f, s)| Parsed::new(f, s)).collect();
+    let mut out = CrateScan::default();
+    // Functions that write an audit row, directly or through a checked call.
+    let mut writers_of_rows: BTreeMap<String, bool> = BTreeMap::new();
+    let mut queue: Vec<String> = Vec::new();
 
-            let Some(close) = matching(&c, after, '(', ')') else {
-                defect(pos, format!("`{writer}(` has an unbalanced argument list"));
-                continue;
-            };
-
-            // Rule 1: not inside the argument of any spawn form.
-            if let Some((open, _, name)) = spawns.iter().find(|(o, cl, _)| *o < pos && pos < *cl) {
-                defect(
-                    pos,
-                    format!(
-                        "`{writer}(` sits inside the argument of `{name}(` opened at line {}: the \
-                         write is detached from the response",
-                        line_of(&c, *open)
-                    ),
-                );
-            }
-
-            // Rule 2: awaited where it is called.
-            let tail = skip_ws(&c, close + 1);
-            let awaited = c.get(tail) == Some(&'.') && {
-                let w = skip_ws(&c, tail + 1);
-                c[w..].iter().take(5).collect::<String>() == "await"
-                    && !c.get(w + 5).is_some_and(|&x| is_ident(x))
-            };
-            if !awaited {
-                defect(
-                    pos,
-                    format!(
-                        "`{writer}(..)` is not `.await`ed where it is called (handed to a helper, \
-                         bound to a variable, or dropped)"
-                    ),
-                );
-            } else if writer == "log_admin_action" {
-                // The Result must be handled, not thrown away.
-                // Skip a path prefix (`ares_store::audit_log::`) to reach the
-                // start of the call expression.
-                let mut start = pos;
-                while start > 0 && (is_ident(c[start - 1]) || c[start - 1] == ':') {
-                    start -= 1;
+    // Pass 1: the audit call sites.
+    for p in &parsed {
+        let c = &p.c;
+        let mut sites: Vec<usize> = Vec::new();
+        for writer in WRITERS {
+            for pos in find_all(c, writer) {
+                // A definition (`fn log_admin_action(`) is not a call site.
+                if word_before(c, pos).is_some_and(|(w, _)| w == "fn") {
+                    continue;
                 }
-                let head: String = c[..start].iter().collect();
-                let discarded_by_let = head
-                    .trim_end()
-                    .strip_suffix('=')
-                    .map(str::trim_end)
-                    .and_then(|t| t.strip_suffix('_'))
-                    .is_some_and(|t| t.trim_end().ends_with("let"));
-                let w = skip_ws(&c, tail + 1);
-                let after_await = skip_ws(&c, w + 5);
-                let discarded_by_ok = c.get(after_await) == Some(&'.') && {
-                    let m: String = c[skip_ws(&c, after_await + 1)..]
-                        .iter()
-                        .take_while(|&&x| is_ident(x))
-                        .collect();
-                    matches!(
-                        m.as_str(),
-                        "ok" | "unwrap_or" | "unwrap_or_default" | "unwrap_or_else"
-                    )
-                };
-                if discarded_by_let || discarded_by_ok {
-                    defect(
+                let after = skip_ws(c, pos + writer.chars().count());
+                if c.get(after) != Some(&'(') {
+                    p.defect(
+                        &mut out.defects,
                         pos,
-                        "the Result of `log_admin_action(..)` is discarded".to_string(),
+                        format!(
+                            "`{writer}` is referenced without being called: it could be handed to \
+                             a helper or spawned as a function value"
+                        ),
+                    );
+                    continue;
+                }
+                sites.push(pos);
+                let Some(close) = matching(c, after, '(', ')') else {
+                    p.defect(
+                        &mut out.defects,
+                        pos,
+                        format!("`{writer}(` has an unbalanced argument list"),
+                    );
+                    continue;
+                };
+                let (reasons, holder) = check_call(p, &format!("`{writer}(..)`"), pos, close, &[]);
+                for reason in reasons {
+                    p.defect(&mut out.defects, pos, reason);
+                }
+                note_writer(holder, &mut writers_of_rows, &mut queue);
+
+                if writer == "log_admin_action" && awaited_after(c, close) {
+                    // The Result must be handled, not thrown away.
+                    // Skip a path prefix (`ares_store::audit_log::`) to reach the
+                    // start of the call expression.
+                    let mut start = pos;
+                    while start > 0 && (is_ident(c[start - 1]) || c[start - 1] == ':') {
+                        start -= 1;
+                    }
+                    let head: String = c[..start].iter().collect();
+                    let discarded_by_let = head
+                        .trim_end()
+                        .strip_suffix('=')
+                        .map(str::trim_end)
+                        .and_then(|t| t.strip_suffix('_'))
+                        .is_some_and(|t| t.trim_end().ends_with("let"));
+                    let w = skip_ws(c, skip_ws(c, close + 1) + 1);
+                    let after_await = skip_ws(c, w + 5);
+                    let discarded_by_ok = c.get(after_await) == Some(&'.')
+                        && matches!(
+                            ident_at(c, skip_ws(c, after_await + 1)).as_str(),
+                            "ok" | "unwrap_or" | "unwrap_or_default" | "unwrap_or_else"
+                        );
+                    if discarded_by_let || discarded_by_ok {
+                        p.defect(
+                            &mut out.defects,
+                            pos,
+                            "the Result of `log_admin_action(..)` is discarded".to_string(),
+                        );
+                    }
+                }
+            }
+        }
+        for (pos, reason) in writer_renames(c) {
+            p.defect(&mut out.defects, pos, reason);
+        }
+        for name in CALLER_MACROS {
+            for pos in find_all(c, name) {
+                let mut k = pos;
+                while k > 0 && c[k - 1].is_whitespace() {
+                    k -= 1;
+                }
+                let by_rules = k > 0
+                    && c[k - 1] == '!'
+                    && word_before(c, k - 1).is_some_and(|(w, _)| w == "macro_rules");
+                let by_as = word_before(c, pos).is_some_and(|(w, _)| w == "as");
+                if by_rules || by_as {
+                    p.defect(
+                        &mut out.defects,
+                        pos,
+                        format!(
+                            "`{name}` is defined here (`macro_rules!` or `as`): it would borrow \
+                             the scan's allowance for calls inside `{name}!`"
+                        ),
                     );
                 }
             }
+        }
+        if !sites.is_empty() {
+            sites.sort_unstable();
+            out.sites.insert(p.file.clone(), sites);
+        }
+    }
 
-            // Rule 3: not inside an async block (which could be spawned later).
-            if inside_async_block(&c, pos) {
-                defect(
+    // Pass 2: every call of a function that writes an audit row obeys the same
+    // rules, transitively; such a function is named without a call only as a
+    // route's handler or in a `use` list.
+    let mut done: std::collections::BTreeSet<(String, bool)> = std::collections::BTreeSet::new();
+    while let Some(name) = queue.pop() {
+        let method = writers_of_rows.get(&name).copied().unwrap_or(false);
+        if !done.insert((name.clone(), method)) {
+            continue;
+        }
+        let what = format!("`{name}(..)`, a function that writes an audit row,");
+        for p in &parsed {
+            let c = &p.c;
+            for pos in find_all(c, &name) {
+                // Its own definition.
+                if word_before(c, pos).is_some_and(|(w, _)| w == "fn") {
+                    continue;
+                }
+                let dotted = char_before(c, pos) == Some('.');
+                if dotted && !method {
+                    // A method of the same name: not this free function.
+                    continue;
+                }
+                let mut after = skip_ws(c, pos + name.chars().count());
+                if c.get(after) == Some(&':') && c.get(after + 1) == Some(&':') {
+                    let lt = skip_ws(c, after + 2);
+                    if c.get(lt) == Some(&'<') {
+                        if let Some(gt) = matching(c, lt, '<', '>') {
+                            after = skip_ws(c, gt + 1);
+                        }
+                    }
+                }
+                if c.get(after) == Some(&'(') {
+                    let Some(close) = matching(c, after, '(', ')') else {
+                        p.defect(
+                            &mut out.defects,
+                            pos,
+                            format!("{what} has an unbalanced argument list"),
+                        );
+                        continue;
+                    };
+                    let (reasons, holder) = check_call(p, &what, pos, close, CALLER_MACROS);
+                    for reason in reasons {
+                        p.defect(&mut out.defects, pos, reason);
+                    }
+                    note_writer(holder, &mut writers_of_rows, &mut queue);
+                    continue;
+                }
+                if dotted || is_route_handler(c, pos, &name) || is_plain_use(c, pos, &name) {
+                    // A field of that name, a route's handler, or a plain import.
+                    continue;
+                }
+                p.defect(
+                    &mut out.defects,
                     pos,
                     format!(
-                        "`{writer}(` sits inside an `async` block: that future can be spawned or \
-                         dropped away from the response; await the call in the handler body"
+                        "`{name}`, a function that writes an audit row, is referenced as a value: \
+                         it could be spawned, stored or dropped away from the response"
                     ),
                 );
             }
         }
     }
-    sites.sort_unstable();
-    result.sites = sites;
-    result
+    // A name re-checked because it became a method reports its free calls twice.
+    let mut seen = std::collections::BTreeSet::new();
+    out.defects
+        .retain(|d| seen.insert((d.file.clone(), d.line, d.reason.clone())));
+    out
+}
+
+/// One file on its own (the scanner's fixtures).
+fn scan(file: &str, src: &str) -> Scan {
+    let r = scan_files(&[(file.to_string(), src.to_string())]);
+    Scan {
+        sites: r.sites.into_values().flatten().collect(),
+        defects: r.defects,
+    }
 }
 
 #[test]
 fn audit_is_awaited_on_every_admin_write() {
-    let mut total = 0usize;
-    let mut per_file: BTreeMap<String, usize> = BTreeMap::new();
-    let mut defects: Vec<Defect> = Vec::new();
-
-    for (file, src) in all_sources() {
-        let s = scan(&file, &src);
-        if !s.sites.is_empty() {
-            per_file.insert(file.clone(), s.sites.len());
-        }
-        total += s.sites.len();
-        defects.extend(s.defects);
-    }
+    let result = scan_files(&all_sources());
+    let per_file: BTreeMap<String, usize> = result
+        .sites
+        .iter()
+        .map(|(f, s)| (f.clone(), s.len()))
+        .collect();
+    let total: usize = per_file.values().sum();
+    let defects = result.defects;
 
     eprintln!(
         "audit call sites scanned: {total} in {} files",
@@ -537,7 +1089,8 @@ fn audit_is_awaited_on_every_admin_write() {
         defects.is_empty(),
         "{} audit call site(s) are not awaited directly in the handler (see stderr for the list): \
          every write must go through `ares_store::audit_log::record(..).await` where it is called, \
-         never inside a spawn or an async block",
+         never inside a spawn, an async block or closure, a macro or a nested function, and so \
+         must every call of a function that writes one",
         defects.len()
     );
     assert!(
@@ -601,8 +1154,205 @@ fn find_seq(c: &[char], needle: &str, from: usize) -> Option<usize> {
     (from..=c.len() - nd.len()).find(|&i| c[i..i + nd.len()] == nd[..])
 }
 
+/// The method routers the inventory reads; the first four are mutating.
+const METHOD_ROUTERS: [&str; 8] = [
+    "post", "put", "patch", "delete", "get", "head", "options", "trace",
+];
+
+/// The source text from `from` to `to`, with its whitespace collapsed.
+fn text_of(orig: &[char], from: usize, to: usize) -> String {
+    orig[from..to.min(orig.len())]
+        .iter()
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// `(start, end)` of each top-level argument between the parentheses at
+/// `open` and `close` (an empty trailing argument is dropped).
+fn split_args(c: &[char], open: usize, close: usize) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut s = open + 1;
+    for (k, &ch) in c.iter().enumerate().take(close).skip(open + 1) {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push((s, k));
+                s = k + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push((s, close));
+    out.retain(|&(a, b)| c[a..b].iter().any(|x| !x.is_whitespace()));
+    out
+}
+
+/// `(dot, name, open, close)` of every method call `.name(..)` (or
+/// `.name::<..>(..)`) that starts between `from` and `to`, in order.
+fn chained_calls(c: &[char], from: usize, to: usize) -> Vec<(usize, String, usize, usize)> {
+    let mut out = Vec::new();
+    for dot in from..to {
+        if c[dot] != '.' {
+            continue;
+        }
+        let at = skip_ws(c, dot + 1);
+        let name = ident_at(c, at);
+        if name.is_empty() || name.starts_with(|x: char| x.is_ascii_digit()) {
+            continue;
+        }
+        let mut open = skip_ws(c, at + name.chars().count());
+        if c.get(open) == Some(&':') && c.get(open + 1) == Some(&':') {
+            let lt = skip_ws(c, open + 2);
+            if c.get(lt) == Some(&'<') {
+                if let Some(gt) = matching(c, lt, '<', '>') {
+                    open = skip_ws(c, gt + 1);
+                }
+            }
+        }
+        if c.get(open) != Some(&'(') {
+            // `.await`, a field.
+            continue;
+        }
+        let close = matching(c, open, '(', ')').unwrap_or(c.len());
+        out.push((dot, name, open, close));
+    }
+    out
+}
+
+/// The routers written inline between `from` and `to`: `let NAME = Router::new()`.
+fn inline_routers(c: &[char], from: usize, to: usize) -> Vec<String> {
+    find_all(&c[from..to], "let")
+        .into_iter()
+        .filter_map(|at| {
+            let at = from + at;
+            let mut j = skip_ws(c, at + 3);
+            if ident_at(c, j) == "mut" {
+                j = skip_ws(c, j + 3);
+            }
+            let name = ident_at(c, j);
+            let eq = skip_ws(c, j + name.chars().count());
+            if name.is_empty() || c.get(eq) != Some(&'=') {
+                return None;
+            }
+            let rhs: String = c[skip_ws(c, eq + 1)..].iter().take(13).collect();
+            (rhs == "Router::new()").then_some(name)
+        })
+        .collect()
+}
+
+/// The mutating registrations of one `.route(path, method_router)` call whose
+/// argument list runs from `open` to `close`. Anything but a string-literal
+/// path and a chain of known method routers, each with a plain-path handler,
+/// panics: the inventory fails closed.
+fn parse_route(c: &[char], orig: &[char], open: usize, close: usize) -> Vec<MutatingRoute> {
+    let whole = text_of(orig, open + 1, close);
+    let args = split_args(c, open, close);
+    let [(ps, pe), (ms, me)] = args[..] else {
+        panic!("routes.rs: `.route({whole})` is not a path and a method router");
+    };
+    let lit = text_of(orig, ps, pe);
+    let Some(path) = lit
+        .strip_prefix('"')
+        .and_then(|l| l.strip_suffix('"'))
+        .filter(|p| !p.contains('"'))
+    else {
+        panic!("routes.rs: the path of `.route({whole})` is not a string literal");
+    };
+
+    let mut out = Vec::new();
+    let mut k = skip_ws(c, ms);
+    let mut first = true;
+    while k < me {
+        if !first {
+            if c[k] != '.' {
+                panic!(
+                    "routes.rs: route `{path}`: `{}` in its method router is not a call the \
+                     inventory reads",
+                    text_of(orig, k, me)
+                );
+            }
+            k = skip_ws(c, k + 1);
+        }
+        // The callee: a name, or for the first call a path (`axum::routing::post`).
+        let mut name = ident_at(c, k);
+        let mut j = k + name.chars().count();
+        while first && c.get(j) == Some(&':') && c.get(j + 1) == Some(&':') {
+            let next = ident_at(c, j + 2);
+            if next.is_empty() {
+                break;
+            }
+            j += 2 + next.chars().count();
+            name = next;
+        }
+        let paren = skip_ws(c, j);
+        if name.is_empty() || c.get(paren) != Some(&'(') {
+            panic!(
+                "routes.rs: route `{path}`: the method router `{}` is not a call the inventory \
+                 reads",
+                text_of(orig, ms, me)
+            );
+        }
+        let end = matching(c, paren, '(', ')')
+            .filter(|&e| e < me)
+            .unwrap_or_else(|| panic!("routes.rs: route `{path}`: unbalanced `{name}(`"));
+        if METHOD_ROUTERS.contains(&name.as_str()) {
+            let arg = text_of(orig, paren + 1, end);
+            let arg = arg.trim_end_matches(',').trim();
+            if arg.is_empty() || !arg.chars().all(|ch| is_ident(ch) || ch == ':') {
+                panic!(
+                    "routes.rs: route `{} {path}`: the handler argument `{arg}` is not a plain \
+                     path, so the inventory cannot check that its handler audits",
+                    name.to_uppercase()
+                );
+            }
+            if METHOD_ROUTERS[..4].contains(&name.as_str()) {
+                let segments: Vec<&str> = arg.split("::").collect();
+                let module = segments.iter().find_map(|s| match *s {
+                    "admin" => Some("admin"),
+                    "v1" => Some("v1"),
+                    "deploy" => Some("deploy"),
+                    _ => None,
+                });
+                let Some(module) = module else {
+                    panic!("routes.rs: cannot place mutating handler `{arg}` in admin/v1/deploy");
+                };
+                // `create_router` is nested under `/api`; the v1 table under `/api/v1`.
+                let full = match module {
+                    "v1" => format!("/api/v1{path}"),
+                    _ => format!("/api{path}"),
+                };
+                out.push(MutatingRoute {
+                    method: name.to_uppercase(),
+                    path: full,
+                    module,
+                    name: segments.last().expect("non-empty").to_string(),
+                });
+            }
+        } else if !first && (name == "layer" || name == "route_layer") {
+            // Middleware on this one route: no handler in it.
+        } else {
+            panic!(
+                "routes.rs: route `{path}`: unrecognised method router `{name}(` (the inventory \
+                 reads {METHOD_ROUTERS:?}, each with a plain-path handler)"
+            );
+        }
+        k = skip_ws(c, end + 1);
+        first = false;
+    }
+    if first {
+        panic!("routes.rs: route `{path}` has no method router");
+    }
+    out
+}
+
 /// Every POST / PUT / PATCH / DELETE registration in `create_router`'s admin
-/// route table and its `/v1` route table.
+/// route table and its `/v1` route table, read fail-closed: a shape the
+/// parser does not know panics with the route and its text instead of being
+/// skipped, so a registration can never go uncounted.
 fn mutating_routes(routes_src: &str) -> Vec<MutatingRoute> {
     let orig: Vec<char> = routes_src.chars().collect();
     let c = mask(routes_src);
@@ -616,78 +1366,78 @@ fn mutating_routes(routes_src: &str) -> Vec<MutatingRoute> {
             "api_key_auth_middleware",
         ),
     ];
+    let segments: Vec<(&str, usize, usize)> = tables
+        .iter()
+        .map(|&(start_marker, end_marker)| {
+            let start = find_seq(&c, start_marker, 0)
+                .unwrap_or_else(|| panic!("routes.rs: start marker `{start_marker}` not found"));
+            let end = find_seq(&c, end_marker, start)
+                .unwrap_or_else(|| panic!("routes.rs: end marker `{end_marker}` not found"));
+            (start_marker, start, end)
+        })
+        .collect();
+    // A `.merge(` or `.nest(` may only take a router written inline in the
+    // tables, whose routes this parse reads anyway.
+    let inline: Vec<String> = segments
+        .iter()
+        .flat_map(|&(_, s, e)| inline_routers(&c, s, e))
+        .collect();
+
     let mut out = Vec::new();
-    for (start_marker, end_marker) in tables {
-        let start = find_seq(&c, start_marker, 0)
-            .unwrap_or_else(|| panic!("routes.rs: start marker `{start_marker}` not found"));
-        let end = find_seq(&c, end_marker, start)
-            .unwrap_or_else(|| panic!("routes.rs: end marker `{end_marker}` not found"));
-        let seg = &c[start..end];
-        let mut i = 0;
-        while i < seg.len() {
-            let starts_ident = (seg[i].is_ascii_alphabetic() || seg[i] == '_')
-                && (i == 0 || !is_ident(seg[i - 1]));
-            if !starts_ident {
-                i += 1;
+    for &(table, start, end) in &segments {
+        // Argument lists read already: `.route(` (parsed) and `.layer(` /
+        // `.route_layer(` (middleware).
+        let mut covered: Vec<(usize, usize)> = Vec::new();
+        for (dot, name, open, close) in chained_calls(&c, start, end) {
+            if covered.iter().any(|&(s, e)| s < dot && dot < e) {
                 continue;
             }
-            let s = i;
-            while i < seg.len() && is_ident(seg[i]) {
-                i += 1;
+            match name.as_str() {
+                "route" => {
+                    out.extend(parse_route(&c, &orig, open, close));
+                    covered.push((open, close));
+                }
+                "layer" | "route_layer" => covered.push((open, close)),
+                "merge" | "nest" => {
+                    let router = split_args(&c, open, close)
+                        .last()
+                        .map(|&(s, e)| text_of(&orig, s, e))
+                        .unwrap_or_default();
+                    if !inline.contains(&router) {
+                        panic!(
+                            "routes.rs: `.{name}({})` in the table at `{table}` takes a router \
+                             the inventory cannot see: write its routes inline in the table, or \
+                             teach this parser to read it",
+                            text_of(&orig, open + 1, close)
+                        );
+                    }
+                }
+                other => panic!(
+                    "routes.rs: unrecognised router call `.{other}({})` in the table at `{table}`",
+                    text_of(&orig, open + 1, close)
+                ),
             }
-            let name: String = seg[s..i].iter().collect();
-            if !matches!(name.as_str(), "post" | "put" | "patch" | "delete") {
+        }
+        // A method router built anywhere but inside a `.route(`.
+        for at in start..end {
+            if !is_ident(c[at]) || (at > 0 && is_ident(c[at - 1])) {
                 continue;
             }
-            let open = skip_ws(seg, i);
-            if seg.get(open) != Some(&'(') {
+            let name = ident_at(&c, at);
+            if !METHOD_ROUTERS.contains(&name.as_str()) || char_before(&c, at) == Some('.') {
                 continue;
             }
-            let Some(close) = matching(seg, open, '(', ')') else {
-                continue;
-            };
-            let arg: String = seg[open + 1..close]
-                .iter()
-                .collect::<String>()
-                .split_whitespace()
-                .collect();
-            let arg = arg.trim_end_matches(',').to_string();
-            if arg.is_empty() || !arg.chars().all(|ch| is_ident(ch) || ch == ':') {
+            if c.get(skip_ws(&c, at + name.len())) != Some(&'(') {
                 continue;
             }
-            let segments: Vec<&str> = arg.split("::").collect();
-            let module = segments.iter().find_map(|s| match *s {
-                "admin" => Some("admin"),
-                "v1" => Some("v1"),
-                "deploy" => Some("deploy"),
-                _ => None,
-            });
-            let Some(module) = module else {
-                panic!("routes.rs: cannot place mutating handler `{arg}` in admin/v1/deploy");
-            };
-            // The route's path literal, from the unmasked text.
-            let abs = start + s;
-            let route_at = (0..abs)
-                .rev()
-                .find(|&k| c[k..].starts_with(&['.', 'r', 'o', 'u', 't', 'e', '(']));
-            let path = route_at
-                .and_then(|r| {
-                    let q1 = (r..orig.len()).find(|&k| orig[k] == '"')?;
-                    let q2 = (q1 + 1..orig.len()).find(|&k| orig[k] == '"')?;
-                    Some(orig[q1 + 1..q2].iter().collect::<String>())
-                })
-                .unwrap_or_default();
-            // `create_router` is nested under `/api`; the v1 table under `/api/v1`.
-            let path = match module {
-                "v1" => format!("/api/v1{path}"),
-                _ => format!("/api{path}"),
-            };
-            out.push(MutatingRoute {
-                method: name.to_uppercase(),
-                path,
-                module,
-                name: segments.last().expect("non-empty").to_string(),
-            });
+            if covered.iter().any(|&(s, e)| s < at && at < e) {
+                continue;
+            }
+            panic!(
+                "routes.rs: `{name}(..)` at line {} in the table at `{table}` builds a method \
+                 router outside a `.route(`: the inventory cannot place it",
+                line_of(&c, at)
+            );
         }
     }
     out
@@ -1183,6 +1933,45 @@ fn scanner_follows_a_function_that_audits_to_its_callers() {
                 .iter()
                 .any(|d| d.reason.contains("a function that writes an audit row")),
             "{label}: {:?}",
+            s.defects
+        );
+    }
+}
+
+#[test]
+fn scanner_allows_a_caller_in_assert_only_and_no_site_in_any_macro() {
+    let helper = format!("async fn audit_now(pool: &PgPool) {{\n    {CALL}.await;\n}}\n");
+    // A caller inside `assert!` (the cordis unit test's shape) passes.
+    let s = scan(
+        "fixture.rs",
+        &format!(
+            "{helper}async fn t(pool: PgPool) {{\n    assert!(audit_now(&pool).await == ());\n}}\n"
+        ),
+    );
+    assert!(s.defects.is_empty(), "{:?}", s.defects);
+    // An audit call site inside `assert!` does not.
+    let s = fixture(&format!("    assert!({CALL}.await == ());"));
+    assert!(
+        s.defects.iter().any(|d| d
+            .reason
+            .contains("inside the arguments of the macro `assert!`")),
+        "{:?}",
+        s.defects
+    );
+    // Nor does a caller inside a macro that borrows the name.
+    for shadow in [
+        "macro_rules! assert {\n    ($($t:tt)*) => { tokio::spawn(async move { $($t)* }) };\n}\n",
+        "use crate::detach as assert;\n",
+    ] {
+        let s = scan(
+            "fixture.rs",
+            &format!("{shadow}{helper}async fn t(pool: PgPool) {{\n    assert!(audit_now(&pool).await);\n}}\n"),
+        );
+        assert!(
+            s.defects
+                .iter()
+                .any(|d| d.reason.contains("borrow the scan's allowance")),
+            "{shadow}: {:?}",
             s.defects
         );
     }

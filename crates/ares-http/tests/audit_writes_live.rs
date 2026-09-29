@@ -711,8 +711,8 @@ async fn audit_row_lands_before_response_v1_key_rotate() {
 /// that raises on the UPDATE of this one key's row (`revoke_api_key` is
 /// `UPDATE api_keys SET is_active = 0 WHERE id = $1 AND tenant_id = $2`). It
 /// touches no product code, and its `WHEN` clause names this test's own key id
-/// so no other test in the binary is affected; it is dropped before any
-/// assertion.
+/// so no other test in the binary is affected; the trigger and its function
+/// are dropped before any assertion.
 #[tokio::test]
 async fn rotate_audits_the_mint_when_the_revoke_fails() {
     let Some((ctx, pool)) = live_ctx().await else {
@@ -764,6 +764,10 @@ async fn rotate_audits_the_mint_when_the_revoke_fails() {
         .execute(&pool)
         .await
         .expect("drop trigger");
+    sqlx::query("DROP FUNCTION IF EXISTS t1116_fail_revoke()")
+        .execute(&pool)
+        .await
+        .expect("drop trigger function");
 
     // The handler's status for a failed revoke is today's: the database
     // error from `revoke_api_key`, mapped to 500. The audit ordering must not
@@ -882,7 +886,13 @@ fn assert_moved_live_but_not_saved(
     );
     let current = ctx.get::<cordis::CurrentEntries>().expect("CurrentEntries");
     assert!(
-        current.tree.lock().unwrap().0.iter().any(|e| e.id == new_id),
+        current
+            .tree
+            .lock()
+            .unwrap()
+            .0
+            .iter()
+            .any(|e| e.id == new_id),
         "the live tree holds the moved entry {new_id}"
     );
     let file_after =
@@ -987,7 +997,10 @@ async fn cordis_patch_audits_the_live_move_when_the_save_fails() {
     );
 }
 
-fn provision_request(name: &str, provider: Option<ProvisionProviderSpec>) -> ProvisionClientRequest {
+fn provision_request(
+    name: &str,
+    provider: Option<ProvisionProviderSpec>,
+) -> ProvisionClientRequest {
     ProvisionClientRequest {
         name: name.to_string(),
         tier: "free".to_string(),

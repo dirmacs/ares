@@ -523,6 +523,28 @@ fn normalize_entry_config(mut entry: cordis::loader::Entry) -> cordis::loader::E
     entry
 }
 
+/// The `details` of a `patch_cordis_entry` audit row: which fields the patch
+/// carried (never their values: `config` can hold credentials) and, after a
+/// move, the entry's previous id.
+fn patch_audit_details(update: &cordis::loader::EntryUpdate, id: &str, final_id: &str) -> String {
+    let fields: Vec<&str> = [
+        ("config", update.config.is_some()),
+        ("disabled", update.disabled.is_some()),
+        ("isolate", update.isolate.is_some()),
+        ("intercept", update.intercept.is_some()),
+        ("parent", update.parent.is_some()),
+        ("position", update.position.is_some()),
+    ]
+    .into_iter()
+    .filter_map(|(name, present)| present.then_some(name))
+    .collect();
+    serde_json::json!({
+        "fields": fields,
+        "previous_id": (final_id != id).then_some(id),
+    })
+    .to_string()
+}
+
 /// Load the entries file as the desired tree for a mutation. A missing file
 /// starts from an empty tree; an existing but unparsable file is a hard 422.
 fn load_desired_tree(
@@ -986,14 +1008,9 @@ pub async fn move_cordis_entry(
         }
     };
 
-    tree.0 = tree.0.drain(..).map(normalize_entry_config).collect();
-    if let Err(e) = tree.save_to_toml_file(&path) {
-        return Ok((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "applied": [], "error": e.to_string() })),
-        ));
-    }
-    // The durable write of the program file is the audited event.
+    // The move has already changed live state (journal records re-keyed,
+    // fibers relabelled, the shared `CurrentEntries` tree), and the file save
+    // below can still fail with a 500: audit the move now, before the save.
     if let Some(pool) = audit_pool(&ctx, "move_cordis_entry") {
         let details = serde_json::json!({
             "parent": &parent,
@@ -1011,6 +1028,14 @@ pub async fn move_cordis_entry(
             actor.audit_actor(),
         )
         .await;
+    }
+
+    tree.0 = tree.0.drain(..).map(normalize_entry_config).collect();
+    if let Err(e) = tree.save_to_toml_file(&path) {
+        return Ok((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "applied": [], "error": e.to_string() })),
+        ));
     }
 
     match apply_entries_from_disk(&ctx).await {
@@ -1077,6 +1102,7 @@ pub async fn patch_cordis_entry(
     // MOVE phase: a present `parent`/`position` field relocates the entry —
     // renaming the subtree namespace — BEFORE any field updates land.
     let mut renamed: Vec<(String, String)> = Vec::new();
+    let mut moved = false;
     if update.parent.is_some() || update.position.is_some() {
         let current_parent = tree
             .0
@@ -1103,7 +1129,10 @@ pub async fn patch_cordis_entry(
         )
         .await
         {
-            Ok(outcome) => renamed = outcome.renamed,
+            Ok(outcome) => {
+                renamed = outcome.renamed;
+                moved = true;
+            }
             Err(e) => {
                 return Ok((
                     StatusCode::CONFLICT,
@@ -1119,6 +1148,27 @@ pub async fn patch_cordis_entry(
         .last()
         .map(|(_, new)| new.clone())
         .unwrap_or_else(|| id.clone());
+
+    // A move has already changed live state (journal records re-keyed, fibers
+    // relabelled, the shared `CurrentEntries` tree), and the save below can
+    // still fail with a 500: audit the patch now, before anything else. The
+    // row names which fields the patch carried, never their values (`config`
+    // can hold credentials).
+    if moved {
+        if let Some(pool) = audit_pool(&ctx, "patch_cordis_entry") {
+            let details = patch_audit_details(&update, &id, &final_id);
+            audit_log::record(
+                &pool,
+                "patch_cordis_entry",
+                "cordis_entry",
+                &final_id,
+                Some(&details),
+                actor.ip(),
+                actor.audit_actor(),
+            )
+            .await;
+        }
+    }
 
     let Some(entry) = tree.0.iter_mut().find(|e| e.id == final_id) else {
         return Ok((
@@ -1137,36 +1187,22 @@ pub async fn patch_cordis_entry(
             Json(serde_json::json!({ "applied": [], "error": e.to_string() })),
         ));
     }
-    // The durable write of the program file is the audited event. The row
-    // names which fields the patch carried, never their values (`config` can
-    // hold credentials).
-    if let Some(pool) = audit_pool(&ctx, "patch_cordis_entry") {
-        let fields: Vec<&str> = [
-            ("config", update.config.is_some()),
-            ("disabled", update.disabled.is_some()),
-            ("isolate", update.isolate.is_some()),
-            ("intercept", update.intercept.is_some()),
-            ("parent", update.parent.is_some()),
-            ("position", update.position.is_some()),
-        ]
-        .into_iter()
-        .filter_map(|(name, present)| present.then_some(name))
-        .collect();
-        let details = serde_json::json!({
-            "fields": fields,
-            "previous_id": (final_id != id).then_some(&id),
-        })
-        .to_string();
-        audit_log::record(
-            &pool,
-            "patch_cordis_entry",
-            "cordis_entry",
-            &final_id,
-            Some(&details),
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
+    // Without a move, the durable write of the program file is the first
+    // change and the audited event; with one, the row was written above.
+    if !moved {
+        if let Some(pool) = audit_pool(&ctx, "patch_cordis_entry") {
+            let details = patch_audit_details(&update, &id, &final_id);
+            audit_log::record(
+                &pool,
+                "patch_cordis_entry",
+                "cordis_entry",
+                &final_id,
+                Some(&details),
+                actor.ip(),
+                actor.audit_actor(),
+            )
+            .await;
+        }
     }
 
     // Structured issues below describe THIS apply only: drop any record an

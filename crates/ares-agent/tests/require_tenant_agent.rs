@@ -482,7 +482,8 @@ async fn required_tenant_agent_refuses_with_empty_user_id() {
 
 /// Production installs the event bus, so `Execute::run` goes through the `agent.run`
 /// waterfall, which round-trips the error through a slot. The typed variant must survive.
-#[tokio::test]
+/// `multi_thread`: with the event bus installed, `Tools` blocks in place.
+#[tokio::test(flavor = "multi_thread")]
 async fn required_tenant_agent_refusal_keeps_its_variant_through_the_run_waterfall() {
     let f = Fixture::with_events(Missing::Registry).await;
     let err = f.run_refused(&request(true)).await;

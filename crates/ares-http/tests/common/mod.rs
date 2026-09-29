@@ -36,15 +36,23 @@ pub async fn reachable(url: &str) -> bool {
     }
 }
 
+/// What the gate decided.
+pub enum Gate {
+    /// The database is reachable: run the test against this URL.
+    Run(String),
+    /// Unconfigured and nothing reachable: skip, for this reason (no URL in it).
+    Skip(String),
+}
+
 /// The gate itself, with the two inputs made explicit so it can be tested
-/// without touching the process environment.
+/// without touching the process environment. Prints nothing.
 ///
-/// `Some(url)` when the database is reachable. Unreachable and `configured`:
-/// panics, naming [`DB_ENV`] only. Unreachable and not configured: prints
-/// `SKIPPED` (no URL) and returns `None`.
-pub async fn resolve(test: &str, configured: bool, url: String) -> Option<String> {
+/// [`Gate::Run`] when the database is reachable. Unreachable and `configured`:
+/// panics, naming [`DB_ENV`] only. Unreachable and not configured:
+/// [`Gate::Skip`].
+pub async fn gate(test: &str, configured: bool, url: String) -> Gate {
     if reachable(&url).await {
-        return Some(url);
+        return Gate::Run(url);
     }
     if configured {
         panic!(
@@ -52,11 +60,21 @@ pub async fn resolve(test: &str, configured: bool, url: String) -> Option<String
              within 5 s). A configured run never skips: fix the variable or the database."
         );
     }
-    eprintln!(
-        "SKIPPED {test}: no test database reachable ({DB_ENV} is unset; checked DATABASE_URL and \
-         the unix-socket fallback)"
-    );
-    None
+    Gate::Skip(format!(
+        "{test}: no test database reachable ({DB_ENV} is unset; checked DATABASE_URL and the \
+         unix-socket fallback)"
+    ))
+}
+
+/// [`gate`], with the unconfigured skip printed as `SKIPPED ..` (no URL).
+pub async fn resolve(test: &str, configured: bool, url: String) -> Option<String> {
+    match gate(test, configured, url).await {
+        Gate::Run(url) => Some(url),
+        Gate::Skip(reason) => {
+            eprintln!("SKIPPED {reason}");
+            None
+        }
+    }
 }
 
 /// The URL of the live test database, or `None` for the unconfigured skip.

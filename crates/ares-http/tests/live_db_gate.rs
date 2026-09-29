@@ -47,10 +47,17 @@ fn configured_run_with_an_unreachable_database_panics_naming_the_variable_only()
 
 #[test]
 fn unconfigured_run_with_an_unreachable_database_skips_without_panicking() {
-    let got = run(common::resolve(
-        "gate_probe",
-        false,
-        UNREACHABLE.to_string(),
-    ));
-    assert!(got.is_none(), "an unconfigured run skips");
+    // `gate`, not `resolve`: the skip is returned, not printed, so no SKIPPED
+    // line appears in this binary's output.
+    let got = run(common::gate("gate_probe", false, UNREACHABLE.to_string()));
+    let common::Gate::Skip(reason) = got else {
+        panic!("an unconfigured run with no database must skip");
+    };
+    assert!(reason.contains(common::DB_ENV), "{reason}");
+    for leak in ["sentinel-user", "sentinel-db", "127.0.0.1", "postgres://"] {
+        assert!(
+            !reason.contains(leak),
+            "the skip reason must not echo any part of the URL ({leak:?}): {reason}"
+        );
+    }
 }

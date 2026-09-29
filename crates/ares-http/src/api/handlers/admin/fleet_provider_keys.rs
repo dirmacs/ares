@@ -68,13 +68,8 @@ pub async fn upsert_fleet_provider(
         )
         .await?;
 
-    // Reload + atomically swap the in-memory map. The store gives us the
-    // encrypted form; we need the decrypted form for the in-memory cache.
-    let map = store.load_all(master.as_ref()).await?;
-    ctx.get::<ares_store::FleetSecrets>()
-        .expect("not provided")
-        .store(map);
-
+    // The upsert is the write. The reload of the in-memory map below can still
+    // fail with the row already stored, so the row is audited first.
     // Audit log — redact the raw key, only emit the boolean + last-4.
     let details = serde_json::json!({
         "api_key_set": stored.has_api_key,
@@ -100,6 +95,13 @@ pub async fn upsert_fleet_provider(
         actor.audit_actor(),
     )
     .await;
+
+    // Reload + atomically swap the in-memory map. The store gives us the
+    // encrypted form; we need the decrypted form for the in-memory cache.
+    let map = store.load_all(master.as_ref()).await?;
+    ctx.get::<ares_store::FleetSecrets>()
+        .expect("not provided")
+        .store(map);
 
     Ok(Json(serde_json::json!({
         "name": provider_name,
@@ -133,13 +135,8 @@ pub async fn delete_fleet_provider(
         ))));
     }
 
-    // Reload + atomically swap the in-memory map.
-    let master = MasterKey::from_env();
-    let map = store.load_all(master.as_ref()).await?;
-    ctx.get::<ares_store::FleetSecrets>()
-        .expect("not provided")
-        .store(map);
-
+    // The delete is the write. The reload of the in-memory map below can still
+    // fail with the row already gone, so the delete is audited first.
     let pool = ctx
         .get::<ares_store::TenantDb>()
         .expect("not provided")
@@ -156,6 +153,13 @@ pub async fn delete_fleet_provider(
         actor.audit_actor(),
     )
     .await;
+
+    // Reload + atomically swap the in-memory map.
+    let master = MasterKey::from_env();
+    let map = store.load_all(master.as_ref()).await?;
+    ctx.get::<ares_store::FleetSecrets>()
+        .expect("not provided")
+        .store(map);
 
     Ok(Json(serde_json::json!({
         "name": provider_name,

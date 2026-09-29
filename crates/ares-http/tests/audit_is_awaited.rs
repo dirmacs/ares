@@ -25,8 +25,7 @@
 //!    turns this red.
 //!
 //! Base `1fa9d9c` had 54 `log_admin_action(` sites in `ares-http`, every one
-//! of the form `tokio::spawn(async move { let _ = log_admin_action(..).await; })`
-//! (an earlier note here said 56: that was a miscount).
+//! of the form `tokio::spawn(async move { let _ = log_admin_action(..).await; })`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

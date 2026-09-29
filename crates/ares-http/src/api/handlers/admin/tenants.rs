@@ -266,6 +266,27 @@ pub async fn provision_client(
         .pool()
         .clone();
 
+    // The tenant exists from here on, and every later step can still fail
+    // with `?` (the provider spec's validation, the key mint): audit its
+    // creation now. The `provision_client` row at the end follows only a
+    // provisioning that completed.
+    let created = serde_json::json!({
+        "via": "provision_client",
+        "product_type": &product_type,
+        "tier": tenant.tier.as_str(),
+    })
+    .to_string();
+    audit_log::record(
+        &pool,
+        "create_tenant",
+        "tenant",
+        &tenant.id,
+        Some(&created),
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
+
     let agents = clone_templates_for_tenant(&pool, &tenant.id, &product_type).await?;
 
     // Row 34: a provisioned tenant must be runnable without a second pass.

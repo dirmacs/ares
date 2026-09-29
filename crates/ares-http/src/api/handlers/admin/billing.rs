@@ -299,6 +299,7 @@ pub async fn get_tenant_budget(
 /// Set (upsert) a tenant budget.
 pub async fn set_tenant_budget(
     State(ctx): State<Arc<Context>>,
+    _actor: AdminActor,
     Path(tenant_id): Path<String>,
     Json(mut req): Json<SetTenantBudgetRequest>,
 ) -> Result<Json<TenantBudget>> {
@@ -316,6 +317,7 @@ pub async fn set_tenant_budget(
 /// Delete a tenant budget.
 pub async fn delete_tenant_budget(
     State(ctx): State<Arc<Context>>,
+    _actor: AdminActor,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let __pool_13 = ctx
@@ -352,6 +354,7 @@ pub async fn get_token_budget(
 /// Set the enforced token budget for a tenant.
 pub async fn set_token_budget(
     State(ctx): State<Arc<Context>>,
+    _actor: AdminActor,
     Path(tenant_id): Path<String>,
     Json(req): Json<SetTokenBudgetRequest>,
 ) -> Result<Json<TokenBudget>> {
@@ -385,6 +388,7 @@ pub async fn get_token_budget_status(
 /// Reset the current enforced token-budget period for a tenant.
 pub async fn reset_token_budget_period(
     State(ctx): State<Arc<Context>>,
+    _actor: AdminActor,
     Path(tenant_id): Path<String>,
 ) -> Result<Json<BudgetStatus>> {
     let __pool_17 = ctx
@@ -434,6 +438,7 @@ pub async fn list_budget_alerts(
 /// Acknowledge a budget alert.
 pub async fn acknowledge_budget_alert(
     State(ctx): State<Arc<Context>>,
+    _actor: AdminActor,
     Path(id): Path<String>,
     Json(req): Json<AcknowledgeBudgetAlertRequest>,
 ) -> Result<Json<BudgetAlert>> {

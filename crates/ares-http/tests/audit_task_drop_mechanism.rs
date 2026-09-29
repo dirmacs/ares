@@ -18,24 +18,7 @@
 
 #![cfg(feature = "postgres")]
 
-use std::time::Duration;
-
-async fn db_reachable(url: &str) -> bool {
-    match tokio::time::timeout(
-        Duration::from_secs(5),
-        sqlx::postgres::PgPoolOptions::new()
-            .max_connections(1)
-            .connect(url),
-    )
-    .await
-    {
-        Ok(Ok(pool)) => {
-            pool.close().await;
-            true
-        }
-        _ => false,
-    }
-}
+mod common;
 
 /// Spawns a task in the *old* shape (detached, discarded `JoinHandle`,
 /// discarded inner `Result`) that inserts one row, then returns immediately
@@ -56,9 +39,10 @@ async fn spawn_and_discard_like_the_old_code(pool: sqlx::PgPool, marker: String)
 
 #[tokio::test]
 async fn task_dropped_at_runtime_teardown_loses_the_pending_insert() {
-    let url = ares_test_support::test_db_url();
-    if !db_reachable(&url).await {
-        eprintln!("SKIPPED: test database unreachable ({url})");
+    if common::live_db_url(&common::current_test_name())
+        .await
+        .is_none()
+    {
         return;
     }
     let pool = ares_test_support::pool().await;

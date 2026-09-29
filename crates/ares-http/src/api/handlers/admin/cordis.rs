@@ -523,10 +523,17 @@ fn normalize_entry_config(mut entry: cordis::loader::Entry) -> cordis::loader::E
     entry
 }
 
-/// The `details` of a `patch_cordis_entry` audit row: which fields the patch
-/// carried (never their values: `config` can hold credentials) and, after a
-/// move, the entry's previous id.
-fn patch_audit_details(update: &cordis::loader::EntryUpdate, id: &str, final_id: &str) -> String {
+/// The `details` of a `patch_cordis_entry` audit row, a row that names
+/// `audited_id`: which fields the patch carried (never their values: `config`
+/// can hold credentials), the entry's previous id `id` after a move, and
+/// `fields_applied_to` when the fields were applied to another entry
+/// (`applied_to`) than the one the row names.
+fn patch_audit_details(
+    update: &cordis::loader::EntryUpdate,
+    id: &str,
+    audited_id: &str,
+    applied_to: &str,
+) -> String {
     let fields: Vec<&str> = [
         ("config", update.config.is_some()),
         ("disabled", update.disabled.is_some()),
@@ -538,11 +545,14 @@ fn patch_audit_details(update: &cordis::loader::EntryUpdate, id: &str, final_id:
     .into_iter()
     .filter_map(|(name, present)| present.then_some(name))
     .collect();
-    serde_json::json!({
+    let mut details = serde_json::json!({
         "fields": fields,
-        "previous_id": (final_id != id).then_some(id),
-    })
-    .to_string()
+        "previous_id": (audited_id != id).then_some(id),
+    });
+    if applied_to != audited_id {
+        details["fields_applied_to"] = serde_json::json!(applied_to);
+    }
+    details.to_string()
 }
 
 /// Load the entries file as the desired tree for a mutation. A missing file
@@ -1144,8 +1154,19 @@ pub async fn patch_cordis_entry(
             }
         }
     }
+    // Where the field updates below are applied: the LAST id `renamed` lists,
+    // which is a descendant when the moved entry has children. That is the
+    // separate `cordis-move-fix` item's; the audit row does not follow it.
     let final_id = renamed
         .last()
+        .map(|(_, new)| new.clone())
+        .unwrap_or_else(|| id.clone());
+    // The entry the request addressed, under its new id after a move:
+    // `Loader::move_entry` lists the moved entry first, then its descendants.
+    // The audit row names this entry, and says in `details` where the fields
+    // were applied when that is another entry.
+    let audited_id = renamed
+        .first()
         .map(|(_, new)| new.clone())
         .unwrap_or_else(|| id.clone());
 
@@ -1156,12 +1177,12 @@ pub async fn patch_cordis_entry(
     // can hold credentials).
     if moved {
         if let Some(pool) = audit_pool(&ctx, "patch_cordis_entry") {
-            let details = patch_audit_details(&update, &id, &final_id);
+            let details = patch_audit_details(&update, &id, &audited_id, &final_id);
             audit_log::record(
                 &pool,
                 "patch_cordis_entry",
                 "cordis_entry",
-                &final_id,
+                &audited_id,
                 Some(&details),
                 actor.ip(),
                 actor.audit_actor(),
@@ -1191,12 +1212,12 @@ pub async fn patch_cordis_entry(
     // change and the audited event; with one, the row was written above.
     if !moved {
         if let Some(pool) = audit_pool(&ctx, "patch_cordis_entry") {
-            let details = patch_audit_details(&update, &id, &final_id);
+            let details = patch_audit_details(&update, &id, &audited_id, &final_id);
             audit_log::record(
                 &pool,
                 "patch_cordis_entry",
                 "cordis_entry",
-                &final_id,
+                &audited_id,
                 Some(&details),
                 actor.ip(),
                 actor.audit_actor(),

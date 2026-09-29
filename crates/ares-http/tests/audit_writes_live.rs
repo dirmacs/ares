@@ -29,12 +29,15 @@ use ares_http::api::handlers::admin::billing::set_token_budget;
 use ares_http::api::handlers::admin::cordis::{
     move_cordis_entry, patch_cordis_entry, provide_cordis_service,
 };
+use ares_http::api::handlers::admin::fleet_provider_keys::{
+    delete_fleet_provider, upsert_fleet_provider,
+};
 use ares_http::api::handlers::admin::providers::{
     delete_runtime_provider, upsert_runtime_provider,
 };
 use ares_http::api::handlers::admin::shared::{
-    CreateRuntimeProviderRequest, ProvisionClientRequest, ProvisionProviderSpec,
-    RuntimeProviderScopeQuery, SetTokenBudgetRequest,
+    CreateRuntimeProviderRequest, FleetProviderUpsertRequest, ProvisionClientRequest,
+    ProvisionProviderSpec, RuntimeProviderScopeQuery, SetTokenBudgetRequest,
 };
 use ares_http::api::handlers::admin::tenants::provision_client;
 use ares_http::api::handlers::admin::{update_tenant_agent_handler, AdminActor};
@@ -1107,4 +1110,425 @@ async fn provision_client_audits_the_tenant_then_the_provisioning() {
         assert_eq!(row.resource_type, "tenant");
         assert_eq!(row.actor.as_deref(), Some("audit-test-admin"));
     }
+}
+
+// ---------------------------------------------------------------------------
+// 1.16-FIX-3: the cordis PATCH row names the entry the request moved, and the
+// runtime- and fleet-provider handlers audit their write before the registry
+// reload that can still fail.
+// ---------------------------------------------------------------------------
+
+/// A temp cordis program directory, removed on drop even when an assertion
+/// fails first.
+struct TempEntriesDir(std::path::PathBuf);
+
+impl Drop for TempEntriesDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// `PATCH` of `grp` with `parent: top` moves `grp` and its child `grp:svc` to
+/// `top:grp` and `top:grp:svc`. `Loader::move_entry` lists the moved entry
+/// first and its descendants after it; the audit row must name the moved
+/// entry, under its new id, and not the last descendant. Where the patch's
+/// other fields land is the separate `cordis-move-fix` item's, so this test
+/// pins only the row's target.
+#[tokio::test]
+async fn cordis_patch_audit_row_names_the_moved_entry_not_its_last_child() {
+    let Some((ctx, pool)) = live_ctx().await else {
+        return;
+    };
+    let top = format!("top{}", uuid::Uuid::new_v4().simple());
+    let grp = format!("grp{}", uuid::Uuid::new_v4().simple());
+    let child = format!("{grp}:svc");
+    ctx.provide(cordis::ReflectService::new());
+    let journal = cordis::LoaderJournal::provide_new(&ctx);
+    ctx.provide(cordis::RegistryService::new());
+    let dir = TempEntriesDir(std::env::temp_dir().join(unique("t1116-cordis-entries")));
+    std::fs::create_dir_all(&dir.0).expect("temp entries dir");
+    let path = dir.0.join("cordis-entries.toml");
+    std::fs::write(
+        &path,
+        format!(
+            "[[entry]]\nid = \"{top}\"\nplugin = \"GroupMarker\"\ndisabled = false\n\n\
+             [entry.config]\n\n[[entry]]\nid = \"{grp}\"\nplugin = \"GroupMarker\"\n\
+             disabled = false\n\n[entry.config]\n\n[[entry]]\nid = \"{child}\"\n\
+             plugin = \"CalculatorService\"\ndisabled = false\n\n[entry.config]\n"
+        ),
+    )
+    .expect("seed entries file");
+    let tree = cordis::loader::Loader::load_from_file(&path).expect("parse the seeded entries");
+    ctx.provide_arc(Arc::new(cordis::CurrentEntries {
+        tree: Arc::new(Mutex::new(tree)),
+        path,
+    }));
+    journal.upsert(&child, "CalculatorService", serde_json::json!({}), None);
+
+    let (status, Json(body)) = patch_cordis_entry(
+        State(ctx.clone()),
+        admin_actor(),
+        Path(grp.clone()),
+        Json(cordis::loader::EntryUpdate {
+            parent: Some(Some(top.clone())),
+            disabled: Some(true),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("patch_cordis_entry response");
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Right after the response, no sleep: one row for the request, under the
+    // moved entry's new id, naming its previous id.
+    let moved = format!("{top}:{grp}");
+    let rows = rows_for_resource(&pool, &moved).await;
+    assert_eq!(
+        rows.len(),
+        1,
+        "expected exactly one audit row under the moved entry {moved}, got {rows:?}"
+    );
+    assert_eq!(rows[0].action, "patch_cordis_entry");
+    assert_eq!(rows[0].resource_type, "cordis_entry");
+    assert_eq!(rows[0].actor.as_deref(), Some("audit-test-admin"));
+    let details: serde_json::Value =
+        serde_json::from_str(rows[0].details.as_deref().expect("details")).expect("json details");
+    assert_eq!(details["previous_id"], serde_json::json!(grp));
+    // ... and none under any other id the move touched.
+    for other in [grp.clone(), child.clone(), format!("{top}:{child}")] {
+        let stray = rows_for_resource(&pool, &other).await;
+        assert!(
+            stray.is_empty(),
+            "no row for this request under {other}, got {stray:?}"
+        );
+    }
+}
+
+/// A root `Context` whose `TenantDb` runs on a one-connection pool, so every
+/// statement a handler makes runs in one Postgres session. The caller has
+/// already run the binary's migrations (`ares_test_support::pool`).
+async fn one_connection_ctx(url: &str) -> (Arc<Context>, PgPool) {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(url)
+        .await
+        .expect("connect one-connection pool");
+    let ctx = Context::new_root();
+    ctx.provide_arc(Arc::new(TenantDb::new(Arc::new(
+        ares_store::PostgresClient { pool: pool.clone() },
+    ))));
+    (ctx, pool)
+}
+
+/// A temp table named after the trigger's table with none of its columns: a
+/// `SELECT` of named columns from it fails.
+const SHADOW_NO_COLUMNS: &str =
+    "EXECUTE format('CREATE TEMP TABLE IF NOT EXISTS %I (id int)', TG_TABLE_NAME);";
+
+/// For the fleet upsert, whose write ends by re-reading its own row
+/// (`FleetProviderSecretsStore::upsert` calls `fetch_stored`): a temp copy of
+/// the written row, which that re-read may see, and one row with a NULL
+/// `provider_name`, which the reload's `load_all` cannot decode.
+const SHADOW_COPY_AND_NULL_ROW: &str = "EXECUTE format('CREATE TEMP TABLE %I AS SELECT * FROM \
+     %I.%I WHERE provider_name = %L', TG_TABLE_NAME, TG_TABLE_SCHEMA, TG_TABLE_NAME, \
+     NEW.provider_name); EXECUTE format('INSERT INTO pg_temp.%I (provider_name) VALUES (NULL)', \
+     TG_TABLE_NAME);";
+
+/// Makes an admin handler's registry reload fail after its write, in the
+/// scratch database only and without touching product code. A row trigger on
+/// `table`, limited to this test's own row by `when`, runs `shadow`, which
+/// creates a session-local temp table named `table`. The handler runs on a
+/// one-connection pool, so from its write on that temp table shadows the real
+/// one for every statement the handler has not run before in the session, and
+/// the reload's `SELECT` fails. Other sessions, other rows and the real table
+/// are untouched. The trigger and its function are dropped by
+/// [`ReloadFault::remove`] before any assertion; the temp table goes with the
+/// one-connection pool.
+struct ReloadFault {
+    shared: PgPool,
+    table: &'static str,
+    trigger: String,
+    function: String,
+}
+
+impl ReloadFault {
+    async fn install(
+        shared: &PgPool,
+        table: &'static str,
+        event: &str,
+        when: &str,
+        shadow: &str,
+    ) -> Self {
+        let tag = uuid::Uuid::new_v4().simple().to_string();
+        let function = format!("t1116_shadow_fn_{tag}");
+        let trigger = format!("t1116_shadow_{tag}");
+        sqlx::query(&format!(
+            "CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS \
+             $$ BEGIN {shadow} RETURN NULL; END $$"
+        ))
+        .execute(shared)
+        .await
+        .expect("create the shadow function in the scratch database");
+        sqlx::query(&format!(
+            "CREATE TRIGGER {trigger} AFTER {event} ON {table} FOR EACH ROW \
+             WHEN ({when}) EXECUTE FUNCTION {function}()"
+        ))
+        .execute(shared)
+        .await
+        .expect("create the shadow trigger in the scratch database");
+        ReloadFault {
+            shared: shared.clone(),
+            table,
+            trigger,
+            function,
+        }
+    }
+
+    async fn remove(self) {
+        sqlx::query(&format!(
+            "DROP TRIGGER IF EXISTS {} ON {}",
+            self.trigger, self.table
+        ))
+        .execute(&self.shared)
+        .await
+        .expect("drop the shadow trigger");
+        sqlx::query(&format!("DROP FUNCTION IF EXISTS {}()", self.function))
+            .execute(&self.shared)
+            .await
+            .expect("drop the shadow function");
+    }
+}
+
+/// The response today's handlers give when the reload fails: the store's
+/// database error, mapped to 500.
+fn assert_reload_failure(result: Result<impl std::fmt::Debug, ares_http::HttpError>) {
+    let err = result.expect_err("the reload was forced to fail, so the handler fails");
+    assert!(
+        matches!(&err.0, AppError::Database(_)),
+        "unexpected error: {err:?}"
+    );
+    assert_eq!(
+        err.into_response().status(),
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+}
+
+/// Exactly one audit row for `resource_id`, with this action and type and the
+/// admin as its actor.
+async fn assert_one_row(pool: &PgPool, resource_id: &str, action: &str, resource_type: &str) {
+    let rows = rows_for_resource(pool, resource_id).await;
+    assert_eq!(
+        rows.len(),
+        1,
+        "the write must have exactly one audit row even though the reload after it failed, \
+         got {rows:?}"
+    );
+    assert_eq!(rows[0].action, action);
+    assert_eq!(rows[0].resource_type, resource_type);
+    assert_eq!(rows[0].actor.as_deref(), Some("audit-test-admin"));
+}
+
+fn runtime_provider_request(name: &str) -> CreateRuntimeProviderRequest {
+    CreateRuntimeProviderRequest {
+        tenant_id: None,
+        name: name.to_string(),
+        display_name: "Audit Test Provider".to_string(),
+        provider_type: "openai-compatible".to_string(),
+        api_base: "https://example.test/v1".to_string(),
+        auth_type: "api_key".to_string(),
+        default_model: None,
+        headers: None,
+        request_transform: None,
+        response_transform: None,
+        enabled: Some(true),
+    }
+}
+
+#[tokio::test]
+async fn runtime_provider_upsert_audits_the_write_when_the_reload_fails() {
+    let Some(url) = common::live_db_url(&common::current_test_name()).await else {
+        return;
+    };
+    let shared = ares_test_support::pool().await;
+    let (ctx, handler_pool) = one_connection_ctx(&url).await;
+    let name = unique("audit-test-provider-reload");
+    let fault = ReloadFault::install(
+        &shared,
+        "runtime_providers",
+        "INSERT OR UPDATE",
+        &format!("NEW.name = '{name}'"),
+        SHADOW_NO_COLUMNS,
+    )
+    .await;
+
+    let result = upsert_runtime_provider(
+        State(ctx.clone()),
+        admin_actor(),
+        Json(runtime_provider_request(&name)),
+    )
+    .await;
+    fault.remove().await;
+    handler_pool.close().await;
+
+    assert_reload_failure(result);
+    let store = ares_store::runtime_providers::RuntimeProviderStore::new(&shared);
+    assert!(
+        store
+            .get_scoped(None, &name)
+            .await
+            .expect("provider lookup")
+            .is_some(),
+        "the upsert was written before the reload failed"
+    );
+    assert_one_row(
+        &shared,
+        &name,
+        "create_runtime_provider",
+        "runtime_provider",
+    )
+    .await;
+    let _ = store.delete_scoped(None, &name).await;
+}
+
+#[tokio::test]
+async fn runtime_provider_delete_audits_the_write_when_the_reload_fails() {
+    let Some(url) = common::live_db_url(&common::current_test_name()).await else {
+        return;
+    };
+    let shared = ares_test_support::pool().await;
+    let (ctx, handler_pool) = one_connection_ctx(&url).await;
+    let name = unique("audit-test-provider-reload-del");
+    let store = ares_store::runtime_providers::RuntimeProviderStore::new(&shared);
+    store
+        .upsert(&runtime_provider_request(&name))
+        .await
+        .expect("seed provider directly");
+    let fault = ReloadFault::install(
+        &shared,
+        "runtime_providers",
+        "DELETE",
+        &format!("OLD.name = '{name}'"),
+        SHADOW_NO_COLUMNS,
+    )
+    .await;
+
+    let result = delete_runtime_provider(
+        State(ctx.clone()),
+        admin_actor(),
+        Path(name.clone()),
+        Query(RuntimeProviderScopeQuery { tenant_id: None }),
+    )
+    .await;
+    fault.remove().await;
+    handler_pool.close().await;
+
+    assert_reload_failure(result);
+    assert!(
+        store
+            .get_scoped(None, &name)
+            .await
+            .expect("provider lookup")
+            .is_none(),
+        "the delete was written before the reload failed"
+    );
+    assert_one_row(
+        &shared,
+        &name,
+        "delete_runtime_provider",
+        "runtime_provider",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn fleet_provider_upsert_audits_the_write_when_the_reload_fails() {
+    let Some(url) = common::live_db_url(&common::current_test_name()).await else {
+        return;
+    };
+    let shared = ares_test_support::pool().await;
+    let (ctx, handler_pool) = one_connection_ctx(&url).await;
+    let name = unique("audit-test-fleet-reload");
+    let fault = ReloadFault::install(
+        &shared,
+        "fleet_provider_secrets",
+        "INSERT OR UPDATE",
+        &format!("NEW.provider_name = '{name}'"),
+        SHADOW_COPY_AND_NULL_ROW,
+    )
+    .await;
+
+    // No `api_key`: nothing to encrypt, so the handler needs no master key.
+    let result = upsert_fleet_provider(
+        State(ctx.clone()),
+        Path(name.clone()),
+        admin_actor(),
+        Json(FleetProviderUpsertRequest {
+            api_key: None,
+            api_base: Some("https://example.test/v1".to_string()),
+            default_model: None,
+            fallback_providers: None,
+        }),
+    )
+    .await;
+    fault.remove().await;
+    handler_pool.close().await;
+
+    assert_reload_failure(result);
+    let store = ares_store::fleet_provider_secrets::FleetProviderSecretsStore::new(&shared);
+    assert!(
+        store
+            .fetch_stored(&name)
+            .await
+            .expect("fleet provider lookup")
+            .is_some(),
+        "the upsert was written before the reload failed"
+    );
+    assert_one_row(&shared, &name, "fleet_provider_upsert", "fleet_provider").await;
+    let _ = store.delete(&name).await;
+}
+
+#[tokio::test]
+async fn fleet_provider_delete_audits_the_write_when_the_reload_fails() {
+    let Some(url) = common::live_db_url(&common::current_test_name()).await else {
+        return;
+    };
+    let shared = ares_test_support::pool().await;
+    let (ctx, handler_pool) = one_connection_ctx(&url).await;
+    let name = unique("audit-test-fleet-reload-del");
+    let store = ares_store::fleet_provider_secrets::FleetProviderSecretsStore::new(&shared);
+    store
+        .upsert(
+            &name,
+            None,
+            Some("https://example.test/v1"),
+            None,
+            None,
+            None,
+            "audit-test-admin",
+        )
+        .await
+        .expect("seed fleet provider directly");
+    let fault = ReloadFault::install(
+        &shared,
+        "fleet_provider_secrets",
+        "DELETE",
+        &format!("OLD.provider_name = '{name}'"),
+        SHADOW_NO_COLUMNS,
+    )
+    .await;
+
+    let result = delete_fleet_provider(State(ctx.clone()), Path(name.clone()), admin_actor()).await;
+    fault.remove().await;
+    handler_pool.close().await;
+
+    assert_reload_failure(result);
+    assert!(
+        store
+            .fetch_stored(&name)
+            .await
+            .expect("fleet provider lookup")
+            .is_none(),
+        "the delete was written before the reload failed"
+    );
+    assert_one_row(&shared, &name, "fleet_provider_delete", "fleet_provider").await;
 }

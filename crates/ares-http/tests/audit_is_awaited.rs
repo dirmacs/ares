@@ -6,13 +6,27 @@
 //! source text (no database, no network, no `include_str!` list to forget to
 //! extend: the whole of `crates/ares-http/src` is walked at run time).
 //!
+//! **The bar** (SR, 2026-09-29, `rulings/2026-09-29-SR-bk-files-1.16-admin-branch.md`
+//! §2): the scan must catch ordinary code, meaning every audited route written
+//! the normal way; it does not have to be unfoolable against code written to
+//! evade it. It catches the ordinary shapes listed below. Code written to get
+//! past a source scan (a spawner whose name does not start with `spawn`, a
+//! type of one's own made to look like a route table, a router put together
+//! at run time, a macro or an attribute from another crate) is outside its
+//! scope. The backstop for evasion is the live tests (`audit_writes_live.rs`:
+//! each drives an audited route against a live database and asserts that its
+//! row has landed before the response) and review.
+//!
 //! 1. `audit_is_awaited_on_every_admin_write`. An audit call site is a call
 //!    of `audit_log::record(` or `log_admin_action(`. Every site is `.await`ed
 //!    exactly where it is called, in the body of a function that is not
 //!    nested inside another function, and sits in none of these:
-//!    - the argument of a spawn form (`tokio::spawn`, `tokio::task::spawn`,
+//!    - the argument of a spawn form, meaning a call whose callee's name
+//!      starts with `spawn` (`tokio::spawn`, `tokio::task::spawn`,
 //!      `spawn_blocking`, `spawn_local`, `JoinSet::spawn`, any `.spawn(`),
-//!      judged by the balanced extent of the spawned argument;
+//!      judged by the balanced extent of the spawned argument. A spawner
+//!      under another name is caught only where the rules below catch what it
+//!      is handed (a call not awaited in place, an async block or closure);
 //!    - an `async` block or an `async` closure (`async ||`, `async move ||`,
 //!      `async |..|`): that future can be spawned or dropped elsewhere;
 //!    - the arguments of any macro invocation, a `macro_rules!` body
@@ -27,14 +41,22 @@
 //!    `CALLER_MACROS` (today only `assert!`, which evaluates its condition in
 //!    place; a unit test calls a handler inside it); a `macro_rules!` or an
 //!    `as` import that defines a listed name is itself a defect. Such a
-//!    function is named without being called
-//!    only as the plain-path handler of a route (`post(path::handler)`) or in
+//!    function is named without being called only as a route's handler or in
 //!    a `use` list (never renamed with `as`), and the writer itself is never
 //!    imported by a glob, a use list or `as`, where its calls could not be
-//!    found by name. The test also asserts that it scanned at least a stated
-//!    number of sites (in total and per file), so it can never go vacuous
-//!    again: at `6aaf2da` a scan keyed on the old function name matched 0
-//!    sites and a spawn-wrapped `record(...)` passed.
+//!    found by name. A route's handler is the plain path that is the only
+//!    argument of a method router (`get`, `post`, `put`, `patch`, `delete`,
+//!    `head`, `options`, `trace`) in the method-router argument of a
+//!    `.route("literal", ..)` call in a route table: one of the two tables in
+//!    `create_router` (`api/routes.rs`), or a method chain that starts at an
+//!    inline `Router::new()` (the Cordis RouteSet routers, `pub fn routes()`
+//!    in each handler module and `build_routes`; the test prints each such
+//!    handler). Named anywhere else, as in `x.post(writer)` on another type,
+//!    `let m = post(writer)` or a `.route(` on another receiver, the function
+//!    is flagged as referenced as a value. The test also asserts that it
+//!    scanned at least a stated number of sites (in total and per file), so
+//!    it can never go vacuous again: at `6aaf2da` a scan keyed on the old
+//!    function name matched 0 sites and a spawn-wrapped `record(...)` passed.
 //! 2. `every_mutating_admin_route_is_audited_or_exempt`: every mutating
 //!    (POST / PUT / PATCH / DELETE) route behind the admin middleware, and
 //!    every key-lifecycle route on `/v1`, reaches a handler that writes an
@@ -45,15 +67,24 @@
 //!    argument that is not a plain path (a closure, a variable), a method
 //!    router other than `get`, `post`, `put`, `patch`, `delete`, `head`,
 //!    `options` and `trace`, a router call other than `.route`, `.layer`,
-//!    `.route_layer`, `.merge` and `.nest`, and a `.merge(` or `.nest(` of a
-//!    router not written inline in the two tables each panic with the route
-//!    and the text, instead of being skipped.
+//!    `.route_layer`, `.merge` and `.nest`, and a `.merge(NAME)` or
+//!    `.nest(.., NAME)` of a router the parse has not read each panic with the
+//!    route and the text, instead of being skipped. A merged or nested NAME is
+//!    read only when its most recent `let` binding before the call, in the
+//!    same function and in scope there, is `let NAME = Router::new()` inside
+//!    the two tables, and NAME is not reassigned in between; otherwise the
+//!    panic names `routes.rs` and NAME.
 //!
 //! What a source scan does not prove, stated so nobody reads more into it:
 //! - calls are matched by name, not resolved: any function of the same name
 //!   in the crate counts as the same function (the scan errs towards
 //!   flagging), and method-call syntax (`x.name(`) is followed only when the
 //!   auditing function takes `self`;
+//! - route tables are recognised by their shape, not their type: a type of
+//!   one's own named `Router`, with a `route` method, would pass for one; and
+//!   a merged router is followed through `let` bindings only (a function
+//!   parameter, a closure parameter, a `match` arm or a `for` pattern that
+//!   rebinds the name is not seen);
 //! - macros are not expanded: an attribute macro that rewrites a function
 //!   body is invisible to it (`ares-http` defines none; a new one needs a new
 //!   dependency, which a diff shows);

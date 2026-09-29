@@ -350,7 +350,10 @@ async fn audit_row_lands_before_response_admin_runtime_provider_delete() {
 /// every event's level, target and fields so the test can assert one fired
 /// at `ERROR` naming the audit action, without needing a fmt layer.
 #[derive(Clone, Default)]
-struct CaptureLog(Arc<Mutex<Vec<(tracing::Level, String, Vec<(String, String)>)>>>);
+struct CaptureLog(Arc<Mutex<Vec<CapturedEvent>>>);
+
+/// One captured event: its level, its target and its `(field, value)` pairs.
+type CapturedEvent = (tracing::Level, String, Vec<(String, String)>);
 
 struct FieldVisitor(Vec<(String, String)>);
 impl tracing::field::Visit for FieldVisitor {

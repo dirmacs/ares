@@ -619,6 +619,223 @@ fn enclosing_fns(fns: &[FnDef], pos: usize) -> Vec<&FnDef> {
 }
 
 // ---------------------------------------------------------------------------
+// Route tables: where a function that writes an audit row may be named as a
+// route's handler without being called
+// ---------------------------------------------------------------------------
+
+/// The two route tables in `create_router` (`api/routes.rs`), each read from
+/// its start marker to its end marker.
+const TABLES: [(&str, &str); 2] = [
+    (
+        "let admin_routes = Router::new()",
+        "admin_middleware(req, next)",
+    ),
+    (
+        "let v1_metered_routes = Router::new()",
+        "api_key_auth_middleware",
+    ),
+];
+
+/// A route table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum RouteTable {
+    /// One of the two tables in `create_router` (`api/routes.rs`).
+    CreateRouter,
+    /// A method chain that starts at an inline `Router::new()`: the Cordis
+    /// RouteSet routers (`pub fn routes()` in each handler module) and
+    /// `build_routes`.
+    InlineRouter,
+}
+
+/// A route's handler: the plain path from `from` to `to` that is the only
+/// argument of a method router in a route table's `.route(` call.
+#[derive(Debug, Clone, Copy)]
+struct RouteSlot {
+    from: usize,
+    to: usize,
+    table: RouteTable,
+}
+
+/// `(start, end)` of each of the two tables found in `c`, the masked text of
+/// `api/routes.rs` (the route inventory panics on a missing one).
+fn table_extents(c: &[char]) -> Vec<(usize, usize)> {
+    TABLES
+        .iter()
+        .filter_map(|&(start_marker, end_marker)| {
+            let start = find_seq(c, start_marker, 0)?;
+            Some((start, find_seq(c, end_marker, start)?))
+        })
+        .collect()
+}
+
+/// Index of the bracket that opens the one that closes at `close`.
+fn matching_back(c: &[char], close: usize, o: char, cl: char) -> Option<usize> {
+    let mut depth = 0i32;
+    for (k, &ch) in c[..=close].iter().enumerate().rev() {
+        if ch == cl {
+            depth += 1;
+        } else if ch == o {
+            depth -= 1;
+            if depth == 0 {
+                return Some(k);
+            }
+        }
+    }
+    None
+}
+
+/// The last position before `idx` that is not whitespace, if any.
+fn prev_non_ws(c: &[char], idx: usize) -> Option<usize> {
+    (0..idx.min(c.len())).rev().find(|&k| !c[k].is_whitespace())
+}
+
+/// Where the path segment before `end` ends, stepping back over a turbofish
+/// (`name::<..>`) when one ends just before `end`; `None` when a `>` there
+/// closes no turbofish.
+fn before_turbofish(c: &[char], end: usize) -> Option<usize> {
+    let gt = prev_non_ws(c, end)?;
+    if c[gt] != '>' {
+        return Some(end);
+    }
+    let lt = matching_back(c, gt, '<', '>')?;
+    let colon = prev_non_ws(c, lt)?;
+    (colon >= 1 && c[colon] == ':' && c[colon - 1] == ':').then_some(colon - 1)
+}
+
+/// True when the method chain that the call at the `.` at `dot` belongs to
+/// starts at an inline `Router::new()` (also `axum::Router::new()` and
+/// `Router::<S>::new()`): an axum router built in place, the way a route
+/// table is written.
+fn chain_starts_at_router_new(c: &[char], dot: usize) -> bool {
+    let mut dot = dot;
+    loop {
+        // The receiver ends just before this `.`, with the `)` of a call.
+        let Some(close) = prev_non_ws(c, dot) else {
+            return false;
+        };
+        if c[close] != ')' {
+            return false;
+        }
+        let Some(open) = matching_back(c, close, '(', ')') else {
+            return false;
+        };
+        let Some((name, start)) = before_turbofish(c, open).and_then(|end| word_before(c, end))
+        else {
+            return false;
+        };
+        match prev_non_ws(c, start) {
+            // An earlier call in the same chain.
+            Some(p) if c[p] == '.' => dot = p,
+            // The root: `Router::new()`.
+            Some(p) if name == "new" && p >= 1 && c[p] == ':' && c[p - 1] == ':' => {
+                return before_turbofish(c, p - 1)
+                    .and_then(|end| word_before(c, end))
+                    .is_some_and(|(ty, _)| ty == "Router");
+            }
+            _ => return false,
+        }
+    }
+}
+
+/// The handlers in the method-router argument of a `.route(`, which runs from
+/// `from` to `to`: a chain of method routers (`get(h)`,
+/// `axum::routing::post(h)`, then `.delete(h)`), with `.layer(..)` and
+/// `.route_layer(..)` allowed after the first. Each method router's argument
+/// that is a plain path (a trailing comma allowed) is a handler, as
+/// `(start, end)`. A chain with anything else in it has none.
+fn method_router_handlers(c: &[char], from: usize, to: usize) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut k = skip_ws(c, from);
+    let mut first = true;
+    while k < to {
+        if !first {
+            if c[k] != '.' {
+                return Vec::new();
+            }
+            k = skip_ws(c, k + 1);
+        }
+        let mut name = ident_at(c, k);
+        let mut j = k + name.chars().count();
+        while first && c.get(j) == Some(&':') && c.get(j + 1) == Some(&':') {
+            let next = ident_at(c, j + 2);
+            if next.is_empty() {
+                break;
+            }
+            j += 2 + next.chars().count();
+            name = next;
+        }
+        let paren = skip_ws(c, j);
+        if name.is_empty() || c.get(paren) != Some(&'(') {
+            return Vec::new();
+        }
+        let Some(end) = matching(c, paren, '(', ')').filter(|&e| e < to) else {
+            return Vec::new();
+        };
+        if METHOD_ROUTERS.contains(&name.as_str()) {
+            let a = skip_ws(c, paren + 1);
+            let mut b = end;
+            while b > a && c[b - 1].is_whitespace() {
+                b -= 1;
+            }
+            if b > a && c[b - 1] == ',' {
+                b -= 1;
+                while b > a && c[b - 1].is_whitespace() {
+                    b -= 1;
+                }
+            }
+            if b > a && c[a..b].iter().all(|&x| is_ident(x) || x == ':') {
+                out.push((a, b));
+            }
+        } else if first || !(name == "layer" || name == "route_layer") {
+            return Vec::new();
+        }
+        k = skip_ws(c, end + 1);
+        first = false;
+    }
+    out
+}
+
+/// Every route's handler in one file: the method routers' plain-path
+/// arguments in each `.route("literal", method_router)` call of a route table,
+/// meaning one of the two tables in `create_router` (when `file` is
+/// `api/routes.rs`) or a method chain that starts at an inline `Router::new()`.
+fn route_slots(file: &str, c: &[char]) -> Vec<RouteSlot> {
+    let tables = if file == "api/routes.rs" {
+        table_extents(c)
+    } else {
+        Vec::new()
+    };
+    let mut out = Vec::new();
+    for (dot, name, open, close) in chained_calls(c, 0, c.len()) {
+        if name != "route" {
+            continue;
+        }
+        let table = if tables.iter().any(|&(s, e)| s <= dot && dot < e) {
+            RouteTable::CreateRouter
+        } else if chain_starts_at_router_new(c, dot) {
+            RouteTable::InlineRouter
+        } else {
+            continue;
+        };
+        let args = split_args(c, open, close);
+        let [(ps, pe), (ms, me)] = args[..] else {
+            continue;
+        };
+        let path: String = c[ps..pe].iter().collect();
+        let path = path.trim();
+        if path.len() < 2 || !path.starts_with('"') || !path.ends_with('"') {
+            continue;
+        }
+        out.extend(
+            method_router_handlers(c, ms, me)
+                .into_iter()
+                .map(|(from, to)| RouteSlot { from, to, table }),
+        );
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Audit call sites
 // ---------------------------------------------------------------------------
 
@@ -651,11 +868,13 @@ struct Scan {
 }
 
 /// The scan of a set of files: the audit call sites per file (files with none
-/// left out) and every defect.
+/// left out), every defect, and every place a function that writes an audit
+/// row is named as a route's handler, as `(file, line, name, table)`.
 #[derive(Debug, Default)]
 struct CrateScan {
     sites: BTreeMap<String, Vec<usize>>,
     defects: Vec<Defect>,
+    handlers: std::collections::BTreeSet<(String, usize, String, RouteTable)>,
 }
 
 /// One source file, masked, with every extent the rules need.
@@ -666,6 +885,7 @@ struct Parsed {
     asyncs: Vec<(usize, usize, AsyncKind)>,
     macros: Vec<(usize, usize, String)>,
     fns: Vec<FnDef>,
+    slots: Vec<RouteSlot>,
 }
 
 impl Parsed {
@@ -675,6 +895,7 @@ impl Parsed {
         let asyncs = async_extents(&c);
         let macros = macro_extents(&c);
         let fns = fn_defs(&c);
+        let slots = route_slots(file, &c);
         Parsed {
             file: file.to_string(),
             c,
@@ -682,6 +903,7 @@ impl Parsed {
             asyncs,
             macros,
             fns,
+            slots,
         }
     }
 
@@ -767,26 +989,16 @@ fn check_call<'a>(
     (reasons, encl.last().copied())
 }
 
-/// True when `pos` starts the last segment of a plain path that is the only
-/// argument of a method router: `post(crate::api::handlers::admin::x)`.
-fn is_route_handler(c: &[char], pos: usize, name: &str) -> bool {
-    let mut end = skip_ws(c, pos + name.chars().count());
-    if c.get(end) == Some(&',') {
-        end = skip_ws(c, end + 1);
-    }
-    if c.get(end) != Some(&')') {
-        return false;
-    }
-    let mut start = pos;
-    while start > 0 && (is_ident(c[start - 1]) || c[start - 1] == ':') {
-        start -= 1;
-    }
-    while start > 0 && c[start - 1].is_whitespace() {
-        start -= 1;
-    }
-    start > 0
-        && c[start - 1] == '('
-        && word_before(c, start - 1).is_some_and(|(w, _)| METHOD_ROUTERS.contains(&w.as_str()))
+/// The route table in which `name`, starting at `pos`, is a route's handler
+/// (the last segment of a [`RouteSlot`]'s plain path), if it is one. A
+/// method router anywhere else (`x.post(name)`, `let m = post(name)`, a
+/// `.route(` on another receiver) is no route's handler.
+fn route_handler_at(p: &Parsed, pos: usize, name: &str) -> Option<RouteTable> {
+    let end = pos + name.chars().count();
+    p.slots
+        .iter()
+        .find(|s| s.from <= pos && s.to == end)
+        .map(|s| s.table)
 }
 
 /// True when `pos` names an item in a `use` declaration without renaming it
@@ -1029,8 +1241,14 @@ fn scan_files(files: &[(String, String)]) -> CrateScan {
                     note_writer(holder, &mut writers_of_rows, &mut queue);
                     continue;
                 }
-                if dotted || is_route_handler(c, pos, &name) || is_plain_use(c, pos, &name) {
-                    // A field of that name, a route's handler, or a plain import.
+                if dotted || is_plain_use(c, pos, &name) {
+                    // A field of that name, or a plain import.
+                    continue;
+                }
+                if let Some(table) = route_handler_at(p, pos, &name) {
+                    // A route's handler, in a route table.
+                    out.handlers
+                        .insert((p.file.clone(), line_of(c, pos), name.clone(), table));
                     continue;
                 }
                 p.defect(
@@ -1077,6 +1295,20 @@ fn audit_is_awaited_on_every_admin_write() {
     );
     for (f, k) in &per_file {
         eprintln!("  {k:3}  {f}");
+    }
+    let outside: Vec<&(String, usize, String, RouteTable)> = result
+        .handlers
+        .iter()
+        .filter(|h| h.3 == RouteTable::InlineRouter)
+        .collect();
+    eprintln!(
+        "functions that write an audit row, named as a route's handler: {} in create_router's \
+         two tables, {} in inline `Router::new()` chains outside them:",
+        result.handlers.len() - outside.len(),
+        outside.len()
+    );
+    for (file, line, name, _) in &outside {
+        eprintln!("  {file}:{line}  {name}");
     }
     if !defects.is_empty() {
         eprintln!("{} defect(s):", defects.len());

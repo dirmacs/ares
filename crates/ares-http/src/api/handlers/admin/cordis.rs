@@ -8,8 +8,9 @@
 //! (`crate::context_services::*Service`) hold an inner `Arc<T>` under a
 //! distinct TypeId, so removal would not cascade — those answer 409.
 
-use super::AdminActor;
+use super::{audit_pool, AdminActor};
 use crate::HttpError;
+use ares_store::audit_log;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, RwLock};
 
@@ -81,7 +82,7 @@ static RETIRE_MAP: LazyLock<RwLock<HashMap<String, RetireFn>>> = LazyLock::new(|
 /// not direct Cordis services (wrapper types are not supported today).
 pub async fn retire_cordis_service(
     State(ctx): State<Arc<Context>>,
-    _actor: AdminActor,
+    actor: AdminActor,
     Path(name): Path<String>,
 ) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
     let retire = {
@@ -128,6 +129,21 @@ pub async fn retire_cordis_service(
         cascaded_notify,
         "cordis service retire requested via admin API"
     );
+    // Only a retire that actually removed the service is a write.
+    if removed_type.is_some() {
+        if let Some(pool) = audit_pool(&ctx, "retire_cordis_service") {
+            audit_log::record(
+                &pool,
+                "retire_cordis_service",
+                "cordis_service",
+                &name,
+                None,
+                actor.ip(),
+                actor.audit_actor(),
+            )
+            .await;
+        }
+    }
     Ok((
         StatusCode::OK,
         Json(serde_json::json!({
@@ -143,7 +159,7 @@ pub async fn retire_cordis_service(
 /// so retire/provide cycles are demonstrable repeatedly.
 pub async fn provide_cordis_service(
     State(ctx): State<Arc<Context>>,
-    _actor: AdminActor,
+    actor: AdminActor,
     Path(name): Path<String>,
 ) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
     match name.as_str() {
@@ -160,6 +176,18 @@ pub async fn provide_cordis_service(
             }
             ctx.provide(EventsService::new());
             tracing::info!(service = %name, "cordis service re-provided via admin API");
+            if let Some(pool) = audit_pool(&ctx, "provide_cordis_service") {
+                audit_log::record(
+                    &pool,
+                    "provide_cordis_service",
+                    "cordis_service",
+                    &name,
+                    None,
+                    actor.ip(),
+                    actor.audit_actor(),
+                )
+                .await;
+            }
             Ok((
                 StatusCode::OK,
                 Json(serde_json::json!({
@@ -195,7 +223,7 @@ pub async fn provide_cordis_service(
 /// loader state (journal) is absent on this context.
 pub async fn replace_cordis_service(
     State(ctx): State<Arc<Context>>,
-    _actor: AdminActor,
+    actor: AdminActor,
     Path(name): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
@@ -234,6 +262,19 @@ pub async fn replace_cordis_service(
                 fiber_id,
                 "cordis provider replaced via admin API"
             );
+            if let Some(pool) = audit_pool(&ctx, "replace_cordis_service") {
+                let details = serde_json::json!({ "fiber_id": fiber_id }).to_string();
+                audit_log::record(
+                    &pool,
+                    "replace_cordis_service",
+                    "cordis_service",
+                    &name,
+                    Some(&details),
+                    actor.ip(),
+                    actor.audit_actor(),
+                )
+                .await;
+            }
             Ok((
                 StatusCode::OK,
                 Json(serde_json::json!({
@@ -533,13 +574,33 @@ fn require_loader_state(
 /// cannot be read or parsed.
 pub async fn reload_cordis_entries(
     State(ctx): State<Arc<Context>>,
-    _actor: AdminActor,
+    actor: AdminActor,
 ) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
     match apply_entries_from_disk(&ctx).await {
-        Ok(actions) => Ok((
-            StatusCode::OK,
-            Json(serde_json::json!({ "applied": applied_json(&actions) })),
-        )),
+        Ok(actions) => {
+            // The reload applied the on-disk program to the live process.
+            if let Some(pool) = audit_pool(&ctx, "reload_cordis_entries") {
+                let file = ctx
+                    .get::<cordis::CurrentEntries>()
+                    .map(|entries| entries.path.display().to_string())
+                    .unwrap_or_else(|| "cordis-entries".to_string());
+                let details = serde_json::json!({ "applied": actions.len() }).to_string();
+                audit_log::record(
+                    &pool,
+                    "reload_cordis_entries",
+                    "cordis_entries",
+                    &file,
+                    Some(&details),
+                    actor.ip(),
+                    actor.audit_actor(),
+                )
+                .await;
+            }
+            Ok((
+                StatusCode::OK,
+                Json(serde_json::json!({ "applied": applied_json(&actions) })),
+            ))
+        }
         Err((status, body)) => Ok((status, Json(body))),
     }
 }
@@ -635,7 +696,7 @@ pub async fn list_cordis_entries(
 /// reload. Blank `id` / `plugin` are rejected with 400 InvalidInput.
 pub async fn put_cordis_entry(
     State(ctx): State<Arc<Context>>,
-    _actor: AdminActor,
+    actor: AdminActor,
     axum::Json(entry): axum::Json<cordis::loader::Entry>,
 ) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
     if entry.id.trim().is_empty() || entry.plugin.trim().is_empty() {
@@ -660,6 +721,14 @@ pub async fn put_cordis_entry(
         Err((status, body)) => return Ok((status, Json(body))),
     };
     let entry = normalize_entry_config(entry);
+    // The audit row names the entry and its plugin, never its config (which
+    // can carry credentials).
+    let entry_id = entry.id.clone();
+    let details = serde_json::json!({
+        "plugin": &entry.plugin,
+        "disabled": entry.disabled,
+    })
+    .to_string();
     match tree.0.iter_mut().find(|e| e.id == entry.id) {
         Some(slot) => *slot = entry,
         None => tree.0.push(entry),
@@ -669,6 +738,19 @@ pub async fn put_cordis_entry(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "applied": [], "error": e.to_string() })),
         ));
+    }
+    // The durable write of the program file is the audited event.
+    if let Some(pool) = audit_pool(&ctx, "put_cordis_entry") {
+        audit_log::record(
+            &pool,
+            "put_cordis_entry",
+            "cordis_entry",
+            &entry_id,
+            Some(&details),
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
     }
 
     match apply_entries_from_disk(&ctx).await {
@@ -684,7 +766,7 @@ pub async fn put_cordis_entry(
 /// program file and apply the resulting retire. Unknown ids answer 404.
 pub async fn delete_cordis_entry(
     State(ctx): State<Arc<Context>>,
-    _actor: AdminActor,
+    actor: AdminActor,
     Path(id): Path<String>,
 ) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
     if let Err((status, body)) = require_loader_state(&ctx) {
@@ -723,6 +805,19 @@ pub async fn delete_cordis_entry(
             Json(serde_json::json!({ "applied": [], "error": e.to_string() })),
         ));
     }
+    // The durable write of the program file is the audited event.
+    if let Some(pool) = audit_pool(&ctx, "delete_cordis_entry") {
+        audit_log::record(
+            &pool,
+            "delete_cordis_entry",
+            "cordis_entry",
+            &id,
+            None,
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
+    }
 
     match apply_entries_from_disk(&ctx).await {
         Ok(actions) => Ok((
@@ -737,7 +832,7 @@ pub async fn delete_cordis_entry(
 /// entry, persist, and apply (disabled → Retire, re-enabled → Begin).
 pub async fn toggle_cordis_entry(
     State(ctx): State<Arc<Context>>,
-    _actor: AdminActor,
+    actor: AdminActor,
     Path(id): Path<String>,
 ) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
     if let Err((status, body)) = require_loader_state(&ctx) {
@@ -776,6 +871,20 @@ pub async fn toggle_cordis_entry(
             Json(serde_json::json!({ "applied": [], "error": e.to_string() })),
         ));
     }
+    // The durable write of the program file is the audited event.
+    if let Some(pool) = audit_pool(&ctx, "toggle_cordis_entry") {
+        let details = serde_json::json!({ "disabled": disabled }).to_string();
+        audit_log::record(
+            &pool,
+            "toggle_cordis_entry",
+            "cordis_entry",
+            &id,
+            Some(&details),
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
+    }
 
     match apply_entries_from_disk(&ctx).await {
         Ok(actions) => Ok((
@@ -804,7 +913,7 @@ pub async fn toggle_cordis_entry(
 /// 503.
 pub async fn move_cordis_entry(
     State(ctx): State<Arc<Context>>,
-    _actor: AdminActor,
+    actor: AdminActor,
     Path(id): Path<String>,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
@@ -884,6 +993,25 @@ pub async fn move_cordis_entry(
             Json(serde_json::json!({ "applied": [], "error": e.to_string() })),
         ));
     }
+    // The durable write of the program file is the audited event.
+    if let Some(pool) = audit_pool(&ctx, "move_cordis_entry") {
+        let details = serde_json::json!({
+            "parent": &parent,
+            "renamed": outcome.renamed.len(),
+            "noop": outcome.noop,
+        })
+        .to_string();
+        audit_log::record(
+            &pool,
+            "move_cordis_entry",
+            "cordis_entry",
+            &id,
+            Some(&details),
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
+    }
 
     match apply_entries_from_disk(&ctx).await {
         Ok(actions) => Ok((
@@ -914,7 +1042,7 @@ pub async fn move_cordis_entry(
 /// when a move ran). Unknown ids answer 404.
 pub async fn patch_cordis_entry(
     State(ctx): State<Arc<Context>>,
-    _actor: AdminActor,
+    actor: AdminActor,
     Path(id): Path<String>,
     axum::Json(update): axum::Json<cordis::loader::EntryUpdate>,
 ) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
@@ -1008,6 +1136,37 @@ pub async fn patch_cordis_entry(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "applied": [], "error": e.to_string() })),
         ));
+    }
+    // The durable write of the program file is the audited event. The row
+    // names which fields the patch carried, never their values (`config` can
+    // hold credentials).
+    if let Some(pool) = audit_pool(&ctx, "patch_cordis_entry") {
+        let fields: Vec<&str> = [
+            ("config", update.config.is_some()),
+            ("disabled", update.disabled.is_some()),
+            ("isolate", update.isolate.is_some()),
+            ("intercept", update.intercept.is_some()),
+            ("parent", update.parent.is_some()),
+            ("position", update.position.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(name, present)| present.then_some(name))
+        .collect();
+        let details = serde_json::json!({
+            "fields": fields,
+            "previous_id": (final_id != id).then_some(&id),
+        })
+        .to_string();
+        audit_log::record(
+            &pool,
+            "patch_cordis_entry",
+            "cordis_entry",
+            &final_id,
+            Some(&details),
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
     }
 
     // Structured issues below describe THIS apply only: drop any record an

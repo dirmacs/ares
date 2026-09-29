@@ -1033,8 +1033,11 @@ pub async fn create_api_key(
 ///
 /// Double-mint order: the new key is created first so the tenant never loses
 /// access if the revoke fails. The old key is revoked immediately after.
-/// Audit-logged. The new secret is returned once-only; it cannot be retrieved
-/// again.
+/// Audit-logged in two rows, each awaited before the next step: the mint
+/// (`rotate_api_key`, on the new key) as soon as it succeeds, so a failed
+/// revoke cannot leave a minted key without its row; and the revoke
+/// (`revoke_api_key`, on the old key) once it has succeeded. The new secret is
+/// returned once-only; it cannot be retrieved again.
 pub async fn rotate_api_key(
     State(state_ctx): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
@@ -1064,27 +1067,40 @@ pub async fn rotate_api_key(
     let old = db.get_api_key(&tc.tenant_id, &key_id).await?;
     let name = old.name.clone();
     let scopes = payload.scopes.or(Some(old.scopes.clone()));
-    // Mint first.
-    let (api_key, raw_key) = db
-        .create_api_key(&tc.tenant_id, name, scopes, payload.expires_in_days)
-        .await?;
-    // Then revoke the old key.
-    db.revoke_api_key(&tc.tenant_id, &key_id).await?;
     let pool = db.pool().clone();
-    let new_id = api_key.id.clone();
-    let old_id = key_id.clone();
     // Tenant-surface rotation: the API key carries no user identity, so the
     // tenant id is the closest real actor; the client address comes from the
     // forwarding headers when present (Caddy sets X-Forwarded-For at the edge).
     let actor_id = tc.tenant_id.clone();
     let client_ip = crate::api::handlers::v1::shared::client_ip_from_headers(&headers);
-    let details = format!("{{\"rotated_from\":\"{}\"}}", old_id);
+    // Mint first.
+    let (api_key, raw_key) = db
+        .create_api_key(&tc.tenant_id, name, scopes, payload.expires_in_days)
+        .await?;
+    // Audit the mint as soon as it succeeds, before the revoke: a failed
+    // revoke returns its error below (the response is unchanged), but the
+    // tenant then holds a live minted key that must not be missing its row.
+    let new_id = api_key.id.clone();
+    let mint_details = format!("{{\"rotated_from\":\"{}\"}}", key_id);
     ares_store::audit_log::record(
         &pool,
         "rotate_api_key",
         "api_key",
         &new_id,
-        Some(&details),
+        Some(&mint_details),
+        client_ip.as_deref(),
+        Some(actor_id.as_str()),
+    )
+    .await;
+    // Then revoke the old key, and audit that revoke once it has succeeded.
+    db.revoke_api_key(&tc.tenant_id, &key_id).await?;
+    let revoke_details = format!("{{\"rotated_to\":\"{}\"}}", new_id);
+    ares_store::audit_log::record(
+        &pool,
+        "revoke_api_key",
+        "api_key",
+        &key_id,
+        Some(&revoke_details),
         client_ip.as_deref(),
         Some(actor_id.as_str()),
     )
@@ -1145,11 +1161,13 @@ pub async fn revoke_api_key(
 
 /// GDPR: DELETE /v1/tenant/data — purge all tenant data (usage_events, agent_runs, api_keys)
 /// The tenant account itself is NOT deleted; only operational data is purged.
+/// Audit-logged: one `delete_tenant_data` row naming the tenant, with the
+/// number of API keys revoked in `details`, before the response.
 pub async fn delete_tenant_data(
     State(state_ctx): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
     usage: Option<Extension<crate::middleware::usage::UsageContext>>,
-    _headers: HeaderMap,
+    headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>> {
     let tc = extract_tenant(ctx)?;
     // Open the tenant realm when TenantRealms is on ctx, then intercept TenantContext.
@@ -1209,6 +1227,29 @@ pub async fn delete_tenant_data(
         .bind(tid)
         .execute(&pool)
         .await;
+
+    // The bulk `DELETE FROM api_keys` above is a key-lifecycle write: one row
+    // naming the tenant, with the number of keys revoked (and the other purge
+    // counts) in `details`, awaited before the response. The tenant id is the
+    // actor, as for the other tenant-surface key writes.
+    let client_ip = crate::api::handlers::v1::shared::client_ip_from_headers(&headers);
+    let details = serde_json::json!({
+        "api_keys_revoked": keys_deleted,
+        "usage_events_deleted": usage_deleted,
+        "agent_runs_deleted": runs_deleted,
+        "tenant_users_deleted": users_deleted,
+    })
+    .to_string();
+    ares_store::audit_log::record(
+        &pool,
+        "delete_tenant_data",
+        "tenant",
+        tid,
+        Some(&details),
+        client_ip.as_deref(),
+        Some(tid.as_str()),
+    )
+    .await;
 
     Ok(Json(serde_json::json!({
         "status": "purged",

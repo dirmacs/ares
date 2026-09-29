@@ -73,10 +73,15 @@ pub async fn log_admin_action(
 /// tears down (process exit, or a `#[tokio::test]`'s per-test runtime
 /// ending when the test function returns) is dropped without running the
 /// rest of its body, including the INSERT it was about to make — the
-/// pending write is lost, silently, with no error and no log line. See
-/// `crates/ares-http/tests/audit_writes_live.rs` for a reproduction of the
-/// task-dropped-at-teardown mechanism, and this crate's
-/// `record_error_is_traced_not_dropped` for the failure-visibility half.
+/// pending write is lost, silently, with no error and no log line. The
+/// mechanism is reproduced by `task_dropped_at_runtime_teardown_loses_the_pending_insert`
+/// in `crates/ares-http/tests/audit_task_drop_mechanism.rs`; the
+/// failure-visibility half (a failed insert is logged at `error`, the
+/// handler's response is unchanged) is
+/// `audit_failure_is_logged_not_dropped` in
+/// `crates/ares-http/tests/audit_writes_live.rs`; and
+/// `audit_is_awaited_on_every_admin_write` in
+/// `crates/ares-http/tests/audit_is_awaited.rs` keeps every call site awaited.
 ///
 /// On a write error, `record` logs `tracing::error!` with the action,
 /// resource type/id and the error, and returns — it never propagates the

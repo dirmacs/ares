@@ -455,7 +455,13 @@ fn scan(file: &str, src: &str) -> Scan {
                 );
             } else if writer == "log_admin_action" {
                 // The Result must be handled, not thrown away.
-                let head: String = c[..pos].iter().collect();
+                // Skip a path prefix (`ares_store::audit_log::`) to reach the
+                // start of the call expression.
+                let mut start = pos;
+                while start > 0 && (is_ident(c[start - 1]) || c[start - 1] == ':') {
+                    start -= 1;
+                }
+                let head: String = c[..start].iter().collect();
                 let discarded_by_let = head
                     .trim_end()
                     .strip_suffix('=')
@@ -961,6 +967,10 @@ fn scanner_flags_a_discarded_log_admin_action_result() {
     let call = "log_admin_action(&pool, \"a\", \"b\", \"c\", None, None, None)";
     for (label, body) in [
         ("let _", format!("    let _ = {call}.await;")),
+        (
+            "let _ with a path",
+            format!("    let _ = ares_store::audit_log::{call}.await;"),
+        ),
         ("ok()", format!("    {call}.await.ok();")),
     ] {
         let s = fixture(&body);

@@ -8,6 +8,7 @@ use std::sync::Arc;
 use crate::HttpError;
 use crate::Result;
 use ares_llm::provider_registry::{ModelInfo, RuntimeProviderEntry};
+use ares_store::audit_log;
 use ares_types::types::AppError;
 use axum::{
     extract::{Path, Query, State},
@@ -103,6 +104,7 @@ pub async fn get_runtime_provider(
 /// Create or update a runtime provider.
 pub async fn upsert_runtime_provider(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Json(mut req): Json<CreateRuntimeProviderRequest>,
 ) -> Result<Json<RuntimeProviderResponse>> {
     let __pool_4 = ctx
@@ -113,14 +115,35 @@ pub async fn upsert_runtime_provider(
     let store = RuntimeProviderStore::new(&__pool_4);
     preserve_redacted_runtime_provider_secret(&store, &mut req).await?;
     let provider = store.upsert(&req).await?;
+
+    // The upsert is the write. The registry reload below can still fail with
+    // the row already stored, so the row is audited first.
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
+    audit_log::record(
+        &pool,
+        "create_runtime_provider",
+        "runtime_provider",
+        &provider.name,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
+
     reload_runtime_provider_registry(&ctx).await?;
     tracing::info!("Upserted runtime provider {}", provider.name);
+
     Ok(Json(provider.into()))
 }
 
 /// Hard-delete a runtime provider by name.
 pub async fn delete_runtime_provider(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Path(name): Path<String>,
     Query(query): Query<RuntimeProviderScopeQuery>,
 ) -> Result<StatusCode> {
@@ -138,8 +161,27 @@ pub async fn delete_runtime_provider(
             "runtime provider {name} not found"
         ))));
     }
+    // The delete is the write. The registry reload below can still fail with
+    // the row already gone, so the delete is audited first.
+    let pool = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
+    audit_log::record(
+        &pool,
+        "delete_runtime_provider",
+        "runtime_provider",
+        &name,
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
+
     reload_runtime_provider_registry(&ctx).await?;
     tracing::info!("Deleted runtime provider {}", name);
+
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -17,8 +17,8 @@ pub mod billing;
 pub mod connectors;
 #[path = "admin/cordis.rs"]
 pub mod cordis;
-#[path = "admin/fleet_secrets.rs"]
-pub mod fleet_secrets;
+#[path = "admin/fleet_provider_keys.rs"]
+pub mod fleet_provider_keys;
 #[path = "admin/health.rs"]
 pub mod health;
 #[path = "admin/mcp.rs"]
@@ -43,7 +43,7 @@ pub use audit::*;
 pub use billing::*;
 pub use connectors::*;
 pub use cordis::*;
-pub use fleet_secrets::*;
+pub use fleet_provider_keys::*;
 pub use health::*;
 pub use mcp::*;
 pub use pipelines::*;
@@ -276,7 +276,7 @@ pub fn admin_routes() -> axum::Router<Arc<Context>> {
         .merge(pipelines::routes())
         .merge(billing::routes())
         .merge(mcp::routes())
-        .merge(fleet_secrets::routes())
+        .merge(fleet_provider_keys::routes())
         .merge(connectors::routes())
         .merge(health::routes())
         .merge(audit::routes())

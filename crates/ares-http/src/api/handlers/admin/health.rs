@@ -127,18 +127,16 @@ pub async fn set_tenant_model_tier(
         .clone();
     let t_id = tenant_id.clone();
     let t_name = tier_name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "tenant_model_tier_set",
-            "tenant_model_tier",
-            &format!("{t_id}/{t_name}"),
-            None,
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "tenant_model_tier_set",
+        "tenant_model_tier",
+        &format!("{t_id}/{t_name}"),
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(Json(tier))
 }
@@ -168,18 +166,16 @@ pub async fn delete_tenant_model_tier(
         .clone();
     let t_id = tenant_id.clone();
     let t_name = tier_name.clone();
-    tokio::spawn(async move {
-        let _ = audit_log::log_admin_action(
-            &pool,
-            "tenant_model_tier_delete",
-            "tenant_model_tier",
-            &format!("{t_id}/{t_name}"),
-            None,
-            actor.ip(),
-            actor.audit_actor(),
-        )
-        .await;
-    });
+    audit_log::record(
+        &pool,
+        "tenant_model_tier_delete",
+        "tenant_model_tier",
+        &format!("{t_id}/{t_name}"),
+        None,
+        actor.ip(),
+        actor.audit_actor(),
+    )
+    .await;
 
     Ok(StatusCode::NO_CONTENT)
 }

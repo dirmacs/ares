@@ -1,5 +1,7 @@
+use crate::api::handlers::admin::{audit_pool, AdminActor};
 use crate::HttpError;
 use crate::Result;
+use ares_store::audit_log;
 use ares_types::types::AppError;
 use axum::{
     extract::{Path, State},
@@ -99,6 +101,7 @@ fn health_script() -> String {
 /// POST /api/admin/deploy — trigger a deployment
 pub async fn trigger_deploy(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Json(req): Json<DeployRequest>,
 ) -> Result<Json<DeployResponse>> {
     let target = req.target.to_lowercase();
@@ -189,6 +192,23 @@ pub async fn trigger_deploy(
             deploy.finished_at = Some(now);
         }
     });
+
+    // The deploy has been started: one audit row, awaited before the response.
+    // (The spawn above runs the deploy script; the audit write is not part of
+    // it.)
+    if let Some(pool) = audit_pool(&ctx, "trigger_deploy") {
+        let details = serde_json::json!({ "target": &target }).to_string();
+        audit_log::record(
+            &pool,
+            "trigger_deploy",
+            "deploy",
+            &id,
+            Some(&details),
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
+    }
 
     Ok(Json(DeployResponse {
         id,
@@ -451,6 +471,7 @@ mod tests {
             let state = test_app_state(new_deploy_registry());
             let err = trigger_deploy(
                 State(state),
+                AdminActor::default(),
                 Json(DeployRequest {
                     target: "not-a-service".into(),
                 }),
@@ -478,6 +499,7 @@ mod tests {
             let state = test_app_state(registry);
             let err = trigger_deploy(
                 State(state),
+                AdminActor::default(),
                 Json(DeployRequest {
                     target: "ares".into(),
                 }),
@@ -502,6 +524,7 @@ mod tests {
             let state = test_app_state(registry.clone());
             let resp = trigger_deploy(
                 State(state),
+                AdminActor::default(),
                 Json(DeployRequest {
                     target: "ares".into(),
                 }),

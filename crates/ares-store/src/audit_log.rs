@@ -61,6 +61,62 @@ pub async fn log_admin_action(
     Ok(())
 }
 
+/// Write one admin/key-lifecycle audit row, **awaited to completion before
+/// returning**, never fired into a detached `tokio::spawn`.
+///
+/// Every caller used to do `tokio::spawn(async move { let _ =
+/// log_admin_action(...).await; })`: the `JoinHandle` was itself discarded
+/// (fire-and-forget), so nothing observed whether the spawned task ever ran
+/// to completion, and the inner `Result` was thrown away with `let _ =` on
+/// top of that — a double discard (row 20, VERIFY-2026-09-22.md §4). A
+/// detached task that has not been polled to completion when its runtime
+/// tears down (process exit, or a `#[tokio::test]`'s per-test runtime
+/// ending when the test function returns) is dropped without running the
+/// rest of its body, including the INSERT it was about to make — the
+/// pending write is lost, silently, with no error and no log line. The
+/// mechanism is reproduced by `task_dropped_at_runtime_teardown_loses_the_pending_insert`
+/// in `crates/ares-http/tests/audit_task_drop_mechanism.rs`; the
+/// failure-visibility half (a failed insert is logged at `error`, the
+/// handler's response is unchanged) is
+/// `audit_failure_is_logged_not_dropped` in
+/// `crates/ares-http/tests/audit_writes_live.rs`; and
+/// `audit_is_awaited_on_every_admin_write` in
+/// `crates/ares-http/tests/audit_is_awaited.rs` keeps every call site awaited.
+///
+/// On a write error, `record` logs `tracing::error!` with the action,
+/// resource type/id and the error, and returns — it never propagates the
+/// error to the caller, because by the time `record` runs the mutation
+/// itself has already committed; the caller's response must not change.
+pub async fn record(
+    pool: &PgPool,
+    action: &str,
+    resource_type: &str,
+    resource_id: &str,
+    details: Option<&str>,
+    admin_ip: Option<&str>,
+    actor: Option<&str>,
+) {
+    if let Err(e) = log_admin_action(
+        pool,
+        action,
+        resource_type,
+        resource_id,
+        details,
+        admin_ip,
+        actor,
+    )
+    .await
+    {
+        tracing::error!(
+            action,
+            resource_type,
+            resource_id,
+            error = %e,
+            "admin audit write failed"
+        );
+    }
+}
+
 pub async fn list_audit_log(pool: &PgPool, limit: i64, offset: i64) -> Result<Vec<AuditLogEntry>> {
     let rows = sqlx::query(LIST_ADMIN_AUDIT_LOG_SQL)
         .bind(limit)

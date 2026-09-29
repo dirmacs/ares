@@ -8,7 +8,9 @@
 //! (`crate::context_services::*Service`) hold an inner `Arc<T>` under a
 //! distinct TypeId, so removal would not cascade — those answer 409.
 
+use super::{audit_pool, AdminActor};
 use crate::HttpError;
+use ares_store::audit_log;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, RwLock};
 
@@ -80,6 +82,7 @@ static RETIRE_MAP: LazyLock<RwLock<HashMap<String, RetireFn>>> = LazyLock::new(|
 /// not direct Cordis services (wrapper types are not supported today).
 pub async fn retire_cordis_service(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Path(name): Path<String>,
 ) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
     let retire = {
@@ -126,6 +129,21 @@ pub async fn retire_cordis_service(
         cascaded_notify,
         "cordis service retire requested via admin API"
     );
+    // Only a retire that actually removed the service is a write.
+    if removed_type.is_some() {
+        if let Some(pool) = audit_pool(&ctx, "retire_cordis_service") {
+            audit_log::record(
+                &pool,
+                "retire_cordis_service",
+                "cordis_service",
+                &name,
+                None,
+                actor.ip(),
+                actor.audit_actor(),
+            )
+            .await;
+        }
+    }
     Ok((
         StatusCode::OK,
         Json(serde_json::json!({
@@ -141,6 +159,7 @@ pub async fn retire_cordis_service(
 /// so retire/provide cycles are demonstrable repeatedly.
 pub async fn provide_cordis_service(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Path(name): Path<String>,
 ) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
     match name.as_str() {
@@ -157,6 +176,18 @@ pub async fn provide_cordis_service(
             }
             ctx.provide(EventsService::new());
             tracing::info!(service = %name, "cordis service re-provided via admin API");
+            if let Some(pool) = audit_pool(&ctx, "provide_cordis_service") {
+                audit_log::record(
+                    &pool,
+                    "provide_cordis_service",
+                    "cordis_service",
+                    &name,
+                    None,
+                    actor.ip(),
+                    actor.audit_actor(),
+                )
+                .await;
+            }
             Ok((
                 StatusCode::OK,
                 Json(serde_json::json!({
@@ -192,6 +223,7 @@ pub async fn provide_cordis_service(
 /// loader state (journal) is absent on this context.
 pub async fn replace_cordis_service(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Path(name): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
@@ -230,6 +262,19 @@ pub async fn replace_cordis_service(
                 fiber_id,
                 "cordis provider replaced via admin API"
             );
+            if let Some(pool) = audit_pool(&ctx, "replace_cordis_service") {
+                let details = serde_json::json!({ "fiber_id": fiber_id }).to_string();
+                audit_log::record(
+                    &pool,
+                    "replace_cordis_service",
+                    "cordis_service",
+                    &name,
+                    Some(&details),
+                    actor.ip(),
+                    actor.audit_actor(),
+                )
+                .await;
+            }
             Ok((
                 StatusCode::OK,
                 Json(serde_json::json!({
@@ -478,6 +523,38 @@ fn normalize_entry_config(mut entry: cordis::loader::Entry) -> cordis::loader::E
     entry
 }
 
+/// The `details` of a `patch_cordis_entry` audit row, a row that names
+/// `audited_id`: which fields the patch carried (never their values: `config`
+/// can hold credentials), the entry's previous id `id` after a move, and
+/// `fields_applied_to` when the fields were applied to another entry
+/// (`applied_to`) than the one the row names.
+fn patch_audit_details(
+    update: &cordis::loader::EntryUpdate,
+    id: &str,
+    audited_id: &str,
+    applied_to: &str,
+) -> String {
+    let fields: Vec<&str> = [
+        ("config", update.config.is_some()),
+        ("disabled", update.disabled.is_some()),
+        ("isolate", update.isolate.is_some()),
+        ("intercept", update.intercept.is_some()),
+        ("parent", update.parent.is_some()),
+        ("position", update.position.is_some()),
+    ]
+    .into_iter()
+    .filter_map(|(name, present)| present.then_some(name))
+    .collect();
+    let mut details = serde_json::json!({
+        "fields": fields,
+        "previous_id": (audited_id != id).then_some(id),
+    });
+    if applied_to != audited_id {
+        details["fields_applied_to"] = serde_json::json!(applied_to);
+    }
+    details.to_string()
+}
+
 /// Load the entries file as the desired tree for a mutation. A missing file
 /// starts from an empty tree; an existing but unparsable file is a hard 422.
 fn load_desired_tree(
@@ -529,12 +606,33 @@ fn require_loader_state(
 /// cannot be read or parsed.
 pub async fn reload_cordis_entries(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
 ) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
     match apply_entries_from_disk(&ctx).await {
-        Ok(actions) => Ok((
-            StatusCode::OK,
-            Json(serde_json::json!({ "applied": applied_json(&actions) })),
-        )),
+        Ok(actions) => {
+            // The reload applied the on-disk program to the live process.
+            if let Some(pool) = audit_pool(&ctx, "reload_cordis_entries") {
+                let file = ctx
+                    .get::<cordis::CurrentEntries>()
+                    .map(|entries| entries.path.display().to_string())
+                    .unwrap_or_else(|| "cordis-entries".to_string());
+                let details = serde_json::json!({ "applied": actions.len() }).to_string();
+                audit_log::record(
+                    &pool,
+                    "reload_cordis_entries",
+                    "cordis_entries",
+                    &file,
+                    Some(&details),
+                    actor.ip(),
+                    actor.audit_actor(),
+                )
+                .await;
+            }
+            Ok((
+                StatusCode::OK,
+                Json(serde_json::json!({ "applied": applied_json(&actions) })),
+            ))
+        }
         Err((status, body)) => Ok((status, Json(body))),
     }
 }
@@ -630,6 +728,7 @@ pub async fn list_cordis_entries(
 /// reload. Blank `id` / `plugin` are rejected with 400 InvalidInput.
 pub async fn put_cordis_entry(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     axum::Json(entry): axum::Json<cordis::loader::Entry>,
 ) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
     if entry.id.trim().is_empty() || entry.plugin.trim().is_empty() {
@@ -654,6 +753,14 @@ pub async fn put_cordis_entry(
         Err((status, body)) => return Ok((status, Json(body))),
     };
     let entry = normalize_entry_config(entry);
+    // The audit row names the entry and its plugin, never its config (which
+    // can carry credentials).
+    let entry_id = entry.id.clone();
+    let details = serde_json::json!({
+        "plugin": &entry.plugin,
+        "disabled": entry.disabled,
+    })
+    .to_string();
     match tree.0.iter_mut().find(|e| e.id == entry.id) {
         Some(slot) => *slot = entry,
         None => tree.0.push(entry),
@@ -663,6 +770,19 @@ pub async fn put_cordis_entry(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "applied": [], "error": e.to_string() })),
         ));
+    }
+    // The durable write of the program file is the audited event.
+    if let Some(pool) = audit_pool(&ctx, "put_cordis_entry") {
+        audit_log::record(
+            &pool,
+            "put_cordis_entry",
+            "cordis_entry",
+            &entry_id,
+            Some(&details),
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
     }
 
     match apply_entries_from_disk(&ctx).await {
@@ -678,6 +798,7 @@ pub async fn put_cordis_entry(
 /// program file and apply the resulting retire. Unknown ids answer 404.
 pub async fn delete_cordis_entry(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Path(id): Path<String>,
 ) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
     if let Err((status, body)) = require_loader_state(&ctx) {
@@ -716,6 +837,19 @@ pub async fn delete_cordis_entry(
             Json(serde_json::json!({ "applied": [], "error": e.to_string() })),
         ));
     }
+    // The durable write of the program file is the audited event.
+    if let Some(pool) = audit_pool(&ctx, "delete_cordis_entry") {
+        audit_log::record(
+            &pool,
+            "delete_cordis_entry",
+            "cordis_entry",
+            &id,
+            None,
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
+    }
 
     match apply_entries_from_disk(&ctx).await {
         Ok(actions) => Ok((
@@ -730,6 +864,7 @@ pub async fn delete_cordis_entry(
 /// entry, persist, and apply (disabled → Retire, re-enabled → Begin).
 pub async fn toggle_cordis_entry(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Path(id): Path<String>,
 ) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
     if let Err((status, body)) = require_loader_state(&ctx) {
@@ -768,6 +903,20 @@ pub async fn toggle_cordis_entry(
             Json(serde_json::json!({ "applied": [], "error": e.to_string() })),
         ));
     }
+    // The durable write of the program file is the audited event.
+    if let Some(pool) = audit_pool(&ctx, "toggle_cordis_entry") {
+        let details = serde_json::json!({ "disabled": disabled }).to_string();
+        audit_log::record(
+            &pool,
+            "toggle_cordis_entry",
+            "cordis_entry",
+            &id,
+            Some(&details),
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
+    }
 
     match apply_entries_from_disk(&ctx).await {
         Ok(actions) => Ok((
@@ -796,6 +945,7 @@ pub async fn toggle_cordis_entry(
 /// 503.
 pub async fn move_cordis_entry(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Path(id): Path<String>,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
@@ -868,6 +1018,28 @@ pub async fn move_cordis_entry(
         }
     };
 
+    // The move has already changed live state (journal records re-keyed,
+    // fibers relabelled, the shared `CurrentEntries` tree), and the file save
+    // below can still fail with a 500: audit the move now, before the save.
+    if let Some(pool) = audit_pool(&ctx, "move_cordis_entry") {
+        let details = serde_json::json!({
+            "parent": &parent,
+            "renamed": outcome.renamed.len(),
+            "noop": outcome.noop,
+        })
+        .to_string();
+        audit_log::record(
+            &pool,
+            "move_cordis_entry",
+            "cordis_entry",
+            &id,
+            Some(&details),
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
+    }
+
     tree.0 = tree.0.drain(..).map(normalize_entry_config).collect();
     if let Err(e) = tree.save_to_toml_file(&path) {
         return Ok((
@@ -905,6 +1077,7 @@ pub async fn move_cordis_entry(
 /// when a move ran). Unknown ids answer 404.
 pub async fn patch_cordis_entry(
     State(ctx): State<Arc<Context>>,
+    actor: AdminActor,
     Path(id): Path<String>,
     axum::Json(update): axum::Json<cordis::loader::EntryUpdate>,
 ) -> crate::Result<(StatusCode, Json<serde_json::Value>)> {
@@ -939,6 +1112,7 @@ pub async fn patch_cordis_entry(
     // MOVE phase: a present `parent`/`position` field relocates the entry —
     // renaming the subtree namespace — BEFORE any field updates land.
     let mut renamed: Vec<(String, String)> = Vec::new();
+    let mut moved = false;
     if update.parent.is_some() || update.position.is_some() {
         let current_parent = tree
             .0
@@ -965,7 +1139,10 @@ pub async fn patch_cordis_entry(
         )
         .await
         {
-            Ok(outcome) => renamed = outcome.renamed,
+            Ok(outcome) => {
+                renamed = outcome.renamed;
+                moved = true;
+            }
             Err(e) => {
                 return Ok((
                     StatusCode::CONFLICT,
@@ -977,10 +1154,42 @@ pub async fn patch_cordis_entry(
             }
         }
     }
+    // Where the field updates below are applied: the LAST id `renamed` lists,
+    // which is a descendant when the moved entry has children. That is the
+    // separate `cordis-move-fix` item's; the audit row does not follow it.
     let final_id = renamed
         .last()
         .map(|(_, new)| new.clone())
         .unwrap_or_else(|| id.clone());
+    // The entry the request addressed, under its new id after a move:
+    // `Loader::move_entry` lists the moved entry first, then its descendants.
+    // The audit row names this entry, and says in `details` where the fields
+    // were applied when that is another entry.
+    let audited_id = renamed
+        .first()
+        .map(|(_, new)| new.clone())
+        .unwrap_or_else(|| id.clone());
+
+    // A move has already changed live state (journal records re-keyed, fibers
+    // relabelled, the shared `CurrentEntries` tree), and the save below can
+    // still fail with a 500: audit the patch now, before anything else. The
+    // row names which fields the patch carried, never their values (`config`
+    // can hold credentials).
+    if moved {
+        if let Some(pool) = audit_pool(&ctx, "patch_cordis_entry") {
+            let details = patch_audit_details(&update, &id, &audited_id, &final_id);
+            audit_log::record(
+                &pool,
+                "patch_cordis_entry",
+                "cordis_entry",
+                &audited_id,
+                Some(&details),
+                actor.ip(),
+                actor.audit_actor(),
+            )
+            .await;
+        }
+    }
 
     let Some(entry) = tree.0.iter_mut().find(|e| e.id == final_id) else {
         return Ok((
@@ -998,6 +1207,23 @@ pub async fn patch_cordis_entry(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "applied": [], "error": e.to_string() })),
         ));
+    }
+    // Without a move, the durable write of the program file is the first
+    // change and the audited event; with one, the row was written above.
+    if !moved {
+        if let Some(pool) = audit_pool(&ctx, "patch_cordis_entry") {
+            let details = patch_audit_details(&update, &id, &audited_id, &final_id);
+            audit_log::record(
+                &pool,
+                "patch_cordis_entry",
+                "cordis_entry",
+                &audited_id,
+                Some(&details),
+                actor.ip(),
+                actor.audit_actor(),
+            )
+            .await;
+        }
     }
 
     // Structured issues below describe THIS apply only: drop any record an
@@ -1086,16 +1312,24 @@ mod tests {
         assert!(ctx.get::<EventsService>().is_some());
 
         // Wrapper / unsupported names answer 409 Conflict.
-        let resp = retire_cordis_service(State(ctx.clone()), Path("tool_registry".into()))
-            .await
-            .expect("handler");
+        let resp = retire_cordis_service(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("tool_registry".into()),
+        )
+        .await
+        .expect("handler");
         assert_eq!(resp.0, StatusCode::CONFLICT);
         assert_eq!(resp.1 .0["retired"], json!(false));
 
         // Real retirement: store entry dropped by TypeId.
-        let resp = retire_cordis_service(State(ctx.clone()), Path("events_service".into()))
-            .await
-            .expect("handler");
+        let resp = retire_cordis_service(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("events_service".into()),
+        )
+        .await
+        .expect("handler");
         assert_eq!(resp.0, StatusCode::OK);
         assert_eq!(resp.1 .0["retired"], json!(true));
         assert_eq!(
@@ -1106,32 +1340,46 @@ mod tests {
         assert!(ctx.get::<EventsService>().is_none());
 
         // Retiring again reports already-absent, still 200.
-        let resp = retire_cordis_service(State(ctx.clone()), Path("events_service".into()))
-            .await
-            .expect("handler");
+        let resp = retire_cordis_service(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("events_service".into()),
+        )
+        .await
+        .expect("handler");
         assert_eq!(resp.0, StatusCode::OK);
         assert_eq!(resp.1 .0["retired"], json!(false));
 
         // Re-provide flips dependent fibers back on; cycle repeatable.
-        let resp = provide_cordis_service(State(ctx.clone()), Path("events_service".into()))
-            .await
-            .expect("handler");
+        let resp = provide_cordis_service(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("events_service".into()),
+        )
+        .await
+        .expect("handler");
         assert_eq!(resp.0, StatusCode::OK);
         assert_eq!(resp.1 .0["provided"], json!(true));
         assert!(ctx.get::<EventsService>().is_some());
 
         // Providing while present reports already-present.
-        let resp = provide_cordis_service(State(ctx.clone()), Path("events_service".into()))
-            .await
-            .expect("handler");
+        let resp = provide_cordis_service(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("events_service".into()),
+        )
+        .await
+        .expect("handler");
         assert_eq!(resp.1 .0["provided"], json!(false));
 
         // Unknown constructors are rejected as invalid input.
-        assert!(
-            provide_cordis_service(State(ctx.clone()), Path("nope".into()))
-                .await
-                .is_err()
-        );
+        assert!(provide_cordis_service(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("nope".into())
+        )
+        .await
+        .is_err());
     }
 
     /// Registry-backed plugin providing `BarService`; used to build a real
@@ -1176,9 +1424,13 @@ mod tests {
         ));
 
         // Retire must be REFUSED: one active consumer still relies on it.
-        let resp = retire_cordis_service(State(ctx.clone()), Path("events_service".into()))
-            .await
-            .expect("handler");
+        let resp = retire_cordis_service(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("events_service".into()),
+        )
+        .await
+        .expect("handler");
         assert_eq!(resp.0, StatusCode::CONFLICT);
         assert_eq!(resp.1 .0["retired"], json!(false));
         assert_eq!(resp.1 .0["reason"], json!("guarded"));
@@ -1193,9 +1445,13 @@ mod tests {
         assert!(ctx.get::<BarService>().is_none());
 
         // Retire now succeeds.
-        let resp = retire_cordis_service(State(ctx.clone()), Path("events_service".into()))
-            .await
-            .expect("handler");
+        let resp = retire_cordis_service(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("events_service".into()),
+        )
+        .await
+        .expect("handler");
         assert_eq!(resp.0, StatusCode::OK);
         assert_eq!(resp.1 .0["retired"], json!(true));
         assert!(ctx.get::<EventsService>().is_none());
@@ -1219,9 +1475,13 @@ mod tests {
         fiber.refresh(&ctx).await;
         assert!(matches!(fiber.state(), ::cordis::FiberState::Active { .. }));
 
-        let _ = retire_cordis_service(State(ctx.clone()), Path("events_service".into()))
-            .await
-            .expect("handler");
+        let _ = retire_cordis_service(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("events_service".into()),
+        )
+        .await
+        .expect("handler");
         // remove() notified dependents; give the spawned refresh a beat.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert!(matches!(
@@ -1229,9 +1489,13 @@ mod tests {
             ::cordis::FiberState::Inactive { .. }
         ));
 
-        let _ = provide_cordis_service(State(ctx.clone()), Path("events_service".into()))
-            .await
-            .expect("handler");
+        let _ = provide_cordis_service(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("events_service".into()),
+        )
+        .await
+        .expect("handler");
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert!(matches!(fiber.state(), ::cordis::FiberState::Active { .. }));
     }
@@ -1278,7 +1542,7 @@ mod tests {
             "[[entry]]\nid = \"calc\"\nplugin = \"CalculatorService\"\ndisabled = false\n\n[entry.config]\n",
         )
         .expect("write entries v2");
-        let (status, Json(body)) = reload_cordis_entries(State(ctx.clone()))
+        let (status, Json(body)) = reload_cordis_entries(State(ctx.clone()), AdminActor::default())
             .await
             .expect("resp");
         assert_eq!(status, StatusCode::OK);
@@ -1288,7 +1552,7 @@ mod tests {
 
         // 2) remove it → Retire-ok
         std::fs::write(&path, "").expect("write entries v3");
-        let (status, Json(body)) = reload_cordis_entries(State(ctx.clone()))
+        let (status, Json(body)) = reload_cordis_entries(State(ctx.clone()), AdminActor::default())
             .await
             .expect("resp");
         assert_eq!(status, StatusCode::OK);
@@ -1451,9 +1715,13 @@ mod tests {
 
         let mut new_entry = probe_entry("calc2", false);
         new_entry.config = serde_json::Value::Null; // handler must normalize
-        let (status, Json(body)) = put_cordis_entry(State(ctx.clone()), axum::Json(new_entry))
-            .await
-            .expect("resp");
+        let (status, Json(body)) = put_cordis_entry(
+            State(ctx.clone()),
+            AdminActor::default(),
+            axum::Json(new_entry),
+        )
+        .await
+        .expect("resp");
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["applied"][0]["id"], "calc2");
         assert_eq!(body["applied"][0]["action"], "begin");
@@ -1479,9 +1747,13 @@ mod tests {
         let (ctx, dir) =
             build_entries_fixture("delete", CALC_TOML_BLOCK, vec![probe_entry("calc", false)]);
 
-        let (status, Json(body)) = delete_cordis_entry(State(ctx.clone()), Path("calc".into()))
-            .await
-            .expect("resp");
+        let (status, Json(body)) = delete_cordis_entry(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("calc".into()),
+        )
+        .await
+        .expect("resp");
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["applied"][0]["id"], "calc");
         assert_eq!(body["applied"][0]["action"], "retire");
@@ -1489,9 +1761,13 @@ mod tests {
         assert!(ctx.get::<Probe>().is_none(), "retired service removed");
 
         // Unknown id answers 404 with deleted:false.
-        let (status, Json(body)) = delete_cordis_entry(State(ctx.clone()), Path("nope".into()))
-            .await
-            .expect("resp");
+        let (status, Json(body)) = delete_cordis_entry(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("nope".into()),
+        )
+        .await
+        .expect("resp");
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["deleted"], false);
         assert_eq!(body["error"], "no such entry");
@@ -1507,9 +1783,13 @@ mod tests {
             build_entries_fixture("toggle", CALC_TOML_BLOCK, vec![probe_entry("calc", false)]);
 
         // First toggle: disabled=false → true → Retire.
-        let (status, Json(body)) = toggle_cordis_entry(State(ctx.clone()), Path("calc".into()))
-            .await
-            .expect("resp");
+        let (status, Json(body)) = toggle_cordis_entry(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("calc".into()),
+        )
+        .await
+        .expect("resp");
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["disabled"], true);
         let retire_ok = body["applied"]
@@ -1525,9 +1805,13 @@ mod tests {
         assert!(ctx.get::<Probe>().is_none());
 
         // Second toggle: disabled=true → false → Begin again.
-        let (status, Json(body)) = toggle_cordis_entry(State(ctx.clone()), Path("calc".into()))
-            .await
-            .expect("resp");
+        let (status, Json(body)) = toggle_cordis_entry(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("calc".into()),
+        )
+        .await
+        .expect("resp");
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["disabled"], false);
         let begin_ok = body["applied"]
@@ -1594,6 +1878,7 @@ mod tests {
         // Replace with a new config for the same plugin label.
         let (status, Json(body)) = replace_cordis_service(
             State(ctx.clone()),
+            AdminActor::default(),
             Path("CalculatorService".into()),
             Json(json!({"config": {"v": 9}})),
         )
@@ -1638,6 +1923,7 @@ mod tests {
 
         let (status, Json(body)) = replace_cordis_service(
             State(ctx.clone()),
+            AdminActor::default(),
             Path("NoSuchFactory".into()),
             Json(json!({"config": {}})),
         )
@@ -1664,6 +1950,7 @@ mod tests {
         for bad in [json!({}), json!("nope"), json!([1, 2])] {
             let (status, Json(body)) = replace_cordis_service(
                 State(ctx.clone()),
+                AdminActor::default(),
                 Path("CalculatorService".into()),
                 Json(bad),
             )
@@ -1677,6 +1964,7 @@ mod tests {
         }
         let (status, Json(body)) = replace_cordis_service(
             State(ctx.clone()),
+            AdminActor::default(),
             Path("CalculatorService".into()),
             Json(json!({"config": {"v": 3}})),
         )
@@ -1697,6 +1985,7 @@ mod tests {
 
         let (status, Json(body)) = replace_cordis_service(
             State(ctx),
+            AdminActor::default(),
             Path("CalculatorService".into()),
             Json(json!({"config": {}})),
         )
@@ -1718,7 +2007,7 @@ mod tests {
 
         let mut bad = probe_entry("x", false);
         bad.plugin = "  ".to_string();
-        let err = put_cordis_entry(State(ctx.clone()), axum::Json(bad))
+        let err = put_cordis_entry(State(ctx.clone()), AdminActor::default(), axum::Json(bad))
             .await
             .expect_err("blank plugin must be rejected");
         assert_eq!(err.0.status_code(), 400);
@@ -1748,10 +2037,14 @@ mod tests {
             parent: None,
             position: None,
         };
-        let (status, Json(body)) =
-            patch_cordis_entry(State(ctx.clone()), Path("calc".into()), axum::Json(update))
-                .await
-                .expect("resp");
+        let (status, Json(body)) = patch_cordis_entry(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("calc".into()),
+            axum::Json(update),
+        )
+        .await
+        .expect("resp");
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["patched"], json!(true));
         assert_eq!(
@@ -1789,6 +2082,7 @@ mod tests {
 
         let (status, Json(body)) = patch_cordis_entry(
             State(ctx.clone()),
+            AdminActor::default(),
             Path("calc".into()),
             axum::Json(cordis::loader::EntryUpdate::default()),
         )
@@ -1834,10 +2128,14 @@ mod tests {
             config: Some(serde_json::json!({"v": 3})),
             ..Default::default()
         };
-        let (status, Json(body)) =
-            patch_cordis_entry(State(ctx.clone()), Path("nope".into()), axum::Json(update))
-                .await
-                .expect("resp");
+        let (status, Json(body)) = patch_cordis_entry(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("nope".into()),
+            axum::Json(update),
+        )
+        .await
+        .expect("resp");
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["patched"], json!(false));
         assert_eq!(body["error"], "no such entry");
@@ -1892,6 +2190,7 @@ mod tests {
         };
         let (status, Json(body)) = patch_cordis_entry(
             State(ctx.clone()),
+            AdminActor::default(),
             Path("calc".into()),
             axum::Json(bad_update),
         )
@@ -1925,6 +2224,7 @@ mod tests {
         };
         let (status, Json(ok_body)) = patch_cordis_entry(
             State(ctx.clone()),
+            AdminActor::default(),
             Path("calc".into()),
             axum::Json(ok_update),
         )
@@ -1963,7 +2263,7 @@ mod tests {
         );
 
         // Boot-like first apply so both entries have journaled live fibers.
-        let (status, Json(body)) = reload_cordis_entries(State(ctx.clone()))
+        let (status, Json(body)) = reload_cordis_entries(State(ctx.clone()), AdminActor::default())
             .await
             .expect("resp");
         assert_eq!(status, StatusCode::OK);
@@ -1978,10 +2278,14 @@ mod tests {
             position: None,
             ..Default::default()
         };
-        let (status, Json(body)) =
-            patch_cordis_entry(State(ctx.clone()), Path("svc".into()), axum::Json(update))
-                .await
-                .expect("resp");
+        let (status, Json(body)) = patch_cordis_entry(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("svc".into()),
+            axum::Json(update),
+        )
+        .await
+        .expect("resp");
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["patched"], json!(true));
         assert_eq!(
@@ -2014,10 +2318,14 @@ mod tests {
         // …and a follow-up no-op PATCH round-trips cleanly (no phantom
         // retire/begin for the renamed ids).
         let noop = cordis::loader::EntryUpdate::default();
-        let (status, Json(body)) =
-            patch_cordis_entry(State(ctx.clone()), Path("grp:svc".into()), axum::Json(noop))
-                .await
-                .expect("resp");
+        let (status, Json(body)) = patch_cordis_entry(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("grp:svc".into()),
+            axum::Json(noop),
+        )
+        .await
+        .expect("resp");
         assert_eq!(status, StatusCode::OK);
         assert!(
             body["applied"]
@@ -2053,10 +2361,14 @@ mod tests {
             parent: Some(Some("b".into())), // would collide with existing b:a
             ..Default::default()
         };
-        let (status, Json(body)) =
-            patch_cordis_entry(State(ctx.clone()), Path("a".into()), axum::Json(update))
-                .await
-                .expect("resp");
+        let (status, Json(body)) = patch_cordis_entry(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("a".into()),
+            axum::Json(update),
+        )
+        .await
+        .expect("resp");
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(body["patched"], json!(false));
         assert!(

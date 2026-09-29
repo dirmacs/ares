@@ -314,59 +314,6 @@ pub(crate) async fn load_tenant_agent_config(
     Ok(Some((agent_config, config_version, config_json)))
 }
 
-pub(crate) async fn resolve_agent_for_tenant(
-    pool: &PgPool,
-    agent_registry: &AgentRegistry,
-    tenant_id: &str,
-    agent_name: &str,
-    fleet_secrets: &ares_store::FleetSecrets,
-) -> Result<ResolvedAgent> {
-    if let Some((agent_config, config_version, config_json)) =
-        load_tenant_agent_config(pool, tenant_id, agent_name).await?
-    {
-        let agent = agent_registry
-            .create_agent_from_config_with_fallbacks(
-                agent_name,
-                &agent_config,
-                tenant_id,
-                pool,
-                fleet_secrets,
-            )
-            .await?;
-
-        return Ok(ResolvedAgent {
-            agent,
-            source: AgentConfigSource::TenantDb,
-            agent_name: agent_name.to_string(),
-            config_version: Some(config_version),
-            config: Some(config_json),
-        });
-    }
-
-    let registry_config = agent_registry.get_config_any(agent_name).ok_or_else(|| {
-        AppError::Configuration(format!(
-            "Agent '{}' not found in TOML or TOON configuration",
-            agent_name
-        ))
-    })?;
-    let agent = agent_registry
-        .create_agent_from_config_with_fallbacks(
-            agent_name,
-            &registry_config,
-            tenant_id,
-            pool,
-            fleet_secrets,
-        )
-        .await?;
-    Ok(ResolvedAgent {
-        agent,
-        source: AgentConfigSource::Registry,
-        agent_name: agent_name.to_string(),
-        config_version: None,
-        config: None,
-    })
-}
-
 /// Tenant id from Cordis isolate (`Execute`) then TenantContext intercept.
 pub fn tenant_id_from_agent_ctx(ctx: &std::sync::Arc<cordis::Context>) -> Option<String> {
     let id = crate::resolver::user_id_from_ctx(ctx, "");
@@ -375,50 +322,6 @@ pub fn tenant_id_from_agent_ctx(ctx: &std::sync::Arc<cordis::Context>) -> Option
     } else {
         Some(id)
     }
-}
-
-pub async fn resolve_required_tenant_agent_from_ctx(
-    pool: &PgPool,
-    agent_registry: &AgentRegistry,
-    ctx: &std::sync::Arc<cordis::Context>,
-    agent_name: &str,
-    fleet_secrets: &ares_store::FleetSecrets,
-) -> Result<ResolvedAgent> {
-    let tenant_id = tenant_id_from_agent_ctx(ctx)
-        .ok_or_else(|| AppError::Auth("Missing tenant context".to_string()))?;
-    resolve_required_tenant_agent(pool, agent_registry, &tenant_id, agent_name, fleet_secrets).await
-}
-
-pub(crate) async fn resolve_required_tenant_agent(
-    pool: &PgPool,
-    agent_registry: &AgentRegistry,
-    tenant_id: &str,
-    agent_name: &str,
-    fleet_secrets: &ares_store::FleetSecrets,
-) -> Result<ResolvedAgent> {
-    let Some((agent_config, config_version, config_json)) =
-        load_tenant_agent_config(pool, tenant_id, agent_name).await?
-    else {
-        return Err(tenant_agent_not_found_error(agent_name, tenant_id));
-    };
-
-    let agent = agent_registry
-        .create_agent_from_config_with_fallbacks(
-            agent_name,
-            &agent_config,
-            tenant_id,
-            pool,
-            fleet_secrets,
-        )
-        .await?;
-
-    Ok(ResolvedAgent {
-        agent,
-        source: AgentConfigSource::TenantDb,
-        agent_name: agent_name.to_string(),
-        config_version: Some(config_version),
-        config: Some(config_json),
-    })
 }
 
 /// Construct a tenant-configured agent for legacy callers.
@@ -928,10 +831,7 @@ mod tests {
 
     #[cfg(feature = "postgres")]
     mod postgres_integration {
-        use super::super::{
-            agent_config_from_json, create_tenant_agent, resolve_agent_for_tenant,
-            resolve_required_tenant_agent, AgentConfigSource,
-        };
+        use super::super::{agent_config_from_json, create_tenant_agent, load_tenant_agent_config};
         use crate::registry::AgentRegistry;
         use crate::Agent;
         use crate::AgentConfig;
@@ -1128,60 +1028,73 @@ mod tests {
             assert_eq!(agent.system_prompt(), "tenant-create-prompt");
         }
 
+        // Moved from `resolve_agent_for_tenant_prefers_tenant_db_config` (2.20): the
+        // deleted function was a wrapper. The tenant row's config and version come from
+        // `load_tenant_agent_config`, which `Execute::run` calls for a request that
+        // requires the tenant's own agent. "The present row wins over a same-named system
+        // agent" is asserted through `Execute::run` in `tests/require_tenant_agent.rs`
+        // (`required_request_with_present_row_runs_the_tenant_agent`).
         #[tokio::test]
-        async fn resolve_agent_for_tenant_prefers_tenant_db_config() {
-            let mock_ollama = spawn_mock_ollama_server().await;
+        async fn load_tenant_agent_config_returns_row_config_and_version() {
             let pool = test_pool().await;
-            let registry = registry_with_product(&mock_ollama);
             let tenant_id = unique_id("tenant-db-wins");
-            allow_mock_model(&pool, &tenant_id).await;
             insert_tenant_agent(&pool, &tenant_id, "product", "tenant-db-prompt").await;
 
-            let resolved = resolve_agent_for_tenant(
-                &pool,
-                &registry,
-                &tenant_id,
-                "product",
-                &ares_store::FleetSecrets::new(),
-            )
-            .await
-            .expect("resolve tenant agent");
+            let (config, config_version, config_json) =
+                load_tenant_agent_config(&pool, &tenant_id, "product")
+                    .await
+                    .expect("load tenant agent config")
+                    .expect("the tenant row is present");
 
-            assert_eq!(resolved.source, AgentConfigSource::TenantDb);
-            assert_eq!(resolved.agent_name, "product");
-            assert_eq!(resolved.agent.system_prompt(), "tenant-db-prompt");
-            assert!(resolved.config_version.is_some());
+            assert_eq!(config.system_prompt.as_deref(), Some("tenant-db-prompt"));
+            assert_eq!(config_json["system_prompt"], "tenant-db-prompt");
+            assert!(
+                config_version.starts_with("tenant-db:"),
+                "no explicit version in the config, so it derives from updated_at: {config_version}"
+            );
         }
 
+        // Moved from `resolve_agent_for_tenant_falls_back_to_registry` (2.20): the
+        // deleted function's registry fallback is the behaviour AR-1 removed from the
+        // required path; what survives is that a registry config builds an agent with the
+        // tenant allowlist applied (default-deny tools), through
+        // `AgentRegistry::create_agent_from_config_with_fallbacks`.
         #[tokio::test]
-        async fn resolve_agent_for_tenant_falls_back_to_registry() {
+        async fn registry_config_builds_agent_with_default_deny_tools() {
             let mock_ollama = spawn_mock_ollama_server().await;
             let pool = test_pool().await;
             let registry = registry_with_product(&mock_ollama);
-            let tenant_id = unique_id("registry-fallback");
+            let tenant_id = unique_id("registry-config");
             allow_mock_model(&pool, &tenant_id).await;
+            let registry_config = registry
+                .get_config_any("product")
+                .expect("product is registered");
 
-            let resolved = resolve_agent_for_tenant(
-                &pool,
-                &registry,
-                &tenant_id,
-                "product",
-                &ares_store::FleetSecrets::new(),
-            )
-            .await
-            .expect("resolve registry agent");
+            let agent = registry
+                .create_agent_from_config_with_fallbacks(
+                    "product",
+                    &registry_config,
+                    &tenant_id,
+                    &pool,
+                    &ares_store::FleetSecrets::new(),
+                )
+                .await
+                .expect("build the registry agent");
 
-            assert_eq!(resolved.source, AgentConfigSource::Registry);
-            assert!(resolved.config_version.is_none());
-            assert_eq!(resolved.agent.system_prompt(), "registry-product-prompt");
+            assert_eq!(agent.system_prompt(), "registry-product-prompt");
             assert!(matches!(
-                resolved.agent.allowed_tools(),
+                agent.allowed_tools(),
                 Some(tools) if tools.is_empty()
             ));
         }
 
+        // Moved from `resolve_agent_for_tenant_rejects_unallowed_fallback_model` (2.20):
+        // the allowlist check on fallback providers lives in
+        // `AgentRegistry::create_agent_from_config_with_fallbacks`, which the deleted
+        // wrapper called with the registry config. Same setup, same assertions, called
+        // directly.
         #[tokio::test]
-        async fn resolve_agent_for_tenant_rejects_unallowed_fallback_model() {
+        async fn create_agent_from_config_rejects_unallowed_fallback_model() {
             let mock_ollama = spawn_mock_ollama_server().await;
             let pool = test_pool().await;
             let tenant_id = unique_id("fallback-deny");
@@ -1248,14 +1161,18 @@ mod tests {
             );
             let fleet_secrets = ares_store::FleetSecrets::from_providers(overrides);
 
-            let err = match resolve_agent_for_tenant(
-                &pool,
-                &registry,
-                &tenant_id,
-                "product",
-                &fleet_secrets,
-            )
-            .await
+            let registry_config = registry
+                .get_config_any("product")
+                .expect("product is registered");
+            let err = match registry
+                .create_agent_from_config_with_fallbacks(
+                    "product",
+                    &registry_config,
+                    &tenant_id,
+                    &pool,
+                    &fleet_secrets,
+                )
+                .await
             {
                 Err(err) => err,
                 Ok(_) => panic!("unallowed fallback model should fail"),
@@ -1265,31 +1182,29 @@ mod tests {
             assert!(err.to_string().contains("fallback-model"));
         }
 
+        // Moved from `resolve_required_tenant_agent_errors_when_row_missing` (2.20): a
+        // missing row is `Ok(None)` from `load_tenant_agent_config`, and `Execute::run`
+        // turns it into a typed not-found for a request that requires the tenant's own
+        // agent (asserted end to end, with a same-named system agent that must not run, in
+        // `tests/require_tenant_agent.rs`:
+        // `required_request_without_row_is_not_found_and_runs_nothing`).
         #[tokio::test]
-        async fn resolve_required_tenant_agent_errors_when_row_missing() {
+        async fn load_tenant_agent_config_returns_none_without_row() {
             let pool = test_pool().await;
-            let registry = registry_with_product("http://127.0.0.1:9");
             let tenant_id = unique_id("required-missing");
 
-            let err = match resolve_required_tenant_agent(
-                &pool,
-                &registry,
-                &tenant_id,
-                "product",
-                &ares_store::FleetSecrets::new(),
-            )
-            .await
-            {
-                Err(err) => err,
-                Ok(_) => panic!("missing tenant row should fail"),
-            };
+            let loaded = load_tenant_agent_config(&pool, &tenant_id, "product")
+                .await
+                .expect("a missing row is not an error at this layer");
 
-            assert!(matches!(err, AppError::NotFound(_)));
-            assert!(err.to_string().contains("not found"));
+            assert!(loaded.is_none());
         }
 
+        // Renamed from `resolved_agent_execute_uses_tenant_system_prompt` (2.20): it built
+        // its agent through the deleted `resolve_agent_for_tenant`; the live, kept helper
+        // for a tenant-configured agent is `create_tenant_agent`. Same assertion.
         #[tokio::test]
-        async fn resolved_agent_execute_uses_tenant_system_prompt() {
+        async fn tenant_agent_execute_uses_tenant_system_prompt() {
             let mock_ollama = spawn_mock_ollama_server().await;
             let pool = test_pool().await;
             let registry = registry_with_product(&mock_ollama);
@@ -1297,7 +1212,7 @@ mod tests {
             allow_mock_model(&pool, &tenant_id).await;
             insert_tenant_agent(&pool, &tenant_id, "product", "tenant-execute-prompt").await;
 
-            let resolved = resolve_agent_for_tenant(
+            let agent = create_tenant_agent(
                 &pool,
                 &registry,
                 &tenant_id,
@@ -1305,23 +1220,24 @@ mod tests {
                 &ares_store::FleetSecrets::new(),
             )
             .await
-            .expect("resolve for execution");
+            .expect("tenant row should produce an agent");
 
-            let response = resolved
-                .agent
+            let response = agent
                 .execute("hello", &test_agent_context())
                 .await
-                .expect("execute resolved tenant agent");
+                .expect("execute tenant agent");
 
             assert!(response
                 .content
                 .contains("SYSTEM_PROMPT=tenant-execute-prompt"));
         }
 
+        // Renamed from `resolve_agent_for_tenant_errors_when_agent_disabled` (2.20): the
+        // disabled-row error is raised by `load_tenant_agent_config`, which the deleted
+        // wrapper called; `Execute::run` calls it directly for a required tenant agent.
         #[tokio::test]
-        async fn resolve_agent_for_tenant_errors_when_agent_disabled() {
+        async fn load_tenant_agent_config_errors_when_agent_disabled() {
             let pool = test_pool().await;
-            let registry = registry_with_product("http://127.0.0.1:9");
             let tenant_id = unique_id("disabled-agent");
             insert_tenant_agent(&pool, &tenant_id, "product", "disabled-prompt").await;
 
@@ -1339,27 +1255,20 @@ mod tests {
             .await
             .expect("disable tenant agent");
 
-            let err = match resolve_agent_for_tenant(
-                &pool,
-                &registry,
-                &tenant_id,
-                "product",
-                &ares_store::FleetSecrets::new(),
-            )
-            .await
-            {
+            let err = match load_tenant_agent_config(&pool, &tenant_id, "product").await {
                 Err(err) => err,
-                Ok(_) => panic!("disabled tenant agent should not resolve"),
+                Ok(_) => panic!("disabled tenant agent should not load"),
             };
 
             assert!(matches!(err, AppError::NotFound(_)));
             assert!(err.to_string().contains("disabled"));
         }
 
+        // Renamed from `resolve_agent_for_tenant_errors_on_invalid_tenant_config` (2.20):
+        // the invalid-config error is raised by `load_tenant_agent_config`.
         #[tokio::test]
-        async fn resolve_agent_for_tenant_errors_on_invalid_tenant_config() {
+        async fn load_tenant_agent_config_errors_on_invalid_tenant_config() {
             let pool = test_pool().await;
-            let registry = registry_with_product("http://127.0.0.1:9");
             let tenant_id = unique_id("invalid-config");
 
             // Insert invalid config directly via SQL to bypass validation
@@ -1384,15 +1293,7 @@ mod tests {
             .execute(&pool)
             .await
             .expect("insert invalid tenant config via raw SQL");
-            let err = match resolve_agent_for_tenant(
-                &pool,
-                &registry,
-                &tenant_id,
-                "product",
-                &ares_store::FleetSecrets::new(),
-            )
-            .await
-            {
+            let err = match load_tenant_agent_config(&pool, &tenant_id, "product").await {
                 Err(err) => err,
                 Ok(_) => panic!("invalid tenant config should fail"),
             };

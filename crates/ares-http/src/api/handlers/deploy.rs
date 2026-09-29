@@ -1,3 +1,4 @@
+use crate::api::handlers::admin::AdminActor;
 use crate::HttpError;
 use crate::Result;
 use ares_types::types::AppError;
@@ -99,6 +100,7 @@ fn health_script() -> String {
 /// POST /api/admin/deploy — trigger a deployment
 pub async fn trigger_deploy(
     State(ctx): State<Arc<Context>>,
+    _actor: AdminActor,
     Json(req): Json<DeployRequest>,
 ) -> Result<Json<DeployResponse>> {
     let target = req.target.to_lowercase();
@@ -451,6 +453,7 @@ mod tests {
             let state = test_app_state(new_deploy_registry());
             let err = trigger_deploy(
                 State(state),
+                AdminActor::default(),
                 Json(DeployRequest {
                     target: "not-a-service".into(),
                 }),
@@ -478,6 +481,7 @@ mod tests {
             let state = test_app_state(registry);
             let err = trigger_deploy(
                 State(state),
+                AdminActor::default(),
                 Json(DeployRequest {
                     target: "ares".into(),
                 }),
@@ -502,6 +506,7 @@ mod tests {
             let state = test_app_state(registry.clone());
             let resp = trigger_deploy(
                 State(state),
+                AdminActor::default(),
                 Json(DeployRequest {
                     target: "ares".into(),
                 }),

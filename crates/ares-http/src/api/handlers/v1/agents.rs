@@ -1149,6 +1149,7 @@ pub async fn delete_tenant_data(
     State(state_ctx): State<Arc<Context>>,
     ctx: Option<Extension<TenantContext>>,
     usage: Option<Extension<crate::middleware::usage::UsageContext>>,
+    _headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>> {
     let tc = extract_tenant(ctx)?;
     // Open the tenant realm when TenantRealms is on ctx, then intercept TenantContext.

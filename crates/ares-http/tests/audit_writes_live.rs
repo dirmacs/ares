@@ -4,7 +4,10 @@
 //! and a failed audit insert must be visible at `error` level, never dropped.
 //!
 //! Requires a live Postgres reachable via `TEST_DATABASE_URL` (never
-//! `ares_test`; see the brief). Handlers are called directly as plain async
+//! `ares_test`; see the brief). With the variable set and the database
+//! unreachable a test **panics** (naming the variable, never its value): a
+//! configured run does not skip. With it unset the crate's skip convention
+//! applies (`tests/common/mod.rs`). Handlers are called directly as plain async
 //! functions with hand-built extractors (`State`, `Extension`, `Path`,
 //! `Json`) — the same in-process pattern `ares-http`'s own
 //! `middleware/api_key_auth.rs` test module uses for its live-DB cases —
@@ -13,56 +16,46 @@
 //!
 //! `#[cfg(feature = "postgres")]`, not `#[ignore]`: these are meant to run in
 //! the normal `cargo test --locked` sweep (they are the brief's failing/
-//! passing evidence), so they must skip cleanly instead of panicking when
-//! the live database is unreachable — matching `live_chat_stream.rs`.
+//! passing evidence). Unconfigured, they skip cleanly, matching
+//! `live_chat_stream.rs`; configured, they never skip.
 
 #![cfg(feature = "postgres")]
 
+mod common;
+
 use std::sync::{Arc, Mutex};
 
+use ares_http::api::handlers::admin::billing::set_token_budget;
+use ares_http::api::handlers::admin::cordis::provide_cordis_service;
 use ares_http::api::handlers::admin::providers::{
     delete_runtime_provider, upsert_runtime_provider,
 };
 use ares_http::api::handlers::admin::shared::{
-    CreateRuntimeProviderRequest, RuntimeProviderScopeQuery,
+    CreateRuntimeProviderRequest, RuntimeProviderScopeQuery, SetTokenBudgetRequest,
 };
 use ares_http::api::handlers::admin::{update_tenant_agent_handler, AdminActor};
-use ares_http::api::handlers::v1::{create_api_key, revoke_api_key, CreateApiKeyRequest};
+use ares_http::api::handlers::v1::{
+    create_api_key, delete_tenant_data, revoke_api_key, rotate_api_key, CreateApiKeyRequest,
+    RotateApiKeyRequest,
+};
 use ares_store::tenant_agents::{create_tenant_agent, CreateTenantAgentRequest};
 use ares_store::TenantDb;
 use ares_types::models::{TenantContext, TenantTier};
+use ares_types::types::AppError;
 use axum::extract::{Extension, Path, Query, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::IntoResponse;
 use axum::Json;
 use cordis::Context;
 use sqlx::PgPool;
 use sqlx::Row;
 
-async fn db_reachable(url: &str) -> bool {
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        sqlx::postgres::PgPoolOptions::new()
-            .max_connections(1)
-            .connect(url),
-    )
-    .await
-    {
-        Ok(Ok(pool)) => {
-            pool.close().await;
-            true
-        }
-        _ => false,
-    }
-}
-
 /// A fresh root `Context` carrying a real, connected `TenantDb`, plus the
-/// pool underneath it for the test's own assertions.
+/// pool underneath it for the test's own assertions. `None` only for the
+/// unconfigured skip; a configured run with no database panics in
+/// `common::live_db_url`.
 async fn live_ctx() -> Option<(Arc<Context>, PgPool)> {
-    let url = ares_test_support::test_db_url();
-    if !db_reachable(&url).await {
-        eprintln!("SKIPPED: test database unreachable ({url})");
-        return None;
-    }
+    common::live_db_url(&common::current_test_name()).await?;
     let pg = ares_test_support::client().await;
     let pool = pg.pool.clone();
     let tenant_db = Arc::new(TenantDb::new(Arc::new(pg)));
@@ -394,11 +387,9 @@ impl tracing::Subscriber for CaptureLog {
 
 #[tokio::test]
 async fn audit_failure_is_logged_not_dropped() {
-    let url = ares_test_support::test_db_url();
-    if !db_reachable(&url).await {
-        eprintln!("SKIPPED: test database unreachable ({url})");
+    let Some(url) = common::live_db_url(&common::current_test_name()).await else {
         return;
-    }
+    };
     // Ensure migrations have run once for this binary (ares_test_support's
     // shared INIT) before opening our own dedicated connection below — this
     // test may run before any other test in the binary has triggered it.
@@ -483,5 +474,333 @@ async fn audit_failure_is_logged_not_dropped() {
         found,
         "expected an ERROR-level tracing event naming the failed action \
          (revoke_api_key); captured events: {events:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 1.16-FIX-1: the admin billing and cordis writes, the bulk key revoke, and
+// the rotate ordering. Each asserts right after the response, no sleep.
+// ---------------------------------------------------------------------------
+
+/// One `admin_audit_log` row as the tests see it.
+#[derive(Debug)]
+struct AuditRow {
+    action: String,
+    resource_type: String,
+    actor: Option<String>,
+    details: Option<String>,
+}
+
+/// Every audit row whose `resource_id` is `resource_id`, oldest first. The
+/// tests use ids no other test touches, so "exactly one new row" is the
+/// length of this list.
+async fn rows_for_resource(pool: &PgPool, resource_id: &str) -> Vec<AuditRow> {
+    sqlx::query(
+        "SELECT action, resource_type, actor, details FROM admin_audit_log \
+         WHERE resource_id = $1 ORDER BY created_at, action",
+    )
+    .bind(resource_id)
+    .fetch_all(pool)
+    .await
+    .expect("audit rows query")
+    .into_iter()
+    .map(|row| AuditRow {
+        action: row.get("action"),
+        resource_type: row.get("resource_type"),
+        actor: row.get("actor"),
+        details: row.get("details"),
+    })
+    .collect()
+}
+
+fn admin_actor() -> AdminActor {
+    AdminActor {
+        subject: Some("audit-test-admin".to_string()),
+        email: None,
+        auth: Some("jwt"),
+        client_ip: Some("203.0.113.99".to_string()),
+    }
+}
+
+#[tokio::test]
+async fn audit_row_lands_before_response_billing() {
+    let Some((ctx, pool)) = live_ctx().await else {
+        return;
+    };
+    let tenant_db = ctx.get::<TenantDb>().expect("TenantDb");
+    let tenant = tenant_db
+        .create_tenant(unique("t1116-billing"), TenantTier::Free)
+        .await
+        .expect("create tenant");
+
+    let resp = set_token_budget(
+        State(ctx.clone()),
+        admin_actor(),
+        Path(tenant.id.clone()),
+        Json(SetTokenBudgetRequest {
+            token_limit: 1_000,
+            period: "monthly".to_string(),
+        }),
+    )
+    .await
+    .expect("set_token_budget response");
+    assert_eq!(resp.0.token_limit, 1_000);
+
+    // Right after the response, no sleep: exactly one row for this tenant.
+    let rows = rows_for_resource(&pool, &tenant.id).await;
+    assert_eq!(
+        rows.len(),
+        1,
+        "expected exactly one admin_audit_log row for the billing write immediately after the \
+         response, got {rows:?}"
+    );
+    assert_eq!(rows[0].action, "set_token_budget");
+    assert_eq!(rows[0].resource_type, "token_budget");
+    assert_eq!(rows[0].actor.as_deref(), Some("audit-test-admin"));
+    let details = rows[0].details.as_deref().expect("details");
+    assert!(
+        details.contains("1000") && details.contains("monthly"),
+        "details must record the new limit and period, got {details}"
+    );
+}
+
+#[tokio::test]
+async fn audit_row_lands_before_response_cordis() {
+    let Some((ctx, pool)) = live_ctx().await else {
+        return;
+    };
+    // `events_service` is the one service the endpoint can provide; a fresh
+    // root context does not have it yet, so the call provides it.
+    assert!(ctx.get::<cordis::EventsService>().is_none());
+    let before = rows_for_resource(&pool, "events_service").await.len();
+
+    let (status, Json(body)) = provide_cordis_service(
+        State(ctx.clone()),
+        admin_actor(),
+        Path("events_service".to_string()),
+    )
+    .await
+    .expect("provide_cordis_service response");
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["provided"], serde_json::json!(true));
+
+    let rows = rows_for_resource(&pool, "events_service").await;
+    assert_eq!(
+        rows.len(),
+        before + 1,
+        "expected exactly one new admin_audit_log row for the cordis write immediately after the \
+         response, got {rows:?}"
+    );
+    let row = rows.last().expect("one row");
+    assert_eq!(row.action, "provide_cordis_service");
+    assert_eq!(row.resource_type, "cordis_service");
+    assert_eq!(row.actor.as_deref(), Some("audit-test-admin"));
+}
+
+#[tokio::test]
+async fn audit_row_lands_before_response_bulk_key_revoke() {
+    let Some((ctx, pool)) = live_ctx().await else {
+        return;
+    };
+    let tenant_db = ctx.get::<TenantDb>().expect("TenantDb");
+    let tenant = tenant_db
+        .create_tenant(unique("t1116-bulk"), TenantTier::Free)
+        .await
+        .expect("create tenant");
+    for n in 0..3 {
+        tenant_db
+            .create_api_key(&tenant.id, format!("bulk-{n}"), None, None)
+            .await
+            .expect("create api key directly");
+    }
+    let tc = TenantContext::new(tenant.id.clone(), TenantTier::Free);
+
+    let resp = delete_tenant_data(
+        State(ctx.clone()),
+        Some(Extension(tc)),
+        None,
+        HeaderMap::new(),
+    )
+    .await
+    .expect("delete_tenant_data response");
+    assert_eq!(resp.0["api_keys_revoked"], serde_json::json!(3));
+
+    // One row naming the tenant, and the number of keys revoked in details.
+    let rows = rows_for_resource(&pool, &tenant.id).await;
+    assert_eq!(
+        rows.len(),
+        1,
+        "expected exactly one admin_audit_log row for the bulk key revoke immediately after the \
+         response, got {rows:?}"
+    );
+    assert_eq!(rows[0].action, "delete_tenant_data");
+    assert_eq!(rows[0].resource_type, "tenant");
+    assert_eq!(rows[0].actor.as_deref(), Some(tenant.id.as_str()));
+    let details: serde_json::Value =
+        serde_json::from_str(rows[0].details.as_deref().expect("details")).expect("json details");
+    assert_eq!(details["api_keys_revoked"], serde_json::json!(3));
+}
+
+#[tokio::test]
+async fn audit_row_lands_before_response_v1_key_rotate() {
+    let Some((ctx, pool)) = live_ctx().await else {
+        return;
+    };
+    let tenant_db = ctx.get::<TenantDb>().expect("TenantDb");
+    let tenant = tenant_db
+        .create_tenant(unique("t1116-rotate"), TenantTier::Free)
+        .await
+        .expect("create tenant");
+    let (old_key, _raw) = tenant_db
+        .create_api_key(&tenant.id, "to-rotate".to_string(), None, None)
+        .await
+        .expect("create api key directly");
+    let tc = TenantContext::new(tenant.id.clone(), TenantTier::Free);
+
+    let resp = rotate_api_key(
+        State(ctx.clone()),
+        Some(Extension(tc)),
+        None,
+        Path(old_key.id.clone()),
+        HeaderMap::new(),
+        Json(RotateApiKeyRequest {
+            scopes: None,
+            expires_in_days: None,
+        }),
+    )
+    .await
+    .expect("rotate_api_key response");
+    let new_id = resp.0.key.id.clone();
+
+    // The mint and the revoke each leave one row, on their own key.
+    let minted = rows_for_resource(&pool, &new_id).await;
+    assert_eq!(minted.len(), 1, "mint rows: {minted:?}");
+    assert_eq!(minted[0].action, "rotate_api_key");
+    assert_eq!(minted[0].resource_type, "api_key");
+    assert_eq!(minted[0].actor.as_deref(), Some(tenant.id.as_str()));
+    assert!(minted[0]
+        .details
+        .as_deref()
+        .expect("details")
+        .contains(&old_key.id));
+
+    let revoked = rows_for_resource(&pool, &old_key.id).await;
+    assert_eq!(revoked.len(), 1, "revoke rows: {revoked:?}");
+    assert_eq!(revoked[0].action, "revoke_api_key");
+    assert_eq!(revoked[0].resource_type, "api_key");
+    assert_eq!(revoked[0].actor.as_deref(), Some(tenant.id.as_str()));
+    assert!(revoked[0]
+        .details
+        .as_deref()
+        .expect("details")
+        .contains(&new_id));
+}
+
+/// `rotate_api_key` mints first, then revokes the old key with `?`. When the
+/// revoke fails the tenant has a live minted key the caller never received a
+/// response for: it must still have its audit row.
+///
+/// The revoke is forced to fail here, in the scratch database, with a trigger
+/// that raises on the UPDATE of this one key's row (`revoke_api_key` is
+/// `UPDATE api_keys SET is_active = 0 WHERE id = $1 AND tenant_id = $2`). It
+/// touches no product code, and its `WHEN` clause names this test's own key id
+/// so no other test in the binary is affected; it is dropped before any
+/// assertion.
+#[tokio::test]
+async fn rotate_audits_the_mint_when_the_revoke_fails() {
+    let Some((ctx, pool)) = live_ctx().await else {
+        return;
+    };
+    let tenant_db = ctx.get::<TenantDb>().expect("TenantDb");
+    let tenant = tenant_db
+        .create_tenant(unique("t1116-rotate-fail"), TenantTier::Free)
+        .await
+        .expect("create tenant");
+    let (old_key, _raw) = tenant_db
+        .create_api_key(&tenant.id, "to-rotate-fail".to_string(), None, None)
+        .await
+        .expect("create api key directly");
+    let tc = TenantContext::new(tenant.id.clone(), TenantTier::Free);
+
+    // Force the revoke's UPDATE (only of this key) to fail.
+    let trigger = format!("t1116_fail_revoke_{}", old_key.id.replace('-', ""));
+    sqlx::query(
+        "CREATE OR REPLACE FUNCTION t1116_fail_revoke() RETURNS trigger LANGUAGE plpgsql AS \
+         $$ BEGIN RAISE EXCEPTION 't1116 forced revoke failure'; END $$",
+    )
+    .execute(&pool)
+    .await
+    .expect("create trigger function in the scratch database");
+    sqlx::query(&format!(
+        "CREATE TRIGGER {trigger} BEFORE UPDATE ON api_keys FOR EACH ROW \
+         WHEN (OLD.id = '{}') EXECUTE FUNCTION t1116_fail_revoke()",
+        old_key.id
+    ))
+    .execute(&pool)
+    .await
+    .expect("create trigger in the scratch database");
+
+    let result = rotate_api_key(
+        State(ctx.clone()),
+        Some(Extension(tc)),
+        None,
+        Path(old_key.id.clone()),
+        HeaderMap::new(),
+        Json(RotateApiKeyRequest {
+            scopes: None,
+            expires_in_days: None,
+        }),
+    )
+    .await;
+
+    sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger} ON api_keys"))
+        .execute(&pool)
+        .await
+        .expect("drop trigger");
+
+    // The handler's status for a failed revoke is today's: the database
+    // error from `revoke_api_key`, mapped to 500. The audit ordering must not
+    // change it.
+    let err = result.expect_err("a failed revoke fails the rotation");
+    assert!(
+        matches!(&err.0, AppError::Database(m) if m.contains("Failed to revoke API key")),
+        "unexpected error: {err:?}"
+    );
+    assert_eq!(
+        err.into_response().status(),
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+
+    // The mint happened: exactly one other key exists for the tenant, active.
+    let minted_ids: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM api_keys WHERE tenant_id = $1 AND id <> $2")
+            .bind(&tenant.id)
+            .bind(&old_key.id)
+            .fetch_all(&pool)
+            .await
+            .expect("minted key lookup");
+    assert_eq!(minted_ids.len(), 1, "the mint should have succeeded");
+
+    // ... and it has its audit row, though the response was an error.
+    let minted = rows_for_resource(&pool, &minted_ids[0]).await;
+    assert_eq!(
+        minted.len(),
+        1,
+        "the minted key must have exactly one audit row even though the revoke failed, got \
+         {minted:?}"
+    );
+    assert_eq!(minted[0].action, "rotate_api_key");
+    assert_eq!(minted[0].resource_type, "api_key");
+    assert_eq!(minted[0].actor.as_deref(), Some(tenant.id.as_str()));
+    assert!(minted[0]
+        .details
+        .as_deref()
+        .expect("details")
+        .contains(&old_key.id));
+
+    // The revoke did not happen, so the old key has no revoke row.
+    assert!(
+        rows_for_resource(&pool, &old_key.id).await.is_empty(),
+        "no revoke row for a revoke that failed"
     );
 }

@@ -2096,3 +2096,173 @@ fn route_inventory_fails_closed_on_a_router_call_it_does_not_know() {
         assert!(read.is_err(), "`{extra}` was read without complaint");
     }
 }
+
+// ---------------------------------------------------------------------------
+// 1.16-FIX-3, under SR's bar for the scanner (it catches every audited route
+// written the normal way): gate round 3's two shapes. A function that writes
+// an audit row is named as a value only as a route's handler, inside a
+// `.route(` of a route table; a `.merge(NAME)` or `.nest(.., NAME)` in the
+// tables is read through NAME's binding, not its name. Each first case below
+// is the reviewer's own sabotage, in shape.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn scanner_flags_a_writer_passed_as_a_value_outside_a_route_registration() {
+    let writer = format!(
+        "async fn write_patch_audit(a: PatchAudit) {{\n    let pool = a.pool;\n    {CALL}.await;\n}}\n"
+    );
+    for (label, src) in [
+        // Gate round 3, rev2 finding 1: the writer handed to a spawning method named `post`.
+        (
+            "a spawning method named `post` on another type",
+            format!(
+                "struct PatchAudit {{\n    pool: PgPool,\n}}\n\
+                 impl PatchAudit {{\n    fn post<F, Fut>(self, f: F)\n    where\n        \
+                 F: FnOnce(PatchAudit) -> Fut,\n        \
+                 Fut: std::future::Future<Output = ()> + Send + 'static,\n    {{\n        \
+                 tokio::spawn(f(self));\n    }}\n}}\n\
+                 {writer}pub async fn patch_cordis_entry(pool: PgPool) {{\n    \
+                 PatchAudit {{ pool }}.post(write_patch_audit);\n}}\n"
+            ),
+        ),
+        (
+            "a method router built outside `.route(`",
+            format!(
+                "{writer}pub fn routes() -> Router {{\n    let mr = post(write_patch_audit);\n    \
+                 Router::new().route(\"/x\", mr)\n}}\n"
+            ),
+        ),
+        (
+            "`.route(` on a receiver that is not a route table",
+            format!(
+                "{writer}pub async fn handler(auditor: Auditor) {{\n    \
+                 auditor.route(\"/x\", post(write_patch_audit));\n}}\n"
+            ),
+        ),
+        (
+            "`.post(` of another type inside a `.route(`",
+            format!(
+                "{writer}pub fn routes() -> Router {{\n    \
+                 Router::new().route(\"/x\", Spawner.post(write_patch_audit))\n}}\n"
+            ),
+        ),
+    ] {
+        let s = scan("fixture.rs", &src);
+        assert!(
+            s.defects.iter().any(|d| {
+                d.reason.contains(
+                "`write_patch_audit`, a function that writes an audit row, is referenced as a value"
+            )
+            }),
+            "{label}: {:?}",
+            s.defects
+        );
+    }
+}
+
+#[test]
+fn scanner_lets_a_writer_through_as_a_handler_in_a_route_table() {
+    // A handler module's own inline router (the Cordis RouteSet shape), with a
+    // trailing comma after the path ...
+    let handlers = format!(
+        "pub async fn revoke_api_key(pool: PgPool) {{\n    {CALL}.await;\n}}\n\
+         pub async fn rotate_api_key(pool: PgPool) {{\n    {CALL}.await;\n}}\n\
+         pub fn routes() -> axum::Router {{\n    axum::Router::new()\n        \
+         .route(\"/api-keys/{{id}}/rotate\", post(rotate_api_key))\n        \
+         .route(\n            \"/api-keys/{{id}}\",\n            \
+         get(list_api_keys).delete(\n                revoke_api_key,\n            ),\n        )\n}}\n"
+    );
+    // ... and `create_router`'s tables, including a registration on
+    // `v1_routes` (not a `Router::new()` chain) inside the v1 table.
+    let routes = ROUTES_FIXTURE.replace(
+        "    let v1_routes = v1_routes.layer(",
+        "    let v1_routes = v1_routes.route(\n        \"/api-keys/{id}/rotate\",\n        \
+         post(crate::api::handlers::v1::rotate_api_key),\n    );\n    \
+         let v1_routes = v1_routes.layer(",
+    );
+    let r = scan_files(&[
+        ("api/handlers/v1/agents.rs".to_string(), handlers),
+        ("api/routes.rs".to_string(), routes),
+    ]);
+    assert!(r.defects.is_empty(), "{:?}", r.defects);
+    assert_eq!(r.sites.values().map(Vec::len).sum::<usize>(), 2);
+}
+
+/// The message of the panic `f` raises (it must raise one).
+fn panic_message(f: impl FnOnce() + std::panic::UnwindSafe) -> String {
+    let payload = std::panic::catch_unwind(f).expect_err("expected the inventory to panic");
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap_or_default()
+}
+
+fn assert_merge_refused(src: &str, name: &str) {
+    let src = src.to_string();
+    let msg = panic_message(move || {
+        mutating_routes(&src);
+    });
+    let quoted = format!("`{name}`");
+    for part in [
+        "routes.rs",
+        "a router the inventory cannot see",
+        quoted.as_str(),
+    ] {
+        assert!(msg.contains(part), "missing `{part}` in: {msg}");
+    }
+}
+
+#[test]
+fn route_inventory_fails_closed_on_a_merge_of_a_router_bound_outside_the_tables() {
+    // Gate round 3, rev2 finding 2: a router with an unaudited closure route,
+    // bound under the admin table's own name before the table, then merged as
+    // the table's first call (where `admin_routes` still names that router).
+    let shadow = r#"    let admin_routes = Router::<Arc<Context>>::new().route(
+        "/admin/tenants/{id}/budget-wipe",
+        delete(
+            |axum::extract::State(ctx): axum::extract::State<Arc<Context>>,
+             axum::extract::Path(id): axum::extract::Path<String>| async move {
+                if let Some(db) = ctx.get::<TenantDb>() {
+                    let _ = sqlx::query("DELETE FROM tenant_budgets WHERE tenant_id = $1")
+                        .bind(id)
+                        .execute(db.pool())
+                        .await;
+                }
+                axum::http::StatusCode::NO_CONTENT
+            },
+        ),
+    );
+"#;
+    let src = routes_with("").replace(
+        "    let admin_routes = Router::new()\n",
+        &format!("{shadow}    let admin_routes = Router::new()\n        .merge(admin_routes)\n"),
+    );
+    assert_merge_refused(&src, "admin_routes");
+}
+
+#[test]
+fn route_inventory_fails_closed_on_a_merge_of_a_rebound_router() {
+    // The table's inline router, bound again before the merge to a router the
+    // inventory cannot read.
+    let src = routes_with("").replace(
+        "    let v1_routes = Router::new()\n",
+        "    let v1_metered_routes = crate::api::handlers::v1::chat::routes();\n    \
+         let v1_routes = Router::new()\n",
+    );
+    assert_merge_refused(&src, "v1_metered_routes");
+}
+
+#[test]
+fn route_inventory_fails_closed_on_a_merge_of_a_reassigned_router() {
+    // An inline router in the table, reassigned before the merge.
+    let src = routes_with("").replace(
+        "    let v1_routes = Router::new()\n        .merge(v1_metered_routes)\n",
+        "    let mut v1_extra_routes = Router::new()\n        \
+         .route(\"/usage\", get(crate::api::handlers::v1::get_usage));\n    \
+         v1_extra_routes = crate::api::handlers::v1::chat::routes();\n    \
+         let v1_routes = Router::new()\n        .merge(v1_metered_routes)\n        \
+         .merge(v1_extra_routes)\n",
+    );
+    assert_merge_refused(&src, "v1_extra_routes");
+}

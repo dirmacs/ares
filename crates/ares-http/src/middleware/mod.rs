@@ -1,4 +1,5 @@
 pub mod api_key_auth;
+pub mod rate_limit;
 pub mod usage;
 
 pub use api_key_auth::api_key_auth_middleware;

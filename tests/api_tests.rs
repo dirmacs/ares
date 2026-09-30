@@ -120,6 +120,7 @@ async fn create_test_app() -> Router {
             cors_origins: vec!["*".to_string()],
             rate_limit_per_second: 0, // Disabled for tests
             rate_limit_burst: 0,
+            rate_limit: Default::default(),
         },
         auth: TomlAuthConfig {
             jwt_secret_env: "TEST_JWT_SECRET".to_string(),

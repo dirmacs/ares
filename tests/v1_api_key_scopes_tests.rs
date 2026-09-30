@@ -155,6 +155,7 @@ async fn create_v1_test_server() -> (TestServer, Arc<TenantDb>) {
             cors_origins: vec!["*".to_string()],
             rate_limit_per_second: 0,
             rate_limit_burst: 0,
+            rate_limit: Default::default(),
         },
         auth: TomlAuthConfig {
             jwt_secret_env: "TEST_JWT_SECRET".to_string(),

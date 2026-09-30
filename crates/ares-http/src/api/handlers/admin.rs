@@ -193,11 +193,17 @@ fn admin_percent_decode(value: &str) -> Result<String> {
 
 pub async fn admin_middleware(mut req: axum::extract::Request, next: Next) -> Response {
     let client_ip = admin_client_ip(&req);
-    let admin_secret = std::env::var("ADMIN_API_KEY").ok();
+    // An empty or whitespace-only secret never authenticates: a configured
+    // `ADMIN_API_KEY` like that is treated exactly as unset, and such a
+    // header never matches.
+    let admin_secret = std::env::var("ADMIN_API_KEY")
+        .ok()
+        .filter(|secret| !secret.trim().is_empty());
     let header_secret = req
         .headers()
         .get("x-admin-secret")
         .and_then(|v| v.to_str().ok())
+        .filter(|given| !given.trim().is_empty())
         .map(String::from);
     if let (Some(expected), Some(given)) = (&admin_secret, &header_secret) {
         if expected == given {

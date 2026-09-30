@@ -117,7 +117,9 @@ pub async fn handle_field_change(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::handlers::document_upload::WEBHOOK_SECRET_ENV_LOCK;
+    use crate::api::handlers::document_upload::{
+        webhook_headers_admitted, WEBHOOK_SECRET_ENV_LOCK,
+    };
     use axum::http::HeaderValue;
 
     #[test]
@@ -150,5 +152,31 @@ mod tests {
         headers.insert("X-Webhook-Secret", HeaderValue::from_static("secret456"));
         assert!(verify_webhook_secret(&headers).is_ok());
         std::env::remove_var("WEBHOOK_SECRET");
+    }
+
+    /// Probe E7 on this route's check: `WEBHOOK_SECRET` set empty refuses
+    /// every header.
+    #[test]
+    fn verify_webhook_secret_e7_empty_secret_refuses_every_header() {
+        let _guard = WEBHOOK_SECRET_ENV_LOCK.lock().expect("env lock poisoned");
+        let admitted = webhook_headers_admitted(verify_webhook_secret, Some(""));
+        assert!(admitted.is_empty(), "E7: let through {admitted:?}");
+    }
+
+    /// Unset refuses every request (the amending ruling §2.1).
+    #[test]
+    fn verify_webhook_secret_unset_refuses_every_header() {
+        let _guard = WEBHOOK_SECRET_ENV_LOCK.lock().expect("env lock poisoned");
+        let admitted = webhook_headers_admitted(verify_webhook_secret, None);
+        assert!(admitted.is_empty(), "unset: let through {admitted:?}");
+    }
+
+    /// Whitespace-only is treated as unset: not even the same whitespace
+    /// matches.
+    #[test]
+    fn verify_webhook_secret_blank_secret_refuses_every_header() {
+        let _guard = WEBHOOK_SECRET_ENV_LOCK.lock().expect("env lock poisoned");
+        let admitted = webhook_headers_admitted(verify_webhook_secret, Some("   "));
+        assert!(admitted.is_empty(), "blank: let through {admitted:?}");
     }
 }

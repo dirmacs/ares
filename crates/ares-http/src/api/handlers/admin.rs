@@ -595,4 +595,147 @@ mod tests {
         std::env::remove_var("ADMIN_API_KEY");
         drop(env_guard);
     }
+
+    // -------------------------------------------------------------------------
+    // admin_middleware: an empty secret never authenticates (item 2.16e)
+    // -------------------------------------------------------------------------
+
+    /// The static-secret regressions of `tests/empty_secrets.rs`, on the
+    /// middleware alone: no database, so they run in every `--lib` run.
+    // Deliberate: each test holds the admin env lock across its awaited
+    // requests, because the middleware reads `ADMIN_API_KEY` mid-await.
+    #[allow(clippy::await_holding_lock)]
+    mod empty_secret {
+        use super::*;
+        use tower::ServiceExt;
+
+        /// A dummy secret for these tests only. It protects nothing.
+        const TEST_SECRET: &str = "s3cret-test";
+
+        /// The refusal, as `admin_middleware` writes it.
+        const REFUSAL: &str =
+            r#"{"error":"Admin access requires X-Admin-Secret header or JWT with admin role"}"#;
+
+        /// The middleware under test. No request here carries a token, so the
+        /// key set is never fetched and its URL is never dialled.
+        fn secret_only_app() -> axum::Router {
+            admin_test_app(Arc::new(crate::auth::jwks::JwksCache::new(
+                "http://127.0.0.1:9/never-fetched-jwks.json",
+            )))
+        }
+
+        /// Set (`Some`) or remove (`None`) `ADMIN_API_KEY`, send one request
+        /// with `header` as `X-Admin-Secret` (`None`: no header), and remove
+        /// the variable again. The caller holds the admin env lock.
+        async fn static_secret_status(
+            key: Option<&str>,
+            header: Option<&str>,
+        ) -> (StatusCode, String) {
+            match key {
+                Some(value) => std::env::set_var("ADMIN_API_KEY", value),
+                None => std::env::remove_var("ADMIN_API_KEY"),
+            }
+            let mut builder = Request::builder().uri("/");
+            if let Some(value) = header {
+                builder = builder.header("x-admin-secret", value);
+            }
+            let response = secret_only_app()
+                .oneshot(builder.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let status = response.status();
+            let body = response_body(response).await;
+            std::env::remove_var("ADMIN_API_KEY");
+            (status, body)
+        }
+
+        /// Probe E1: `ADMIN_API_KEY` set empty and an empty `X-Admin-Secret`
+        /// were admitted as actor `admin_secret`.
+        #[tokio::test]
+        async fn e1_empty_admin_key_and_empty_header_is_refused() {
+            let _env = shared::lock_admin_env();
+            let (status, body) = static_secret_status(Some(""), Some("")).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "E1 admitted: {body:?}");
+            assert_eq!(body, REFUSAL);
+        }
+
+        /// A whitespace-only key never matches, not even the same whitespace.
+        #[tokio::test]
+        async fn blank_admin_key_and_blank_header_is_refused() {
+            let _env = shared::lock_admin_env();
+            let (status, body) = static_secret_status(Some("   "), Some("   ")).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "blank admitted: {body:?}");
+            assert_eq!(body, REFUSAL);
+        }
+
+        /// The other direction: a configured key with the right header is
+        /// still admitted through the static path.
+        #[tokio::test]
+        async fn configured_admin_key_with_right_header_is_admitted() {
+            let _env = shared::lock_admin_env();
+            let (status, body) = static_secret_status(Some(TEST_SECRET), Some(TEST_SECRET)).await;
+            assert_eq!(status, StatusCode::OK, "configured key refused: {body:?}");
+            assert_eq!(body, "admin_secret");
+        }
+
+        /// One raw `GET /` over a real socket, with `header_line`
+        /// (CRLF-terminated) verbatim. Returns the status line and the body.
+        async fn raw_get(addr: std::net::SocketAddr, header_line: &str) -> (String, String) {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let request = format!(
+                "GET / HTTP/1.1\r\nHost: admin-test\r\n{header_line}Connection: close\r\n\r\n"
+            );
+            sock.write_all(request.as_bytes()).await.unwrap();
+            let mut buf = Vec::new();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                sock.read_to_end(&mut buf),
+            )
+            .await
+            .expect("response within 10 s")
+            .unwrap();
+            let text = String::from_utf8_lossy(&buf).into_owned();
+            let status_line = text.lines().next().unwrap_or("").to_string();
+            let body = text
+                .split_once("\r\n\r\n")
+                .map(|(_, body)| body.to_string())
+                .unwrap_or_default();
+            (status_line, body)
+        }
+
+        /// Probe E6, the wire form of E1: hyper parses the header line
+        /// `X-Admin-Secret:` with an empty value (`curl -H 'X-Admin-Secret:'`
+        /// would drop the header, so the request is written by hand).
+        #[tokio::test]
+        async fn e6_empty_header_on_the_wire_is_refused() {
+            let _env = shared::lock_admin_env();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                let _ = axum::serve(listener, secret_only_app()).await;
+            });
+
+            std::env::set_var("ADMIN_API_KEY", "");
+            let (status_line, body) = raw_get(addr, "X-Admin-Secret:\r\n").await;
+            // Control: the same socket admits the right secret when the key
+            // is non-empty, so a 401 above is the middleware's refusal.
+            std::env::set_var("ADMIN_API_KEY", TEST_SECRET);
+            let (control_line, control_body) =
+                raw_get(addr, &format!("X-Admin-Secret: {TEST_SECRET}\r\n")).await;
+            std::env::remove_var("ADMIN_API_KEY");
+
+            assert!(
+                status_line.starts_with("HTTP/1.1 401"),
+                "E6 must be refused, got {status_line:?} {body:?}"
+            );
+            assert_eq!(body, REFUSAL);
+            assert!(
+                control_line.starts_with("HTTP/1.1 200"),
+                "control must be admitted, got {control_line:?}"
+            );
+            assert_eq!(control_body, "admin_secret");
+        }
+    }
 }

@@ -29,6 +29,11 @@
 //! - Set but unreachable: every test panics (the gate in `tests/common`).
 //! - Neither panic prints the URL.
 //!
+//! Without the `postgres` feature this binary has no tests. The regressions
+//! that need no database (E1, E6, E7, blank, unset, and a correctly
+//! configured key) are also unit tests in `admin.rs`, `document_upload.rs`
+//! and `field_change.rs`, so every `--lib` run guards the fix.
+//!
 //! `ADMIN_API_KEY` and `WEBHOOK_SECRET` are process-global. Every test takes
 //! the one static [`ENV_LOCK`] for its whole body and sets or removes the
 //! variable before each request. The secrets are dummies spelled in this

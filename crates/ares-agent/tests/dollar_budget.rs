@@ -8,7 +8,7 @@
 //! agent through the public `Agent::execute` entry on both of its model paths (no tools, and the
 //! tool loop).
 //!
-//! Every refusal must be typed (`AppError::RateLimited`, the error the token budget already uses)
+//! Every refusal must be typed (`AppError::BudgetExceeded`, the error the token budget also uses)
 //! and must happen before the model is called: the stub model counts its calls and the count is
 //! asserted to be zero on every refusal.
 //!
@@ -323,14 +323,14 @@ fn day_start() -> i64 {
 fn assert_refused_before_the_model(outcome: (Result<AgentResponse, AppError>, usize)) -> String {
     let (result, calls) = outcome;
     match result {
-        Err(AppError::RateLimited(msg)) => {
+        Err(AppError::BudgetExceeded(msg)) => {
             assert_eq!(
                 calls, 0,
                 "the run was refused but the model was still called {calls} time(s): {msg}"
             );
             msg
         }
-        Err(other) => panic!("expected the typed budget refusal (RateLimited), got {other:?}"),
+        Err(other) => panic!("expected the typed budget refusal (BudgetExceeded), got {other:?}"),
         Ok(response) => panic!(
             "expected the run to be refused before the model call, but it ran: the model was \
              called {calls} time(s) and answered {:?}",

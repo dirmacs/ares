@@ -109,7 +109,9 @@ async fn spawn_stub(mode: Stub) -> (String, Arc<AtomicUsize>) {
         .expect("bind the stub provider");
     let addr = listener.local_addr().expect("stub provider address");
     tokio::spawn(async move {
-        axum::serve(listener, app).await.expect("serve the stub provider");
+        axum::serve(listener, app)
+            .await
+            .expect("serve the stub provider");
     });
     (format!("http://{addr}"), calls)
 }
@@ -149,6 +151,9 @@ struct RunRow {
     provider_name: Option<String>,
     error: Option<String>,
 }
+
+/// `reason_code, success, model_name, provider_name` as read from `usage_events`.
+type UsageColumns = (Option<String>, bool, Option<String>, Option<String>);
 
 /// The run's `usage_events` row.
 #[derive(Debug)]
@@ -326,15 +331,14 @@ impl Fixture {
     async fn usage_row(&self) -> UsageRow {
         let started = Instant::now();
         loop {
-            let rows: Vec<(Option<String>, bool, Option<String>, Option<String>)> =
-                sqlx::query_as(
-                    "SELECT reason_code, success, model_name, provider_name FROM usage_events \
+            let rows: Vec<UsageColumns> = sqlx::query_as(
+                "SELECT reason_code, success, model_name, provider_name FROM usage_events \
                      WHERE tenant_id = $1",
-                )
-                .bind(&self.tenant_id)
-                .fetch_all(&self.pool)
-                .await
-                .expect("query usage_events");
+            )
+            .bind(&self.tenant_id)
+            .fetch_all(&self.pool)
+            .await
+            .expect("query usage_events");
             if let Some(row) = rows.first() {
                 assert_eq!(rows.len(), 1, "one run, one usage_events row: {rows:?}");
                 return UsageRow {
@@ -448,7 +452,10 @@ async fn failed_run_meters_reason_code() {
     assert!(fx.model_calls() >= 1, "the provider was called and failed");
 
     let usage = fx.usage_row().await;
-    assert!(!usage.success, "a failed run bills success = false: {usage:?}");
+    assert!(
+        !usage.success,
+        "a failed run bills success = false: {usage:?}"
+    );
     assert_eq!(
         usage.reason_code.as_deref(),
         Some("llm_error"),
@@ -474,7 +481,11 @@ async fn failed_run_records_resolved_model_and_provider() {
 
     let usage = fx.usage_row().await;
     assert_eq!(usage.model_name.as_deref(), Some(STUB_MODEL), "{usage:?}");
-    assert_eq!(usage.provider_name.as_deref(), Some(STUB_PROVIDER), "{usage:?}");
+    assert_eq!(
+        usage.provider_name.as_deref(),
+        Some(STUB_PROVIDER),
+        "{usage:?}"
+    );
 }
 
 /// A failure before the agent is built (its model resolves to nothing): no provider is
@@ -486,7 +497,11 @@ async fn failure_before_resolution_is_marked_unresolved() {
     };
     let reply = fx.run().await;
     assert_failed_reply(&reply);
-    assert_eq!(fx.model_calls(), 0, "nothing was resolved, so nothing was called");
+    assert_eq!(
+        fx.model_calls(),
+        0,
+        "nothing was resolved, so nothing was called"
+    );
 
     let run = fx.run_row(&reply.run_id()).await;
     assert_eq!(run.status, "failed");
@@ -495,7 +510,11 @@ async fn failure_before_resolution_is_marked_unresolved() {
 
     let usage = fx.usage_row().await;
     assert_eq!(usage.model_name.as_deref(), Some(UNRESOLVED), "{usage:?}");
-    assert_eq!(usage.provider_name.as_deref(), Some(UNRESOLVED), "{usage:?}");
+    assert_eq!(
+        usage.provider_name.as_deref(),
+        Some(UNRESOLVED),
+        "{usage:?}"
+    );
     assert_eq!(
         usage.reason_code.as_deref(),
         reply.body["reason_code"].as_str(),
@@ -544,9 +563,17 @@ async fn failed_run_logs_class_not_text() {
         "exactly one warn event for the failed run; captured: {events:?}"
     );
     let (_, _, fields) = run_warns[0];
-    assert_eq!(field(fields, "tenant_id"), Some(fx.tenant_id.as_str()), "{fields:?}");
+    assert_eq!(
+        field(fields, "tenant_id"),
+        Some(fx.tenant_id.as_str()),
+        "{fields:?}"
+    );
     assert_eq!(field(fields, "agent_name"), Some(AGENT), "{fields:?}");
-    assert_eq!(field(fields, "reason_code"), Some("llm_error"), "{fields:?}");
+    assert_eq!(
+        field(fields, "reason_code"),
+        Some("llm_error"),
+        "{fields:?}"
+    );
     assert_eq!(field(fields, "error_variant"), Some("LLM"), "{fields:?}");
 
     for (level, target, fields) in events.iter() {
@@ -570,10 +597,18 @@ async fn budget_refusal_is_budget_exceeded() {
     usd.over_usd_budget("10.00", "11.000000").await;
     let reply = usd.run().await;
     assert_failed_reply(&reply);
-    assert_eq!(reply.body["reason_code"], "budget_exceeded", "{}", reply.body);
+    assert_eq!(
+        reply.body["reason_code"], "budget_exceeded",
+        "{}",
+        reply.body
+    );
     assert_eq!(usd.model_calls(), 0, "a refused run never calls the model");
     let usage = usd.usage_row().await;
-    assert_eq!(usage.reason_code.as_deref(), Some("budget_exceeded"), "{usage:?}");
+    assert_eq!(
+        usage.reason_code.as_deref(),
+        Some("budget_exceeded"),
+        "{usage:?}"
+    );
     assert!(!usage.success, "{usage:?}");
     // The refusal comes after resolution: the names are the resolved ones.
     let run = usd.run_row(&reply.run_id()).await;
@@ -586,10 +621,22 @@ async fn budget_refusal_is_budget_exceeded() {
     tokens.over_token_budget().await;
     let reply = tokens.run().await;
     assert_failed_reply(&reply);
-    assert_eq!(reply.body["reason_code"], "budget_exceeded", "{}", reply.body);
-    assert_eq!(tokens.model_calls(), 0, "a refused run never calls the model");
+    assert_eq!(
+        reply.body["reason_code"], "budget_exceeded",
+        "{}",
+        reply.body
+    );
+    assert_eq!(
+        tokens.model_calls(),
+        0,
+        "a refused run never calls the model"
+    );
     let usage = tokens.usage_row().await;
-    assert_eq!(usage.reason_code.as_deref(), Some("budget_exceeded"), "{usage:?}");
+    assert_eq!(
+        usage.reason_code.as_deref(),
+        Some("budget_exceeded"),
+        "{usage:?}"
+    );
 }
 
 /// The success arm is unchanged: completed, metered success = true, `reason_code` NULL.
@@ -611,7 +658,10 @@ async fn completed_run_reason_code_stays_null() {
 
     let usage = fx.usage_row().await;
     assert!(usage.success, "{usage:?}");
-    assert_eq!(usage.reason_code, None, "a completed run meters no reason_code");
+    assert_eq!(
+        usage.reason_code, None,
+        "a completed run meters no reason_code"
+    );
     assert_eq!(usage.model_name.as_deref(), Some(STUB_MODEL), "{usage:?}");
 }
 
@@ -654,7 +704,8 @@ struct FieldVisitor(Vec<(String, String)>);
 
 impl tracing::field::Visit for FieldVisitor {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        self.0.push((field.name().to_string(), format!("{value:?}")));
+        self.0
+            .push((field.name().to_string(), format!("{value:?}")));
     }
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
         self.0.push((field.name().to_string(), value.to_string()));

@@ -562,7 +562,9 @@ async fn failed_run_logs_class_not_text() {
         1,
         "exactly one warn event for the failed run; captured: {events:?}"
     );
-    let (_, _, fields) = run_warns[0];
+    let (_, target, fields) = run_warns[0];
+    // The line itself, for the record (`--nocapture` shows it).
+    eprintln!("captured WARN {target}: {fields:?}");
     assert_eq!(
         field(fields, "tenant_id"),
         Some(fx.tenant_id.as_str()),

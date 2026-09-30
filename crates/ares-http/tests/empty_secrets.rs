@@ -18,9 +18,16 @@
 //! Every test drives the real router in-process: `ares_http::build_router`,
 //! which nests `create_router` at `/api` with `admin_middleware` on the admin
 //! routes and the two public event routes as mounted. The admitted cells reach
-//! real handlers, so the tests run against a live scratch Postgres named by
-//! `TEST_DATABASE_URL` (never `ares_test`), through the crate's gate
-//! (`tests/common/mod.rs`): configured and unreachable panics, never skips.
+//! real handlers, so the tests need a live scratch Postgres, and they touch
+//! only the one `TEST_DATABASE_URL` names (never `ares_test`):
+//!
+//! - `TEST_DATABASE_URL` unset or empty: every test panics first, before it
+//!   touches anything. They never skip, and never fall back to
+//!   `DATABASE_URL`, a dotenv file or the unix-socket `ares_test` (the
+//!   fallbacks of `ares_test_support::test_db_url`, which no test here
+//!   calls).
+//! - Set but unreachable: every test panics (the gate in `tests/common`).
+//! - Neither panic prints the URL.
 //!
 //! `ADMIN_API_KEY` and `WEBHOOK_SECRET` are process-global. Every test takes
 //! the one static [`ENV_LOCK`] for its whole body and sets or removes the
@@ -137,11 +144,50 @@ struct Harness {
     tenant_id: String,
 }
 
-/// `build_router` over a live scratch database, with one seeded tenant.
-/// `jwks_url` points the admin JWT path at a local issuer key set.
-async fn boot(jwks_url: Option<String>) -> Option<Harness> {
-    common::live_db_url(&common::current_test_name()).await?;
-    let pg = Arc::new(ares_test_support::client().await);
+/// The one database this binary may touch: the one `TEST_DATABASE_URL` names.
+///
+/// Every test calls this first, before anything else. Unset, empty or not
+/// valid Unicode panics: these security tests never skip, and never fall back
+/// to another database. The message names the variable, never a URL.
+fn named_test_db() -> String {
+    match std::env::var(common::DB_ENV) {
+        Ok(url) if !url.trim().is_empty() => url,
+        _ => panic!(
+            "{test}: {var} is unset or empty. The empty-secret tests never skip and never fall \
+             back to another database: set {var} to a scratch database (never ares_test).",
+            test = common::current_test_name(),
+            var = common::DB_ENV,
+        ),
+    }
+}
+
+/// Migrations run once per test binary, on the named database.
+static MIGRATED: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+/// `build_router` over the database [`named_test_db`] returned, with one
+/// seeded tenant. `jwks_url` points the admin JWT path at a local issuer key
+/// set.
+async fn boot(db_url: String, jwks_url: Option<String>) -> Harness {
+    let test = common::current_test_name();
+    // Configured and unreachable panics here, naming the variable only.
+    let common::Gate::Run(db_url) = common::gate(&test, true, db_url).await else {
+        unreachable!("a configured gate never skips");
+    };
+    // A pool on exactly that URL: no resolver, no dotenv, no fallback.
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&db_url)
+        .await
+        .unwrap_or_else(|_| panic!("{test}: no pool on the database {} names", common::DB_ENV));
+    MIGRATED
+        .get_or_init(|| async {
+            ares_store::MIGRATOR
+                .run(&pool)
+                .await
+                .expect("migrate the named test database");
+        })
+        .await;
+    let pg = Arc::new(ares_store::PostgresClient { pool });
     let tenant_db = Arc::new(TenantDb::new(pg));
     let tenant = tenant_db
         .create_tenant(
@@ -158,10 +204,10 @@ async fn boot(jwks_url: Option<String>) -> Option<Harness> {
     let ctx = cordis::Context::new_root();
     ctx.provide_arc(tenant_db);
     ctx.provide_arc(Arc::new(auth));
-    Some(Harness {
+    Harness {
         router: ares_http::build_router(ctx),
         tenant_id: tenant.id,
-    })
+    }
 }
 
 async fn send(router: &axum::Router, req: Request<Body>) -> (StatusCode, String, String) {
@@ -256,9 +302,10 @@ fn webhook_refused(status: StatusCode, body: &str) -> bool {
 
 #[tokio::test]
 async fn admin_secret_matrix() {
+    let db = named_test_db();
     let _env = lock_env();
     set_env(WEBHOOK_ENV, None);
-    let Some(h) = boot(None).await else { return };
+    let h = boot(db, None).await;
 
     let headers = [
         Given::Missing,
@@ -318,8 +365,9 @@ async fn admin_secret_matrix() {
 /// `X-Admin-Secret` was admitted as actor `admin_secret`.
 #[tokio::test]
 async fn e1_empty_admin_secret_and_empty_header_is_refused() {
+    let db = named_test_db();
     let _env = lock_env();
-    let Some(h) = boot(None).await else { return };
+    let h = boot(db, None).await;
 
     set_env(ADMIN_ENV, Some(""));
     let (status, content_type, body) = send(&h.router, admin_get(Some(""))).await;
@@ -363,8 +411,9 @@ async fn raw_admin_get(addr: SocketAddr, header_line: &str) -> (String, String) 
 /// drop the header, so the request is written by hand).
 #[tokio::test]
 async fn e6_empty_header_on_the_wire_is_refused() {
+    let db = named_test_db();
     let _env = lock_env();
-    let Some(h) = boot(None).await else { return };
+    let h = boot(db, None).await;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -403,9 +452,10 @@ async fn e6_empty_header_on_the_wire_is_refused() {
 
 #[tokio::test]
 async fn webhook_secret_matrix() {
+    let db = named_test_db();
     let _env = lock_env();
     set_env(ADMIN_ENV, None);
-    let Some(h) = boot(None).await else { return };
+    let h = boot(db, None).await;
 
     let headers = [Given::Missing, Given::Empty, Given::Wrong, Given::Right];
     let (mut cells, mut admitted, mut wrong) = (0usize, 0usize, Vec::new());
@@ -464,8 +514,9 @@ async fn webhook_secret_matrix() {
 /// Every request is now refused, on both routes.
 #[tokio::test]
 async fn e7_empty_webhook_secret_refuses_every_request() {
+    let db = named_test_db();
     let _env = lock_env();
-    let Some(h) = boot(None).await else { return };
+    let h = boot(db, None).await;
 
     set_env(WEBHOOK_ENV, Some(""));
     let mut wrong = Vec::new();
@@ -572,12 +623,11 @@ fn eddsa_admin_token(seed: u8, kid: &str) -> String {
 
 #[tokio::test]
 async fn correctly_configured_host_behaves_as_before() {
+    let db = named_test_db();
     let _env = lock_env();
     let (seed, kid) = (41u8, "2-16e-test-kid");
     let jwks_url = jwks_stub(seed, kid).await;
-    let Some(h) = boot(Some(jwks_url)).await else {
-        return;
-    };
+    let h = boot(db, Some(jwks_url)).await;
 
     set_env(ADMIN_ENV, Some(ADMIN_TEST_SECRET));
     set_env(WEBHOOK_ENV, Some(WEBHOOK_TEST_SECRET));

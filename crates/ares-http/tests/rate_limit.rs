@@ -210,7 +210,10 @@ async fn off_by_default_no_request_is_ever_refused() {
     assert_eq!(config.trusted_proxies, vec![ip("127.0.0.1"), ip("::1")]);
 
     let h = Harness::new(config);
-    assert!(!h.layer.is_enabled(), "every limit at 0 means the limiter is off");
+    assert!(
+        !h.layer.is_enabled(),
+        "every limit at 0 means the limiter is off"
+    );
 
     for n in 0..300 {
         let status = h
@@ -222,9 +225,17 @@ async fn off_by_default_no_request_is_ever_refused() {
             .await;
         assert_eq!(status, StatusCode::OK, "request {n} was refused while off");
         let status = h
-            .get("/v1/ping", "127.0.0.1", &[("x-forwarded-for", "198.51.100.9")])
+            .get(
+                "/v1/ping",
+                "127.0.0.1",
+                &[("x-forwarded-for", "198.51.100.9")],
+            )
             .await;
-        assert_eq!(status, StatusCode::OK, "proxied request {n} was refused while off");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "proxied request {n} was refused while off"
+        );
     }
     assert_eq!(h.refusals(), RefusalCounts::default());
 }
@@ -262,7 +273,10 @@ trusted_proxies = ["127.0.0.1", "::1", "192.0.2.10"]
 
     // A key without its unit is refused at load, never silently ignored.
     let unitless = toml::from_str::<ServerConfig>("[rate_limit]\nper_client = 60\n");
-    assert!(unitless.is_err(), "an unknown [rate_limit] key must not load");
+    assert!(
+        unitless.is_err(),
+        "an unknown [rate_limit] key must not load"
+    );
 
     // A trusted proxy that is not an IP address is refused at load.
     let bad_proxy = toml::from_str::<ServerConfig>("[rate_limit]\ntrusted_proxies = [\"caddy\"]\n");
@@ -286,8 +300,16 @@ async fn units_per_client_60_per_minute_burst_5() {
         );
     }
     let sixth = h.call(Method::GET, "/v1/ping", "203.0.113.7", &[]).await;
-    assert_eq!(sixth.status(), StatusCode::TOO_MANY_REQUESTS, "the 6th in a burst of 5");
-    assert_eq!(retry_after(&sixth), "1", "60 per minute refills one request per second");
+    assert_eq!(
+        sixth.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "the 6th in a burst of 5"
+    );
+    assert_eq!(
+        retry_after(&sixth),
+        "1",
+        "60 per minute refills one request per second"
+    );
 
     // Another client is untouched.
     assert_eq!(h.get("/v1/ping", "203.0.113.8", &[]).await, StatusCode::OK);
@@ -344,16 +366,25 @@ async fn trusted_proxy_forwarded_for_names_the_client() {
     let b = [("x-forwarded-for", "203.0.113.8")];
     assert_eq!(h.get("/v1/ping", "127.0.0.1", &a).await, StatusCode::OK);
     assert_eq!(h.get("/v1/ping", "127.0.0.1", &a).await, StatusCode::OK);
-    assert_eq!(h.get("/v1/ping", "127.0.0.1", &a).await, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        h.get("/v1/ping", "127.0.0.1", &a).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
     assert_eq!(h.get("/v1/ping", "127.0.0.1", &b).await, StatusCode::OK);
     assert_eq!(h.get("/v1/ping", "127.0.0.1", &b).await, StatusCode::OK);
-    assert_eq!(h.get("/v1/ping", "127.0.0.1", &b).await, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        h.get("/v1/ping", "127.0.0.1", &b).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
 
     // The proxy's own requests (no forwarding header) are a third client.
     assert_eq!(h.get("/v1/ping", "127.0.0.1", &[]).await, StatusCode::OK);
 
     // ::1 and the IPv4-mapped loopback are the same trusted proxy.
-    assert_eq!(h.get("/v1/ping", "::1", &a).await, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        h.get("/v1/ping", "::1", &a).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
     assert_eq!(
         h.get("/v1/ping", "::ffff:127.0.0.1", &a).await,
         StatusCode::TOO_MANY_REQUESTS
@@ -365,8 +396,12 @@ async fn trusted_proxy_forwarded_for_names_the_client() {
     assert_eq!(h.get("/v1/ping", "127.0.0.1", &real).await, StatusCode::OK);
     assert_eq!(h.get("/v1/ping", "127.0.0.1", &real).await, StatusCode::OK);
     assert_eq!(
-        h.get("/v1/ping", "127.0.0.1", &[("x-forwarded-for", "198.51.100.20")])
-            .await,
+        h.get(
+            "/v1/ping",
+            "127.0.0.1",
+            &[("x-forwarded-for", "198.51.100.20")]
+        )
+        .await,
         StatusCode::TOO_MANY_REQUESTS,
         "X-Real-IP and X-Forwarded-For naming one address are one client"
     );
@@ -374,7 +409,10 @@ async fn trusted_proxy_forwarded_for_names_the_client() {
     assert_eq!(
         h.client_of(
             "127.0.0.1",
-            &[("x-forwarded-for", "203.0.113.30"), ("x-real-ip", "198.51.100.20")]
+            &[
+                ("x-forwarded-for", "203.0.113.30"),
+                ("x-real-ip", "198.51.100.20")
+            ]
         ),
         Some(ip("203.0.113.30"))
     );
@@ -399,11 +437,21 @@ async fn spoofed_forwarded_for_from_untrusted_peer_is_never_read() {
     eprintln!("spoof: peer 127.0.0.1    + X-Forwarded-For 203.0.113.7 -> client {via_proxy:?}");
     eprintln!("spoof: peer 198.51.100.9 + X-Forwarded-For 203.0.113.7 -> client {via_untrusted:?}");
     assert_eq!(via_proxy, Some(ip("203.0.113.7")));
-    assert_eq!(via_untrusted, Some(ip("198.51.100.9")), "the header from an untrusted peer is ignored");
+    assert_eq!(
+        via_untrusted,
+        Some(ip("198.51.100.9")),
+        "the header from an untrusted peer is ignored"
+    );
 
     // The untrusted peer spends its own bucket, whatever it claims.
-    assert_eq!(h.get("/v1/ping", "198.51.100.9", &spoof).await, StatusCode::OK);
-    assert_eq!(h.get("/v1/ping", "198.51.100.9", &spoof).await, StatusCode::OK);
+    assert_eq!(
+        h.get("/v1/ping", "198.51.100.9", &spoof).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.get("/v1/ping", "198.51.100.9", &spoof).await,
+        StatusCode::OK
+    );
     let mut statuses = Vec::new();
     for headers in [
         vec![("x-forwarded-for", "203.0.113.7")],
@@ -438,12 +486,21 @@ async fn spoofed_forwarded_for_from_untrusted_peer_is_never_read() {
     eprintln!("spoof: refusal log lines: {warns:#?}");
     assert_eq!(warns.len(), 4, "one warn line per refusal: {warns:#?}");
     for line in &warns {
-        assert!(line.contains("client"), "the line names the dimension: {line}");
-        assert!(line.contains("198.51.100.0/24"), "the line carries the /24: {line}");
+        assert!(
+            line.contains("client"),
+            "the line names the dimension: {line}"
+        );
+        assert!(
+            line.contains("198.51.100.0/24"),
+            "the line carries the /24: {line}"
+        );
     }
     let text = capture.all_text();
     for full in ["198.51.100.9", "203.0.113.7", "203.0.113.8", "203.0.113.9"] {
-        assert!(!text.contains(full), "a full address was logged: {full}\n{text}");
+        assert!(
+            !text.contains(full),
+            "a full address was logged: {full}\n{text}"
+        );
     }
 }
 
@@ -461,10 +518,7 @@ async fn forwarded_for_with_several_hops_picks_the_rightmost_untrusted() {
         ..off()
     });
 
-    let hops = [(
-        "x-forwarded-for",
-        "198.51.100.77, 203.0.113.9, 192.0.2.10",
-    )];
+    let hops = [("x-forwarded-for", "198.51.100.77, 203.0.113.9, 192.0.2.10")];
     assert_eq!(h.client_of("127.0.0.1", &hops), Some(ip("203.0.113.9")));
     // Several header lines are one list, in order.
     assert_eq!(
@@ -478,21 +532,33 @@ async fn forwarded_for_with_several_hops_picks_the_rightmost_untrusted() {
         Some(ip("203.0.113.9"))
     );
     assert_eq!(
-        h.client_of("127.0.0.1", &[("x-forwarded-for", "203.0.113.9,192.0.2.10")]),
+        h.client_of(
+            "127.0.0.1",
+            &[("x-forwarded-for", "203.0.113.9,192.0.2.10")]
+        ),
         Some(ip("203.0.113.9"))
     );
     // Every hop trusted: the peer is the client.
     assert_eq!(
-        h.client_of("127.0.0.1", &[("x-forwarded-for", "192.0.2.11, 192.0.2.10")]),
+        h.client_of(
+            "127.0.0.1",
+            &[("x-forwarded-for", "192.0.2.11, 192.0.2.10")]
+        ),
         Some(ip("127.0.0.1"))
     );
     // A hop that cannot be read stops the walk: never an address left of it.
     assert_eq!(
-        h.client_of("127.0.0.1", &[("x-forwarded-for", "203.0.113.9, not-an-ip")]),
+        h.client_of(
+            "127.0.0.1",
+            &[("x-forwarded-for", "203.0.113.9, not-an-ip")]
+        ),
         Some(ip("127.0.0.1"))
     );
     assert_eq!(
-        h.client_of("127.0.0.1", &[("x-forwarded-for", "203.0.113.9, , 192.0.2.10")]),
+        h.client_of(
+            "127.0.0.1",
+            &[("x-forwarded-for", "203.0.113.9, , 192.0.2.10")]
+        ),
         Some(ip("127.0.0.1"))
     );
     // The IPv4-mapped form of an address is that address.
@@ -504,14 +570,22 @@ async fn forwarded_for_with_several_hops_picks_the_rightmost_untrusted() {
     // Through the router: the chosen hop is the bucket.
     assert_eq!(h.get("/v1/ping", "127.0.0.1", &hops).await, StatusCode::OK);
     assert_eq!(
-        h.get("/v1/ping", "127.0.0.1", &[("x-forwarded-for", "203.0.113.9")])
-            .await,
+        h.get(
+            "/v1/ping",
+            "127.0.0.1",
+            &[("x-forwarded-for", "203.0.113.9")]
+        )
+        .await,
         StatusCode::TOO_MANY_REQUESTS,
         "the rightmost untrusted hop was the client"
     );
     assert_eq!(
-        h.get("/v1/ping", "127.0.0.1", &[("x-forwarded-for", "198.51.100.77")])
-            .await,
+        h.get(
+            "/v1/ping",
+            "127.0.0.1",
+            &[("x-forwarded-for", "198.51.100.77")]
+        )
+        .await,
         StatusCode::OK,
         "the leftmost, client-supplied entry was not the client"
     );
@@ -542,13 +616,25 @@ async fn per_key_buckets_are_separate_and_keys_are_never_logged() {
     let b_hdr = [("authorization", b.as_str())];
 
     // Two keys from one client: separate buckets.
-    assert_eq!(h.get("/v1/ping", "203.0.113.7", &a_hdr).await, StatusCode::OK);
-    assert_eq!(h.get("/v1/ping", "203.0.113.7", &a_hdr).await, StatusCode::OK);
+    assert_eq!(
+        h.get("/v1/ping", "203.0.113.7", &a_hdr).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.get("/v1/ping", "203.0.113.7", &a_hdr).await,
+        StatusCode::OK
+    );
     let refused = h.call(Method::GET, "/v1/ping", "203.0.113.7", &a_hdr).await;
     assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(retry_after(&refused), "1");
-    assert_eq!(h.get("/v1/ping", "203.0.113.7", &b_hdr).await, StatusCode::OK);
-    assert_eq!(h.get("/v1/ping", "203.0.113.7", &b_hdr).await, StatusCode::OK);
+    assert_eq!(
+        h.get("/v1/ping", "203.0.113.7", &b_hdr).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.get("/v1/ping", "203.0.113.7", &b_hdr).await,
+        StatusCode::OK
+    );
     assert_eq!(
         h.get("/v1/ping", "203.0.113.7", &b_hdr).await,
         StatusCode::TOO_MANY_REQUESTS
@@ -560,7 +646,10 @@ async fn per_key_buckets_are_separate_and_keys_are_never_logged() {
     }
     // An unknown key is not authenticated here: it gets its own bucket.
     let unknown_hdr = [("authorization", unknown.as_str())];
-    assert_eq!(h.get("/v1/ping", "203.0.113.7", &unknown_hdr).await, StatusCode::OK);
+    assert_eq!(
+        h.get("/v1/ping", "203.0.113.7", &unknown_hdr).await,
+        StatusCode::OK
+    );
     // The same key from another client shares its bucket.
     assert_eq!(
         h.get("/v1/ping", "198.51.100.9", &a_hdr).await,
@@ -591,7 +680,10 @@ async fn per_key_buckets_are_separate_and_keys_are_never_logged() {
         "limiter_key_bravo",
         "Bearer",
     ] {
-        assert!(!text.contains(secret), "a key leaked into the logs: {secret}\n{text}");
+        assert!(
+            !text.contains(secret),
+            "a key leaked into the logs: {secret}\n{text}"
+        );
     }
 }
 
@@ -611,8 +703,12 @@ async fn global_cap_applies_across_clients() {
         "a fresh client is refused once the shared cap is spent"
     );
     assert_eq!(
-        h.get("/v1/ping", "127.0.0.1", &[("x-forwarded-for", "203.0.113.7")])
-            .await,
+        h.get(
+            "/v1/ping",
+            "127.0.0.1",
+            &[("x-forwarded-for", "203.0.113.7")]
+        )
+        .await,
         StatusCode::TOO_MANY_REQUESTS
     );
     assert_eq!(
@@ -646,16 +742,30 @@ async fn only_exact_get_and_head_health_is_exempt() {
     for _ in 0..50 {
         assert_eq!(h.get("/health", "203.0.113.7", &[]).await, StatusCode::OK);
         assert_eq!(
-            h.call(Method::HEAD, "/health", "203.0.113.7", &[]).await.status(),
+            h.call(Method::HEAD, "/health", "203.0.113.7", &[])
+                .await
+                .status(),
             StatusCode::OK
         );
     }
     // Those 100 requests spent nothing: the burst of 2 is intact.
-    assert_eq!(h.get("/healthz", "203.0.113.7", &[]).await, StatusCode::NOT_FOUND);
-    assert_eq!(h.get("/health/x", "203.0.113.7", &[]).await, StatusCode::NOT_FOUND);
+    assert_eq!(
+        h.get("/healthz", "203.0.113.7", &[]).await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        h.get("/health/x", "203.0.113.7", &[]).await,
+        StatusCode::NOT_FOUND
+    );
 
     // Spent. No prefix or look-alike is exempt.
-    for path in ["/health/x", "/healthz", "/health/", "/health/context", "/HEALTH"] {
+    for path in [
+        "/health/x",
+        "/healthz",
+        "/health/",
+        "/health/context",
+        "/HEALTH",
+    ] {
         assert_eq!(
             h.get(path, "203.0.113.7", &[]).await,
             StatusCode::TOO_MANY_REQUESTS,
@@ -664,16 +774,23 @@ async fn only_exact_get_and_head_health_is_exempt() {
     }
     for method in [Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS] {
         assert_eq!(
-            h.call(method.clone(), "/health", "203.0.113.7", &[]).await.status(),
+            h.call(method.clone(), "/health", "203.0.113.7", &[])
+                .await
+                .status(),
             StatusCode::TOO_MANY_REQUESTS,
             "{method} /health must be limited"
         );
     }
     // The exact GET and HEAD still pass (a query string is not part of the path).
     assert_eq!(h.get("/health", "203.0.113.7", &[]).await, StatusCode::OK);
-    assert_eq!(h.get("/health?probe=1", "203.0.113.7", &[]).await, StatusCode::OK);
     assert_eq!(
-        h.call(Method::HEAD, "/health", "203.0.113.7", &[]).await.status(),
+        h.get("/health?probe=1", "203.0.113.7", &[]).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.call(Method::HEAD, "/health", "203.0.113.7", &[])
+            .await
+            .status(),
         StatusCode::OK
     );
 }
@@ -689,7 +806,11 @@ async fn refusal_is_429_json_with_retry_after_in_whole_seconds() {
 
     let refused = h.call(Method::GET, "/v1/ping", "203.0.113.7", &[]).await;
     assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(retry_after(&refused), "60", "1 request per minute: next one in 60 s");
+    assert_eq!(
+        retry_after(&refused),
+        "60",
+        "1 request per minute: next one in 60 s"
+    );
     assert_eq!(
         refused
             .headers()
@@ -714,7 +835,11 @@ async fn refusal_is_429_json_with_retry_after_in_whole_seconds() {
 
     h.clock.advance(Duration::from_millis(29_000));
     let refused = h.call(Method::GET, "/v1/ping", "203.0.113.7", &[]).await;
-    assert_eq!(retry_after(&refused), "1", "0.5 s left rounds up to 1, never 0");
+    assert_eq!(
+        retry_after(&refused),
+        "1",
+        "0.5 s left rounds up to 1, never 0"
+    );
 
     h.clock.advance(Duration::from_millis(500));
     assert_eq!(h.get("/v1/ping", "203.0.113.7", &[]).await, StatusCode::OK);

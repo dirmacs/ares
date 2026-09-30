@@ -151,6 +151,48 @@ pub(crate) fn verify_webhook_secret(headers: &HeaderMap) -> crate::Result<()> {
 #[cfg(test)]
 pub(crate) static WEBHOOK_SECRET_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Every `X-Webhook-Secret` a caller can send: none, empty, whitespace-only
+/// and a non-empty value.
+#[cfg(test)]
+pub(crate) fn every_webhook_header() -> [(&'static str, HeaderMap); 4] {
+    let with = |value: &'static str| {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-Webhook-Secret",
+            axum::http::HeaderValue::from_static(value),
+        );
+        headers
+    };
+    [
+        ("missing", HeaderMap::new()),
+        ("empty", with("")),
+        ("blank", with("   ")),
+        ("non-empty", with("anything")),
+    ]
+}
+
+/// Sets (`Some`) or removes (`None`) `WEBHOOK_SECRET`, runs `check` against
+/// [`every_webhook_header`], removes the variable again, and returns the
+/// headers `check` let through. Each test module passes its own
+/// `verify_webhook_secret`. The caller holds [`WEBHOOK_SECRET_ENV_LOCK`].
+#[cfg(test)]
+pub(crate) fn webhook_headers_admitted(
+    check: fn(&HeaderMap) -> crate::Result<()>,
+    secret: Option<&str>,
+) -> Vec<&'static str> {
+    match secret {
+        Some(value) => std::env::set_var("WEBHOOK_SECRET", value),
+        None => std::env::remove_var("WEBHOOK_SECRET"),
+    }
+    let admitted = every_webhook_header()
+        .into_iter()
+        .filter(|(_, headers)| check(headers).is_ok())
+        .map(|(label, _)| label)
+        .collect();
+    std::env::remove_var("WEBHOOK_SECRET");
+    admitted
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,5 +302,31 @@ mod tests {
         headers.insert("X-Webhook-Secret", HeaderValue::from_static("secret123"));
         assert!(verify_webhook_secret(&headers).is_ok());
         std::env::remove_var("WEBHOOK_SECRET");
+    }
+
+    /// Probe E7: `WEBHOOK_SECRET` set empty skipped the check. Every header
+    /// is now refused.
+    #[test]
+    fn verify_webhook_secret_e7_empty_secret_refuses_every_header() {
+        let _guard = WEBHOOK_SECRET_ENV_LOCK.lock().expect("env lock poisoned");
+        let admitted = webhook_headers_admitted(verify_webhook_secret, Some(""));
+        assert!(admitted.is_empty(), "E7: let through {admitted:?}");
+    }
+
+    /// Unset refuses every request (the amending ruling §2.1).
+    #[test]
+    fn verify_webhook_secret_unset_refuses_every_header() {
+        let _guard = WEBHOOK_SECRET_ENV_LOCK.lock().expect("env lock poisoned");
+        let admitted = webhook_headers_admitted(verify_webhook_secret, None);
+        assert!(admitted.is_empty(), "unset: let through {admitted:?}");
+    }
+
+    /// Whitespace-only is treated as unset: not even the same whitespace
+    /// matches.
+    #[test]
+    fn verify_webhook_secret_blank_secret_refuses_every_header() {
+        let _guard = WEBHOOK_SECRET_ENV_LOCK.lock().expect("env lock poisoned");
+        let admitted = webhook_headers_admitted(verify_webhook_secret, Some("   "));
+        assert!(admitted.is_empty(), "blank: let through {admitted:?}");
     }
 }

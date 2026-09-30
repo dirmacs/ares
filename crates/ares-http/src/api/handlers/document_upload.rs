@@ -39,8 +39,8 @@ pub struct DocumentUploadEvent {
 /// POST /api/events/document-upload
 ///
 /// Public endpoint that receives document-upload events and triggers
-/// matching agents.  Secured by `X-Webhook-Secret` when `WEBHOOK_SECRET`
-/// is configured.
+/// matching agents.  Secured by `X-Webhook-Secret`; refuses every request
+/// until `WEBHOOK_SECRET` is configured (`verify_webhook_secret`).
 pub async fn handle_document_upload(
     State(ctx): State<Arc<Context>>,
     headers: HeaderMap,
@@ -126,32 +126,35 @@ fn document_upload_trigger_matches(
 }
 
 /// Check the `X-Webhook-Secret` header against the `WEBHOOK_SECRET` env var.
-/// If the env var is unset the check is skipped (development mode).
-fn verify_webhook_secret(headers: &HeaderMap) -> crate::Result<()> {
-    let expected = std::env::var("WEBHOOK_SECRET").unwrap_or_default();
-    if expected.is_empty() {
-        return Ok(());
-    }
+///
+/// Fails closed: refuses unless `WEBHOOK_SECRET` is non-empty after trimming
+/// **and** the header equals it. Unset, empty and whitespace-only all refuse
+/// every request. The one check for both `/api/events/*` routes
+/// (`field_change` uses it too).
+pub(crate) fn verify_webhook_secret(headers: &HeaderMap) -> crate::Result<()> {
+    let expected = std::env::var("WEBHOOK_SECRET")
+        .ok()
+        .filter(|secret| !secret.trim().is_empty());
     let provided = headers
         .get("X-Webhook-Secret")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    if provided == expected {
-        Ok(())
-    } else {
-        Err(HttpError::from(AppError::Auth(
+        .and_then(|h| h.to_str().ok());
+    match (expected, provided) {
+        (Some(expected), Some(provided)) if provided == expected => Ok(()),
+        _ => Err(HttpError::from(AppError::Auth(
             "Invalid webhook secret".to_string(),
-        )))
+        ))),
     }
 }
+
+/// Serializes the unit tests, here and in `field_change`, that mutate the
+/// process-global `WEBHOOK_SECRET`: both modules test the one check above.
+#[cfg(test)]
+pub(crate) static WEBHOOK_SECRET_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
-    use std::sync::Mutex;
-
-    static WEBHOOK_SECRET_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn document_trigger(bucket: &str, prefix: &str, enabled: bool) -> db_schedules::EventTrigger {
         db_schedules::EventTrigger {
@@ -218,12 +221,25 @@ mod tests {
     }
 
     #[test]
-    fn verify_webhook_secret_empty_env_allows_all() {
+    fn verify_webhook_secret_unset_or_empty_refuses() {
         let _guard = WEBHOOK_SECRET_ENV_LOCK.lock().expect("env lock poisoned");
+        let no_header = HeaderMap::new();
+        let mut anything = HeaderMap::new();
+        anything.insert("X-Webhook-Secret", HeaderValue::from_static("anything"));
+        let mut empty = HeaderMap::new();
+        empty.insert("X-Webhook-Secret", HeaderValue::from_static(""));
+        let mut blank = HeaderMap::new();
+        blank.insert("X-Webhook-Secret", HeaderValue::from_static("   "));
+
         std::env::remove_var("WEBHOOK_SECRET");
-        let mut headers = HeaderMap::new();
-        headers.insert("X-Webhook-Secret", HeaderValue::from_static("anything"));
-        assert!(verify_webhook_secret(&headers).is_ok());
+        assert!(verify_webhook_secret(&anything).is_err());
+        assert!(verify_webhook_secret(&no_header).is_err());
+        std::env::set_var("WEBHOOK_SECRET", "");
+        assert!(verify_webhook_secret(&no_header).is_err());
+        assert!(verify_webhook_secret(&empty).is_err());
+        std::env::set_var("WEBHOOK_SECRET", "   ");
+        assert!(verify_webhook_secret(&blank).is_err());
+        std::env::remove_var("WEBHOOK_SECRET");
     }
 
     #[test]

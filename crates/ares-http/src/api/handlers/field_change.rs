@@ -3,7 +3,7 @@
 //! Receives simulated field-change events and executes any matching
 //! field-change triggers for the tenant.
 
-use crate::HttpError;
+use crate::api::handlers::document_upload::verify_webhook_secret;
 use ares_agent::trigger;
 use ares_store::schedules as db_schedules;
 use ares_types::types::AppError;
@@ -36,8 +36,8 @@ pub struct FieldChangeEvent {
 /// POST /api/events/field-change
 ///
 /// Public endpoint that receives field-change events and triggers
-/// matching agents.  Secured by `X-Webhook-Secret` when `WEBHOOK_SECRET`
-/// is configured.
+/// matching agents.  Secured by `X-Webhook-Secret`; refuses every request
+/// until `WEBHOOK_SECRET` is configured (`verify_webhook_secret`).
 pub async fn handle_field_change(
     State(ctx): State<Arc<Context>>,
     headers: HeaderMap,
@@ -114,41 +114,22 @@ pub async fn handle_field_change(
     Ok(StatusCode::OK)
 }
 
-/// Check the `X-Webhook-Secret` header against the `WEBHOOK_SECRET` env var.
-/// If the env var is unset the check is skipped (development mode).
-fn verify_webhook_secret(headers: &HeaderMap) -> crate::Result<()> {
-    let expected = std::env::var("WEBHOOK_SECRET").unwrap_or_default();
-    if expected.is_empty() {
-        return Ok(());
-    }
-    let provided = headers
-        .get("X-Webhook-Secret")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    if provided == expected {
-        Ok(())
-    } else {
-        Err(HttpError::from(AppError::Auth(
-            "Invalid webhook secret".to_string(),
-        )))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::handlers::document_upload::WEBHOOK_SECRET_ENV_LOCK;
     use axum::http::HeaderValue;
-    use std::sync::Mutex;
-
-    static WEBHOOK_SECRET_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn verify_webhook_secret_empty_env_allows_all() {
+    fn verify_webhook_secret_unset_or_empty_refuses() {
         let _guard = WEBHOOK_SECRET_ENV_LOCK.lock().expect("env lock poisoned");
-        std::env::remove_var("WEBHOOK_SECRET");
         let mut headers = HeaderMap::new();
         headers.insert("X-Webhook-Secret", HeaderValue::from_static("anything"));
-        assert!(verify_webhook_secret(&headers).is_ok());
+        std::env::remove_var("WEBHOOK_SECRET");
+        assert!(verify_webhook_secret(&headers).is_err());
+        std::env::set_var("WEBHOOK_SECRET", "");
+        assert!(verify_webhook_secret(&HeaderMap::new()).is_err());
+        std::env::remove_var("WEBHOOK_SECRET");
     }
 
     #[test]

@@ -28,6 +28,10 @@
 //! file; no test reads a real one.
 
 #![cfg(feature = "postgres")]
+// Deliberate: each test holds `ENV_LOCK` across its awaited requests,
+// because the code under test reads the variables mid-await (the same
+// reasoning as `ADMIN_ENV_LOCK` in `admin/shared.rs`).
+#![allow(clippy::await_holding_lock)]
 
 mod common;
 

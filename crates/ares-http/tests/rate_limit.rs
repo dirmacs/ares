@@ -854,9 +854,11 @@ async fn old_keys_warn_once_and_limit_nothing() {
     let capture = Capture::default();
     let _guard = tracing::subscriber::set_default(capture.clone());
 
-    let mut server = ServerConfig::default();
-    server.rate_limit_per_second = 50;
-    server.rate_limit_burst = 200;
+    let mut server = ServerConfig {
+        rate_limit_per_second: 50,
+        rate_limit_burst: 200,
+        ..ServerConfig::default()
+    };
 
     let message = legacy_keys_warning(&server).expect("old keys above 0 are warned about");
     for needle in [

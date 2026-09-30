@@ -667,7 +667,11 @@ mod tests {
         for n in 0..=(MIN_SWEEP_LEN as u32) {
             buckets.set(n, 5, 0);
         }
-        assert_eq!(buckets.tats.len(), MIN_SWEEP_LEN + 1, "all live: none swept");
+        assert_eq!(
+            buckets.tats.len(),
+            MIN_SWEEP_LEN + 1,
+            "all live: none swept"
+        );
         buckets.set(u32::MAX, 20, 10);
         assert_eq!(buckets.tats.len(), MIN_SWEEP_LEN + 2, "below the new mark");
         let mut buckets: Buckets<u32> = Buckets::new();

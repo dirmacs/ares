@@ -889,50 +889,30 @@ async fn run_server(
     // Build CORS layer from configuration
     let cors = build_cors_layer(&config.server.cors_origins);
 
-    // Build rate limiting layer if enabled (per-IP rate limiting using tower_governor)
-    let app = if config.server.rate_limit_per_second > 0 {
-        use std::sync::Arc;
-        use std::time::Duration;
-        use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
-
-        // Configure per-IP rate limiting
-        let governor_conf = Arc::new(
-            GovernorConfigBuilder::default()
-                .per_second(config.server.rate_limit_per_second as u64)
-                .burst_size(config.server.rate_limit_burst)
-                .use_headers() // Include x-ratelimit-* headers in responses
-                .finish()
-                .expect("Failed to build rate limiter configuration"),
-        );
-
-        // Clone the limiter for background cleanup task
-        let governor_limiter = governor_conf.limiter().clone();
-        let cleanup_interval = Duration::from_secs(60);
-
-        // Background task to periodically clean up old rate limiting entries
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(cleanup_interval);
-            loop {
-                interval.tick().await;
-                tracing::debug!(
-                    "Rate limiter storage size: {}, cleaning up old entries",
-                    governor_limiter.len()
-                );
-                governor_limiter.retain_recent();
-            }
-        });
-
+    // Rate limiting: `[server.rate_limit]`, per client (proxy-aware) and per
+    // key, in requests per minute; every limit 0 (the default) is off. The
+    // retired tower_governor keys (`rate_limit_per_second`/`rate_limit_burst`)
+    // are ignored, with one startup warning when either is above 0.
+    ares_http::middleware::rate_limit::warn_legacy_keys(&config.server);
+    let rate_limit =
+        ares_http::middleware::rate_limit::RateLimitLayer::from_server_config(&config.server);
+    let app = if rate_limit.is_enabled() {
+        let limits = &config.server.rate_limit;
         tracing::info!(
-            "Rate limiting enabled: {} req/sec per IP with burst of {}",
-            config.server.rate_limit_per_second,
-            config.server.rate_limit_burst
+            global_requests_per_minute = limits.global_requests_per_minute,
+            per_client_requests_per_minute = limits.per_client_requests_per_minute,
+            per_key_requests_per_minute = limits.per_key_requests_per_minute,
+            burst = limits.burst,
+            trusted_proxies = ?limits.trusted_proxies,
+            "Rate limiting enabled ([server.rate_limit]; a limit of 0 is off)"
         );
-
-        app.layer(GovernorLayer::new(governor_conf))
+        app.layer(rate_limit)
             .layer(cors)
             .layer(TraceLayer::new_for_http())
     } else {
-        tracing::warn!("Rate limiting is disabled - not recommended for production");
+        tracing::warn!(
+            "Rate limiting is disabled ([server.rate_limit]: every limit is 0) - not recommended for production"
+        );
         app.layer(cors).layer(TraceLayer::new_for_http())
     };
 

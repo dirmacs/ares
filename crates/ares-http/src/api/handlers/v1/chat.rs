@@ -182,6 +182,8 @@ pub async fn v1_chat(
                         pipeline_id: None,
                         schedule_id: None,
                         trigger_id: None,
+                        resolved_endpoint: None,
+                        region: None,
                         ..Default::default()
                     };
                     let duration_ms = start.elapsed().as_millis() as i64;
@@ -259,6 +261,8 @@ pub async fn v1_chat(
                 pipeline_id: None,
                 schedule_id: None,
                 trigger_id: None,
+                resolved_endpoint: None,
+                region: None,
                 ..Default::default()
             };
             tokio::spawn(async move {

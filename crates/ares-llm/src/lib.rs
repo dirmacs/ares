@@ -105,7 +105,7 @@ pub use capabilities::{
 pub use client::GenaiProvider;
 pub use client::{
     CacheControl, GenerationHints, LLMClient, LLMClientFactory, LLMResponse, LlmStreamEvent,
-    ModelParams, Provider, TokenUsage,
+    LlmStreamItem, ModelParams, Provider, TokenUsage,
 };
 pub use compact::{
     CompactConfig, CompactEvent, CompactionSnapshot, CompactionState, Compactor, TurnEntry,

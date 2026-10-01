@@ -195,6 +195,33 @@ pub trait LLMClient: Send + Sync {
     fn supports_provider_web_search(&self) -> bool {
         false
     }
+
+    /// Stream a completion with conversation history, additionally yielding
+    /// the provider's own token usage when the upstream reports one.
+    ///
+    /// Yields [`LlmStreamItem::Text`] per content chunk and, when the provider
+    /// sent a usage frame, a final [`LlmStreamItem::Usage`]. The absence of
+    /// that item means the upstream reported nothing — it is never replaced by
+    /// a zero count, so a caller can bill the real number when it exists and
+    /// fall back only when it does not.
+    ///
+    /// Default: delegates to [`LLMClient::stream_with_history`] and never
+    /// reports usage, so clients that cannot surface a provider count keep
+    /// compiling and keep streaming text unchanged.
+    async fn stream_with_history_and_usage(
+        &self,
+        messages: &[(String, String)], // (role, content) pairs
+    ) -> Result<Box<dyn futures::Stream<Item = Result<LlmStreamItem>> + Send + Unpin>> {
+        let inner = self.stream_with_history(messages).await?;
+        let s = async_stream::stream! {
+            use futures::StreamExt;
+            let mut inner = inner;
+            while let Some(ev) = inner.next().await {
+                yield ev.map(LlmStreamItem::Text);
+            }
+        };
+        Ok(Box::new(Box::pin(s)))
+    }
 }
 
 /// Event yielded by [`LLMClient::stream_with_tools_and_history`].
@@ -204,6 +231,21 @@ pub enum LlmStreamEvent {
     Text(String),
     /// Tool calls captured from the completed stream (at most one of these).
     ToolCalls(Vec<ToolCall>),
+}
+
+/// Event yielded by [`LLMClient::stream_with_history_and_usage`].
+///
+/// Deliberately a distinct type from [`LlmStreamEvent`] rather than a new
+/// variant of it: the tool-call consumers of that enum match it exhaustively
+/// (no wildcard arm), so a new variant would be a breaking change for them.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LlmStreamItem {
+    /// Incremental assistant text.
+    Text(String),
+    /// Token usage exactly as reported by the provider (at most one of these,
+    /// emitted last). Absent entirely when the upstream sent no usage frame,
+    /// which is distinct from a reported zero.
+    Usage(TokenUsage),
 }
 
 /// Token usage statistics from an LLM generation call

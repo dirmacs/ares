@@ -4,6 +4,34 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ---
 
+## 0.11.8 - 2026-10-01
+
+**A stream accessor that reports the provider's own token counts, honestly
+absent when the provider reported none.**
+
+### Added
+
+- `LLMClient::stream_with_history_and_usage` streams a completion with
+  conversation history and additionally yields the provider's own token usage
+  when the upstream sent one. It emits a terminal `LlmStreamItem::Usage` only
+  when the provider actually reported counts, so "no report" stays
+  distinguishable from a reported zero and a caller can bill the real number
+  when it exists.
+- `LlmStreamItem`, the item that accessor yields. It is a distinct type from
+  `LlmStreamEvent` rather than a new variant of it: the tool-call consumers
+  of that enum match it exhaustively, so a variant would have been a breaking
+  change for them.
+- `GenaiClient` overrides the accessor to surface
+  `ChatStreamEvent::End.captured_usage`, which the text-only stream path
+  discards.
+
+### Unchanged
+
+- The new trait method carries a default body that delegates to
+  `stream_with_history` and never reports usage, so a client that cannot
+  surface a provider count keeps compiling and keeps streaming text exactly
+  as before. No existing signature, enum, or stream body changed.
+
 ## 0.11.7 - 2026-09-19
 
 **Fail-closed tenant runs, closed key scopes, tamper-evident config history.**

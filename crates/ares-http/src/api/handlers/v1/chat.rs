@@ -182,6 +182,8 @@ pub async fn v1_chat(
                         pipeline_id: None,
                         schedule_id: None,
                         trigger_id: None,
+                        // A failed chat names no provider (its row says `unknown`), so it names
+                        // no endpoint or region either.
                         resolved_endpoint: None,
                         region: None,
                         ..Default::default()
@@ -213,6 +215,10 @@ pub async fn v1_chat(
         let response_text = exec_result.response.content;
         let (model_name, provider_name) =
             execution_metadata_names(exec_result.response.metadata.as_ref());
+        // Where the provider that answered sends its calls (item 2.12b). From the metadata the
+        // server built, never from the request; NULL when the path names no provider.
+        let (resolved_endpoint, region) =
+            execution_metadata_residency(exec_result.response.metadata.as_ref());
         let counts_source = llm_counts_source(exec_result.response.usage.as_ref()).to_string();
         let (input_tokens, output_tokens) = llm_token_counts_u32(
             exec_result.response.usage.as_ref(),
@@ -261,8 +267,8 @@ pub async fn v1_chat(
                 pipeline_id: None,
                 schedule_id: None,
                 trigger_id: None,
-                resolved_endpoint: None,
-                region: None,
+                resolved_endpoint,
+                region,
                 ..Default::default()
             };
             tokio::spawn(async move {

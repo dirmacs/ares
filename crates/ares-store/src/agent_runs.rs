@@ -222,12 +222,15 @@ pub struct AgentRun {
     pub trigger_id: Option<String>,
     #[serde(default)]
     pub updated_at: Option<i64>,
-    /// The endpoint of the provider that answered the run (scheme, host, port and path only;
-    /// migration 039). NULL for a run written before 039, a run that failed, and every path that
-    /// cannot name its provider (skill runs, the generic `Execute` fall-through).
+    /// The endpoint (scheme, host, port and path only; migration 039) of the provider this row's
+    /// `provider_name` names: the one that answered the run, or, for a v1 run that failed after
+    /// its provider was resolved, the primary it had resolved to. NULL for a row written before
+    /// 039 and for every path that names no provider: a run that failed before resolution, a
+    /// trigger, scheduler or pipeline failure, a skill run, the generic `Execute` fall-through
+    /// and a chat stream.
     #[serde(default)]
     pub resolved_endpoint: Option<String>,
-    /// The region of the provider that answered the run, where it has one (migration 039).
+    /// The region of that provider, where it has one (migration 039); NULL otherwise.
     #[serde(default)]
     pub region: Option<String>,
 }

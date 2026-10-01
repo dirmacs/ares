@@ -665,9 +665,19 @@ async fn execute_target_agent(
         provider_name,
         output,
         counts_source,
+        residency,
     ) = match execution {
         Ok(result) => {
             let source = pipeline_counts_source(result.response.usage.as_ref()).to_string();
+            // Where the provider that answered sends its calls (a fallback's when a fallback
+            // answered). A skill run has no `metadata`: its steps resolve providers inside
+            // `Llm`, so it records NULL.
+            let residency = result
+                .response
+                .metadata
+                .as_ref()
+                .map(|metadata| metadata.residency.clone())
+                .unwrap_or_default();
             let (input, output) = llm_token_counts_u64(
                 result.response.usage.as_ref(),
                 &effective_message,
@@ -695,6 +705,7 @@ async fn execute_target_agent(
                 provider,
                 result.response.content,
                 source,
+                residency,
             )
         }
         Err(error) => {
@@ -708,6 +719,8 @@ async fn execute_target_agent(
                 "unknown".to_string(),
                 String::new(),
                 "estimated".to_string(),
+                // Nothing answered: no endpoint and no region (the row says `unknown` too).
+                ares_llm::client::Residency::none(),
             )
         }
     };
@@ -737,7 +750,9 @@ async fn execute_target_agent(
         status,
         Some(counts_source.clone()),
     );
-    let metadata = effects.metadata;
+    let mut metadata = effects.metadata;
+    metadata.resolved_endpoint = residency.resolved_endpoint().map(str::to_string);
+    metadata.region = residency.region().map(str::to_string);
     let usage = effects.usage;
     let pool_clone = pool.clone();
     let tenant = tenant_id.to_string();

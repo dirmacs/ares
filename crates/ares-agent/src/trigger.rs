@@ -878,11 +878,28 @@ async fn execute_triggered_agent_legacy(
         ),
     );
 
-    let (status, error_msg, input_tokens, output_tokens, model_name, provider_name, counts_source);
+    let (
+        status,
+        error_msg,
+        input_tokens,
+        output_tokens,
+        model_name,
+        provider_name,
+        counts_source,
+        residency,
+    );
 
     match result {
         Ok(response) => {
             counts_source = trigger_counts_source(response.response.usage.as_ref()).to_string();
+            // Where the provider that answered sends its calls (a fallback's when a fallback
+            // answered). Unknown when the path names no provider (`metadata` is `None`).
+            residency = response
+                .response
+                .metadata
+                .as_ref()
+                .map(|m| m.residency.clone())
+                .unwrap_or_default();
             status = "completed";
             error_msg = None;
             let (itok, otok) = llm_token_counts_u64(
@@ -930,6 +947,8 @@ async fn execute_triggered_agent_legacy(
             output_tokens = 0;
             model_name = "unknown".to_string();
             provider_name = "unknown".to_string();
+            // Nothing answered, so no endpoint and no region (the row says `unknown` too).
+            residency = ares_llm::client::Residency::none();
             track_finish(app_state, &run_id, "error");
         }
     }
@@ -941,7 +960,8 @@ async fn execute_triggered_agent_legacy(
     sqlx::query(
         "UPDATE agent_runs
          SET status = $2, input_tokens = $3, output_tokens = $4,
-             duration_ms = $5, error = $6, model_name = $7, provider_name = $8
+             duration_ms = $5, error = $6, model_name = $7, provider_name = $8,
+             resolved_endpoint = $9, region = $10
          WHERE id = $1",
     )
     .bind(&run_id)
@@ -952,6 +972,8 @@ async fn execute_triggered_agent_legacy(
     .bind(error_msg.as_deref())
     .bind(&model_name)
     .bind(&provider_name)
+    .bind(residency.resolved_endpoint())
+    .bind(residency.region())
     .execute(&pool)
     .await
     .map_err(|e| e.to_string())?;

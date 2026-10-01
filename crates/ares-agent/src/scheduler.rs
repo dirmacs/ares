@@ -1087,9 +1087,19 @@ async fn execute_scheduled_agent(
         provider_name,
         output,
         counts_source,
+        residency,
     ) = match execution {
         Ok(result) => {
             let source = scheduled_counts_source(result.response.usage.as_ref()).to_string();
+            // Where the provider that answered sends its calls (a fallback's when a fallback
+            // answered). A skill run has no `metadata`: its steps resolve providers inside
+            // `Llm`, so it records NULL.
+            let residency = result
+                .response
+                .metadata
+                .as_ref()
+                .map(|metadata| metadata.residency.clone())
+                .unwrap_or_default();
             let (input, output) = llm_token_counts_u64(
                 result.response.usage.as_ref(),
                 &effective_message,
@@ -1117,6 +1127,7 @@ async fn execute_scheduled_agent(
                 provider,
                 result.response.content,
                 source,
+                residency,
             )
         }
         Err(error) => {
@@ -1130,6 +1141,8 @@ async fn execute_scheduled_agent(
                 "unknown".to_string(),
                 String::new(),
                 "estimated".to_string(),
+                // Nothing answered: no endpoint and no region (the row says `unknown` too).
+                ares_llm::client::Residency::none(),
             )
         }
     };
@@ -1150,8 +1163,8 @@ async fn execute_scheduled_agent(
         pipeline_id: None,
         schedule_id: Some(sched.id.clone()),
         trigger_id: None,
-        resolved_endpoint: None,
-        region: None,
+        resolved_endpoint: residency.resolved_endpoint().map(str::to_string),
+        region: residency.region().map(str::to_string),
     };
     let error_msg = redact_agent_run_error(no_retain, error_msg.as_deref());
     if skill_run {

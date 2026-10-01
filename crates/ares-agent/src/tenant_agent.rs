@@ -244,6 +244,16 @@ pub(crate) fn tenant_agent_not_found_error(agent_name: &str, tenant_id: &str) ->
     ))
 }
 
+/// The refusal for a row that was never published (item 2.6a, D-7): the
+/// same not-found class as a disabled agent, and never a reason to run
+/// another agent in its place.
+pub(crate) fn tenant_agent_not_published_error(agent_name: &str, tenant_id: &str) -> AppError {
+    AppError::NotFound(format!(
+        "Agent '{}' is not published for tenant '{}'",
+        agent_name, tenant_id
+    ))
+}
+
 pub(crate) fn legacy_create_should_use_tenant_config(
     load_result: &Result<Option<(AgentConfig, String, serde_json::Value)>>,
 ) -> bool {
@@ -283,13 +293,21 @@ fn tenant_config_version(config: &serde_json::Value, updated_at: i64) -> String 
         .unwrap_or_else(|| format!("tenant-db:{}", updated_at))
 }
 
-pub(crate) async fn load_tenant_agent_config(
+/// The tenant's own row, as the run path executes it: the published config
+/// only (item 2.6a, D-1).
+///
+/// `Ok(None)` when the tenant has no such row. A disabled row is refused,
+/// and so is a row that was never published (`published_digest IS NULL`,
+/// D-7): its content is a draft no second admin has approved, and the caller
+/// must not fall back to another agent of the same name. A draft pending on
+/// a published row is never read here.
+pub async fn load_tenant_agent_config(
     pool: &PgPool,
     tenant_id: &str,
     agent_name: &str,
 ) -> Result<Option<(AgentConfig, String, serde_json::Value)>> {
     let row = sqlx::query(
-        "SELECT config, enabled, updated_at FROM tenant_agents WHERE tenant_id = $1 AND agent_name = $2",
+        "SELECT config, enabled, updated_at, published_digest FROM tenant_agents WHERE tenant_id = $1 AND agent_name = $2",
     )
     .bind(tenant_id)
     .bind(agent_name)
@@ -304,6 +322,11 @@ pub(crate) async fn load_tenant_agent_config(
     let enabled: bool = row.get("enabled");
     if !enabled {
         return Err(tenant_agent_disabled_error(agent_name, tenant_id));
+    }
+
+    let published_digest: Option<String> = row.get("published_digest");
+    if published_digest.is_none() {
+        return Err(tenant_agent_not_published_error(agent_name, tenant_id));
     }
 
     let config_json: serde_json::Value = row.get("config");

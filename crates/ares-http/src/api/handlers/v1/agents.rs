@@ -638,9 +638,13 @@ async fn run_configurable_agent_path(
         ..Default::default()
     };
     // Execute writes the primary's resolved model and provider here once the
-    // agent is built; the failure arm reads it (empty: failed before that).
+    // agent is built; the failure arm reads it (empty: failed before that). Where that
+    // primary sends its calls rides a sibling slot: the names slot never holds a URL.
     let resolved = ares_agent::execution::ResolvedModelSlot::new();
-    let run_ctx = state_ctx.with_intercept(resolved.clone());
+    let resolved_residency = ares_agent::execution::ResolvedResidencySlot::new();
+    let run_ctx = state_ctx
+        .with_intercept(resolved.clone())
+        .with_intercept(resolved_residency.clone());
     let result = exec
         .run(&req, &run_ctx)
         .await
@@ -666,12 +670,23 @@ async fn run_configurable_agent_path(
                 &mut run_guard,
                 no_retain,
                 error,
-                resolved.get(),
+                FailedRunProvider {
+                    model: resolved.get(),
+                    residency: resolved_residency.get(),
+                },
                 duration_ms,
             )
             .await
         }
     }
+}
+
+/// The primary provider a run that failed after resolution had resolved to, as `Execute`
+/// reported it: the names from the model slot and where it sends its calls from the residency
+/// slot. Both are empty when the run failed before its provider was resolved.
+struct FailedRunProvider {
+    model: Option<ares_agent::execution::ResolvedModel>,
+    residency: Option<ares_llm::client::Residency>,
 }
 
 /// Fetch external (ERUKA) context for this run and fold it into the message.
@@ -728,6 +743,9 @@ async fn complete_llm_run(
         .as_ref()
         .map(|m| m.provider_name.clone())
         .unwrap_or_else(|| "unknown".to_string());
+    // Where the provider that answered sends its calls (a fallback's when a fallback answered),
+    // from the metadata the server built; never from the request.
+    let (resolved_endpoint, region) = execution_metadata_residency(response.metadata.as_ref());
     state_ctx
         .get::<crate::active_runs::ActiveRuns>()
         .expect("not provided")
@@ -740,7 +758,7 @@ async fn complete_llm_run(
     // Exactly one row per run: UPDATE the pre-inserted parent.
     let duration_ms_i64 = duration_ms as i64;
     sqlx::query(
-        "UPDATE agent_runs SET status = 'completed', input_tokens = $2, output_tokens = $3, duration_ms = $4, error = NULL, model_name = $5, provider_name = $6, updated_at = $7 WHERE id = $1",
+        "UPDATE agent_runs SET status = 'completed', input_tokens = $2, output_tokens = $3, duration_ms = $4, error = NULL, model_name = $5, provider_name = $6, updated_at = $7, resolved_endpoint = $8, region = $9 WHERE id = $1",
     )
     .bind(&setup.run_id)
     .bind(input_tokens as i64)
@@ -749,6 +767,8 @@ async fn complete_llm_run(
     .bind(&model_name)
     .bind(&provider_name)
     .bind(Utc::now().timestamp())
+    .bind(resolved_endpoint.as_deref())
+    .bind(region.as_deref())
     .execute(&setup.pool)
     .await
     .map_err(|e| HttpError::from(ares_types::types::AppError::Database(e.to_string())))?;
@@ -793,7 +813,7 @@ async fn fail_llm_run(
     guard: &mut RunCompletionGuard,
     no_retain: bool,
     error: ares_types::types::AppError,
-    resolved: Option<ares_agent::execution::ResolvedModel>,
+    resolved: FailedRunProvider,
     duration_ms: u64,
 ) -> Result<AgentRunOutcome> {
     state_ctx
@@ -802,9 +822,20 @@ async fn fail_llm_run(
         .finish(&setup.run_id, "error");
 
     let reason_code = failure_reason_code(&error);
-    let (model_name, provider_name) = match resolved {
-        Some(r) => (r.model_name, r.provider_name),
-        None => (UNRESOLVED_MARKER.to_string(), UNRESOLVED_MARKER.to_string()),
+    // The endpoint and region describe the provider the row names: the primary the run
+    // resolved to. A run that failed before resolution carries the `unresolved` marker and no
+    // endpoint or region.
+    let (model_name, provider_name, residency) = match resolved.model {
+        Some(r) => (
+            r.model_name,
+            r.provider_name,
+            resolved.residency.unwrap_or_default(),
+        ),
+        None => (
+            UNRESOLVED_MARKER.to_string(),
+            UNRESOLVED_MARKER.to_string(),
+            ares_llm::client::Residency::none(),
+        ),
     };
     // The class, never the error text: the message can carry the provider's.
     tracing::warn!(
@@ -823,7 +854,7 @@ async fn fail_llm_run(
     let err_msg = redact_agent_run_error(no_retain, Some(raw_err.as_str()));
     let duration_ms_i64 = duration_ms as i64;
     sqlx::query(
-        "UPDATE agent_runs SET status = 'failed', input_tokens = 0, output_tokens = 0, duration_ms = $2, error = $3, model_name = $4, provider_name = $5, updated_at = $6 WHERE id = $1",
+        "UPDATE agent_runs SET status = 'failed', input_tokens = 0, output_tokens = 0, duration_ms = $2, error = $3, model_name = $4, provider_name = $5, updated_at = $6, resolved_endpoint = $7, region = $8 WHERE id = $1",
     )
     .bind(&setup.run_id)
     .bind(duration_ms_i64)
@@ -831,6 +862,8 @@ async fn fail_llm_run(
     .bind(&model_name)
     .bind(&provider_name)
     .bind(Utc::now().timestamp())
+    .bind(residency.resolved_endpoint())
+    .bind(residency.region())
     .execute(&setup.pool)
     .await
     .map_err(|e| HttpError::from(ares_types::types::AppError::Database(e.to_string())))?;

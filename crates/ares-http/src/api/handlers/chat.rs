@@ -221,6 +221,30 @@ pub(crate) fn stream_done_event(
     }
 }
 
+/// The `agent_runs` metadata for a finished chat stream.
+///
+/// A stream's row names no provider (its provider is `unknown`: `Execute::run_stream` hands back
+/// a bare token stream that does not say which client produced it), so it names no endpoint or
+/// region either: both columns stay NULL rather than guess. Pinned by a unit test.
+pub(crate) fn stream_run_metadata(
+    workspace_id: Option<String>,
+    context_id: &str,
+    config_source: &str,
+) -> agent_runs::AgentRunMetadata {
+    agent_runs::AgentRunMetadata {
+        workspace_id,
+        session_id: Some(context_id.to_string()),
+        request_source: Some("api_chat_stream".to_string()),
+        product: None,
+        agent_config_source: Some(config_source.to_string()),
+        agent_config_version: None,
+        eruka_binding_id: None,
+        resolved_endpoint: None,
+        region: None,
+        ..Default::default()
+    }
+}
+
 /// Chat with the AI assistant
 pub async fn chat(
     State(ctx): State<Arc<Context>>,
@@ -317,7 +341,8 @@ pub async fn chat(
     // Execute agent with timing
     let agent_name_for_run = AgentRegistry::type_to_name(&agent_type).to_string();
     let start = std::time::Instant::now();
-    let (response, usage) = execute_agent(agent_type, &payload, &agent_context, &ctx).await?;
+    let (response, usage, residency) =
+        execute_agent(agent_type, &payload, &agent_context, &ctx).await?;
     let duration_ms = start.elapsed().as_millis() as i64;
 
     // Store messages in conversation
@@ -375,6 +400,10 @@ pub async fn chat(
             agent_config_source: None,
             agent_config_version: None,
             eruka_binding_id: None,
+            // Where the provider that answered sends its calls (item 2.12b): from the metadata
+            // the server built, never from the request.
+            resolved_endpoint: residency.resolved_endpoint().map(str::to_string),
+            region: residency.region().map(str::to_string),
             ..Default::default()
         };
         tokio::spawn(async move {
@@ -433,7 +462,11 @@ async fn execute_agent(
     payload: &ChatRequest,
     context: &AgentContext,
     ctx: &Arc<Context>,
-) -> Result<(ChatResponse, Option<ares_llm::client::TokenUsage>)> {
+) -> Result<(
+    ChatResponse,
+    Option<ares_llm::client::TokenUsage>,
+    ares_llm::client::Residency,
+)> {
     // Get agent name from type
     let agent_name = AgentRegistry::type_to_name(&agent_type);
 
@@ -455,6 +488,13 @@ async fn execute_agent(
         ares_agent::request_user_scope(ctx, &context.user_id)
     };
     let exec_result = exec_svc.run(&req, &exec_ctx).await?;
+    // Where the provider that answered sends its calls; empty when the path names no provider.
+    let residency = exec_result
+        .response
+        .metadata
+        .as_ref()
+        .map(|m| m.residency.clone())
+        .unwrap_or_default();
     Ok((
         chat_response_from_agent_output(
             agent_type,
@@ -471,6 +511,7 @@ async fn execute_agent(
                 total_tokens: u.total_tokens,
                 cached_tokens: u.cached_tokens,
             }),
+        residency,
     ))
 }
 
@@ -882,16 +923,11 @@ fn chat_stream_response(
             let itok = ares_agent::memory::estimate_tokens(&message) as i64;
             let otok = ares_agent::memory::estimate_tokens(&full_response) as i64;
             let model = user_agent.model.clone();
-            let metadata = ares_store::agent_runs::AgentRunMetadata {
-                workspace_id: runtime_workspace_id.clone(),
-                session_id: Some(context_id_clone.clone()),
-                request_source: Some("api_chat_stream".to_string()),
-                product: None,
-                agent_config_source: Some(source.to_string()),
-                agent_config_version: None,
-                eruka_binding_id: None,
-                ..Default::default()
-            };
+            let metadata = stream_run_metadata(
+                runtime_workspace_id.clone(),
+                &context_id_clone,
+                &source.to_string(),
+            );
             tokio::spawn(async move {
                 let _ = ares_store::agent_runs::insert_agent_run_with_metadata(
                     &pool, &tid, &aname, Some(&tid), "completed",
@@ -964,6 +1000,19 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
+    }
+
+    /// 2.12b: a chat stream's row names no provider (its provider is `unknown`), so it records
+    /// NULL for the endpoint and the region rather than guess. This pins that path.
+    #[test]
+    fn stream_run_metadata_records_no_residency() {
+        let metadata = stream_run_metadata(Some("ws-1".into()), "ctx-1", "system");
+        assert_eq!(metadata.resolved_endpoint, None);
+        assert_eq!(metadata.region, None);
+        assert_eq!(metadata.request_source.as_deref(), Some("api_chat_stream"));
+        assert_eq!(metadata.session_id.as_deref(), Some("ctx-1"));
+        assert_eq!(metadata.workspace_id.as_deref(), Some("ws-1"));
+        assert_eq!(metadata.agent_config_source.as_deref(), Some("system"));
     }
 
     #[test]

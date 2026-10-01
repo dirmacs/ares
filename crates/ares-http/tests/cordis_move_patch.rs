@@ -91,8 +91,8 @@ fn seed_entries(ctx: &Arc<Context>, entries: &[(&str, &str, Option<&str>)]) -> T
         }
     }
     std::fs::write(dir.program(), program).expect("seed entries file");
-    let tree = cordis::loader::Loader::load_from_file(&dir.program())
-        .expect("parse the seeded entries");
+    let tree =
+        cordis::loader::Loader::load_from_file(&dir.program()).expect("parse the seeded entries");
     ctx.provide_arc(Arc::new(cordis::CurrentEntries {
         tree: Arc::new(Mutex::new(tree)),
         path: dir.program(),
@@ -134,11 +134,12 @@ async fn patch_row_details(pool: &PgPool, resource_id: &str) -> serde_json::Valu
 
 /// No audit row has `resource_id`.
 async fn assert_no_row(pool: &PgPool, resource_id: &str) {
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM admin_audit_log WHERE resource_id = $1")
-        .bind(resource_id)
-        .fetch_one(pool)
-        .await
-        .expect("audit count query");
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM admin_audit_log WHERE resource_id = $1")
+            .bind(resource_id)
+            .fetch_one(pool)
+            .await
+            .expect("audit count query");
     assert_eq!(count, 0, "no row for this request under {resource_id}");
 }
 

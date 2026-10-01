@@ -188,6 +188,9 @@ struct Reply {
     body: Value,
 }
 
+/// `status, provider_name, resolved_endpoint, region` and the whole row as JSON, as read.
+type ResidencyColumns = (String, String, Option<String>, Option<String>, String);
+
 /// The run's `agent_runs` row, as far as residency goes.
 #[derive(Debug)]
 struct ResidencyRow {
@@ -444,17 +447,16 @@ impl Fixture {
     async fn row_for_agent(&self, agent_name: &str) -> ResidencyRow {
         let started = Instant::now();
         loop {
-            let rows: Vec<(String, String, Option<String>, Option<String>, String)> =
-                sqlx::query_as(
-                    "SELECT status, COALESCE(provider_name, ''), resolved_endpoint, region, \
+            let rows: Vec<ResidencyColumns> = sqlx::query_as(
+                "SELECT status, COALESCE(provider_name, ''), resolved_endpoint, region, \
                             row_to_json(agent_runs)::text \
                      FROM agent_runs WHERE tenant_id = $1 AND agent_name = $2",
-                )
-                .bind(&self.tenant_id)
-                .bind(agent_name)
-                .fetch_all(&self.pool)
-                .await
-                .expect("read the tenant's agent_runs rows");
+            )
+            .bind(&self.tenant_id)
+            .bind(agent_name)
+            .fetch_all(&self.pool)
+            .await
+            .expect("read the tenant's agent_runs rows");
             if let Some(row) = rows.first() {
                 assert_eq!(rows.len(), 1, "one run, one row: {rows:?}");
                 return ResidencyRow {

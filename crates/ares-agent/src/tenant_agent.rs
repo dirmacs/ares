@@ -244,6 +244,16 @@ pub(crate) fn tenant_agent_not_found_error(agent_name: &str, tenant_id: &str) ->
     ))
 }
 
+/// The refusal for a row that was never published (item 2.6a, D-7): the
+/// same not-found class as a disabled agent, and never a reason to run
+/// another agent in its place.
+pub(crate) fn tenant_agent_not_published_error(agent_name: &str, tenant_id: &str) -> AppError {
+    AppError::NotFound(format!(
+        "Agent '{}' is not published for tenant '{}'",
+        agent_name, tenant_id
+    ))
+}
+
 pub(crate) fn legacy_create_should_use_tenant_config(
     load_result: &Result<Option<(AgentConfig, String, serde_json::Value)>>,
 ) -> bool {
@@ -283,13 +293,21 @@ fn tenant_config_version(config: &serde_json::Value, updated_at: i64) -> String 
         .unwrap_or_else(|| format!("tenant-db:{}", updated_at))
 }
 
-pub(crate) async fn load_tenant_agent_config(
+/// The tenant's own row, as the run path executes it: the published config
+/// only (item 2.6a, D-1).
+///
+/// `Ok(None)` when the tenant has no such row. A disabled row is refused,
+/// and so is a row that was never published (`published_digest IS NULL`,
+/// D-7): its content is a draft no second admin has approved, and the caller
+/// must not fall back to another agent of the same name. A draft pending on
+/// a published row is never read here.
+pub async fn load_tenant_agent_config(
     pool: &PgPool,
     tenant_id: &str,
     agent_name: &str,
 ) -> Result<Option<(AgentConfig, String, serde_json::Value)>> {
     let row = sqlx::query(
-        "SELECT config, enabled, updated_at FROM tenant_agents WHERE tenant_id = $1 AND agent_name = $2",
+        "SELECT config, enabled, updated_at, published_digest FROM tenant_agents WHERE tenant_id = $1 AND agent_name = $2",
     )
     .bind(tenant_id)
     .bind(agent_name)
@@ -304,6 +322,11 @@ pub(crate) async fn load_tenant_agent_config(
     let enabled: bool = row.get("enabled");
     if !enabled {
         return Err(tenant_agent_disabled_error(agent_name, tenant_id));
+    }
+
+    let published_digest: Option<String> = row.get("published_digest");
+    if published_digest.is_none() {
+        return Err(tenant_agent_not_published_error(agent_name, tenant_id));
     }
 
     let config_json: serde_json::Value = row.get("config");
@@ -838,8 +861,9 @@ mod tests {
         use ares_llm::ProviderRegistry;
         use ares_llm::{ModelConfig, ProviderConfig};
         use ares_store::tenant_agents::{
-            create_tenant_agent as db_create_tenant_agent, update_tenant_agent,
-            CreateTenantAgentRequest, UpdateTenantAgentRequest,
+            create_tenant_agent as db_create_tenant_agent, create_tenant_agent_as,
+            get_tenant_agent_publish_state, publish_tenant_agent, update_tenant_agent,
+            CreateTenantAgentRequest, PublishOutcome, UpdateTenantAgentRequest,
         };
         use ares_store::tenant_allowlist::TenantAllowlistStore;
         use ares_tools::{Tool, Tools};
@@ -980,6 +1004,56 @@ mod tests {
             .expect("insert tenant agent row");
         }
 
+        /// Item 2.6a: only a published row runs. The fixture for a row that
+        /// runs: written by one admin and published by a second, through the
+        /// real publish path.
+        async fn insert_published_tenant_agent(
+            pool: &PgPool,
+            tenant_id: &str,
+            agent_name: &str,
+            system_prompt: &str,
+        ) {
+            create_tenant_agent_as(
+                pool,
+                tenant_id,
+                CreateTenantAgentRequest {
+                    agent_name: agent_name.to_string(),
+                    display_name: format!("{agent_name} display"),
+                    description: Some(format!("{agent_name} description")),
+                    config: json!({
+                        "model": "default",
+                        "system_prompt": system_prompt,
+                        "tools": [],
+                        "max_tool_iterations": 5,
+                        "parallel_tools": false
+                    }),
+                },
+                Some("fixture-author"),
+            )
+            .await
+            .expect("insert tenant agent row");
+            let draft_digest = get_tenant_agent_publish_state(pool, tenant_id, agent_name)
+                .await
+                .expect("publish state")
+                .draft_digest
+                .expect("the new row is a draft");
+            match publish_tenant_agent(
+                pool,
+                tenant_id,
+                agent_name,
+                &draft_digest,
+                "fixture-approver",
+            )
+            .await
+            .expect("publish the tenant agent row")
+            {
+                PublishOutcome::Published(_) => {}
+                PublishOutcome::Refused(refusal) => {
+                    panic!("the fixture publish was refused: {refusal:?}")
+                }
+            }
+        }
+
         fn test_agent_context() -> AgentContext {
             AgentContext {
                 user_id: "user-1".to_string(),
@@ -1013,7 +1087,8 @@ mod tests {
             let registry = registry_with_product(&mock_ollama);
             let tenant_id = unique_id("create-legacy");
             allow_mock_model(&pool, &tenant_id).await;
-            insert_tenant_agent(&pool, &tenant_id, "product", "tenant-create-prompt").await;
+            insert_published_tenant_agent(&pool, &tenant_id, "product", "tenant-create-prompt")
+                .await;
 
             let agent = create_tenant_agent(
                 &pool,
@@ -1038,7 +1113,7 @@ mod tests {
         async fn load_tenant_agent_config_returns_row_config_and_version() {
             let pool = test_pool().await;
             let tenant_id = unique_id("tenant-db-wins");
-            insert_tenant_agent(&pool, &tenant_id, "product", "tenant-db-prompt").await;
+            insert_published_tenant_agent(&pool, &tenant_id, "product", "tenant-db-prompt").await;
 
             let (config, config_version, config_json) =
                 load_tenant_agent_config(&pool, &tenant_id, "product")
@@ -1210,7 +1285,8 @@ mod tests {
             let registry = registry_with_product(&mock_ollama);
             let tenant_id = unique_id("execute-flow");
             allow_mock_model(&pool, &tenant_id).await;
-            insert_tenant_agent(&pool, &tenant_id, "product", "tenant-execute-prompt").await;
+            insert_published_tenant_agent(&pool, &tenant_id, "product", "tenant-execute-prompt")
+                .await;
 
             let agent = create_tenant_agent(
                 &pool,
@@ -1264,6 +1340,105 @@ mod tests {
             assert!(err.to_string().contains("disabled"));
         }
 
+        async fn counting_ollama_chat(
+            axum::extract::State(hits): axum::extract::State<Arc<std::sync::atomic::AtomicUsize>>,
+            body: Json<Value>,
+        ) -> Json<Value> {
+            hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            fake_ollama_chat(body).await
+        }
+
+        /// A mock Ollama that counts the requests reaching it.
+        async fn spawn_counting_ollama() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+            let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let app = Router::new()
+                .route("/api/chat", post(counting_ollama_chat))
+                .with_state(Arc::clone(&hits));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind mock ollama");
+            let addr = listener.local_addr().expect("mock ollama addr");
+            tokio::spawn(async move {
+                axum::serve(listener, app).await.expect("serve mock ollama");
+            });
+            (format!("http://{addr}"), hits)
+        }
+
+        // Item 2.6a (D-7): a row that was never published is refused like a
+        // disabled agent, with "not published". A row written by the store's
+        // create is a draft until a second admin publishes it.
+        #[tokio::test]
+        async fn load_tenant_agent_config_refuses_a_never_published_row() {
+            let pool = test_pool().await;
+            let tenant_id = unique_id("never-published");
+            insert_tenant_agent(&pool, &tenant_id, "product", "draft-prompt").await;
+
+            let err = match load_tenant_agent_config(&pool, &tenant_id, "product").await {
+                Err(err) => err,
+                Ok(loaded) => panic!(
+                    "a never-published row must not load, got {:?}",
+                    loaded.map(|(_, version, json)| (version, json))
+                ),
+            };
+
+            assert!(
+                matches!(&err, AppError::NotFound(m) if m.contains("not published")),
+                "expected a not-published refusal, got {err:?}"
+            );
+        }
+
+        // Item 2.6a (D-7): the required run path refuses a never-published
+        // row, and the same-named registry agent does not run in its place
+        // (no registry fallback).
+        #[tokio::test]
+        async fn never_published_row_runs_nothing_and_does_not_fall_back_to_the_registry() {
+            let (ollama, hits) = spawn_counting_ollama().await;
+            let pool = test_pool().await;
+            let tenant_id = unique_id("never-published-run");
+            // The registry agent would be runnable for this tenant.
+            allow_mock_model(&pool, &tenant_id).await;
+            insert_tenant_agent(&pool, &tenant_id, "product", "draft-prompt").await;
+
+            let root = cordis::Context::new_root();
+            root.provide(ares_store::TenantDb::new(Arc::new(
+                ares_store::PostgresClient { pool: pool.clone() },
+            )));
+            root.provide(ares_store::FleetSecrets::new());
+            let exec =
+                crate::Execute::new().with_agent_registry(Arc::new(registry_with_product(&ollama)));
+            let ctx = crate::request_tenant_ctx(
+                &root,
+                ares_types::models::TenantContext::new(
+                    tenant_id.clone(),
+                    ares_types::models::TenantTier::Pro,
+                ),
+            );
+            let req = crate::AgentRequest {
+                agent_name: "product".to_string(),
+                message: "hello".to_string(),
+                require_tenant_agent: true,
+                ..Default::default()
+            };
+
+            let err = match exec.run(&req, &ctx).await {
+                Err(err) => err,
+                Ok(result) => panic!(
+                    "a never-published row must not run, but {:?} ran: {:?}",
+                    result.source, result.response.content
+                ),
+            };
+
+            assert!(
+                matches!(&err, AppError::NotFound(m) if m.contains("not published")),
+                "expected a not-published refusal, got {err:?}"
+            );
+            assert_eq!(
+                hits.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "no agent called the model"
+            );
+        }
+
         // Renamed from `resolve_agent_for_tenant_errors_on_invalid_tenant_config` (2.20):
         // the invalid-config error is raised by `load_tenant_agent_config`.
         #[tokio::test]
@@ -1271,7 +1446,9 @@ mod tests {
             let pool = test_pool().await;
             let tenant_id = unique_id("invalid-config");
 
-            // Insert invalid config directly via SQL to bypass validation
+            // Insert invalid config directly via SQL to bypass validation.
+            // Item 2.6a: published with the digest by the SQL function, so the
+            // run path reads it.
             let id = format!("{}-invalid", tenant_id);
             let now_ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1279,8 +1456,8 @@ mod tests {
                 .as_secs() as i64;
             sqlx::query(
                 r#"
-                INSERT INTO tenant_agents (id, tenant_id, agent_name, display_name, description, config, enabled, created_at, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, true, $7, $7)
+                INSERT INTO tenant_agents (id, tenant_id, agent_name, display_name, description, config, enabled, created_at, updated_at, published_digest)
+                VALUES ($1, $2, $3, $4, $5, $6, true, $7, $7, tenant_agent_config_digest($6))
                 "#,
             )
             .bind(&id)

@@ -617,7 +617,13 @@ fn tenant_agent_from_snapshot(snapshot: serde_json::Value) -> Result<TenantAgent
 pub enum AgentConfigChangeSource {
     AdminCreate,
     AdminUpdate,
-    Rollback { from_version: String },
+    /// A publish of a draft (item 2.6a), carrying the digest it published.
+    Publish {
+        digest: String,
+    },
+    Rollback {
+        from_version: String,
+    },
 }
 
 impl AgentConfigChangeSource {
@@ -625,9 +631,54 @@ impl AgentConfigChangeSource {
         match self {
             Self::AdminCreate => "admin_create".to_string(),
             Self::AdminUpdate => "admin_update".to_string(),
+            Self::Publish { digest } => format!("publish:{digest}"),
             Self::Rollback { from_version } => format!("rollback:{from_version}"),
         }
     }
+}
+
+fn db_err(e: sqlx::Error) -> AppError {
+    AppError::Database(e.to_string())
+}
+
+/// A version snapshot of a published config: the plain snapshot plus the
+/// digest it was published under, its author and its approver. Carrying the
+/// digest is what lets rollback promote the version (D-6); a draft snapshot,
+/// and every snapshot written before the gate, carries none.
+fn published_snapshot(
+    agent: &TenantAgent,
+    digest: &str,
+    published_by: Option<&str>,
+    approved_by: &str,
+) -> serde_json::Value {
+    let mut snapshot = tenant_agent_snapshot(agent);
+    if let Some(obj) = snapshot.as_object_mut() {
+        obj.insert("published_digest".to_string(), serde_json::json!(digest));
+        obj.insert("published_by".to_string(), serde_json::json!(published_by));
+        obj.insert("approved_by".to_string(), serde_json::json!(approved_by));
+    }
+    snapshot
+}
+
+/// A version snapshot of a draft write: the plain snapshot (whose `config`
+/// is the published one) plus the draft written, when there is one. It
+/// carries no digest, so rollback refuses it.
+fn draft_snapshot(agent: &TenantAgent, draft: Option<&serde_json::Value>) -> serde_json::Value {
+    let mut snapshot = tenant_agent_snapshot(agent);
+    if let (Some(obj), Some(draft)) = (snapshot.as_object_mut(), draft) {
+        obj.insert("draft_config".to_string(), draft.clone());
+    }
+    snapshot
+}
+
+/// The digest a version snapshot was published under, when it carries one.
+pub fn snapshot_published_digest(snapshot: &serde_json::Value) -> Option<String> {
+    snapshot
+        .get("published_digest")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 pub async fn record_tenant_agent_version(
@@ -635,9 +686,18 @@ pub async fn record_tenant_agent_version(
     agent: &TenantAgent,
     change_source: AgentConfigChangeSource,
 ) -> Result<crate::agent_versions::AgentVersionRecord> {
+    record_tenant_agent_snapshot(pool, agent, tenant_agent_snapshot(agent), change_source).await
+}
+
+/// [`record_tenant_agent_version`] with the snapshot to record given.
+async fn record_tenant_agent_snapshot(
+    pool: &PgPool,
+    agent: &TenantAgent,
+    config_json: serde_json::Value,
+    change_source: AgentConfigChangeSource,
+) -> Result<crate::agent_versions::AgentVersionRecord> {
     let agent_id = tenant_agent_version_key(&agent.tenant_id, &agent.agent_name);
     let version = tenant_agent_snapshot_version(agent);
-    let config_json = tenant_agent_snapshot(agent);
 
     let mut tx = pool
         .begin()
@@ -694,12 +754,61 @@ pub async fn list_tenant_agent_versions(
     Ok(rows)
 }
 
+/// Record a version inside the caller's transaction; it becomes the
+/// agent's active version.
+async fn record_version_in(
+    conn: &mut sqlx::PgConnection,
+    agent: &TenantAgent,
+    config_json: &serde_json::Value,
+    change_source: &AgentConfigChangeSource,
+) -> Result<()> {
+    let agent_id = tenant_agent_version_key(&agent.tenant_id, &agent.agent_name);
+    sqlx::query("UPDATE agent_config_versions SET is_active = false WHERE agent_id = $1")
+        .bind(&agent_id)
+        .execute(&mut *conn)
+        .await
+        .map_err(db_err)?;
+    sqlx::query(
+        r#"INSERT INTO agent_config_versions
+           (agent_id, version, config_json, is_active, change_source)
+           VALUES ($1, $2, $3, true, $4)"#,
+    )
+    .bind(&agent_id)
+    .bind(tenant_agent_snapshot_version(agent))
+    .bind(config_json)
+    .bind(change_source.as_str())
+    .execute(&mut *conn)
+    .await
+    .map_err(db_err)?;
+    Ok(())
+}
+
+/// What a rollback promoted: the restored row and the digest it now runs
+/// under.
+#[derive(Debug, Clone, Serialize)]
+pub struct RolledBackTenantAgent {
+    pub agent: TenantAgent,
+    pub published_digest: String,
+}
+
+/// Promote a previously published version (D-6).
+///
+/// Only a version whose record carries a digest from an earlier publish or
+/// from the cutover can be promoted; a draft snapshot, or a snapshot written
+/// before the gate, is refused. The version's content is restored into
+/// `config` with its `published_digest` recomputed by the one SQL definition,
+/// which must equal the digest the record carries, so content that was never
+/// published cannot run under a published digest. `approver`, the rollback
+/// actor, becomes `approved_by`; no second person is needed to restore an
+/// already approved version. Restoring is one transaction with its
+/// `Rollback` version row.
 pub async fn rollback_tenant_agent_version(
     pool: &PgPool,
     tenant_id: &str,
     agent_name: &str,
     version: &str,
-) -> Result<TenantAgent> {
+    approver: &str,
+) -> Result<RolledBackTenantAgent> {
     let agent_id = tenant_agent_version_key(tenant_id, agent_name);
     let record = sqlx::query(
         "SELECT config_json FROM agent_config_versions WHERE agent_id = $1 AND version = $2",
@@ -716,7 +825,19 @@ pub async fn rollback_tenant_agent_version(
         ))
     })?;
 
-    let snapshot = tenant_agent_from_snapshot(record.get("config_json"))?;
+    let snapshot_json: serde_json::Value = record.get("config_json");
+    let Some(carried_digest) = snapshot_published_digest(&snapshot_json) else {
+        return Err(AppError::InvalidInput(format!(
+            "Version '{}' of tenant agent '{}' was never published: rollback promotes only a \
+             version from an earlier publish or the cutover",
+            version, agent_id
+        )));
+    };
+    let published_by = snapshot_json
+        .get("published_by")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let snapshot = tenant_agent_from_snapshot(snapshot_json)?;
     // Closed schema (row 21): a rollback must not reintroduce keys that the
     // write paths reject. Fail loudly instead of arming the merged-update
     // freeze.
@@ -736,9 +857,12 @@ pub async fn rollback_tenant_agent_version(
 
     let row = sqlx::query(
         r#"UPDATE tenant_agents
-           SET display_name = $1, description = $2, config = $3, enabled = $4, updated_at = $5
+           SET display_name = $1, description = $2, config = $3, enabled = $4, updated_at = $5,
+               published_digest = tenant_agent_config_digest($3), published_by = $8,
+               approved_by = $9, published_at = $5
            WHERE tenant_id = $6 AND agent_name = $7
-           RETURNING id, tenant_id, agent_name, display_name, description, config, enabled, created_at, updated_at"#,
+           RETURNING id, tenant_id, agent_name, display_name, description, config, enabled,
+                     created_at, updated_at, published_digest"#,
     )
     .bind(&snapshot.display_name)
     .bind(&snapshot.description)
@@ -747,6 +871,8 @@ pub async fn rollback_tenant_agent_version(
     .bind(now)
     .bind(tenant_id)
     .bind(agent_name)
+    .bind(&published_by)
+    .bind(approver)
     .fetch_optional(&mut *tx)
     .await
     .map_err(|e| AppError::Database(e.to_string()))?
@@ -758,36 +884,34 @@ pub async fn rollback_tenant_agent_version(
     })?;
 
     let restored = agent_from_row(&row);
-    let restored_version = tenant_agent_snapshot_version(&restored);
-    let restored_snapshot = tenant_agent_snapshot(&restored);
+    let published_digest: String = row.get("published_digest");
+    if published_digest != carried_digest {
+        // Dropping the transaction rolls the restore back.
+        return Err(AppError::InvalidInput(format!(
+            "Version '{}' of tenant agent '{}' does not match the digest it was published under",
+            version, agent_id
+        )));
+    }
+
+    let snapshot = published_snapshot(
+        &restored,
+        &published_digest,
+        published_by.as_deref(),
+        approver,
+    );
     let change_source = AgentConfigChangeSource::Rollback {
         from_version: version.to_string(),
     };
-
-    sqlx::query("UPDATE agent_config_versions SET is_active = false WHERE agent_id = $1")
-        .bind(&agent_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
-
-    sqlx::query(
-        r#"INSERT INTO agent_config_versions
-           (agent_id, version, config_json, is_active, change_source)
-           VALUES ($1, $2, $3, true, $4)"#,
-    )
-    .bind(&agent_id)
-    .bind(&restored_version)
-    .bind(&restored_snapshot)
-    .bind(change_source.as_str())
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| AppError::Database(e.to_string()))?;
+    record_version_in(&mut tx, &restored, &snapshot, &change_source).await?;
 
     tx.commit()
         .await
         .map_err(|e| AppError::Database(e.to_string()))?;
 
-    Ok(restored)
+    Ok(RolledBackTenantAgent {
+        agent: restored,
+        published_digest,
+    })
 }
 
 // =============================================================================
@@ -852,66 +976,142 @@ pub async fn get_tenant_agent(
     Ok(agent_from_row(&row))
 }
 
-pub async fn create_tenant_agent(
+/// Create a tenant agent whose content is a draft (D-4, D-7). The row is
+/// never published: its `config` holds [`never_published_config`], the
+/// requested config is its draft, and nothing runs until a second admin
+/// publishes it. `author` is the draft's first author; `None` records none,
+/// and a draft with no recorded author cannot be published.
+pub async fn create_tenant_agent_as(
     pool: &PgPool,
     tenant_id: &str,
     req: CreateTenantAgentRequest,
+    author: Option<&str>,
 ) -> Result<TenantAgent> {
     prepare_create_tenant_agent(&req)?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = now_ts();
 
+    let mut tx = pool.begin().await.map_err(db_err)?;
     sqlx::query(INSERT_TENANT_AGENT_SQL)
         .bind(&id)
         .bind(tenant_id)
         .bind(&req.agent_name)
         .bind(&req.display_name)
         .bind(&req.description)
-        .bind(&req.config)
+        .bind(never_published_config())
         .bind(now)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        .map_err(db_err)?;
+    write_draft(
+        &mut tx,
+        tenant_id,
+        &req.agent_name,
+        &req.config,
+        author,
+        now,
+    )
+    .await?;
+    tx.commit().await.map_err(db_err)?;
 
     let agent = get_tenant_agent(pool, tenant_id, &req.agent_name).await?;
-    record_tenant_agent_version(pool, &agent, AgentConfigChangeSource::AdminCreate).await?;
+    record_tenant_agent_snapshot(
+        pool,
+        &agent,
+        draft_snapshot(&agent, Some(&req.config)),
+        AgentConfigChangeSource::AdminCreate,
+    )
+    .await?;
     Ok(agent)
 }
 
-pub async fn update_tenant_agent(
+/// [`create_tenant_agent_as`] with no recorded author: the draft cannot be
+/// published until an identified admin edits it and another publishes it.
+pub async fn create_tenant_agent(
+    pool: &PgPool,
+    tenant_id: &str,
+    req: CreateTenantAgentRequest,
+) -> Result<TenantAgent> {
+    create_tenant_agent_as(pool, tenant_id, req, None).await
+}
+
+/// Update a tenant agent. Display name, description and `enabled` apply
+/// directly; a config patch is merged into the draft (or, when there is
+/// none, into a copy of the published config) and written as the draft,
+/// adding `author` to its authors. `config` is never written here: what runs
+/// changes only by a publish, and a draft-only write leaves `updated_at`, and
+/// so the run path's reported version, as it was.
+pub async fn update_tenant_agent_as(
     pool: &PgPool,
     tenant_id: &str,
     agent_name: &str,
     req: UpdateTenantAgentRequest,
+    author: Option<&str>,
 ) -> Result<TenantAgent> {
     let now = now_ts();
 
     // Fetch current state
     let current = get_tenant_agent(pool, tenant_id, agent_name).await?;
 
-    let merged = merge_tenant_agent_update(&current, &req, now);
-    if req.config.is_some() {
-        validate_tenant_config(&merged.config)?;
-    }
+    let draft = match &req.config {
+        Some(patch) => {
+            let state = get_tenant_agent_publish_state(pool, tenant_id, agent_name).await?;
+            let draft = deep_merge_config(state.draft_base(), patch);
+            validate_tenant_config(&draft)?;
+            Some(draft)
+        }
+        None => None,
+    };
+    let touches_metadata =
+        req.display_name.is_some() || req.description.is_some() || req.enabled.is_some();
 
-    sqlx::query(
-        "UPDATE tenant_agents SET display_name = $1, description = $2, config = $3, enabled = $4, updated_at = $5
-         WHERE tenant_id = $6 AND agent_name = $7"
-    )
-    .bind(&merged.display_name)
-    .bind(&merged.description)
-    .bind(&merged.config)
-    .bind(merged.enabled)
-    .bind(now)
-    .bind(tenant_id)
-    .bind(agent_name)
-    .execute(pool)
-    .await
-    .map_err(|e| AppError::Database(e.to_string()))?;
+    let mut tx = pool.begin().await.map_err(db_err)?;
+    if touches_metadata {
+        let metadata = UpdateTenantAgentRequest {
+            display_name: req.display_name.clone(),
+            description: req.description.clone(),
+            config: None,
+            enabled: req.enabled,
+        };
+        let merged = merge_tenant_agent_update(&current, &metadata, now);
+        sqlx::query(
+            "UPDATE tenant_agents SET display_name = $1, description = $2, enabled = $3, updated_at = $4
+             WHERE tenant_id = $5 AND agent_name = $6",
+        )
+        .bind(&merged.display_name)
+        .bind(&merged.description)
+        .bind(merged.enabled)
+        .bind(now)
+        .bind(tenant_id)
+        .bind(agent_name)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    }
+    if let Some(draft) = &draft {
+        write_draft(&mut tx, tenant_id, agent_name, draft, author, now).await?;
+    }
+    tx.commit().await.map_err(db_err)?;
 
     let agent = get_tenant_agent(pool, tenant_id, agent_name).await?;
-    record_tenant_agent_version(pool, &agent, AgentConfigChangeSource::AdminUpdate).await?;
+    record_tenant_agent_snapshot(
+        pool,
+        &agent,
+        draft_snapshot(&agent, draft.as_ref()),
+        AgentConfigChangeSource::AdminUpdate,
+    )
+    .await?;
     Ok(agent)
+}
+
+/// [`update_tenant_agent_as`] with no recorded author.
+pub async fn update_tenant_agent(
+    pool: &PgPool,
+    tenant_id: &str,
+    agent_name: &str,
+    req: UpdateTenantAgentRequest,
+) -> Result<TenantAgent> {
+    update_tenant_agent_as(pool, tenant_id, agent_name, req, None).await
 }
 
 pub async fn delete_tenant_agent(pool: &PgPool, tenant_id: &str, agent_name: &str) -> Result<()> {
@@ -1052,15 +1252,22 @@ pub async fn list_agent_templates(
         .collect()
 }
 
-/// Clones all agent templates for a product type into a tenant's agent list.
-/// Idempotent — skips agents that already exist (ON CONFLICT DO NOTHING).
+/// Clones all agent templates for a product type into a tenant's agent list,
+/// as drafts (D-4): each new row is never published, its `config` holds
+/// [`never_published_config`], the template's config is its draft and
+/// `author` (the provisioning admin) its author. Nothing runs until a second
+/// admin publishes it. Idempotent — skips agents that already exist (ON
+/// CONFLICT DO NOTHING). Returns the publish state of every agent of the
+/// tenant.
 pub async fn clone_templates_for_tenant(
     pool: &PgPool,
     tenant_id: &str,
     product_type: &str,
-) -> Result<Vec<TenantAgent>> {
+    author: Option<&str>,
+) -> Result<Vec<TenantAgentPublishState>> {
     let templates = list_agent_templates(pool, Some(product_type)).await?;
     let now = now_ts();
+    let authors: Vec<String> = author.map(|a| vec![a.to_string()]).unwrap_or_default();
 
     for tpl in &templates {
         // Closed schema (row 21): a dirty template row must not seed tenant
@@ -1068,8 +1275,9 @@ pub async fn clone_templates_for_tenant(
         validate_tenant_config(&tpl.config)?;
         let id = uuid::Uuid::new_v4().to_string();
         sqlx::query(
-            "INSERT INTO tenant_agents (id, tenant_id, agent_name, display_name, description, config, enabled, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, true, $7, $7)
+            "INSERT INTO tenant_agents (id, tenant_id, agent_name, display_name, description, config, enabled, created_at, updated_at,
+                                        draft_config, draft_by, draft_authors, draft_at)
+             VALUES ($1, $2, $3, $4, $5, $6, true, $7, $7, $8, $9, $10, $7)
              ON CONFLICT (tenant_id, agent_name) DO NOTHING"
         )
         .bind(&id)
@@ -1077,17 +1285,23 @@ pub async fn clone_templates_for_tenant(
         .bind(&tpl.agent_name)
         .bind(&tpl.display_name)
         .bind(&tpl.description)
-        .bind(&tpl.config)
+        .bind(never_published_config())
         .bind(now)
+        .bind(&tpl.config)
+        .bind(author)
+        .bind(&authors)
         .execute(pool)
         .await
         .map_err(|e| AppError::Database(e.to_string()))?;
     }
 
-    list_tenant_agents(pool, tenant_id).await
+    list_tenant_agent_publish_states(pool, tenant_id).await
 }
 
-/// Point a stored tenant agent at a different model.
+/// Point a stored tenant agent at a different model, in its draft (D-4):
+/// the model is set on the draft (or, when there is none, on a copy of the
+/// published config), written as the draft, and `author` is added to its
+/// authors. What runs changes only by a publish.
 ///
 /// The patched config passes the closed-schema validation (row 21) before
 /// the write, so provisioning cannot seed a row that later write paths
@@ -1097,20 +1311,10 @@ pub async fn set_tenant_agent_model(
     tenant_id: &str,
     agent_name: &str,
     model: &str,
+    author: Option<&str>,
 ) -> Result<()> {
-    let row =
-        sqlx::query("SELECT config FROM tenant_agents WHERE tenant_id = $1 AND agent_name = $2")
-            .bind(tenant_id)
-            .bind(agent_name)
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
-    let Some(row) = row else {
-        return Err(AppError::NotFound(format!(
-            "tenant agent {agent_name} not found"
-        )));
-    };
-    let mut config: serde_json::Value = row.get("config");
+    let state = get_tenant_agent_publish_state(pool, tenant_id, agent_name).await?;
+    let mut config = state.draft_base().clone();
     let Some(obj) = config.as_object_mut() else {
         return Err(AppError::InvalidInput(format!(
             "tenant agent {agent_name} config is not an object"
@@ -1121,18 +1325,349 @@ pub async fn set_tenant_agent_model(
         serde_json::Value::String(model.to_string()),
     );
     validate_tenant_config(&config)?;
-    sqlx::query(
-        "UPDATE tenant_agents SET config = $3, updated_at = $4
+    let mut conn = pool.acquire().await.map_err(db_err)?;
+    write_draft(&mut conn, tenant_id, agent_name, &config, author, now_ts()).await
+}
+
+// =============================================================================
+// Draft -> publish gate (item 2.6a)
+// =============================================================================
+
+/// What `config` holds for a row that was never published: the empty
+/// object. It names no model and no skill, so nothing runs from it, whoever
+/// reads it (the v1 run route's skill branch, triggers, schedules and
+/// pipelines read `config` through [`get_tenant_agent`]); the run path
+/// refuses such a row before reading it (D-7).
+pub fn never_published_config() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
+}
+
+/// `published_by` and `approved_by` of every row the publish-gate migration
+/// (038) published, and the name of those rows' version records (D-3).
+pub const CUTOVER_ACTOR: &str = "cutover";
+
+/// The publish state of one tenant agent: what runs and under which digest,
+/// and the pending draft with its digest and authors. It is the draft view a
+/// reviewer reads before `POST .../publish`.
+///
+/// Every digest here is computed in the database by
+/// `tenant_agent_config_digest(jsonb)` (migration 038), the one definition
+/// of a config digest (D-2).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TenantAgentPublishState {
+    pub tenant_id: String,
+    pub agent_name: String,
+    /// What runs: the published config ([`never_published_config`] for a
+    /// row that was never published).
+    pub config: serde_json::Value,
+    /// Digest of `config` as published; `None` for a row never published.
+    pub published_digest: Option<String>,
+    /// Last author of the published draft (`cutover` for the rows the
+    /// migration published).
+    pub published_by: Option<String>,
+    /// The admin who approved the publish, or ran the rollback.
+    pub approved_by: Option<String>,
+    pub published_at: Option<i64>,
+    /// The pending draft, if any.
+    pub draft_config: Option<serde_json::Value>,
+    /// Digest of `draft_config`: the value a reviewer names in
+    /// `POST .../publish`.
+    pub draft_digest: Option<String>,
+    /// The last writer of the draft.
+    pub draft_by: Option<String>,
+    /// Every actor who wrote the draft since the last publish; none of them
+    /// may approve it.
+    pub draft_authors: Vec<String>,
+    pub draft_at: Option<i64>,
+}
+
+impl TenantAgentPublishState {
+    /// The config a new edit merges into: the draft, or the published config
+    /// when there is no draft.
+    pub fn draft_base(&self) -> &serde_json::Value {
+        self.draft_config.as_ref().unwrap_or(&self.config)
+    }
+}
+
+const PUBLISH_STATE_SELECT: &str = "SELECT tenant_id, agent_name, config, published_digest, \
+     published_by, approved_by, published_at, draft_config, \
+     tenant_agent_config_digest(draft_config) AS draft_digest, draft_by, \
+     COALESCE(draft_authors, '{}'::text[]) AS draft_authors, draft_at \
+     FROM tenant_agents";
+
+fn publish_state_from_row(row: &sqlx::postgres::PgRow) -> TenantAgentPublishState {
+    TenantAgentPublishState {
+        tenant_id: row.get("tenant_id"),
+        agent_name: row.get("agent_name"),
+        config: row.get("config"),
+        published_digest: row.get("published_digest"),
+        published_by: row.get("published_by"),
+        approved_by: row.get("approved_by"),
+        published_at: row.get("published_at"),
+        draft_config: row.get("draft_config"),
+        draft_digest: row.get("draft_digest"),
+        draft_by: row.get("draft_by"),
+        draft_authors: row.get("draft_authors"),
+        draft_at: row.get("draft_at"),
+    }
+}
+
+/// The publish state of one tenant agent (the draft view).
+pub async fn get_tenant_agent_publish_state(
+    pool: &PgPool,
+    tenant_id: &str,
+    agent_name: &str,
+) -> Result<TenantAgentPublishState> {
+    let sql = format!("{PUBLISH_STATE_SELECT} WHERE tenant_id = $1 AND agent_name = $2");
+    let row = sqlx::query(&sql)
+        .bind(tenant_id)
+        .bind(agent_name)
+        .fetch_optional(pool)
+        .await
+        .map_err(db_err)?
+        .ok_or_else(|| tenant_agent_not_found_error(agent_name, tenant_id))?;
+    Ok(publish_state_from_row(&row))
+}
+
+/// The publish state of every agent of a tenant, by agent name.
+pub async fn list_tenant_agent_publish_states(
+    pool: &PgPool,
+    tenant_id: &str,
+) -> Result<Vec<TenantAgentPublishState>> {
+    let sql = format!("{PUBLISH_STATE_SELECT} WHERE tenant_id = $1 ORDER BY agent_name");
+    let rows = sqlx::query(&sql)
+        .bind(tenant_id)
+        .fetch_all(pool)
+        .await
+        .map_err(db_err)?;
+    Ok(rows.iter().map(publish_state_from_row).collect())
+}
+
+/// Write `draft` as the row's draft and add `author` to its authors (once).
+/// `config` and the publish columns are untouched.
+async fn write_draft(
+    conn: &mut sqlx::PgConnection,
+    tenant_id: &str,
+    agent_name: &str,
+    draft: &serde_json::Value,
+    author: Option<&str>,
+    now: i64,
+) -> Result<()> {
+    let result = sqlx::query(
+        "UPDATE tenant_agents
+         SET draft_config = $3, draft_by = $4, draft_at = $5,
+             draft_authors = CASE
+                 WHEN $4::text IS NULL OR $4::text = ANY(COALESCE(draft_authors, '{}'::text[]))
+                     THEN COALESCE(draft_authors, '{}'::text[])
+                 ELSE array_append(COALESCE(draft_authors, '{}'::text[]), $4::text)
+             END
          WHERE tenant_id = $1 AND agent_name = $2",
     )
     .bind(tenant_id)
     .bind(agent_name)
-    .bind(&config)
-    .bind(now_ts())
-    .execute(pool)
+    .bind(draft)
+    .bind(author)
+    .bind(now)
+    .execute(&mut *conn)
     .await
-    .map_err(|e| AppError::Database(e.to_string()))?;
+    .map_err(db_err)?;
+    if result.rows_affected() == 0 {
+        return Err(tenant_agent_not_found_error(agent_name, tenant_id));
+    }
     Ok(())
+}
+
+/// The body of `POST /admin/tenants/{tenant_id}/agents/{agent_name}/publish`:
+/// the digest of the draft the approver reviewed (`GET .../draft`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishTenantAgentRequest {
+    pub draft_digest: String,
+}
+
+/// Why a publish was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishRefusal {
+    /// The row has no draft.
+    NoDraft,
+    /// The draft has no recorded author, so the two-person rule cannot be
+    /// checked.
+    NoRecordedAuthor,
+    /// The approver wrote the draft, or part of it (ruling section 3.2, D-5).
+    ApproverIsAuthor,
+    /// The stored draft is not the one the approver reviewed (section 3.1).
+    DraftChanged,
+}
+
+impl PublishRefusal {
+    /// Stable machine-readable code for the refusal.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::NoDraft => "no_draft",
+            Self::NoRecordedAuthor => "no_recorded_author",
+            Self::ApproverIsAuthor => "approver_is_author",
+            Self::DraftChanged => "draft_changed",
+        }
+    }
+
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::NoDraft => "The agent has no draft to publish",
+            Self::NoRecordedAuthor => {
+                "The draft has no recorded author, so a second person cannot be checked: an \
+                 identified admin must edit it before another publishes it"
+            }
+            Self::ApproverIsAuthor => {
+                "The approver wrote this draft: a draft is published by an admin who is none of \
+                 its authors"
+            }
+            Self::DraftChanged => {
+                "The draft changed after it was reviewed: read the draft again and approve its \
+                 current digest"
+            }
+        }
+    }
+}
+
+/// The publish decision, without the database: `None` when `approver` may
+/// publish the draft whose digest is `draft_digest` and whose authors are
+/// `authors`, having reviewed `reviewed_digest`.
+///
+/// The approver may be none of the authors (the static admin key is the one
+/// actor `admin_secret`, D-5), and the reviewed digest must equal the stored
+/// draft's exactly: it is compared, never normalised and never stored.
+pub fn publish_refusal(
+    draft_digest: Option<&str>,
+    authors: &[String],
+    approver: &str,
+    reviewed_digest: &str,
+) -> Option<PublishRefusal> {
+    let Some(current) = draft_digest else {
+        return Some(PublishRefusal::NoDraft);
+    };
+    if authors.is_empty() {
+        return Some(PublishRefusal::NoRecordedAuthor);
+    }
+    if authors.iter().any(|author| author == approver) {
+        return Some(PublishRefusal::ApproverIsAuthor);
+    }
+    if current != reviewed_digest {
+        return Some(PublishRefusal::DraftChanged);
+    }
+    None
+}
+
+/// A completed publish.
+#[derive(Debug, Clone, Serialize)]
+pub struct PublishedTenantAgent {
+    pub agent: TenantAgent,
+    /// Computed by the database from the new `config`.
+    pub published_digest: String,
+    /// The draft's last author.
+    pub published_by: Option<String>,
+    pub approved_by: String,
+    pub published_at: i64,
+    /// Every author of the draft that was published.
+    pub draft_authors: Vec<String>,
+}
+
+#[derive(Debug)]
+pub enum PublishOutcome {
+    Published(Box<PublishedTenantAgent>),
+    Refused(PublishRefusal),
+}
+
+/// Publish the stored draft of a tenant agent, in one transaction (ruling
+/// section 3.1).
+///
+/// The row is locked; the stored draft's digest is recomputed by the one SQL
+/// definition and must equal `reviewed_digest`; `approver` must be none of
+/// the draft's authors. Then the draft moves into `config`,
+/// `published_digest` is set by the same definition on the new `config`
+/// (computed by the database, never taken from the request), `published_by`
+/// is the draft's last author and `approved_by` the approver, the draft and
+/// its author list are cleared, and a `Publish` version carrying the digest
+/// is recorded. A refusal changes nothing.
+pub async fn publish_tenant_agent(
+    pool: &PgPool,
+    tenant_id: &str,
+    agent_name: &str,
+    reviewed_digest: &str,
+    approver: &str,
+) -> Result<PublishOutcome> {
+    let mut tx = pool.begin().await.map_err(db_err)?;
+    let row = sqlx::query(
+        "SELECT draft_config, tenant_agent_config_digest(draft_config) AS draft_digest,
+                COALESCE(draft_authors, '{}'::text[]) AS draft_authors,
+                COALESCE(draft_by, draft_authors[cardinality(draft_authors)]) AS last_author
+         FROM tenant_agents WHERE tenant_id = $1 AND agent_name = $2
+         FOR UPDATE",
+    )
+    .bind(tenant_id)
+    .bind(agent_name)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db_err)?
+    .ok_or_else(|| tenant_agent_not_found_error(agent_name, tenant_id))?;
+    let draft: Option<serde_json::Value> = row.get("draft_config");
+    let draft_digest: Option<String> = row.get("draft_digest");
+    let authors: Vec<String> = row.get("draft_authors");
+    let last_author: Option<String> = row.get("last_author");
+
+    if let Some(refusal) =
+        publish_refusal(draft_digest.as_deref(), &authors, approver, reviewed_digest)
+    {
+        // Dropping the transaction releases the lock; nothing was written.
+        return Ok(PublishOutcome::Refused(refusal));
+    }
+    // Closed schema (row 21), once more at the gate.
+    if let Some(draft) = &draft {
+        validate_tenant_config(draft)?;
+    }
+
+    let now = now_ts();
+    let row = sqlx::query(
+        "UPDATE tenant_agents
+         SET config = draft_config,
+             published_digest = tenant_agent_config_digest(draft_config),
+             published_by = $3, approved_by = $4, published_at = $5, updated_at = $5,
+             draft_config = NULL, draft_by = NULL, draft_authors = NULL, draft_at = NULL
+         WHERE tenant_id = $1 AND agent_name = $2
+         RETURNING id, tenant_id, agent_name, display_name, description, config, enabled,
+                   created_at, updated_at, published_digest",
+    )
+    .bind(tenant_id)
+    .bind(agent_name)
+    .bind(&last_author)
+    .bind(approver)
+    .bind(now)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(db_err)?;
+    let agent = agent_from_row(&row);
+    let published_digest: String = row.get("published_digest");
+    if draft_digest.as_deref() != Some(published_digest.as_str()) {
+        // The row is locked, so this cannot happen; refuse rather than
+        // publish under a digest nobody reviewed.
+        return Err(AppError::Internal(format!(
+            "Published digest of tenant agent '{agent_name}' differs from the reviewed draft's"
+        )));
+    }
+
+    let snapshot = published_snapshot(&agent, &published_digest, last_author.as_deref(), approver);
+    let change_source = AgentConfigChangeSource::Publish {
+        digest: published_digest.clone(),
+    };
+    record_version_in(&mut tx, &agent, &snapshot, &change_source).await?;
+    tx.commit().await.map_err(db_err)?;
+
+    Ok(PublishOutcome::Published(Box::new(PublishedTenantAgent {
+        agent,
+        published_digest,
+        published_by: last_author,
+        approved_by: approver.to_string(),
+        published_at: now,
+        draft_authors: authors,
+    })))
 }
 
 // =============================================================================
@@ -2058,6 +2593,132 @@ mod tests {
             }
             .as_str(),
             "rollback:v3"
+        );
+    }
+
+    // =====================================================================
+    // Item 2.6a: the draft -> publish gate (pure parts)
+    // =====================================================================
+
+    #[test]
+    fn agent_config_change_source_publish_carries_the_digest() {
+        assert_eq!(
+            super::AgentConfigChangeSource::Publish {
+                digest: "ab12".into()
+            }
+            .as_str(),
+            "publish:ab12"
+        );
+    }
+
+    fn authors(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    #[test]
+    fn publish_refusal_single_author_approving_is_refused() {
+        assert_eq!(
+            publish_refusal(Some("d"), &authors(&["a"]), "a", "d"),
+            Some(PublishRefusal::ApproverIsAuthor)
+        );
+    }
+
+    #[test]
+    fn publish_refusal_any_author_of_the_draft_is_refused() {
+        // A writes, B edits, A approves; and B approves.
+        assert_eq!(
+            publish_refusal(Some("d"), &authors(&["a", "b"]), "a", "d"),
+            Some(PublishRefusal::ApproverIsAuthor)
+        );
+        assert_eq!(
+            publish_refusal(Some("d"), &authors(&["a", "b"]), "b", "d"),
+            Some(PublishRefusal::ApproverIsAuthor)
+        );
+    }
+
+    #[test]
+    fn publish_refusal_lets_a_second_person_publish() {
+        assert_eq!(publish_refusal(Some("d"), &authors(&["a"]), "b", "d"), None);
+    }
+
+    #[test]
+    fn publish_refusal_counts_the_static_key_as_one_actor() {
+        assert_eq!(
+            publish_refusal(Some("d"), &authors(&["admin_secret"]), "admin_secret", "d"),
+            Some(PublishRefusal::ApproverIsAuthor)
+        );
+        assert_eq!(
+            publish_refusal(Some("d"), &authors(&["admin_secret"]), "user-1", "d"),
+            None
+        );
+    }
+
+    #[test]
+    fn publish_refusal_binds_the_approval_to_the_reviewed_digest() {
+        assert_eq!(
+            publish_refusal(Some("new"), &authors(&["a"]), "b", "old"),
+            Some(PublishRefusal::DraftChanged)
+        );
+        // Compared exactly: the request's value is never normalised.
+        assert_eq!(
+            publish_refusal(Some("abc"), &authors(&["a"]), "b", "ABC"),
+            Some(PublishRefusal::DraftChanged)
+        );
+    }
+
+    #[test]
+    fn publish_refusal_needs_a_draft_and_a_recorded_author() {
+        assert_eq!(
+            publish_refusal(None, &authors(&["a"]), "b", "d"),
+            Some(PublishRefusal::NoDraft)
+        );
+        assert_eq!(
+            publish_refusal(Some("d"), &[], "b", "d"),
+            Some(PublishRefusal::NoRecordedAuthor)
+        );
+    }
+
+    #[test]
+    fn never_published_config_names_nothing_runnable() {
+        let config = never_published_config();
+        assert_eq!(config, serde_json::json!({}));
+        assert!(
+            validate_tenant_config(&config).is_err(),
+            "no model: nothing can run from it"
+        );
+        assert!(config.get("skill_id").is_none());
+    }
+
+    #[test]
+    fn only_a_published_snapshot_carries_a_digest() {
+        let agent = sample_agent();
+        let published = published_snapshot(&agent, "d1", Some("a"), "b");
+        assert_eq!(snapshot_published_digest(&published).as_deref(), Some("d1"));
+        assert_eq!(published["published_by"], "a");
+        assert_eq!(published["approved_by"], "b");
+
+        let draft = draft_snapshot(&agent, Some(&serde_json::json!({"model": "m"})));
+        assert_eq!(snapshot_published_digest(&draft), None);
+        assert_eq!(draft["draft_config"]["model"], "m");
+
+        assert_eq!(
+            snapshot_published_digest(&tenant_agent_snapshot(&agent)),
+            None,
+            "a pre-gate snapshot carries none"
+        );
+        assert_eq!(
+            snapshot_published_digest(&serde_json::json!({"published_digest": 7})),
+            None
+        );
+        assert_eq!(
+            snapshot_published_digest(&serde_json::json!({"published_digest": " "})),
+            None
+        );
+        assert_eq!(
+            tenant_agent_from_snapshot(published)
+                .expect("a published snapshot still restores")
+                .agent_name,
+            "listener"
         );
     }
 

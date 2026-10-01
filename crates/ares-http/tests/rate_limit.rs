@@ -291,9 +291,8 @@ max_tracked_keys = 7000
     assert!(rl.any_limit_set());
 
     // trusted_proxies takes exact addresses: a CIDR range fails the load.
-    let cidr = toml::from_str::<ServerConfig>(
-        "[rate_limit]\ntrusted_proxies = [\"127.0.0.0/8\"]\n",
-    );
+    let cidr =
+        toml::from_str::<ServerConfig>("[rate_limit]\ntrusted_proxies = [\"127.0.0.0/8\"]\n");
     assert!(cidr.is_err(), "a CIDR trusted proxy must not load");
 
     // No table at all: every limit off.
@@ -962,9 +961,13 @@ async fn ipv6_clients_share_a_bucket_per_64() {
     });
 
     // Direct peers: one /64 is one client; the next /64 is another.
-    assert_eq!(h.get("/v1/ping", "2001:db8:1:2::1", &[]).await, StatusCode::OK);
     assert_eq!(
-        h.get("/v1/ping", "2001:db8:1:2:ffff:ffff:ffff:fffe", &[]).await,
+        h.get("/v1/ping", "2001:db8:1:2::1", &[]).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.get("/v1/ping", "2001:db8:1:2:ffff:ffff:ffff:fffe", &[])
+            .await,
         StatusCode::TOO_MANY_REQUESTS,
         "another address in the same /64 shares the bucket"
     );
@@ -983,10 +986,16 @@ async fn ipv6_clients_share_a_bucket_per_64() {
         h.get("/v1/ping", "127.0.0.1", &same_64).await,
         StatusCode::TOO_MANY_REQUESTS
     );
-    assert_eq!(h.get("/v1/ping", "127.0.0.1", &other_64).await, StatusCode::OK);
+    assert_eq!(
+        h.get("/v1/ping", "127.0.0.1", &other_64).await,
+        StatusCode::OK
+    );
 
     // IPv4-mapped IPv6 is IPv4: a bucket per address, not per /64.
-    assert_eq!(h.get("/v1/ping", "::ffff:203.0.113.7", &[]).await, StatusCode::OK);
+    assert_eq!(
+        h.get("/v1/ping", "::ffff:203.0.113.7", &[]).await,
+        StatusCode::OK
+    );
     assert_eq!(
         h.get("/v1/ping", "203.0.113.7", &[]).await,
         StatusCode::TOO_MANY_REQUESTS,
@@ -1001,9 +1010,21 @@ async fn ipv6_clients_share_a_bucket_per_64() {
     // The log names the /64, never an address.
     let warns = capture.warn_lines();
     assert_eq!(warns.len(), 3, "one line per refusal: {warns:#?}");
-    assert!(warns[0].contains("client_net=2001:db8:1:2::/64"), "{}", warns[0]);
-    assert!(warns[1].contains("client_net=2001:db8:5:6::/64"), "{}", warns[1]);
-    assert!(warns[2].contains("client_net=203.0.113.0/24"), "{}", warns[2]);
+    assert!(
+        warns[0].contains("client_net=2001:db8:1:2::/64"),
+        "{}",
+        warns[0]
+    );
+    assert!(
+        warns[1].contains("client_net=2001:db8:5:6::/64"),
+        "{}",
+        warns[1]
+    );
+    assert!(
+        warns[2].contains("client_net=203.0.113.0/24"),
+        "{}",
+        warns[2]
+    );
     let text = capture.all_text();
     for full in [
         "2001:db8:1:2::1",
@@ -1012,7 +1033,10 @@ async fn ipv6_clients_share_a_bucket_per_64() {
         "2001:db8:5:6:a",
         "203.0.113.7",
     ] {
-        assert!(!text.contains(full), "a full address was logged: {full}\n{text}");
+        assert!(
+            !text.contains(full),
+            "a full address was logged: {full}\n{text}"
+        );
     }
 }
 
@@ -1039,7 +1063,10 @@ async fn x_real_ip_with_more_than_one_line_is_not_read() {
     assert_eq!(
         h.client_of(
             "127.0.0.1",
-            &[("x-real-ip", "203.0.113.66"), ("x-real-ip", "198.51.100.20")]
+            &[
+                ("x-real-ip", "203.0.113.66"),
+                ("x-real-ip", "198.51.100.20")
+            ]
         ),
         Some(ip("127.0.0.1"))
     );
@@ -1050,8 +1077,14 @@ async fn x_real_ip_with_more_than_one_line_is_not_read() {
     );
 
     // The two-line request spends the proxy's bucket, never the victim's.
-    assert_eq!(h.get("/v1/ping", "127.0.0.1", &two_lines).await, StatusCode::OK);
-    assert_eq!(h.get("/v1/ping", "127.0.0.1", &two_lines).await, StatusCode::OK);
+    assert_eq!(
+        h.get("/v1/ping", "127.0.0.1", &two_lines).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.get("/v1/ping", "127.0.0.1", &two_lines).await,
+        StatusCode::OK
+    );
     assert_eq!(
         h.get("/v1/ping", "127.0.0.1", &two_lines).await,
         StatusCode::TOO_MANY_REQUESTS
@@ -1061,7 +1094,10 @@ async fn x_real_ip_with_more_than_one_line_is_not_read() {
         StatusCode::OK,
         "the client could not choose the victim's bucket"
     );
-    assert_eq!(h.get("/v1/ping", "127.0.0.1", &victim).await, StatusCode::OK);
+    assert_eq!(
+        h.get("/v1/ping", "127.0.0.1", &victim).await,
+        StatusCode::OK
+    );
 }
 
 /// rev2 F1: interpretation 5 (a refused request spends nothing) and the
@@ -1129,7 +1165,10 @@ async fn a_refusal_spends_nothing_and_the_longest_wait_binds() {
         burst: 1,
         ..off()
     });
-    assert_eq!(h.get("/v1/ping", "198.51.100.9", &key).await, StatusCode::OK);
+    assert_eq!(
+        h.get("/v1/ping", "198.51.100.9", &key).await,
+        StatusCode::OK
+    );
     h.clock.advance(Duration::from_secs(1));
     let refused = h.call(Method::GET, "/v1/ping", "198.51.100.9", &key).await;
     assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -1207,7 +1246,11 @@ async fn client_map_is_capped_and_new_clients_share_an_overflow_bucket() {
     // Full again: the overflow bucket (its token is back) serves the next one.
     assert_eq!(h.get("/v1/ping", "192.0.2.7", &[]).await, StatusCode::OK);
     assert_eq!(h.tracked().clients, 2);
-    assert_eq!(overflow_lines(&capture).len(), 1, "within the minute: no new line");
+    assert_eq!(
+        overflow_lines(&capture).len(),
+        1,
+        "within the minute: no new line"
+    );
 
     // A minute on, the next overflow logs the count since the last line.
     h.clock.advance(Duration::from_secs(60));
@@ -1239,8 +1282,12 @@ async fn key_map_is_capped_and_new_keys_share_an_overflow_bucket() {
     for n in 1..=2 {
         let auth = k(n);
         assert_eq!(
-            h.get("/v1/ping", "203.0.113.7", &[("authorization", auth.as_str())])
-                .await,
+            h.get(
+                "/v1/ping",
+                "203.0.113.7",
+                &[("authorization", auth.as_str())]
+            )
+            .await,
             StatusCode::OK
         );
     }

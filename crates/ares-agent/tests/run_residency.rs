@@ -676,7 +676,8 @@ struct Opts {
     /// Give `Execute` the agent registry. Without it, `Execute::run` takes the generic
     /// fall-through, which calls the `Llm` service on the context.
     registry: bool,
-    /// Keys a hostile tenant could write into the agent's config and a trigger message.
+    /// An endpoint and a region in places a hostile input could reach: the system agent's
+    /// config `extra` map and the trigger message (see `request_supplied_endpoint_or_region_is_ignored`).
     hostile_inputs: bool,
 }
 
@@ -820,17 +821,15 @@ impl Fixture {
         let exec = Arc::new(exec);
         root.provide_arc(exec.clone());
 
-        let mut tenant_agent_config = json!({
+        // (A tenant agent's config cannot carry an endpoint or a region: the validator refuses
+        // unknown keys; `ares-http/tests/run_residency_http.rs` pins that.)
+        let tenant_agent_config = json!({
             "model": MODEL_ALIAS,
             "system_prompt": "residency probe",
             "tools": [],
             "max_tool_iterations": 3,
             "parallel_tools": false
         });
-        if opts.hostile_inputs {
-            tenant_agent_config["resolved_endpoint"] = json!(HOSTILE_ENDPOINT);
-            tenant_agent_config["region"] = json!(HOSTILE_REGION);
-        }
         create_tenant_agent(
             &pool,
             &tenant.id,
@@ -1089,9 +1088,9 @@ async fn endpoint_never_carries_userinfo_query_or_fragment() {
 }
 
 /// `request_supplied_endpoint_or_region_is_ignored` (section 3.3): neither column is ever
-/// filled from a request. Here the request's own text (the trigger message), the agent's config
-/// (system tier and the tenant's row) and the message all carry an endpoint and a region; the
-/// row shows the provider's, and nothing of theirs.
+/// filled from a request. Here the request's own text (the trigger message) and the system
+/// agent's config (its `extra` map) carry an endpoint and a region; the row shows the
+/// provider's, and nothing of theirs.
 #[tokio::test(flavor = "multi_thread")]
 async fn request_supplied_endpoint_or_region_is_ignored() {
     let fx = Fixture::build(Opts {

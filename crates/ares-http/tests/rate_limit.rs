@@ -74,12 +74,7 @@ unsafe impl std::alloc::GlobalAlloc for CountingAlloc {
         heap_count(-(layout.size() as isize));
     }
 
-    unsafe fn realloc(
-        &self,
-        ptr: *mut u8,
-        layout: std::alloc::Layout,
-        new_size: usize,
-    ) -> *mut u8 {
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
         let moved = unsafe { std::alloc::System.realloc(ptr, layout, new_size) };
         if !moved.is_null() {
             heap_count(new_size as isize - layout.size() as isize);
@@ -110,7 +105,9 @@ fn heap_reset_peak() {
 /// synchronously: millions of requests in a test, without the router's cost.
 type OkFn = fn(Request<Body>) -> futures::future::Ready<Result<Response, std::convert::Infallible>>;
 
-fn always_ok(_req: Request<Body>) -> futures::future::Ready<Result<Response, std::convert::Infallible>> {
+fn always_ok(
+    _req: Request<Body>,
+) -> futures::future::Ready<Result<Response, std::convert::Infallible>> {
     futures::future::ready(Ok(Response::new(Body::empty())))
 }
 

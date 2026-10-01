@@ -1194,6 +1194,7 @@ fn build_cors_layer(origins: &[String]) -> CorsLayer {
             header::ORIGIN,
             axum::http::HeaderName::from_static("x-admin-secret"),
         ])
+        .expose_headers([header::RETRY_AFTER])
         .allow_credentials(allow_credentials)
 }
 

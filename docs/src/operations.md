@@ -16,8 +16,9 @@ The server reads `ares.toml` from the working directory. `ares-server --config m
 | `port` | 3000 | Listen port. |
 | `log_level` | `"info"` | One of `trace`, `debug`, `info`, `warn`, `error`. |
 | `cors_origins` | `["http://localhost:3000"]` | Allowed CORS origins. Set explicit origins in production. |
-| `rate_limit_per_second` | 100 | Requests per second per IP; 0 disables limiting. |
-| `rate_limit_burst` | 10 | Rate limiter burst size. |
+| `rate_limit_per_second` | 100 | Retired. ARES's own binary ignores it and logs a startup warning (see *Rate limiting*). |
+| `rate_limit_burst` | 10 | Retired, with `rate_limit_per_second`. |
+| `rate_limit` | every limit 0 (off) | The `[server.rate_limit]` table (see *Rate limiting*). |
 
 #### CORS behavior
 
@@ -26,16 +27,35 @@ The server reads `ares.toml` from the working directory. `ares-server --config m
 1. Single `"*"` entry, or an empty list: any origin is allowed, credentials are disabled, and a warning logs at startup. Browsers reject credentials together with wildcard origins, so this mode never sends them.
 2. Any other list: only listed origins pass. Credentials are enabled. Origins that fail to parse drop out silently.
 
-Allowed methods cover GET, POST, PUT, PATCH, DELETE, and OPTIONS. Allowed request headers are `Authorization`, `Content-Type`, `Accept`, `Origin`, and `x-admin-secret`.
+Allowed methods cover GET, POST, PUT, PATCH, DELETE, and OPTIONS. Allowed request headers are `Authorization`, `Content-Type`, `Accept`, `Origin`, and `x-admin-secret`. The `Retry-After` response header is exposed to browsers.
 
-#### Rate limit algorithm
+#### Rate limiting
 
-The two `rate_limit_*` keys drive one middleware built at startup (`src/main.rs`, around the layer assembly):
+`RateLimitConfig` (`crates/ares-http/src/config.rs`) is the `[server.rate_limit]` table. `ares_http::middleware::rate_limit` applies it, and `run_server` (`src/main.rs`) adds the layer only when a limit is above 0. Each limit is a token bucket (the Generic Cell Rate Algorithm, GCRA) that refills at its rate **in requests per minute** and holds up to `burst` requests. A limit of 0 is off, and every limit defaults to 0, so **the limiter is off until you set one**.
 
-- When `rate_limit_per_second > 0`, the app wraps in `tower_governor::GovernorLayer`. The governor runs the Generic Cell Rate Algorithm (GCRA) per client IP: `per_second` sets the sustained refill rate, and `burst_size` permits short bursts above it before rejections start.
-- `use_headers()` adds standard `x-ratelimit-*` headers to responses, so clients can observe their budget.
-- A background task prunes stale per-IP state every 60 seconds to bound memory.
-- If you set `rate_limit_per_second = 0`, the limiter is off. Startup logs a warning. Do not disable limiting in production.
+| Key | Default | Meaning |
+|---|---|---|
+| `global_requests_per_minute` | 0 (off) | One bucket shared by every request: a safety cap. |
+| `per_client_requests_per_minute` | 0 (off) | One bucket per client: an IPv4 address, or an IPv6 /64 network. |
+| `per_key_requests_per_minute` | 0 (off) | One bucket per `Authorization: Bearer` credential, keyed by its SHA-256 and never logged. Nothing is authenticated here. |
+| `burst` | 0 | Bucket size in requests, for each limit. A bucket holds at least 1. |
+| `trusted_proxies` | `["127.0.0.1", "::1"]` | Exact IP addresses whose forwarding headers are read. A CIDR range fails the config load. |
+| `max_tracked_clients` | 100000 | Most client buckets held at once (at most about 3.3 MB). |
+| `max_tracked_keys` | 100000 | Most key buckets held at once (at most about 5.4 MB). |
+
+```toml
+[server.rate_limit]
+per_client_requests_per_minute = 60   # one request a second per client...
+burst = 10                            # ...after up to 10 at once
+trusted_proxies = ["127.0.0.1"]       # the exact address your reverse proxy connects from
+```
+
+- **The client** is the peer address, unless the peer is a trusted proxy. Then it is the rightmost `X-Forwarded-For` address that is not itself a trusted proxy, or `X-Real-IP` when there is no `X-Forwarded-For` and `X-Real-IP` has exactly one line. Forwarding headers from any other peer are never read. Behind a reverse proxy, have it send `X-Forwarded-For` (or `X-Real-IP`) and list its exact address in `trusted_proxies`; otherwise every client shares the proxy's bucket.
+- **Exempt:** only `GET` and `HEAD` of exactly `/health`, the container health check.
+- **A refusal** is HTTP 429 with `{"error":"rate limited","code":"RATE_LIMITED"}` and `Retry-After` in whole seconds. Each refusal logs one `warn` line naming the limit and the client's network (/24 or /64), never a key or a full address.
+- **Memory:** when the client or key map is at its cap with only live buckets, new clients or keys share one overflow bucket at the same rate, and a count is logged at most once a minute.
+- **A change needs a restart:** the limits are read at startup.
+- **The retired keys** `rate_limit_per_second` and `rate_limit_burst` are ignored. They default to 100 and 10, so unless both are set to 0, startup logs one warning that says what they meant: under tower_governor, `per_second(n)` meant one request every `n` seconds per peer IP, and `rate_limit_burst = 0` made the old binary panic at boot. The values are not translated. So a config with no `[server.rate_limit]` table, which the old binary limited per peer IP by default, now runs with no limiter.
 
 A second, independent limiter lives in the API-key auth middleware: tenant daily usage accumulates in the PostgreSQL `daily_rate_limits` table keyed by `(tenant_id, usage_date)` and caches per tenant in memory (`crates/ares-store/src/tenants.rs`). If the database check itself fails, requests fail closed with HTTP 500 `Failed to check rate limit`.
 

@@ -53,7 +53,7 @@ Step 8 is the first step that touches the network for serving. A failure in any 
 
 ### The rate-limit layer
 
-When `rate_limit_per_second > 0`, startup wraps the router in `tower_governor` (`src/main.rs:900-913`). The limiter is a GCRA bucket per client IP. It admits up to `rate_limit_burst` requests immediately and then admits one more request every \\(1/\text{rate\_limit\_per\_second}\\) seconds. A background task prunes idle per-IP buckets every 60 seconds (`src/main.rs:917-930`). Responses carry `x-ratelimit-*` headers. Setting `rate_limit_per_second = 0` removes the layer entirely and logs a warning.
+When any `[server.rate_limit]` limit is above 0, startup wraps the router in `ares_http::middleware::rate_limit::RateLimitLayer` (`run_server` in `src/main.rs`). With every limit at 0, the default, no limiter is added. Each limit is a GCRA token bucket in requests per minute that holds up to `burst` requests. There are three: global, per client, and per `Bearer` credential (keyed by its SHA-256). A client is an IPv4 address or an IPv6 /64. It is read from `X-Forwarded-For`, or a single-line `X-Real-IP`, only when the peer is an exact `trusted_proxies` address. The client and key maps are capped (`max_tracked_clients`, `max_tracked_keys`) and swept of full buckets before they grow. When a map is full of live buckets, new arrivals share one overflow bucket at the same rate. A refusal is HTTP 429 with `Retry-After` in whole seconds. Limits are read at startup, so a change needs a restart. The retired `rate_limit_per_second` and `rate_limit_burst` keys are ignored, with one startup warning.
 
 ## Request path
 

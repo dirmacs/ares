@@ -28,7 +28,10 @@ use ares_agent::{
 use ares_llm::{
     LLMClient, LLMResponse, Llm, LlmStreamEvent, ModelConfig, ProviderConfig, ProviderRegistry,
 };
-use ares_store::tenant_agents::{create_tenant_agent, CreateTenantAgentRequest};
+use ares_store::tenant_agents::{
+    create_tenant_agent_as, get_tenant_agent_publish_state, publish_tenant_agent,
+    CreateTenantAgentRequest, PublishOutcome,
+};
 use ares_store::tenant_allowlist::TenantAllowlistStore;
 use ares_store::{FleetSecrets, PostgresClient, TenantDb};
 use ares_tools::{Tool, Tools};
@@ -334,8 +337,10 @@ impl Fixture {
         }
     }
 
+    /// Item 2.6a: only a published row runs. The row is written by one admin
+    /// and published by a second, through the real publish path.
     async fn insert_tenant_row(&self, system_prompt: &str) {
-        create_tenant_agent(
+        create_tenant_agent_as(
             &self.pool,
             &self.tenant,
             CreateTenantAgentRequest {
@@ -350,9 +355,30 @@ impl Fixture {
                     "parallel_tools": false
                 }),
             },
+            Some("fixture-author"),
         )
         .await
         .expect("insert tenant agent row");
+        let draft_digest = get_tenant_agent_publish_state(&self.pool, &self.tenant, AGENT)
+            .await
+            .expect("publish state")
+            .draft_digest
+            .expect("the new row is a draft");
+        match publish_tenant_agent(
+            &self.pool,
+            &self.tenant,
+            AGENT,
+            &draft_digest,
+            "fixture-approver",
+        )
+        .await
+        .expect("publish the tenant agent row")
+        {
+            PublishOutcome::Published(_) => {}
+            PublishOutcome::Refused(refusal) => {
+                panic!("the fixture publish was refused: {refusal:?}")
+            }
+        }
     }
 
     fn calls(&self) -> String {

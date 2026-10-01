@@ -861,8 +861,9 @@ mod tests {
         use ares_llm::ProviderRegistry;
         use ares_llm::{ModelConfig, ProviderConfig};
         use ares_store::tenant_agents::{
-            create_tenant_agent as db_create_tenant_agent, update_tenant_agent,
-            CreateTenantAgentRequest, UpdateTenantAgentRequest,
+            create_tenant_agent as db_create_tenant_agent, create_tenant_agent_as,
+            get_tenant_agent_publish_state, publish_tenant_agent, update_tenant_agent,
+            CreateTenantAgentRequest, PublishOutcome, UpdateTenantAgentRequest,
         };
         use ares_store::tenant_allowlist::TenantAllowlistStore;
         use ares_tools::{Tool, Tools};
@@ -1003,6 +1004,56 @@ mod tests {
             .expect("insert tenant agent row");
         }
 
+        /// Item 2.6a: only a published row runs. The fixture for a row that
+        /// runs: written by one admin and published by a second, through the
+        /// real publish path.
+        async fn insert_published_tenant_agent(
+            pool: &PgPool,
+            tenant_id: &str,
+            agent_name: &str,
+            system_prompt: &str,
+        ) {
+            create_tenant_agent_as(
+                pool,
+                tenant_id,
+                CreateTenantAgentRequest {
+                    agent_name: agent_name.to_string(),
+                    display_name: format!("{agent_name} display"),
+                    description: Some(format!("{agent_name} description")),
+                    config: json!({
+                        "model": "default",
+                        "system_prompt": system_prompt,
+                        "tools": [],
+                        "max_tool_iterations": 5,
+                        "parallel_tools": false
+                    }),
+                },
+                Some("fixture-author"),
+            )
+            .await
+            .expect("insert tenant agent row");
+            let draft_digest = get_tenant_agent_publish_state(pool, tenant_id, agent_name)
+                .await
+                .expect("publish state")
+                .draft_digest
+                .expect("the new row is a draft");
+            match publish_tenant_agent(
+                pool,
+                tenant_id,
+                agent_name,
+                &draft_digest,
+                "fixture-approver",
+            )
+            .await
+            .expect("publish the tenant agent row")
+            {
+                PublishOutcome::Published(_) => {}
+                PublishOutcome::Refused(refusal) => {
+                    panic!("the fixture publish was refused: {refusal:?}")
+                }
+            }
+        }
+
         fn test_agent_context() -> AgentContext {
             AgentContext {
                 user_id: "user-1".to_string(),
@@ -1036,7 +1087,8 @@ mod tests {
             let registry = registry_with_product(&mock_ollama);
             let tenant_id = unique_id("create-legacy");
             allow_mock_model(&pool, &tenant_id).await;
-            insert_tenant_agent(&pool, &tenant_id, "product", "tenant-create-prompt").await;
+            insert_published_tenant_agent(&pool, &tenant_id, "product", "tenant-create-prompt")
+                .await;
 
             let agent = create_tenant_agent(
                 &pool,
@@ -1061,7 +1113,7 @@ mod tests {
         async fn load_tenant_agent_config_returns_row_config_and_version() {
             let pool = test_pool().await;
             let tenant_id = unique_id("tenant-db-wins");
-            insert_tenant_agent(&pool, &tenant_id, "product", "tenant-db-prompt").await;
+            insert_published_tenant_agent(&pool, &tenant_id, "product", "tenant-db-prompt").await;
 
             let (config, config_version, config_json) =
                 load_tenant_agent_config(&pool, &tenant_id, "product")
@@ -1233,7 +1285,8 @@ mod tests {
             let registry = registry_with_product(&mock_ollama);
             let tenant_id = unique_id("execute-flow");
             allow_mock_model(&pool, &tenant_id).await;
-            insert_tenant_agent(&pool, &tenant_id, "product", "tenant-execute-prompt").await;
+            insert_published_tenant_agent(&pool, &tenant_id, "product", "tenant-execute-prompt")
+                .await;
 
             let agent = create_tenant_agent(
                 &pool,
@@ -1393,7 +1446,9 @@ mod tests {
             let pool = test_pool().await;
             let tenant_id = unique_id("invalid-config");
 
-            // Insert invalid config directly via SQL to bypass validation
+            // Insert invalid config directly via SQL to bypass validation.
+            // Item 2.6a: published with the digest by the SQL function, so the
+            // run path reads it.
             let id = format!("{}-invalid", tenant_id);
             let now_ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1401,8 +1456,8 @@ mod tests {
                 .as_secs() as i64;
             sqlx::query(
                 r#"
-                INSERT INTO tenant_agents (id, tenant_id, agent_name, display_name, description, config, enabled, created_at, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, true, $7, $7)
+                INSERT INTO tenant_agents (id, tenant_id, agent_name, display_name, description, config, enabled, created_at, updated_at, published_digest)
+                VALUES ($1, $2, $3, $4, $5, $6, true, $7, $7, tenant_agent_config_digest($6))
                 "#,
             )
             .bind(&id)

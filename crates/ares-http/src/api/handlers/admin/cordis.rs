@@ -2386,6 +2386,266 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    // --- PATCH field updates land on the entry the request addressed ---
+
+    /// Service types of the group entries in the fixtures below, distinct from
+    /// `Probe` (what `CalculatorService` provides): every entry provides its
+    /// own type, so a test can see which entries are still served.
+    #[derive(Debug)]
+    struct TopProbe;
+    impl Service for TopProbe {}
+
+    #[derive(Debug)]
+    struct GroupProbe;
+    impl Service for GroupProbe {}
+
+    /// `top`, `grp` and `grp`'s child `grp:svc`, all three at the root.
+    const MOVE_TREE_TOML: &str = "[[entry]]\nid = \"top\"\nplugin = \"TopMarker\"\ndisabled = false\n\n[entry.config]\n\n\
+        [[entry]]\nid = \"grp\"\nplugin = \"GroupMarker\"\ndisabled = false\n\n[entry.config]\n\n\
+        [[entry]]\nid = \"grp:svc\"\nplugin = \"CalculatorService\"\ndisabled = false\n\n[entry.config]\n";
+
+    /// `top`, its child `top:grp` and grandchild `top:grp:svc`, each placed
+    /// under its parent.
+    const NESTED_TREE_TOML: &str = "[[entry]]\nid = \"top\"\nplugin = \"TopMarker\"\ndisabled = false\n\n[entry.config]\n\n\
+        [[entry]]\nid = \"top:grp\"\nplugin = \"GroupMarker\"\ndisabled = false\n\n[entry.config]\n\n\
+        [entry.position]\nparent = \"top\"\nposition = 0\n\n\
+        [[entry]]\nid = \"top:grp:svc\"\nplugin = \"CalculatorService\"\ndisabled = false\n\n[entry.config]\n\n\
+        [entry.position]\nparent = \"top:grp\"\nposition = 0\n";
+
+    /// [`build_entries_fixture`] over `toml`, with the `TopMarker` and
+    /// `GroupMarker` factories registered, then a boot-like first reload so
+    /// that every entry has a journaled live fiber.
+    async fn boot_move_fixture(tag: &str, toml: &str) -> (Arc<Context>, std::path::PathBuf) {
+        let (ctx, dir) = build_entries_fixture(tag, toml, vec![]);
+        let registry = ctx.get::<cordis::PluginRegistry>().expect("registry");
+        registry.register(
+            "TopMarker",
+            Arc::new(|ctx: &Arc<::cordis::Context>, _cfg| {
+                let fut = ctx.plugin(TopProbe);
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+            }),
+        );
+        registry.register(
+            "GroupMarker",
+            Arc::new(|ctx: &Arc<::cordis::Context>, _cfg| {
+                let fut = ctx.plugin(GroupProbe);
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+            }),
+        );
+        let (status, Json(body)) = reload_cordis_entries(State(ctx.clone()), AdminActor::default())
+            .await
+            .expect("resp");
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            ctx.get::<TopProbe>().is_some()
+                && ctx.get::<GroupProbe>().is_some()
+                && ctx.get::<Probe>().is_some(),
+            "the boot reload began every entry: {body}"
+        );
+        (ctx, dir)
+    }
+
+    /// The program file as saved, and the live `CurrentEntries` tree.
+    fn saved_and_live(
+        ctx: &Arc<Context>,
+        dir: &std::path::Path,
+    ) -> (cordis::loader::EntryTree, cordis::loader::EntryTree) {
+        let saved = cordis::loader::Loader::load_from_file(&dir.join("cordis-entries.toml"))
+            .expect("parse the saved program");
+        let current = ctx.get::<cordis::CurrentEntries>().expect("CurrentEntries");
+        let live = current.tree.lock().expect("entries lock").clone();
+        (saved, live)
+    }
+
+    /// `disabled` of the entry `id` in `tree`; `None` when no entry has that id.
+    fn disabled_of(tree: &cordis::loader::EntryTree, id: &str) -> Option<bool> {
+        tree.0.iter().find(|e| e.id == id).map(|e| e.disabled)
+    }
+
+    /// A PATCH that moves an entry WITH children applies its field updates to
+    /// the moved entry, under its new id. `Loader::move_entry` lists the moved
+    /// entry first and its descendants after it; the fields must not land on
+    /// the last of them. `PATCH grp {parent: top, disabled: true}` disables
+    /// `top:grp`, and `top:grp:svc` keeps running on the fiber it had.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn patch_target_move_with_children_lands_on_the_moved_entry() {
+        let (ctx, dir) = boot_move_fixture("patch-target-children", MOVE_TREE_TOML).await;
+        let journal = ctx.get::<cordis::LoaderJournal>().expect("journal");
+        let svc_fid = journal
+            .get("grp:svc")
+            .and_then(|r| r.fiber_id)
+            .expect("grp:svc journaled with its fiber");
+
+        let update = cordis::loader::EntryUpdate {
+            parent: Some(Some("top".into())),
+            disabled: Some(true),
+            ..Default::default()
+        };
+        let (status, Json(body)) = patch_cordis_entry(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("grp".into()),
+            axum::Json(update),
+        )
+        .await
+        .expect("resp");
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["renamed"],
+            json!([["grp", "top:grp"], ["grp:svc", "top:grp:svc"]]),
+            "the move renamed the entry and its child: {body}"
+        );
+        assert_eq!(
+            body["entry"]["id"], "top:grp",
+            "the patched entry is the moved one: {body}"
+        );
+        assert_eq!(body["entry"]["disabled"], true, "{body}");
+
+        // The saved program: the moved entry is disabled, its child is not.
+        let (saved, live) = saved_and_live(&ctx, &dir);
+        assert_eq!(disabled_of(&saved, "top:grp"), Some(true), "{saved:?}");
+        assert_eq!(disabled_of(&saved, "top:grp:svc"), Some(false), "{saved:?}");
+        assert_eq!(disabled_of(&saved, "top"), Some(false), "{saved:?}");
+        assert_eq!(live, saved, "CurrentEntries agrees with the saved program");
+
+        // Live: the apply retired the moved entry, and only it.
+        let applied = body["applied"].as_array().expect("applied");
+        assert!(
+            applied
+                .iter()
+                .any(|a| a["id"] == "top:grp" && a["action"] == "retire" && a["ok"] == true),
+            "the moved entry was retired: {body}"
+        );
+        assert!(
+            applied.iter().all(|a| a["id"] != "top:grp:svc"),
+            "nothing was applied to the child: {body}"
+        );
+        assert!(ctx.get::<GroupProbe>().is_none(), "the moved entry stopped");
+        assert!(ctx.get::<Probe>().is_some(), "the child still runs");
+        assert!(ctx.get::<TopProbe>().is_some(), "the new parent still runs");
+        assert!(journal.get("top:grp").is_none(), "the moved entry's record is retired");
+        assert_eq!(
+            journal.get("top:grp:svc").and_then(|r| r.fiber_id),
+            Some(svc_fid),
+            "the child keeps the fiber it had before the move"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A position-only PATCH (a reorder under the current parent) also runs
+    /// `Loader::move_entry`, which lists the entry and its descendants with
+    /// their ids unchanged. The field updates land on the reordered entry.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn patch_target_reorder_with_children_lands_on_the_reordered_entry() {
+        let (ctx, dir) = boot_move_fixture("patch-target-reorder", NESTED_TREE_TOML).await;
+
+        let update = cordis::loader::EntryUpdate {
+            position: Some(0),
+            disabled: Some(true),
+            ..Default::default()
+        };
+        let (status, Json(body)) = patch_cordis_entry(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("top:grp".into()),
+            axum::Json(update),
+        )
+        .await
+        .expect("resp");
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["renamed"],
+            json!([["top:grp", "top:grp"], ["top:grp:svc", "top:grp:svc"]]),
+            "a reorder lists the entry and its child under unchanged ids: {body}"
+        );
+        assert_eq!(
+            body["entry"]["id"], "top:grp",
+            "the patched entry is the reordered one: {body}"
+        );
+        assert_eq!(body["entry"]["disabled"], true, "{body}");
+
+        let (saved, live) = saved_and_live(&ctx, &dir);
+        assert_eq!(disabled_of(&saved, "top:grp"), Some(true), "{saved:?}");
+        assert_eq!(disabled_of(&saved, "top:grp:svc"), Some(false), "{saved:?}");
+        assert_eq!(live, saved, "CurrentEntries agrees with the saved program");
+        assert!(ctx.get::<GroupProbe>().is_none(), "the reordered entry stopped");
+        assert!(ctx.get::<Probe>().is_some(), "its child still runs");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Control: a move of a leaf (no children). `renamed` holds one pair, so
+    /// the moved entry is the only candidate; the behaviour is unchanged.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn patch_target_leaf_move_lands_on_the_moved_leaf() {
+        let (ctx, dir) = boot_move_fixture("patch-target-leaf", MOVE_TREE_TOML).await;
+
+        let update = cordis::loader::EntryUpdate {
+            parent: Some(Some("top".into())),
+            disabled: Some(true),
+            ..Default::default()
+        };
+        let (status, Json(body)) = patch_cordis_entry(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("grp:svc".into()),
+            axum::Json(update),
+        )
+        .await
+        .expect("resp");
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["renamed"], json!([["grp:svc", "top:svc"]]), "{body}");
+        assert_eq!(body["entry"]["id"], "top:svc", "{body}");
+        assert_eq!(body["entry"]["disabled"], true, "{body}");
+
+        let (saved, live) = saved_and_live(&ctx, &dir);
+        assert_eq!(disabled_of(&saved, "top:svc"), Some(true), "{saved:?}");
+        assert_eq!(disabled_of(&saved, "grp"), Some(false), "{saved:?}");
+        assert_eq!(disabled_of(&saved, "top"), Some(false), "{saved:?}");
+        assert_eq!(disabled_of(&saved, "grp:svc"), None, "old id gone: {saved:?}");
+        assert_eq!(live, saved, "CurrentEntries agrees with the saved program");
+        assert!(ctx.get::<Probe>().is_none(), "the moved leaf stopped");
+        assert!(ctx.get::<GroupProbe>().is_some(), "its old parent still runs");
+        assert!(ctx.get::<TopProbe>().is_some(), "its new parent still runs");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Control: a PATCH with no `parent` or `position` on an entry with
+    /// children changes that entry and no other, and reports no `renamed`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn patch_target_no_move_lands_on_the_addressed_entry() {
+        let (ctx, dir) = boot_move_fixture("patch-target-no-move", MOVE_TREE_TOML).await;
+
+        let update = cordis::loader::EntryUpdate {
+            disabled: Some(true),
+            ..Default::default()
+        };
+        let (status, Json(body)) = patch_cordis_entry(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("grp".into()),
+            axum::Json(update),
+        )
+        .await
+        .expect("resp");
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.get("renamed").is_none(), "no move ran: {body}");
+        assert_eq!(body["entry"]["id"], "grp", "{body}");
+        assert_eq!(body["entry"]["disabled"], true, "{body}");
+
+        let (saved, live) = saved_and_live(&ctx, &dir);
+        assert_eq!(disabled_of(&saved, "grp"), Some(true), "{saved:?}");
+        assert_eq!(disabled_of(&saved, "grp:svc"), Some(false), "{saved:?}");
+        assert_eq!(disabled_of(&saved, "top"), Some(false), "{saved:?}");
+        assert_eq!(live, saved, "CurrentEntries agrees with the saved program");
+        assert!(ctx.get::<GroupProbe>().is_none(), "the patched entry stopped");
+        assert!(ctx.get::<Probe>().is_some(), "its child still runs");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
 
 #[cfg(test)]

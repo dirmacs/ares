@@ -140,7 +140,7 @@ fn the_sanitizer_keeps_scheme_host_port_and_path_only() {
         ("   ", None),
     ];
     for (raw, expected) in table {
-        let got = Residency::from_raw(Some(raw), None);
+        let got = Residency::from_raw(Some(*raw), None);
         assert_eq!(
             got.resolved_endpoint(),
             *expected,
@@ -178,7 +178,7 @@ fn the_region_sanitizer_keeps_names_and_refuses_anything_else() {
         (long.as_str(), Some("unparseable")),
     ];
     for (raw, expected) in table {
-        let got = Residency::from_raw(None, Some(raw));
+        let got = Residency::from_raw(None, Some(*raw));
         assert_eq!(got.region(), *expected, "sanitizing the region {raw:?}");
         assert_eq!(got.resolved_endpoint(), None);
     }

@@ -655,6 +655,32 @@ mod tests {
         assert_eq!(back.id, run.id);
         assert_eq!(back.tenant_id, run.tenant_id);
         assert!(back.is_streaming);
+        assert_eq!(back.resolved_endpoint, run.resolved_endpoint);
+        assert_eq!(back.region, run.region);
+    }
+
+    /// 2.12b: the row has 29 columns on the wire (27 before migration 039).
+    #[test]
+    fn agent_run_serializes_29_fields_including_the_residency_pair() {
+        let json = serde_json::to_value(sample_agent_run_full()).unwrap();
+        let object = json
+            .as_object()
+            .expect("an AgentRun serializes to an object");
+        assert_eq!(object.len(), 29, "{:?}", object.keys().collect::<Vec<_>>());
+        assert_eq!(json["resolved_endpoint"], "https://api.example.test/v1");
+        assert_eq!(json["region"], "ap-south-1");
+    }
+
+    /// 2.12b: JSON written before migration 039 has no residency keys; it still reads, as NULL.
+    #[test]
+    fn agent_run_json_without_residency_keys_still_deserializes() {
+        let mut json = serde_json::to_value(sample_agent_run_full()).unwrap();
+        let object = json.as_object_mut().unwrap();
+        object.remove("resolved_endpoint");
+        object.remove("region");
+        let run: AgentRun = serde_json::from_value(json).expect("a pre-039 row still reads");
+        assert_eq!(run.resolved_endpoint, None);
+        assert_eq!(run.region, None);
     }
 
     #[test]
@@ -687,6 +713,8 @@ mod tests {
             schedule_id: None,
             trigger_id: None,
             updated_at: None,
+            resolved_endpoint: None,
+            region: None,
         };
         let back: AgentRun = serde_json::from_str(&serde_json::to_string(&run).unwrap()).unwrap();
         assert_eq!(back.error, Some("timeout".into()));
@@ -715,10 +743,17 @@ mod tests {
             eruka_context_hit: true,
             eruka_read_count: 10,
             eruka_write_count: 5,
+            resolved_endpoint: Some("https://api.example.test/v1".into()),
+            region: Some("ap-south-1".into()),
         };
         let back: AgentRunMetadata =
             serde_json::from_str(&serde_json::to_string(&meta).unwrap()).unwrap();
         assert_eq!(back.eruka_write_count, 5);
+        assert_eq!(
+            back.resolved_endpoint.as_deref(),
+            Some("https://api.example.test/v1")
+        );
+        assert_eq!(back.region.as_deref(), Some("ap-south-1"));
     }
 
     #[test]
@@ -943,9 +978,29 @@ mod tests {
             "eruka_read_count",
             "pipeline_id",
             "schedule_id",
+            "resolved_endpoint",
+            "region",
         ] {
             assert!(LIST_AGENT_RUNS_SELECT.contains(col), "missing {col}");
         }
+    }
+
+    /// 2.12b: the select lists the two residency columns as plain columns, with no COALESCE:
+    /// a run written before migration 039 reads NULL, never a made-up value.
+    #[test]
+    fn list_agent_runs_select_reads_residency_as_plain_nullable_columns() {
+        assert!(
+            LIST_AGENT_RUNS_SELECT.contains("resolved_endpoint,"),
+            "{LIST_AGENT_RUNS_SELECT}"
+        );
+        assert!(
+            LIST_AGENT_RUNS_SELECT.contains("region"),
+            "{LIST_AGENT_RUNS_SELECT}"
+        );
+        assert!(!LIST_AGENT_RUNS_SELECT.contains("COALESCE(resolved_endpoint"));
+        assert!(!LIST_AGENT_RUNS_SELECT.contains("COALESCE(region"));
+        let sql = build_list_agent_runs(&AgentRunListFilter::new("t1"), 25, 10);
+        assert!(sql.contains("resolved_endpoint"), "{sql}");
     }
 
     #[test]
@@ -1012,6 +1067,8 @@ mod tests {
             schedule_id: None,
             trigger_id: None,
             updated_at: Some(1_700_000_000),
+            resolved_endpoint: Some("https://api.example.test/v1".into()),
+            region: Some("ap-south-1".into()),
         }
     }
 
@@ -1125,6 +1182,8 @@ mod tests {
             eruka_context_hit: true,
             eruka_read_count: 5,
             eruka_write_count: 2,
+            resolved_endpoint: Some("https://api.example.test/v1".into()),
+            region: Some("ap-south-1".into()),
         };
 
         let id = insert_agent_run_with_metadata(
@@ -1165,8 +1224,193 @@ mod tests {
         assert_eq!(run.trigger_id, Some("trigger-42".into()));
         assert_eq!(run.error, Some("timeout".into()));
         assert!(run.is_streaming);
+        assert_eq!(
+            run.resolved_endpoint.as_deref(),
+            Some("https://api.example.test/v1")
+        );
+        assert_eq!(run.region.as_deref(), Some("ap-south-1"));
 
         cleanup_test_tenant(&pool, &tenant_id).await;
+    }
+
+    /// 2.12b: a run written without residency (every path that cannot know its provider, and every
+    /// row written before migration 039) reads back with both fields NULL, through the same
+    /// writer and reader.
+    #[tokio::test]
+    async fn integration_run_without_residency_reads_null() {
+        let (_lock, pool) = crate::test_db::pool().await;
+        let tenant_id = unique_tenant();
+        seed_tenant(&pool, &tenant_id).await;
+
+        insert_agent_run(
+            &pool,
+            &tenant_id,
+            "plain",
+            None,
+            "completed",
+            1,
+            1,
+            1,
+            None,
+            "m",
+            "p",
+            false,
+        )
+        .await
+        .expect("insert without residency");
+
+        let runs = list_agent_runs(&pool, &tenant_id, None, 10, 0)
+            .await
+            .expect("list");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].resolved_endpoint, None);
+        assert_eq!(runs[0].region, None);
+
+        cleanup_test_tenant(&pool, &tenant_id).await;
+    }
+
+    /// 2.12b: a row inserted by a statement that predates migration 039 (the explicit column list
+    /// of the older raw writers, no residency columns) still reads, with both fields NULL.
+    #[tokio::test]
+    async fn integration_row_from_a_pre_039_statement_still_reads() {
+        let (_lock, pool) = crate::test_db::pool().await;
+        let tenant_id = unique_tenant();
+        seed_tenant(&pool, &tenant_id).await;
+        let id = format!("run-pre039-{}", uuid::Uuid::new_v4());
+
+        sqlx::query(
+            "INSERT INTO agent_runs (id, tenant_id, agent_name, status, input_tokens, \
+             output_tokens, duration_ms, created_at) \
+             VALUES ($1, $2, 'pre-039', 'completed', 0, 0, 0, 1)",
+        )
+        .bind(&id)
+        .bind(&tenant_id)
+        .execute(&pool)
+        .await
+        .expect("insert with the pre-039 column list");
+
+        let runs = list_agent_runs(&pool, &tenant_id, Some("pre-039"), 10, 0)
+            .await
+            .expect("list");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].id, id);
+        assert_eq!(runs[0].resolved_endpoint, None);
+        assert_eq!(runs[0].region, None);
+
+        cleanup_test_tenant(&pool, &tenant_id).await;
+    }
+
+    /// 2.12b, migration 039: two nullable TEXT columns with no default (so Postgres adds them
+    /// without rewriting the table), and the documented reversal drops exactly those two. The
+    /// reversal runs inside a transaction that is rolled back.
+    #[tokio::test]
+    async fn integration_migration_039_columns_are_nullable_text_and_reversible() {
+        let (_lock, pool) = crate::test_db::pool().await;
+
+        let columns: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT column_name::text, data_type::text, is_nullable::text, column_default::text \
+             FROM information_schema.columns \
+             WHERE table_schema = current_schema() AND table_name = 'agent_runs' \
+               AND column_name IN ('resolved_endpoint', 'region') \
+             ORDER BY column_name",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("read the column catalog");
+        assert_eq!(
+            columns,
+            vec![
+                (
+                    "region".to_string(),
+                    "text".to_string(),
+                    "YES".to_string(),
+                    None
+                ),
+                (
+                    "resolved_endpoint".to_string(),
+                    "text".to_string(),
+                    "YES".to_string(),
+                    None
+                ),
+            ],
+            "migration 039 adds two nullable text columns with no default"
+        );
+
+        let mut tx = pool.begin().await.expect("begin");
+        sqlx::query(MIGRATION_039_REVERSAL_SQL)
+            .execute(&mut *tx)
+            .await
+            .expect("the documented reversal runs");
+        let left: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM information_schema.columns \
+             WHERE table_schema = current_schema() AND table_name = 'agent_runs' \
+               AND column_name IN ('resolved_endpoint', 'region')",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .expect("count after the reversal");
+        assert_eq!(left, 0, "the reversal drops both columns");
+        tx.rollback().await.expect("roll the reversal back");
+
+        let still: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM information_schema.columns \
+             WHERE table_schema = current_schema() AND table_name = 'agent_runs' \
+               AND column_name IN ('resolved_endpoint', 'region')",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count after the rollback");
+        assert_eq!(
+            still, 2,
+            "the rolled-back reversal left the columns in place"
+        );
+    }
+
+    /// The reversal documented in the header of `039_agent_run_residency.sql`. Not part of the
+    /// migrator (there are no down files); SR runs it by hand to undo 039.
+    const MIGRATION_039_REVERSAL_SQL: &str = "ALTER TABLE agent_runs \
+         DROP COLUMN IF EXISTS resolved_endpoint, DROP COLUMN IF EXISTS region";
+
+    /// 2.12b: the migration file states its reversal, and the test constant above is that text.
+    #[test]
+    fn migration_039_header_documents_the_reversal() {
+        let sql = include_str!("../migrations/039_agent_run_residency.sql");
+        // The header comment, with the leading `--` of each line removed.
+        let header = sql
+            .lines()
+            .filter_map(|line| line.trim_start().strip_prefix("--"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let header = header.split_whitespace().collect::<Vec<_>>().join(" ");
+        // The statements: every line that is not a comment.
+        let statements = sql
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("--"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let statements = statements.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        assert!(
+            header.contains(
+                "ALTER TABLE agent_runs DROP COLUMN IF EXISTS resolved_endpoint, \
+                 DROP COLUMN IF EXISTS region"
+            ),
+            "the header must give the reversal SQL: {header}"
+        );
+        assert_eq!(
+            statements,
+            "ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS resolved_endpoint TEXT, \
+             ADD COLUMN IF NOT EXISTS region TEXT;",
+            "the migration is exactly one additive statement"
+        );
+        assert!(
+            !statements.to_uppercase().contains("DEFAULT"),
+            "no default: a default is a rewrite risk and a backfill"
+        );
+        assert!(
+            !statements.to_uppercase().contains("NOT NULL"),
+            "nullable: old rows read NULL"
+        );
     }
 
     #[tokio::test]
@@ -1614,24 +1858,31 @@ mod tests {
         assert!(GET_AGENT_RUN_STATS_SQL.contains("WHERE tenant_id = $1 AND agent_name = $2"));
     }
 
+    /// The placeholder pin, now on the statement the writer really executes
+    /// (`INSERT_AGENT_RUN_SQL`) and not on a copy of it: 27 placeholders before migration 039,
+    /// 29 with `resolved_endpoint` and `region`.
     #[test]
-    fn insert_agent_run_has_27_placeholders() {
-        let sql = "INSERT INTO agent_runs (
-            id, tenant_id, agent_name, user_id, workspace_id, session_id, status,
-            input_tokens, output_tokens, duration_ms, error, created_at,
-            model_name, provider_name, is_streaming, request_source, product,
-            agent_config_source, agent_config_version, eruka_binding_id,
-            eruka_context_hit, eruka_read_count, eruka_write_count, pipeline_id, schedule_id,
-            trigger_id, updated_at
-         ) VALUES (
-            $1, $2, $3, $4, $5, $6, $7,
-            $8, $9, $10, $11, $12,
-            $13, $14, $15, $16, $17,
-            $18, $19, $20,
-            $21, $22, $23, $24, $25,
-            $26, $27
-         )";
-        assert_eq!(count_bind_placeholders(sql), 27);
+    fn insert_agent_run_has_29_placeholders() {
+        assert_eq!(count_bind_placeholders(INSERT_AGENT_RUN_SQL), 29);
+    }
+
+    /// 2.12b: the column list and the value list of the real INSERT have the same length (29),
+    /// and the two new columns are in the list.
+    #[test]
+    fn insert_agent_run_columns_match_values_and_name_the_residency_pair() {
+        let columns_start = INSERT_AGENT_RUN_SQL.find('(').expect("a column list") + 1;
+        let columns_end = INSERT_AGENT_RUN_SQL
+            .find(')')
+            .expect("the end of the column list");
+        let columns: Vec<&str> = INSERT_AGENT_RUN_SQL[columns_start..columns_end]
+            .split(',')
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .collect();
+        assert_eq!(columns.len(), 29, "{columns:?}");
+        assert!(columns.contains(&"resolved_endpoint"), "{columns:?}");
+        assert!(columns.contains(&"region"), "{columns:?}");
+        assert_eq!(count_bind_placeholders(INSERT_AGENT_RUN_SQL), columns.len());
     }
 
     #[test]

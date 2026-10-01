@@ -8,7 +8,6 @@
 
 #![cfg(feature = "postgres")]
 
-use std::alloc::GlobalAlloc;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

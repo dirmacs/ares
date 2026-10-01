@@ -100,9 +100,10 @@ pub struct RateLimitConfig {
     /// minute. 0 = off.
     pub global_requests_per_minute: u32,
 
-    /// One bucket per client IP, in requests per minute. 0 = off. The client
+    /// One bucket per client, in requests per minute. 0 = off. The client
     /// is the peer IP, unless the peer is in `trusted_proxies` (then it is
-    /// taken from `X-Forwarded-For`, else `X-Real-IP`).
+    /// taken from `X-Forwarded-For`, else a single-line `X-Real-IP`). An
+    /// IPv4 client is its address; an IPv6 client is its /64 network.
     pub per_client_requests_per_minute: u32,
 
     /// One bucket per `Authorization: Bearer` credential (keyed by its
@@ -116,15 +117,20 @@ pub struct RateLimitConfig {
 
     /// Peers whose `X-Forwarded-For` / `X-Real-IP` headers are read. A
     /// request from any other peer is identified by its peer IP alone.
+    /// Exact IP addresses only: a CIDR range fails the config load.
     /// Default: `["127.0.0.1", "::1"]` (a proxy on the same host).
     pub trusted_proxies: Vec<std::net::IpAddr>,
 
-    /// Most client buckets held in memory at once (default 100 000).
-    /// Parsed; enforced by the limiter in the next commit.
+    /// Most client buckets held in memory at once (default 100 000; 0
+    /// behaves as 1). An entry is 24 bytes, so the table stays under about
+    /// 3.3 MB (131 072 slots of 25 bytes). When every held bucket is still
+    /// live, a new client shares one overflow bucket, at the same rate,
+    /// instead of growing the table.
     pub max_tracked_clients: u32,
 
-    /// Most key buckets held in memory at once (default 100 000).
-    /// Parsed; enforced by the limiter in the next commit.
+    /// Most key buckets held in memory at once (default 100 000; 0 behaves
+    /// as 1). An entry is 40 bytes, so the table stays under about 5.4 MB
+    /// (131 072 slots of 41 bytes). Overflow works as for clients.
     pub max_tracked_keys: u32,
 }
 

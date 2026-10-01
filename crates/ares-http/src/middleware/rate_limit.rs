@@ -1,7 +1,7 @@
 //! Proxy-aware, per-client and per-key rate limiting for ARES's HTTP server
 //! (CR-3, round A), configured by `[server.rate_limit]` ([`RateLimitConfig`]).
 //! **Every limit defaults to 0, which is off**, so the limiter does nothing
-//! until a value is set.
+//! until a value is set. Limits are read at startup: a change needs a restart.
 //!
 //! # Units
 //!
@@ -16,7 +16,7 @@
 //!
 //! A request is admitted only if every limit that applies to it admits it:
 //! - **global**: one bucket shared by every request (a safety cap);
-//! - **client**: one bucket per client IP (see *The client*);
+//! - **client**: one bucket per client (see *The client*);
 //! - **key**: one bucket per `Authorization: Bearer` credential, read with the
 //!   API-key middleware's own parser. The bucket is keyed by the SHA-256 of
 //!   the credential; the raw value is never stored or logged. Nothing is
@@ -27,17 +27,36 @@
 //!
 //! # The client
 //!
-//! The client is the socket peer (`ConnectInfo<SocketAddr>`), unless the peer
-//! is in `trusted_proxies`. From a trusted peer, the client is the
-//! **rightmost** `X-Forwarded-For` address that is not itself a trusted
-//! proxy, or `X-Real-IP` when there is no `X-Forwarded-For`. **A forwarding
-//! header from an untrusted peer is never read.** If the walk meets an entry
-//! it cannot parse, or finds only trusted proxies, the client is the peer:
-//! never an address to the left of a hop that cannot be read. IPv4-mapped
-//! IPv6 addresses count as their IPv4 form. A request with no
-//! `ConnectInfo` (a server not built with
+//! The client address is the socket peer (`ConnectInfo<SocketAddr>`), unless
+//! the peer is in `trusted_proxies` (exact addresses). From a trusted peer,
+//! it is the **rightmost** `X-Forwarded-For` address that is not itself a
+//! trusted proxy, or `X-Real-IP` when there is no `X-Forwarded-For` and
+//! `X-Real-IP` has **exactly one line**. **A forwarding header from an
+//! untrusted peer is never read.** If the walk meets an entry it cannot
+//! parse, finds only trusted proxies, or `X-Real-IP` has several lines, the
+//! client is the peer: never an address a client could have chosen.
+//! IPv4-mapped IPv6 addresses count as their IPv4 form.
+//!
+//! The client's bucket is its IPv4 address, or its IPv6 **/64** network (one
+//! host controls its whole /64, so a /128 bucket would let it pick buckets).
+//!
+//! A request with no `ConnectInfo` (a server not built with
 //! `into_make_service_with_connect_info`) has no known peer: its headers are
-//! not read and all such requests share one client bucket.
+//! not read, all such requests share one client bucket, and the first one
+//! logs a warning, once per process.
+//!
+//! # Memory
+//!
+//! The client and key maps hold at most `max_tracked_clients` and
+//! `max_tracked_keys` buckets. Before a new bucket would grow a map's table,
+//! the map is swept of full (expired) buckets, which never changes a
+//! decision; a sweep that frees most of the table gives the memory back.
+//! When a map is at its cap and full of live buckets, a new client or key
+//! shares one **overflow** bucket for that dimension, at the same rate: it
+//! is never admitted unlimited. At the cap a map is swept at most once per
+//! second. The overflow is logged at most once per minute, by an
+//! overflowing request, as a count of the overflowing requests since the
+//! last line (no address, no key).
 //!
 //! # Exempt
 //!
@@ -50,15 +69,15 @@
 //! `429` with `{"error":"rate limited","code":"RATE_LIMITED"}` (the crate's
 //! error body shape), a `Retry-After` header in whole seconds (rounded up, at
 //! least 1), one `warn` line naming the binding dimension and the client's
-//! network only (IPv4 /24, IPv6 /48), and a per-dimension counter
+//! network only (IPv4 /24, IPv6 /64), and a per-dimension counter
 //! ([`RateLimiter::refusals`]). When several limits refuse, the binding one is
 //! the one with the longest wait (ties: global, then client, then key), and
 //! `Retry-After` is that wait.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
-use std::net::{IpAddr, Ipv6Addr, SocketAddr};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
 use std::time::{Duration, Instant};
@@ -89,9 +108,14 @@ pub const RATE_LIMITED_MESSAGE: &str = "rate limited";
 const NANOS_PER_SECOND: u64 = 1_000_000_000;
 const NANOS_PER_MINUTE: u64 = 60 * NANOS_PER_SECOND;
 
-/// A bucket map is swept of idle entries once it holds more than this many
-/// entries, and after that whenever it doubles.
-const MIN_SWEEP_LEN: usize = 1024;
+/// While a map is at its cap, it is swept at most this often.
+const CAPPED_SWEEP_GAP_NS: u64 = NANOS_PER_SECOND;
+
+/// The overflow is logged at most this often, as a count.
+const OVERFLOW_LOG_GAP_NS: u64 = NANOS_PER_MINUTE;
+
+/// Set by the first request that reaches an enabled limiter with no peer.
+static NO_PEER_WARNED: AtomicBool = AtomicBool::new(false);
 
 // ============================================================================
 // Clock
@@ -234,40 +258,153 @@ impl Rate {
     }
 }
 
-/// Arrival times per bucket key. An entry whose time has passed is a full
-/// bucket, the same as no entry, so sweeping it changes nothing.
+/// The bucket a client is limited in: an IPv4 address, an IPv6 /64, or the
+/// one bucket for requests with no known peer. 16 bytes. Deliberately not
+/// `Debug`, so it cannot be logged by accident.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum ClientKey {
+    V4(u32),
+    V6Net(u64),
+    Unknown,
+}
+
+impl ClientKey {
+    fn of(client: Option<IpAddr>) -> Self {
+        match client.map(|ip| ip.to_canonical()) {
+            Some(IpAddr::V4(v4)) => Self::V4(u32::from(v4)),
+            Some(IpAddr::V6(v6)) => Self::V6Net((u128::from(v6) >> 64) as u64),
+            None => Self::Unknown,
+        }
+    }
+
+    /// The network for logs: IPv4 /24, IPv6 /64. Never a full address.
+    fn log_network(self) -> String {
+        match self {
+            Self::V4(addr) => {
+                let [a, b, c, _] = Ipv4Addr::from(addr).octets();
+                format!("{a}.{b}.{c}.0/24")
+            }
+            Self::V6Net(prefix) => format!("{}/64", Ipv6Addr::from(u128::from(prefix) << 64)),
+            Self::Unknown => "unknown".to_string(),
+        }
+    }
+}
+
+/// Where a request's bucket lives in a map. Not `Debug` (it holds a client
+/// or a key digest).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Slot<K> {
+    /// The key's own bucket (new or existing).
+    Tracked(K),
+    /// The map is at its cap and full of live buckets: the shared overflow
+    /// bucket, at the same rate.
+    Overflow,
+}
+
+/// Arrival times per bucket key, at most `cap` of them. An entry whose time
+/// has passed is a full bucket, the same as no entry, so sweeping it changes
+/// nothing.
 struct Buckets<K> {
     tats: HashMap<K, u64>,
-    sweep_above: usize,
+    cap: usize,
+    overflow: Option<u64>,
+    next_capped_sweep_at: u64,
+    overflow_pending: u64,
+    overflow_logged_at: Option<u64>,
+    sweeps: u64,
 }
 
-impl<K: Hash + Eq> Buckets<K> {
-    fn new() -> Self {
+impl<K: Hash + Eq + Copy> Buckets<K> {
+    /// `cap` 0 behaves as 1.
+    fn new(cap: u32) -> Self {
         Self {
             tats: HashMap::new(),
-            sweep_above: MIN_SWEEP_LEN,
+            cap: usize::try_from(cap).unwrap_or(usize::MAX).max(1),
+            overflow: None,
+            next_capped_sweep_at: 0,
+            overflow_pending: 0,
+            overflow_logged_at: None,
+            sweeps: 0,
         }
     }
 
-    fn get(&self, key: &K) -> Option<u64> {
-        self.tats.get(key).copied()
+    /// Where `key`'s request is decided. A key already held keeps its own
+    /// bucket. A new key is held unless the map is at its cap with only live
+    /// buckets; then it shares the overflow bucket. Sweeps run here, before
+    /// any insert: when the new key would grow the table, and (at most once
+    /// per [`CAPPED_SWEEP_GAP_NS`]) when the map is at its cap.
+    fn slot(&mut self, key: K, now: u64) -> Slot<K> {
+        if self.tats.contains_key(&key) {
+            return Slot::Tracked(key);
+        }
+        if self.tats.len() >= self.cap {
+            if now >= self.next_capped_sweep_at {
+                self.sweep(now);
+                self.next_capped_sweep_at = now.saturating_add(CAPPED_SWEEP_GAP_NS);
+            }
+            if self.tats.len() >= self.cap {
+                self.overflow_pending = self.overflow_pending.saturating_add(1);
+                return Slot::Overflow;
+            }
+        } else if self.tats.len() >= self.tats.capacity() {
+            self.sweep(now);
+        }
+        Slot::Tracked(key)
     }
 
-    fn set(&mut self, key: K, tat: u64, now: u64) {
-        self.tats.insert(key, tat);
-        if self.tats.len() > self.sweep_above {
-            self.tats.retain(|_, t| *t > now);
-            self.sweep_above = self.tats.len().saturating_mul(2).max(MIN_SWEEP_LEN);
+    fn tat(&self, slot: &Slot<K>) -> Option<u64> {
+        match slot {
+            Slot::Tracked(key) => self.tats.get(key).copied(),
+            Slot::Overflow => self.overflow,
         }
+    }
+
+    fn commit(&mut self, slot: Slot<K>, tat: u64) {
+        match slot {
+            Slot::Tracked(key) => {
+                self.tats.insert(key, tat);
+            }
+            Slot::Overflow => self.overflow = Some(tat),
+        }
+    }
+
+    /// Drop the full buckets. If that freed most of the table, give the
+    /// memory back; if not, grow the table now (never past the cap), so the
+    /// next sweep is at least as many inserts away as the map now holds.
+    ///
+    /// The table's size is read before `retain`: erasing from a full table
+    /// leaves tombstones, so `capacity()` afterwards understates it.
+    fn sweep(&mut self, now: u64) {
+        self.sweeps = self.sweeps.saturating_add(1);
+        let allocated = self.tats.capacity();
+        self.tats.retain(|_, tat| *tat > now);
+        let len = self.tats.len();
+        if len.saturating_mul(2) < allocated {
+            self.tats.shrink_to(len.saturating_add(len / 2));
+        } else {
+            let room = self.cap.saturating_sub(len).min(len.max(1));
+            self.tats.reserve(room);
+        }
+    }
+
+    /// The overflow count to log, at most once per [`OVERFLOW_LOG_GAP_NS`].
+    fn overflow_report(&mut self, now: u64) -> Option<u64> {
+        if self.overflow_pending == 0 {
+            return None;
+        }
+        if let Some(at) = self.overflow_logged_at {
+            if now.saturating_sub(at) < OVERFLOW_LOG_GAP_NS {
+                return None;
+            }
+        }
+        self.overflow_logged_at = Some(now);
+        Some(std::mem::take(&mut self.overflow_pending))
     }
 }
-
-/// `None` is a request with no known peer.
-type ClientId = Option<IpAddr>;
 
 struct State {
     global: Option<u64>,
-    clients: Buckets<ClientId>,
+    clients: Buckets<ClientKey>,
     keys: Buckets<[u8; 32]>,
 }
 
@@ -291,7 +428,7 @@ pub struct RateLimiter {
 struct Refusal {
     dimension: Dimension,
     wait_ns: u64,
-    client: ClientId,
+    client: ClientKey,
 }
 
 impl RateLimiter {
@@ -312,8 +449,8 @@ impl RateLimiter {
             clock,
             state: Mutex::new(State {
                 global: None,
-                clients: Buckets::new(),
-                keys: Buckets::new(),
+                clients: Buckets::new(config.max_tracked_clients),
+                keys: Buckets::new(config.max_tracked_keys),
             }),
             refused_global: AtomicU64::new(0),
             refused_client: AtomicU64::new(0),
@@ -346,8 +483,9 @@ impl RateLimiter {
         }
     }
 
-    /// The client a request from socket peer `peer` is limited as (see the
-    /// module docs). `None` only when the peer is unknown.
+    /// The client address a request from socket peer `peer` is limited as
+    /// (see the module docs; its bucket is this address, or its /64 for
+    /// IPv6). `None` only when the peer is unknown.
     pub fn client_ip(&self, peer: Option<IpAddr>, headers: &HeaderMap) -> Option<IpAddr> {
         let peer = peer?.to_canonical();
         if !self.trusted_proxies.contains(&peer) {
@@ -357,10 +495,11 @@ impl RateLimiter {
         if !forwarded.is_empty() {
             return Some(self.rightmost_untrusted(&forwarded).unwrap_or(peer));
         }
-        let real = headers
-            .get("x-real-ip")
-            .and_then(|v| v.to_str().ok())
-            .and_then(parse_ip);
+        let mut real_ip = headers.get_all("x-real-ip").iter();
+        let real = match (real_ip.next(), real_ip.next()) {
+            (Some(only), None) => only.to_str().ok().and_then(parse_ip),
+            _ => None,
+        };
         Some(real.unwrap_or(peer))
     }
 
@@ -398,7 +537,14 @@ impl RateLimiter {
             .extensions()
             .get::<ConnectInfo<SocketAddr>>()
             .map(|ConnectInfo(addr)| addr.ip());
-        let client = self.client_ip(peer, req.headers());
+        if peer.is_none() && !NO_PEER_WARNED.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                "rate limiter: a request arrived with no peer address (no ConnectInfo<SocketAddr>); \
+                 serve the router with into_make_service_with_connect_info::<SocketAddr>(). Until \
+                 then every such request shares one client bucket. Logged once per process."
+            );
+        }
+        let client = ClientKey::of(self.client_ip(peer, req.headers()));
         let key = if self.key.is_some() {
             key_digest(req.headers())
         } else {
@@ -408,19 +554,26 @@ impl RateLimiter {
 
         let mut state = self.state.lock();
         let global = self.global.map(|rate| rate.check(now, state.global));
-        let per_client = self
-            .client
-            .map(|rate| rate.check(now, state.clients.get(&client)));
-        let per_key = match (self.key, key.as_ref()) {
-            (Some(rate), Some(digest)) => Some(rate.check(now, state.keys.get(digest))),
+        let per_client = match self.client {
+            Some(rate) => {
+                let slot = state.clients.slot(client, now);
+                Some((slot, rate.check(now, state.clients.tat(&slot))))
+            }
+            None => None,
+        };
+        let per_key = match (self.key, key) {
+            (Some(rate), Some(digest)) => {
+                let slot = state.keys.slot(digest, now);
+                Some((slot, rate.check(now, state.keys.tat(&slot))))
+            }
             _ => None,
         };
 
         let mut binding: Option<(Dimension, u64)> = None;
         for (dimension, outcome) in [
             (Dimension::Global, global),
-            (Dimension::Client, per_client),
-            (Dimension::Key, per_key),
+            (Dimension::Client, per_client.map(|(_, outcome)| outcome)),
+            (Dimension::Key, per_key.map(|(_, outcome)| outcome)),
         ] {
             if let Some(Err(wait_ns)) = outcome {
                 if binding.is_none_or(|(_, longest)| wait_ns > longest) {
@@ -428,26 +581,57 @@ impl RateLimiter {
                 }
             }
         }
-        if let Some((dimension, wait_ns)) = binding {
-            drop(state);
-            self.counter(dimension).fetch_add(1, Ordering::Relaxed);
-            return Some(Refusal {
+
+        let refusal = match binding {
+            Some((dimension, wait_ns)) => Some(Refusal {
                 dimension,
                 wait_ns,
                 client,
-            });
-        }
+            }),
+            None => {
+                if let Some(Ok(tat)) = global {
+                    state.global = Some(tat);
+                }
+                if let Some((slot, Ok(tat))) = per_client {
+                    state.clients.commit(slot, tat);
+                }
+                if let Some((slot, Ok(tat))) = per_key {
+                    state.keys.commit(slot, tat);
+                }
+                None
+            }
+        };
+        // The overflow is reported by an overflowing request only, so each
+        // line's count runs up to and including the request that logs it.
+        let client_report = if matches!(per_client, Some((Slot::Overflow, _))) {
+            state.clients.overflow_report(now)
+        } else {
+            None
+        };
+        let key_report = if matches!(per_key, Some((Slot::Overflow, _))) {
+            state.keys.overflow_report(now)
+        } else {
+            None
+        };
+        let overflow = [(Dimension::Client, client_report), (Dimension::Key, key_report)];
+        drop(state);
 
-        if let Some(Ok(tat)) = global {
-            state.global = Some(tat);
+        for (dimension, report) in overflow {
+            if let Some(requests) = report {
+                tracing::warn!(
+                    dimension = dimension.as_str(),
+                    requests,
+                    "rate limiter: the bucket map is at its cap with only live buckets; new \
+                     arrivals share one overflow bucket at the same rate (requests since the \
+                     last report)"
+                );
+            }
         }
-        if let Some(Ok(tat)) = per_client {
-            state.clients.set(client, tat, now);
+        if let Some(refusal) = &refusal {
+            self.counter(refusal.dimension)
+                .fetch_add(1, Ordering::Relaxed);
         }
-        if let (Some(Ok(tat)), Some(digest)) = (per_key, key) {
-            state.keys.set(digest, tat, now);
-        }
-        None
+        refusal
     }
 }
 
@@ -484,26 +668,11 @@ fn retry_after_secs(wait_ns: u64) -> u64 {
     wait_ns.div_ceil(NANOS_PER_SECOND).max(1)
 }
 
-/// The client's network for logs: IPv4 /24, IPv6 /48. Never a full address.
-fn client_network(client: ClientId) -> String {
-    match client {
-        Some(IpAddr::V4(v4)) => {
-            let [a, b, c, _] = v4.octets();
-            format!("{a}.{b}.{c}.0/24")
-        }
-        Some(IpAddr::V6(v6)) => {
-            let s = v6.segments();
-            format!("{}/48", Ipv6Addr::new(s[0], s[1], s[2], 0, 0, 0, 0, 0))
-        }
-        None => "unknown".to_string(),
-    }
-}
-
 fn refusal_response(refusal: &Refusal) -> Response {
     let secs = retry_after_secs(refusal.wait_ns);
     tracing::warn!(
         dimension = refusal.dimension.as_str(),
-        client_net = %client_network(refusal.client),
+        client_net = %refusal.client.log_network(),
         retry_after_secs = secs,
         "request refused by the rate limiter"
     );
@@ -612,7 +781,15 @@ pub fn legacy_keys_warning(server: &ServerConfig) -> Option<String> {
     if per_second == 0 && burst == 0 {
         return None;
     }
-    let meant = if per_second > 0 {
+    let meant = if per_second > 0 && burst == 0 {
+        // tower_governor's GovernorConfigBuilder::finish() returns None for a
+        // burst of 0, and the old main.rs called .expect() on it.
+        format!(
+            "with rate_limit_burst = 0 the old binary panicked at boot (tower_governor's \
+             finish() returned None), so this pair never ran; rate_limit_per_second = \
+             {per_second} would have meant one request every {per_second} s per peer IP"
+        )
+    } else if per_second > 0 {
         format!(
             "under tower_governor they meant a burst of {burst}, then one request every \
              {per_second} s per peer IP (not {per_second} per second), and behind a same-host \
@@ -673,34 +850,101 @@ mod tests {
     }
 
     #[test]
-    fn logged_client_is_truncated() {
-        assert_eq!(
-            client_network(Some("203.0.113.7".parse().unwrap())),
-            "203.0.113.0/24"
-        );
-        assert_eq!(client_network(Some("::1".parse().unwrap())), "::/48");
-        assert_eq!(client_network(None), "unknown");
+    fn client_keys_and_logged_networks() {
+        let v4 = ClientKey::of(Some("203.0.113.7".parse().unwrap()));
+        assert_eq!(v4.log_network(), "203.0.113.0/24");
+        assert!(v4 != ClientKey::of(Some("203.0.113.8".parse().unwrap())));
+        let mapped = ClientKey::of(Some("::ffff:203.0.113.7".parse().unwrap()));
+        assert!(mapped == v4, "IPv4-mapped IPv6 is IPv4");
+        let a = ClientKey::of(Some("2001:db8:1:2::1".parse().unwrap()));
+        let b = ClientKey::of(Some("2001:db8:1:2:ffff:ffff:ffff:ffff".parse().unwrap()));
+        let c = ClientKey::of(Some("2001:db8:1:3::1".parse().unwrap()));
+        assert!(a == b, "one /64");
+        assert!(a != c, "another /64");
+        assert_eq!(a.log_network(), "2001:db8:1:2::/64");
+        assert_eq!(ClientKey::of(None).log_network(), "unknown");
+    }
+
+    /// The worst-case memory in the config docs rests on these sizes:
+    /// hashbrown holds `size_of::<(K, V)>() + 1` bytes per bucket.
+    #[test]
+    fn entry_sizes_behind_the_memory_bound() {
+        assert_eq!(std::mem::size_of::<(ClientKey, u64)>(), 24);
+        assert_eq!(std::mem::size_of::<([u8; 32], u64)>(), 40);
     }
 
     #[test]
-    fn idle_buckets_are_swept_without_changing_a_decision() {
-        let mut buckets: Buckets<u32> = Buckets::new();
-        for n in 0..=(MIN_SWEEP_LEN as u32) {
-            buckets.set(n, 5, 0);
+    fn the_cap_holds_and_overflow_shares_one_bucket() {
+        let rate = Rate::new(60, 1).expect("on");
+        let mut b: Buckets<u32> = Buckets::new(4);
+        for k in 0..4 {
+            let slot = b.slot(k, 0);
+            assert!(slot == Slot::Tracked(k));
+            b.commit(slot, rate.check(0, b.tat(&slot)).expect("fresh"));
         }
-        assert_eq!(
-            buckets.tats.len(),
-            MIN_SWEEP_LEN + 1,
-            "all live: none swept"
+        let slot = b.slot(10, 0);
+        assert!(slot == Slot::Overflow, "full of live buckets");
+        b.commit(slot, rate.check(0, b.tat(&slot)).expect("overflow's token"));
+        let slot = b.slot(11, 0);
+        assert!(slot == Slot::Overflow);
+        assert!(rate.check(0, b.tat(&slot)).is_err(), "the overflow is limited");
+        assert_eq!(b.tats.len(), 4, "the cap holds");
+        assert!(
+            b.slot(2, 0) == Slot::Tracked(2),
+            "a held key keeps its bucket"
         );
-        buckets.set(u32::MAX, 20, 10);
-        assert_eq!(buckets.tats.len(), MIN_SWEEP_LEN + 2, "below the new mark");
-        let mut buckets: Buckets<u32> = Buckets::new();
-        for n in 0..(MIN_SWEEP_LEN as u32) {
-            buckets.set(n, 5, 0);
+    }
+
+    #[test]
+    fn at_the_cap_sweeps_are_at_most_once_a_second() {
+        let mut b: Buckets<u32> = Buckets::new(8);
+        for k in 0..8 {
+            let slot = b.slot(k, 0);
+            b.commit(slot, 5 * NANOS_PER_SECOND);
         }
-        buckets.set(u32::MAX, 20, 10);
-        assert_eq!(buckets.tats.len(), 1, "only the live entry is kept");
-        assert_eq!(buckets.get(&u32::MAX), Some(20));
+        let before = b.sweeps;
+        for k in 100..10_100 {
+            assert!(b.slot(k, 0) == Slot::Overflow);
+        }
+        assert_eq!(b.sweeps, before + 1, "one sweep for 10 000 overflowing arrivals");
+        assert!(b.slot(20_000, NANOS_PER_SECOND) == Slot::Overflow);
+        assert_eq!(b.sweeps, before + 2, "a second later, one more");
+        assert!(
+            b.slot(20_001, 5 * NANOS_PER_SECOND) == Slot::Tracked(20_001),
+            "expired buckets are swept before a new one is held"
+        );
+        assert_eq!(b.tats.len(), 0);
+    }
+
+    #[test]
+    fn sweeps_below_the_cap_are_amortised() {
+        let mut b: Buckets<u32> = Buckets::new(1_000_000);
+        for k in 0..100_000 {
+            let slot = b.slot(k, 0);
+            b.commit(slot, NANOS_PER_SECOND);
+        }
+        assert!(
+            b.sweeps <= 20,
+            "a sweep only when the table would grow: {} sweeps for 100 000 inserts",
+            b.sweeps
+        );
+    }
+
+    #[test]
+    fn a_sweep_that_frees_most_of_the_table_returns_its_memory() {
+        let mut b: Buckets<u32> = Buckets::new(1_000_000);
+        for k in 0..50_000 {
+            let slot = b.slot(k, 0);
+            b.commit(slot, NANOS_PER_SECOND);
+        }
+        let capacity = b.tats.capacity();
+        b.sweep(2 * NANOS_PER_SECOND);
+        assert_eq!(b.tats.len(), 0);
+        assert!(
+            b.tats.capacity() < capacity / 8,
+            "{} -> {}",
+            capacity,
+            b.tats.capacity()
+        );
     }
 }

@@ -203,7 +203,7 @@ async fn create_as(
     agent_name: &str,
     config: Value,
 ) {
-    create_tenant_agent_handler(
+    let Json(_created) = create_tenant_agent_handler(
         State(ctx.clone()),
         Path(tenant_id.to_string()),
         actor,
@@ -225,7 +225,7 @@ async fn put_config_as(
     agent_name: &str,
     patch: Value,
 ) {
-    update_tenant_agent_handler(
+    let Json(_updated) = update_tenant_agent_handler(
         State(ctx.clone()),
         Path((tenant_id.to_string(), agent_name.to_string())),
         actor,

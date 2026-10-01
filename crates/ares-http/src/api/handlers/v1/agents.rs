@@ -331,6 +331,10 @@ async fn run_skill_agent_path(
         pipeline_id: None,
         schedule_id: None,
         trigger_id: None,
+        // A skill run's steps resolve their providers inside `Llm`: the run has no single
+        // provider, so neither column is written (NULL).
+        resolved_endpoint: None,
+        region: None,
         ..Default::default()
     };
     agent_runs::insert_agent_run_with_id_and_metadata(
@@ -588,6 +592,9 @@ async fn run_configurable_agent_path(
         pipeline_id: None,
         schedule_id: None,
         trigger_id: None,
+        // Not known yet: the provider that answers is written by the close-out UPDATE.
+        resolved_endpoint: None,
+        region: None,
         ..Default::default()
     };
     agent_runs::insert_agent_run_with_id_and_metadata(

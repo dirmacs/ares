@@ -18,7 +18,25 @@ const LIST_AGENT_RUNS_SELECT: &str =
                     COALESCE(eruka_write_count, 0)::BIGINT AS eruka_write_count,
                      pipeline_id, schedule_id, trigger_id,
                      parent_run_id, root_run_id,
-                     updated_at";
+                     updated_at, resolved_endpoint, region";
+
+/// The one INSERT every `agent_runs` writer goes through: 31 columns, 31 placeholders. A unit
+/// test pins the count on this very statement.
+const INSERT_AGENT_RUN_SQL: &str = "INSERT INTO agent_runs (
+            id, tenant_id, agent_name, user_id, workspace_id, session_id, status,
+            input_tokens, output_tokens, duration_ms, error, created_at,
+            model_name, provider_name, is_streaming, request_source, product,
+            agent_config_source, agent_config_version, eruka_binding_id,
+            eruka_context_hit, eruka_read_count, eruka_write_count, pipeline_id, schedule_id,
+            trigger_id, parent_run_id, root_run_id, updated_at, resolved_endpoint, region
+         ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7,
+            $8, $9, $10, $11, $12,
+            $13, $14, $15, $16, $17,
+            $18, $19, $20,
+            $21, $22, $23, $24, $25,
+            $26, $27, $28, $29, $30, $31
+         )";
 
 pub const GET_AGENT_RUN_STATS_SQL: &str = "SELECT
             COUNT(*) as total_runs,
@@ -172,6 +190,8 @@ pub fn agent_run_from_row(row: &sqlx::postgres::PgRow) -> Result<AgentRun> {
         parent_run_id: row.try_get("parent_run_id").unwrap_or(None),
         root_run_id: row.try_get("root_run_id").unwrap_or(None),
         updated_at: row.try_get("updated_at").unwrap_or(None),
+        resolved_endpoint: row.get("resolved_endpoint"),
+        region: row.get("region"),
     })
 }
 
@@ -211,6 +231,14 @@ pub struct AgentRun {
     pub root_run_id: Option<String>,
     #[serde(default)]
     pub updated_at: Option<i64>,
+    /// The endpoint of the provider that answered the run (scheme, host, port and path only;
+    /// migration 039). NULL for a run written before 039, a run that failed, and every path that
+    /// cannot name its provider (skill runs, the generic `Execute` fall-through).
+    #[serde(default)]
+    pub resolved_endpoint: Option<String>,
+    /// The region of the provider that answered the run, where it has one (migration 039).
+    #[serde(default)]
+    pub region: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,6 +291,13 @@ pub struct AgentRunMetadata {
     pub parent_run_id: Option<String>,
     /// The top of the run tree this run belongs to; NULL for a top-level run.
     pub root_run_id: Option<String>,
+    /// Sanitized endpoint of the provider that answered (`ares_llm::client::Residency`), or
+    /// `None`. Written from the resolved provider, never from a request field.
+    #[serde(default)]
+    pub resolved_endpoint: Option<String>,
+    /// Region of the provider that answered, where it has one, or `None`.
+    #[serde(default)]
+    pub region: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -354,55 +389,41 @@ pub async fn insert_agent_run_with_id_and_metadata(
     let now = now_ts();
     let metadata = metadata.cloned().unwrap_or_default();
 
-    sqlx::query(
-        "INSERT INTO agent_runs (
-            id, tenant_id, agent_name, user_id, workspace_id, session_id, status,
-            input_tokens, output_tokens, duration_ms, error, created_at,
-            model_name, provider_name, is_streaming, request_source, product,
-            agent_config_source, agent_config_version, eruka_binding_id,
-            eruka_context_hit, eruka_read_count, eruka_write_count, pipeline_id, schedule_id,
-            trigger_id, parent_run_id, root_run_id, updated_at
-         ) VALUES (
-            $1, $2, $3, $4, $5, $6, $7,
-            $8, $9, $10, $11, $12,
-            $13, $14, $15, $16, $17,
-            $18, $19, $20,
-            $21, $22, $23, $24, $25,
-            $26, $27, $28, $29
-         )",
-    )
-    .bind(id)
-    .bind(tenant_id)
-    .bind(agent_name)
-    .bind(user_id)
-    .bind(&metadata.workspace_id)
-    .bind(&metadata.session_id)
-    .bind(status)
-    .bind(input_tokens)
-    .bind(output_tokens)
-    .bind(duration_ms)
-    .bind(error)
-    .bind(now)
-    .bind(model_name)
-    .bind(provider_name)
-    .bind(is_streaming)
-    .bind(&metadata.request_source)
-    .bind(&metadata.product)
-    .bind(&metadata.agent_config_source)
-    .bind(&metadata.agent_config_version)
-    .bind(&metadata.eruka_binding_id)
-    .bind(metadata.eruka_context_hit)
-    .bind(metadata.eruka_read_count)
-    .bind(metadata.eruka_write_count)
-    .bind(&metadata.pipeline_id)
-    .bind(&metadata.schedule_id)
-    .bind(&metadata.trigger_id)
-    .bind(&metadata.parent_run_id)
-    .bind(&metadata.root_run_id)
-    .bind(now)
-    .execute(pool)
-    .await
-    .map_err(|e| AppError::Database(e.to_string()))?;
+    sqlx::query(INSERT_AGENT_RUN_SQL)
+        .bind(id)
+        .bind(tenant_id)
+        .bind(agent_name)
+        .bind(user_id)
+        .bind(&metadata.workspace_id)
+        .bind(&metadata.session_id)
+        .bind(status)
+        .bind(input_tokens)
+        .bind(output_tokens)
+        .bind(duration_ms)
+        .bind(error)
+        .bind(now)
+        .bind(model_name)
+        .bind(provider_name)
+        .bind(is_streaming)
+        .bind(&metadata.request_source)
+        .bind(&metadata.product)
+        .bind(&metadata.agent_config_source)
+        .bind(&metadata.agent_config_version)
+        .bind(&metadata.eruka_binding_id)
+        .bind(metadata.eruka_context_hit)
+        .bind(metadata.eruka_read_count)
+        .bind(metadata.eruka_write_count)
+        .bind(&metadata.pipeline_id)
+        .bind(&metadata.schedule_id)
+        .bind(&metadata.trigger_id)
+        .bind(&metadata.parent_run_id)
+        .bind(&metadata.root_run_id)
+        .bind(now)
+        .bind(&metadata.resolved_endpoint)
+        .bind(&metadata.region)
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
 
     Ok(id.to_string())
 }
@@ -703,14 +724,15 @@ mod tests {
         assert_eq!(back.region, run.region);
     }
 
-    /// 2.12b: the row has 29 columns on the wire (27 before migration 039).
+    /// 2.12b: the row has 31 columns on the wire (29 before migration 039: the 27 of the old
+    /// branch plus the run-tree pair `parent_run_id` / `root_run_id` that main added since).
     #[test]
-    fn agent_run_serializes_29_fields_including_the_residency_pair() {
+    fn agent_run_serializes_31_fields_including_the_residency_pair() {
         let json = serde_json::to_value(sample_agent_run_full()).unwrap();
         let object = json
             .as_object()
             .expect("an AgentRun serializes to an object");
-        assert_eq!(object.len(), 29, "{:?}", object.keys().collect::<Vec<_>>());
+        assert_eq!(object.len(), 31, "{:?}", object.keys().collect::<Vec<_>>());
         assert_eq!(json["resolved_endpoint"], "https://api.example.test/v1");
         assert_eq!(json["region"], "ap-south-1");
     }
@@ -2156,14 +2178,15 @@ mod tests {
     }
 
     /// The placeholder pin, now on the statement the writer really executes
-    /// (`INSERT_AGENT_RUN_SQL`) and not on a copy of it: 27 placeholders before migration 039,
-    /// 29 with `resolved_endpoint` and `region`.
+    /// (`INSERT_AGENT_RUN_SQL`) and not on a copy of it: 29 placeholders before migration 039
+    /// (the 27 of the old branch plus the run-tree pair main added since), 31 with
+    /// `resolved_endpoint` and `region`.
     #[test]
-    fn insert_agent_run_has_29_placeholders() {
-        assert_eq!(count_bind_placeholders(INSERT_AGENT_RUN_SQL), 29);
+    fn insert_agent_run_has_31_placeholders() {
+        assert_eq!(count_bind_placeholders(INSERT_AGENT_RUN_SQL), 31);
     }
 
-    /// 2.12b: the column list and the value list of the real INSERT have the same length (29),
+    /// 2.12b: the column list and the value list of the real INSERT have the same length (31),
     /// and the two new columns are in the list.
     #[test]
     fn insert_agent_run_columns_match_values_and_name_the_residency_pair() {
@@ -2176,7 +2199,7 @@ mod tests {
             .map(str::trim)
             .filter(|c| !c.is_empty())
             .collect();
-        assert_eq!(columns.len(), 29, "{columns:?}");
+        assert_eq!(columns.len(), 31, "{columns:?}");
         assert!(columns.contains(&"resolved_endpoint"), "{columns:?}");
         assert!(columns.contains(&"region"), "{columns:?}");
         assert_eq!(count_bind_placeholders(INSERT_AGENT_RUN_SQL), columns.len());

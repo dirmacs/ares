@@ -2729,6 +2729,61 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    /// `top`, `grp`, and `svc`, linked to `grp` by its parent pointer only:
+    /// `svc` is not under the `grp:` id prefix.
+    const POINTER_TREE_TOML: &str = "[[entry]]\nid = \"top\"\nplugin = \"TopMarker\"\ndisabled = false\n\n[entry.config]\n\n\
+        [[entry]]\nid = \"grp\"\nplugin = \"GroupMarker\"\ndisabled = false\n\n[entry.config]\n\n\
+        [[entry]]\nid = \"svc\"\nplugin = \"CalculatorService\"\ndisabled = false\n\n[entry.config]\n\n\
+        [entry.position]\nparent = \"grp\"\nposition = 0\n";
+
+    /// A child linked to the moved entry by its parent pointer only is part of
+    /// the moved subtree, but the move leaves its id alone (`replacen` finds
+    /// no `grp:` prefix to replace), so `Loader::move_entry` lists the
+    /// moved entry first and `svc` LAST under an unchanged id. The field
+    /// updates land on the moved entry `top:grp`, not on that last id.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn patch_move_with_pointer_only_child_lands_on_the_moved_entry() {
+        let (ctx, dir) = boot_move_fixture("patch-move-pointer-child", POINTER_TREE_TOML).await;
+
+        let update = cordis::loader::EntryUpdate {
+            parent: Some(Some("top".into())),
+            disabled: Some(true),
+            ..Default::default()
+        };
+        let (status, Json(body)) = patch_cordis_entry(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("grp".into()),
+            axum::Json(update),
+        )
+        .await
+        .expect("resp");
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["renamed"],
+            json!([["grp", "top:grp"], ["svc", "svc"]]),
+            "the pointer-only child is listed last, under its unchanged id: {body}"
+        );
+        assert_eq!(
+            body["entry"]["id"], "top:grp",
+            "the patched entry is the moved one, not the last id: {body}"
+        );
+        assert_eq!(body["entry"]["disabled"], true, "{body}");
+
+        // The saved program: the moved entry is disabled, the child is not.
+        let (saved, live) = saved_and_live(&ctx, &dir);
+        assert_eq!(disabled_of(&saved, "top:grp"), Some(true), "{saved:?}");
+        assert_eq!(disabled_of(&saved, "svc"), Some(false), "{saved:?}");
+        assert_eq!(disabled_of(&saved, "top"), Some(false), "{saved:?}");
+        assert_eq!(live, saved, "CurrentEntries agrees with the saved program");
+
+        // Live: the moved entry stopped, the pointer-only child still runs.
+        assert!(ctx.get::<GroupProbe>().is_none(), "the moved entry stopped");
+        assert!(ctx.get::<Probe>().is_some(), "the child still runs");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
 
 #[cfg(test)]

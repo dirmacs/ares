@@ -126,6 +126,8 @@ struct Fixture {
     tenant_id: String,
     api_key: String,
     stub_calls: Arc<AtomicUsize>,
+    /// The stub's real base URL (item 2.12b: what a row that names the stub must record).
+    stub_url: String,
 }
 
 /// What one run returned.
@@ -180,7 +182,7 @@ impl Fixture {
             STUB_PROVIDER.to_string(),
             ProviderConfig::Ollama {
                 api_key_env: "ARES_1_13_UNUSED".to_string(),
-                base_url: stub_url,
+                base_url: stub_url.clone(),
                 default_model: STUB_MODEL.to_string(),
             },
         );
@@ -265,6 +267,7 @@ impl Fixture {
             tenant_id: tenant.id,
             api_key,
             stub_calls,
+            stub_url,
         })
     }
 
@@ -665,6 +668,88 @@ async fn completed_run_reason_code_stays_null() {
         "a completed run meters no reason_code"
     );
     assert_eq!(usage.model_name.as_deref(), Some(STUB_MODEL), "{usage:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Item 2.12b: residency on the same rows (`resolved_endpoint`, `region`, migration 039)
+//
+// The invariant: the endpoint and region on a row describe the provider the row's
+// `provider_name` names. A completed run names the provider that answered; a run that failed
+// after resolution names the provider it resolved to (exactly as `provider_name` already does);
+// a run that failed before resolution has the `unresolved` marker and no endpoint.
+// ---------------------------------------------------------------------------
+
+impl Fixture {
+    /// The run's `(resolved_endpoint, region)`.
+    async fn residency_row(&self, run_id: &str) -> (Option<String>, Option<String>) {
+        sqlx::query_as("SELECT resolved_endpoint, region FROM agent_runs WHERE id = $1")
+            .bind(run_id)
+            .fetch_one(&self.pool)
+            .await
+            .expect("the run's residency columns")
+    }
+}
+
+/// A completed run records the endpoint of the provider that answered (the stub; it has no
+/// region, so NULL).
+#[tokio::test]
+async fn completed_run_records_the_answering_endpoint() {
+    let Some(fx) = Fixture::new(Stub::Answer, MODEL_ALIAS).await else {
+        return;
+    };
+    let reply = fx.run().await;
+    assert_eq!(reply.body["status"], "completed", "{}", reply.body);
+
+    let (endpoint, region) = fx.residency_row(&reply.run_id()).await;
+    assert_eq!(endpoint.as_deref(), Some(fx.stub_url.as_str()));
+    assert_eq!(region, None);
+}
+
+/// A failure after resolution: the row names the provider it resolved to (as `provider_name`
+/// does), so the endpoint is that provider's, from the resolved provider and not from the
+/// provider's error. Nothing the stub said reaches either column.
+#[tokio::test]
+async fn failed_run_records_the_resolved_providers_endpoint() {
+    let Some(fx) = Fixture::new(Stub::Fail, MODEL_ALIAS).await else {
+        return;
+    };
+    let reply = fx.run().await;
+    assert_failed_reply(&reply);
+    assert!(fx.model_calls() >= 1, "the failure came after resolution");
+
+    let run_id = reply.run_id();
+    let run = fx.run_row(&run_id).await;
+    assert_eq!(run.provider_name.as_deref(), Some(STUB_PROVIDER), "{run:?}");
+    let (endpoint, region) = fx.residency_row(&run_id).await;
+    assert_eq!(
+        endpoint.as_deref(),
+        Some(fx.stub_url.as_str()),
+        "the endpoint of the provider named on the same row"
+    );
+    assert_eq!(region, None);
+}
+
+/// A failure before the agent is built: the provider is the `unresolved` marker, and there is no
+/// endpoint or region to record.
+#[tokio::test]
+async fn failure_before_resolution_records_no_endpoint() {
+    let Some(fx) = Fixture::new(Stub::Fail, UNKNOWN_MODEL).await else {
+        return;
+    };
+    let reply = fx.run().await;
+    assert_failed_reply(&reply);
+    assert_eq!(
+        fx.model_calls(),
+        0,
+        "nothing was resolved, so nothing was called"
+    );
+
+    let run_id = reply.run_id();
+    let run = fx.run_row(&run_id).await;
+    assert_eq!(run.provider_name.as_deref(), Some(UNRESOLVED), "{run:?}");
+    let (endpoint, region) = fx.residency_row(&run_id).await;
+    assert_eq!(endpoint, None);
+    assert_eq!(region, None);
 }
 
 // ---------------------------------------------------------------------------

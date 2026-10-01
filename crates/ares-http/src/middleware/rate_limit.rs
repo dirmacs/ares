@@ -613,7 +613,10 @@ impl RateLimiter {
         } else {
             None
         };
-        let overflow = [(Dimension::Client, client_report), (Dimension::Key, key_report)];
+        let overflow = [
+            (Dimension::Client, client_report),
+            (Dimension::Key, key_report),
+        ];
         drop(state);
 
         for (dimension, report) in overflow {
@@ -887,7 +890,10 @@ mod tests {
         b.commit(slot, rate.check(0, b.tat(&slot)).expect("overflow's token"));
         let slot = b.slot(11, 0);
         assert!(slot == Slot::Overflow);
-        assert!(rate.check(0, b.tat(&slot)).is_err(), "the overflow is limited");
+        assert!(
+            rate.check(0, b.tat(&slot)).is_err(),
+            "the overflow is limited"
+        );
         assert_eq!(b.tats.len(), 4, "the cap holds");
         assert!(
             b.slot(2, 0) == Slot::Tracked(2),
@@ -906,7 +912,11 @@ mod tests {
         for k in 100..10_100 {
             assert!(b.slot(k, 0) == Slot::Overflow);
         }
-        assert_eq!(b.sweeps, before + 1, "one sweep for 10 000 overflowing arrivals");
+        assert_eq!(
+            b.sweeps,
+            before + 1,
+            "one sweep for 10 000 overflowing arrivals"
+        );
         assert!(b.slot(20_000, NANOS_PER_SECOND) == Slot::Overflow);
         assert_eq!(b.sweeps, before + 2, "a second later, one more");
         assert!(

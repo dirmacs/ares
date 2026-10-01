@@ -47,7 +47,7 @@ Startup follows one ordered pass in `run_server` (`src/main.rs:524`). Each step 
 5. Guard configuration presence (`src/main.rs:570-585`). A missing config prints an `ares-server init` hint and exits with code 1.
 6. Start the entries watcher (`src/main.rs:592-625`). File events re-compose the program and apply diffs through the loader journal. When the watcher cannot start, a 30-second modified-time poll replaces it.
 7. Preload runtime providers (`src/main.rs:630-632`) and snapshot current agent definitions into the version history (`src/main.rs:673-707`).
-8. Build CORS and rate-limit layers (`src/main.rs:895-944`), bind the TCP listener (`src/main.rs:949-950`), and serve the Axum router with graceful shutdown on Ctrl+C and SIGTERM (`src/main.rs:957-964`).
+8. Build CORS and rate-limit layers (`build_cors_layer` and `RateLimitLayer::from_server_config`, applied in `run_server`), bind the TCP listener, and serve the Axum router with graceful shutdown on Ctrl+C and SIGTERM (`shutdown_signal`), all in `run_server` (`src/main.rs`).
 
 Step 8 is the first step that touches the network for serving. A failure in any earlier step exits before any port opens.
 

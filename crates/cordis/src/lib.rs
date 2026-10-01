@@ -593,11 +593,47 @@ impl LoaderJournal {
     /// structural entry move keeps its live fiber: the record moves, the
     /// fiber does not. Returns the record under its new key, or `None` when
     /// `old` was not journaled.
+    ///
+    /// This inserts under `new` as soon as it has taken `old`, replacing any
+    /// record already there. To re-key several records whose pairs may
+    /// overlap (`a→b` with `b→c`), use [`Self::rename_many`]: calling this
+    /// once per pair overwrites a record the next pair has yet to move.
     pub fn rename(&self, old: &str, new: &str) -> Option<JournalRecord> {
         let mut records = self.records.write();
         let record = records.remove(old)?;
         records.insert(new.to_string(), record.clone());
         Some(record)
+    }
+
+    /// Re-key a WHOLE move's records as one batch: every `old` key is taken
+    /// out first, then every `new` key is put in, all under one write lock.
+    /// Pairs may therefore overlap (`a→b` with `b→c`, or a swap) and no pair
+    /// overwrites a record another pair has yet to move. Like
+    /// [`Self::rename`], each record keeps its plugin label, config,
+    /// generation and fiber id.
+    ///
+    /// Returns one item per pair, in the same order: the record as it now
+    /// sits under its new key, or `None` when `old` was not journaled (that
+    /// pair does nothing, and neither does a pair repeating an `old` that an
+    /// earlier pair already took). Two pairs with the same `new` would leave
+    /// the later record in place, so the caller must hand over distinct `new`
+    /// keys; [`crate::loader::EntryTree::move_entry`] guarantees that for a
+    /// move by refusing any move that would leave two entries with one id.
+    pub fn rename_many<O: AsRef<str>, N: AsRef<str>>(
+        &self,
+        pairs: &[(O, N)],
+    ) -> Vec<Option<JournalRecord>> {
+        let mut records = self.records.write();
+        let taken: Vec<Option<JournalRecord>> = pairs
+            .iter()
+            .map(|(old, _)| records.remove(old.as_ref()))
+            .collect();
+        for ((_, new), record) in pairs.iter().zip(&taken) {
+            if let Some(record) = record {
+                records.insert(new.as_ref().to_string(), record.clone());
+            }
+        }
+        taken
     }
 
     pub fn get(&self, id: &str) -> Option<JournalRecord> {

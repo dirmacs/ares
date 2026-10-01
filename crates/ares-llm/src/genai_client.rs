@@ -5,7 +5,7 @@
 
 use crate::client::{
     CacheControl, GenaiProvider, GenerationHints, LLMClient, LLMResponse, LlmStreamEvent,
-    LlmStreamItem, TokenUsage,
+    LlmStreamItem, Residency, TokenUsage,
 };
 use crate::coordinator::{ConversationMessage, MessageRole};
 use ares_types::types::{AppError, ContentPart as AresPart, Result, ToolCall, ToolDefinition};
@@ -431,6 +431,20 @@ impl LLMClient for GenaiClient {
 
     fn model_name(&self) -> &str {
         &self.provider.model
+    }
+
+    /// The endpoint every call of this client goes to (the configured override, else the
+    /// adapter's default base URL: the same one `service_target` sends to) and the region where
+    /// the adapter has one. Sanitized once, by [`Residency::from_raw`].
+    fn residency(&self) -> Residency {
+        let kind = self.effective_kind();
+        let endpoint = self.resolve_endpoint(kind);
+        let region = match kind {
+            AdapterKind::BedrockApi => Some(bedrock_region(self.provider.region.as_deref())),
+            AdapterKind::Vertex => Some(vertex_region(self.provider.vertex_location.as_deref())),
+            _ => None,
+        };
+        Residency::from_raw(Some(endpoint.as_str()), region.as_deref())
     }
 
     fn supports_hints(&self) -> bool {
@@ -875,15 +889,33 @@ fn vendor_endpoint(kind: AdapterKind) -> Option<&'static str> {
     }
 }
 
-/// Bedrock runtime endpoint for `region` (env fallbacks: `AWS_REGION`,
-/// `AWS_DEFAULT_REGION`, then `us-east-1`).
-fn bedrock_endpoint(region: Option<&str>) -> String {
-    let region = region
+/// The region Bedrock calls go to: the provider's, else the server's environment
+/// (`AWS_REGION`, `AWS_DEFAULT_REGION`), else `us-east-1`. Server configuration only.
+fn bedrock_region(region: Option<&str>) -> String {
+    region
         .map(str::to_string)
         .or_else(|| std::env::var("AWS_REGION").ok())
         .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok())
-        .unwrap_or_else(|| "us-east-1".into());
+        .unwrap_or_else(|| "us-east-1".into())
+}
+
+/// Bedrock runtime endpoint for `region` (env fallbacks: `AWS_REGION`,
+/// `AWS_DEFAULT_REGION`, then `us-east-1`).
+fn bedrock_endpoint(region: Option<&str>) -> String {
+    let region = bedrock_region(region);
     format!("https://bedrock-runtime.{region}.amazonaws.com/")
+}
+
+/// The location Vertex calls go to: the provider's, else `VERTEX_LOCATION`, else `global` (an
+/// empty location is the global endpoint, as in [`vertex_endpoint`]). Server configuration only.
+fn vertex_region(vertex_location: Option<&str>) -> String {
+    match vertex_location
+        .map(str::to_string)
+        .or_else(|| std::env::var("VERTEX_LOCATION").ok())
+    {
+        Some(loc) if !loc.is_empty() => loc,
+        _ => "global".to_string(),
+    }
 }
 
 /// Vertex AI endpoint: a regional host for non-global locations, the

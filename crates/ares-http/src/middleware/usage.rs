@@ -55,6 +55,8 @@ pub(crate) struct MeteringSnapshot {
     pub provider_name: Option<String>,
     pub success: bool,
     pub counts_source: Option<String>,
+    /// Failure class of a failed run (`usage_events.reason_code`); `None` on success.
+    pub reason_code: Option<String>,
 }
 
 /// Request-scoped usage metering, interceptable via Cordis `with_intercept`.
@@ -130,6 +132,7 @@ pub(crate) struct UsageEventParams {
     pub success: bool,
     pub counts_source: Option<String>,
     pub api_key_id: Option<String>,
+    pub reason_code: Option<String>,
 }
 
 /// Returns true when any metering header is present.
@@ -213,6 +216,8 @@ pub(crate) fn parse_metering_headers(headers: &axum::http::HeaderMap) -> Option<
             .map(|v| v.to_string()),
         success: parse_success_header(headers),
         counts_source: parse_counts_source_header(headers),
+        // The header fallback carries no failure class.
+        reason_code: None,
     })
 }
 
@@ -247,6 +252,7 @@ pub(crate) fn usage_event_params_with_key(
         success: snapshot.success,
         counts_source: snapshot.counts_source.clone(),
         api_key_id: api_key_id.map(|s| s.to_string()),
+        reason_code: snapshot.reason_code.clone(),
     }
 }
 
@@ -276,7 +282,7 @@ async fn record_usage_params(
     // Library crates that ship via crates.io cannot rely on a live DB
     // or bundled cache being available to their consumers.
     sqlx::query(
-        "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, success, counts_source, api_key_id, created_at) VALUES ($1, $2, 'http', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+        "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, input_tokens, output_tokens, model_name, agent_name, provider_name, success, counts_source, api_key_id, reason_code, created_at) VALUES ($1, $2, 'http', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
     )
     .bind(uuid::Uuid::new_v4().to_string())
     .bind(params.tenant_id)
@@ -290,6 +296,7 @@ async fn record_usage_params(
     .bind(params.success)
     .bind(params.counts_source)
     .bind(params.api_key_id)
+    .bind(params.reason_code)
     .bind(chrono::Utc::now().timestamp())
     .execute(pool)
     .await?;
@@ -454,6 +461,7 @@ mod tests {
             provider_name: Some("openai".to_string()),
             success: true,
             counts_source: Some("reported".to_string()),
+            reason_code: None,
         };
 
         let params = usage_event_params("tenant-abc", &snapshot);
@@ -478,6 +486,7 @@ mod tests {
             provider_name: Some("anthropic".to_string()),
             success: false,
             counts_source: Some("estimated".to_string()),
+            reason_code: None,
         };
 
         let params = usage_event_params("t", &snapshot);
@@ -519,6 +528,7 @@ mod tests {
             provider_name: Some("openai".into()),
             success: true,
             counts_source: Some("reported".to_string()),
+            reason_code: None,
         });
         let params = usage_event_params_from_ctx(&child).expect("recorded snapshot");
         assert_eq!(params.tenant_id, "acme");
@@ -546,6 +556,7 @@ mod tests {
             provider_name: Some("openai".into()),
             success: true,
             counts_source: None,
+            reason_code: None,
         });
         let snapshot = cloned.snapshot().expect("clone must share snapshot");
         assert_eq!(snapshot.token_count, 10);
@@ -568,6 +579,7 @@ mod tests {
             provider_name: Some("openai".into()),
             success: true,
             counts_source: Some("estimated".to_string()),
+            reason_code: None,
         });
         let params = usage_event_params_from_ctx(&child).expect("intercepted clone sees record");
         assert_eq!(params.tenant_id, "acme");
@@ -587,6 +599,7 @@ mod tests {
             provider_name: None,
             success: true,
             counts_source: None,
+            reason_code: None,
         });
         let clone = usage.clone();
         assert_eq!(clone.snapshot().map(|s| s.token_count), Some(3));
@@ -677,5 +690,29 @@ mod tests {
         let snapshot = parse_metering_headers(&headers).expect("snapshot");
         assert!(snapshot.success);
         assert_eq!(snapshot.counts_source, None);
+    }
+
+    /// Item 1.13: a failed run's class reaches the INSERT's params; the header
+    /// fallback carries none.
+    #[test]
+    fn usage_event_params_carry_the_failure_class() {
+        let snapshot = MeteringSnapshot {
+            input_tokens: 0,
+            output_tokens: 0,
+            token_count: 0,
+            model_name: Some("stub-model".to_string()),
+            agent_name: Some("agent".to_string()),
+            provider_name: Some("stub-provider".to_string()),
+            success: false,
+            counts_source: Some("estimated".to_string()),
+            reason_code: Some("llm_error".to_string()),
+        };
+        let params = usage_event_params("t-failed", &snapshot);
+        assert_eq!(params.reason_code.as_deref(), Some("llm_error"));
+        assert!(!params.success);
+
+        let from_headers =
+            parse_metering_headers(&headers_with(&[("x-success", "false")])).expect("snapshot");
+        assert_eq!(from_headers.reason_code, None);
     }
 }

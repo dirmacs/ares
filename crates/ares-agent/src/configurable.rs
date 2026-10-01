@@ -749,6 +749,13 @@ Handle employee info, policies, and benefits."#
         &self.name
     }
 
+    /// The primary model and provider this agent resolved to: the primary client's concrete
+    /// model id (what the registry resolved the config's model or tier to) and its provider
+    /// name, the pair a successful run reports in `ExecutionMetadata`. Names only.
+    pub fn resolved_model_and_provider(&self) -> (&str, &str) {
+        (self.llm.model_name(), &self.provider_name)
+    }
+
     /// Get the max tool iterations setting
     pub fn max_tool_iterations(&self) -> usize {
         self.max_tool_iterations
@@ -877,7 +884,7 @@ Handle employee info, policies, and benefits."#
             let store = ares_store::token_budgets::TokenBudgetStore::new(db.pool());
             let status = store.check_budget(tenant_id).await?;
             if status.would_exceed {
-                return Err(AppError::RateLimited(format!(
+                return Err(AppError::BudgetExceeded(format!(
                     "Tenant {} token budget exceeded ({} / {})",
                     tenant_id, status.tokens_used, status.token_limit
                 )));
@@ -890,7 +897,7 @@ Handle employee info, policies, and benefits."#
                 .usd_budget_breach(tenant_id, chrono::Utc::now())
                 .await?
             {
-                return Err(AppError::RateLimited(format!(
+                return Err(AppError::BudgetExceeded(format!(
                     "Tenant {} {} USD budget exceeded ({} / {})",
                     tenant_id,
                     breach.period.as_str(),

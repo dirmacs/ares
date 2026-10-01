@@ -87,6 +87,56 @@ pub struct ExecutionResult {
     pub run_id: String,
 }
 
+/// The model and provider a run resolved to, for a caller that has to name the run when it
+/// fails after resolution.
+///
+/// The caller intercepts a fresh slot on the request context before [`Execute::run`];
+/// `Execute` fills it with the primary's resolved names once the agent is built, before
+/// anything else can fail. Still empty after a failure means the run failed before its
+/// model was resolved. Holds names only: never a key, a URL, a secret or error text.
+#[derive(Clone, Default)]
+pub struct ResolvedModelSlot(Arc<std::sync::Mutex<Option<ResolvedModel>>>);
+
+/// The names a [`ResolvedModelSlot`] holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedModel {
+    /// The concrete model id the provider is called with.
+    pub model_name: String,
+    /// The provider's configured name.
+    pub provider_name: String,
+}
+
+impl ResolvedModelSlot {
+    /// An empty slot.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The resolved names, or `None` when the run never got that far.
+    pub fn get(&self) -> Option<ResolvedModel> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// Record the resolved names. Only `Execute` writes the slot (on its `postgres` path).
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+    pub(crate) fn set(&self, model_name: &str, provider_name: &str) {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(ResolvedModel {
+            model_name: model_name.to_string(),
+            provider_name: provider_name.to_string(),
+        });
+    }
+}
+
+impl std::fmt::Debug for ResolvedModelSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ResolvedModelSlot")
+            .field(&self.get())
+            .finish()
+    }
+}
+
+impl Service for ResolvedModelSlot {}
+
 use crate::AgentResponse;
 
 pub use ares_tools::Tools;
@@ -724,6 +774,12 @@ impl Execute {
             Ok(a) => a,
             Err(e) => return Some(Err(e)),
         };
+        // Name the resolution for a caller that has to name a failed run: the primary's
+        // resolved model and provider, before anything after this point can fail.
+        if let Some(slot) = ctx.get::<ResolvedModelSlot>() {
+            let (model_name, provider_name) = agent.resolved_model_and_provider();
+            slot.set(model_name, provider_name);
+        }
         if let Some(tools) = ctx.get::<ares_tools::Tools>() {
             agent.set_tools(tools);
         }
@@ -2108,5 +2164,32 @@ mod tests {
         let first = stream.next().await.expect("chunk").expect("ok");
         assert_eq!(first, "caption");
         assert!(stream.next().await.is_none());
+    }
+
+    /// Item 1.13: the resolution slot holds two names and nothing else, and its `Debug` output
+    /// is those names only. Readable through a context intercept, as the run handler reads it.
+    #[test]
+    fn a_slot_never_holds_a_secret() {
+        let slot = ResolvedModelSlot::new();
+        assert_eq!(slot.get(), None);
+        assert_eq!(format!("{slot:?}"), "ResolvedModelSlot(None)");
+
+        let ctx = Context::new_root().with_intercept(slot.clone());
+        ctx.get::<ResolvedModelSlot>()
+            .expect("the intercepted slot is readable")
+            .set("stub-model", "stub-provider");
+
+        // Exhaustive destructure: a third field on `ResolvedModel` fails to compile here.
+        let ResolvedModel {
+            model_name,
+            provider_name,
+        } = slot.get().expect("the write reached the caller's clone");
+        assert_eq!(model_name, "stub-model");
+        assert_eq!(provider_name, "stub-provider");
+        assert_eq!(
+            format!("{slot:?}"),
+            "ResolvedModelSlot(Some(ResolvedModel { model_name: \"stub-model\", provider_name: \
+             \"stub-provider\" }))"
+        );
     }
 }

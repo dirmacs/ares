@@ -1463,4 +1463,55 @@ mod tests {
         // The opportunistic path: notify() sweeps again before walking.
         reflect.notify(TypeId::of::<u64>());
     }
+
+    /// A structural move re-keys many journal records at once, and its pairs
+    /// can overlap (`a→b` while `b→c`, or a swap). Re-keying them one at a
+    /// time with `rename` overwrote whichever record already sat under a
+    /// later pair's target and then moved the wrong record on the next pair.
+    /// `rename_many` takes every old key out first and puts every new key in
+    /// afterwards, so each record survives under its own new key, keeping its
+    /// plugin, config, generation and fiber id.
+    #[test]
+    fn journal_rekey_never_overwrites_another_record() {
+        let journal = LoaderJournal::new();
+        journal.upsert("a", "PluginA", serde_json::json!({ "v": 1 }), None);
+        journal.upsert("b", "PluginB", serde_json::json!({ "v": 2 }), None);
+        journal.upsert("keep", "PluginKeep", serde_json::json!({ "v": 3 }), None);
+        // Bump `a` so the generation that must travel with it is not 1.
+        journal.update_config("a", serde_json::json!({ "v": 10 }), None);
+        assert_eq!(journal.get("a").unwrap().generation, 2);
+
+        let out = journal.rename_many(&[("a", "b"), ("b", "c"), ("missing", "z")]);
+
+        // One result per pair, in order; an unjournaled `old` yields None.
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].as_ref().unwrap().plugin, "PluginA");
+        assert_eq!(out[1].as_ref().unwrap().plugin, "PluginB");
+        assert!(out[2].is_none());
+
+        // Both records survive under their own new keys, intact.
+        assert!(journal.get("a").is_none(), "a was re-keyed away");
+        let b = journal.get("b").expect("a's record now sits under b");
+        assert_eq!(b.plugin, "PluginA");
+        assert_eq!(b.config, serde_json::json!({ "v": 10 }));
+        assert_eq!(b.generation, 2, "generation travels with the record");
+        let c = journal.get("c").expect("b's record now sits under c");
+        assert_eq!(c.plugin, "PluginB");
+        assert_eq!(c.config, serde_json::json!({ "v": 2 }));
+        assert_eq!(journal.get("keep").unwrap().plugin, "PluginKeep");
+        assert!(journal.get("z").is_none());
+        assert_eq!(journal.len(), 3, "b, c and keep");
+
+        // A swap: neither record may clobber the other.
+        let swap = LoaderJournal::new();
+        swap.upsert("p", "PluginP", serde_json::json!({}), None);
+        swap.upsert("q", "PluginQ", serde_json::json!({}), None);
+        swap.rename_many(&[
+            ("p".to_string(), "q".to_string()),
+            ("q".to_string(), "p".to_string()),
+        ]);
+        assert_eq!(swap.get("q").unwrap().plugin, "PluginP");
+        assert_eq!(swap.get("p").unwrap().plugin, "PluginQ");
+        assert_eq!(swap.len(), 2);
+    }
 }

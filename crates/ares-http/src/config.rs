@@ -118,7 +118,19 @@ pub struct RateLimitConfig {
     /// request from any other peer is identified by its peer IP alone.
     /// Default: `["127.0.0.1", "::1"]` (a proxy on the same host).
     pub trusted_proxies: Vec<std::net::IpAddr>,
+
+    /// Most client buckets held in memory at once (default 100 000).
+    /// Parsed; enforced by the limiter in the next commit.
+    pub max_tracked_clients: u32,
+
+    /// Most key buckets held in memory at once (default 100 000).
+    /// Parsed; enforced by the limiter in the next commit.
+    pub max_tracked_keys: u32,
 }
+
+/// Default for [`RateLimitConfig::max_tracked_clients`] and
+/// [`RateLimitConfig::max_tracked_keys`].
+pub const DEFAULT_MAX_TRACKED: u32 = 100_000;
 
 impl RateLimitConfig {
     /// True when at least one of the three limits is above 0.
@@ -140,6 +152,8 @@ impl Default for RateLimitConfig {
                 std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
                 std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
             ],
+            max_tracked_clients: DEFAULT_MAX_TRACKED,
+            max_tracked_keys: DEFAULT_MAX_TRACKED,
         }
     }
 }

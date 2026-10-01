@@ -152,6 +152,17 @@ pub trait LLMClient: Send + Sync {
     /// Get the model name/identifier
     fn model_name(&self) -> &str;
 
+    /// Where this client's calls go, sanitized: the endpoint (the override the server configured,
+    /// else the adapter's default base URL) and the region where the provider has one.
+    ///
+    /// Each agent run records this for the provider that answered it. The default knows nothing
+    /// (no endpoint, no region), so a client that cannot say where it goes is recorded as NULL
+    /// and never guessed. A client that wraps another one and delegates every call should
+    /// forward this too.
+    fn residency(&self) -> Residency {
+        Residency::none()
+    }
+
     /// Whether this client honors [`GenerationHints`] set via
     /// [`LLMClient::set_hints`]. Defaults to `false`; hint-aware providers
     /// override this together with `set_hints`.
@@ -273,6 +284,99 @@ impl TokenUsage {
             total_tokens: prompt_tokens + completion_tokens,
             cached_tokens: None,
         }
+    }
+}
+
+/// Marker recorded in place of an endpoint or a region that cannot be reduced to safe parts.
+pub const UNPARSEABLE_RESIDENCY: &str = "unparseable";
+
+/// Longest region name accepted. Real region names are far shorter.
+const MAX_REGION_LEN: usize = 64;
+
+/// Where a model call goes: the endpoint it is sent to and the region it runs in. Each agent run
+/// records this for the provider that ANSWERED it (`agent_runs.resolved_endpoint` and
+/// `agent_runs.region`, migration 039).
+///
+/// This type is the one place a value becomes recordable. The fields are private and
+/// [`Residency::from_raw`] is the only constructor that takes text, so everything that reaches a
+/// column has been through the sanitizers below:
+///
+/// - the endpoint keeps scheme, host, port and path only: no userinfo, no query, no fragment and
+///   no trailing slash;
+/// - text that does not parse as a URL with a host is recorded as [`UNPARSEABLE_RESIDENCY`],
+///   never raw;
+/// - a region is a short name (letters, digits, `.`, `_`, `-`); anything else is recorded as
+///   [`UNPARSEABLE_RESIDENCY`].
+///
+/// Server configuration is the only source of either value (the endpoint the provider is
+/// configured with, else the adapter's default; the provider's configured region). Nothing a
+/// request carries reaches this type. `region` is visibility only: it decides nothing about where
+/// a run may go.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Residency {
+    resolved_endpoint: Option<String>,
+    region: Option<String>,
+}
+
+impl Residency {
+    /// Neither an endpoint nor a region: the answer of a client that does not know where it goes.
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// Build from a provider's endpoint and region, sanitizing both. Blank text is no value.
+    pub fn from_raw(endpoint: Option<&str>, region: Option<&str>) -> Self {
+        Self {
+            resolved_endpoint: endpoint
+                .map(str::trim)
+                .filter(|raw| !raw.is_empty())
+                .map(sanitize_endpoint),
+            region: region
+                .map(str::trim)
+                .filter(|raw| !raw.is_empty())
+                .map(sanitize_region),
+        }
+    }
+
+    /// The sanitized endpoint, or `None` when the client does not know it.
+    pub fn resolved_endpoint(&self) -> Option<&str> {
+        self.resolved_endpoint.as_deref()
+    }
+
+    /// The sanitized region, or `None` when the provider has none.
+    pub fn region(&self) -> Option<&str> {
+        self.region.as_deref()
+    }
+}
+
+/// Reduce an endpoint to `scheme://host[:port]/path`. Idempotent: its own output sanitizes to
+/// itself.
+fn sanitize_endpoint(raw: &str) -> String {
+    let Ok(url) = reqwest::Url::parse(raw.trim()) else {
+        return UNPARSEABLE_RESIDENCY.to_string();
+    };
+    let Some(host) = url.host_str().filter(|host| !host.is_empty()) else {
+        return UNPARSEABLE_RESIDENCY.to_string();
+    };
+    let mut endpoint = format!("{}://{}", url.scheme(), host);
+    if let Some(port) = url.port() {
+        endpoint.push(':');
+        endpoint.push_str(&port.to_string());
+    }
+    endpoint.push_str(url.path().trim_end_matches('/'));
+    endpoint
+}
+
+/// Keep a region that looks like a region name; record anything else as unparseable.
+fn sanitize_region(raw: &str) -> String {
+    let looks_like_a_region = raw.len() <= MAX_REGION_LEN
+        && raw
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if looks_like_a_region {
+        raw.to_string()
+    } else {
+        UNPARSEABLE_RESIDENCY.to_string()
     }
 }
 

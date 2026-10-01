@@ -13,12 +13,12 @@ use ares_store::agent_runs;
 use ares_store::agent_versions;
 use ares_store::audit_log;
 use ares_store::tenant_agents::{
-    create_tenant_agent_as, deep_merge_config, delete_tenant_agent as db_delete_tenant_agent,
-    get_tenant_agent as db_get_tenant_agent, get_tenant_agent_publish_state, list_agent_templates,
-    list_tenant_agent_versions, list_tenant_agents as db_list_tenant_agents, publish_tenant_agent,
-    rollback_tenant_agent_version, update_tenant_agent_as, AgentTemplate, AgentTemplateStore,
-    CreateTemplateRequest, CreateTenantAgentRequest, PublishOutcome, PublishRefusal,
-    PublishTenantAgentRequest, TenantAgent, TenantAgentPublishState, UpdateTenantAgentRequest,
+    create_tenant_agent as db_create_tenant_agent, deep_merge_config,
+    delete_tenant_agent as db_delete_tenant_agent, get_tenant_agent as db_get_tenant_agent,
+    list_agent_templates, list_tenant_agent_versions, list_tenant_agents as db_list_tenant_agents,
+    rollback_tenant_agent_version, update_tenant_agent as db_update_tenant_agent, AgentTemplate,
+    AgentTemplateStore, CreateTemplateRequest, CreateTenantAgentRequest, TenantAgent,
+    UpdateTenantAgentRequest,
 };
 use ares_types::types::{AgentContext, AppError};
 use axum::{
@@ -43,33 +43,12 @@ pub async fn list_tenant_agents_handler(
     Ok(Json(agents))
 }
 
-/// The actor a config draft, a publish or a rollback is attributed to
-/// (item 2.6a): the JWT subject, or `admin_secret` for the static key, which
-/// counts as one actor (D-5). A request with no admin identity cannot write,
-/// approve or roll back an agent config: the two-person rule needs to know
-/// who it is.
-fn config_actor(actor: &AdminActor) -> Result<&str> {
-    actor
-        .audit_actor()
-        .filter(|id| !id.trim().is_empty())
-        .ok_or_else(|| {
-            HttpError::from(AppError::Auth(
-                "An identified admin is required to write, publish or roll back an agent config"
-                    .to_string(),
-            ))
-        })
-}
-
-/// `POST /admin/tenants/{tenant_id}/agents`: the new agent's config is a
-/// draft by this admin (item 2.6a, D-4). It runs once another admin
-/// publishes it; until then the row's `config` is the empty object.
 pub async fn create_tenant_agent_handler(
     State(ctx): State<Arc<Context>>,
     Path(tenant_id): Path<String>,
     actor: AdminActor,
     Json(req): Json<CreateTenantAgentRequest>,
 ) -> Result<Json<TenantAgent>> {
-    let author = config_actor(&actor)?;
     let tools = ctx.get::<ares_tools::Tools>().expect("Tools not provided");
     validate_agent_config_tools(&req.config, tools.as_ref(), &ctx, &tenant_id)?;
 
@@ -78,7 +57,7 @@ pub async fn create_tenant_agent_handler(
         .expect("not provided")
         .pool()
         .clone();
-    let agent = create_tenant_agent_as(&__pool_2, &tenant_id, req, Some(author)).await?;
+    let agent = db_create_tenant_agent(&__pool_2, &tenant_id, req).await?;
 
     let pool = ctx
         .get::<ares_store::TenantDb>()
@@ -123,9 +102,6 @@ fn split_merged_config_patch(
     (merged, forward)
 }
 
-/// `PUT /admin/tenants/{tenant_id}/agents/{agent_name}`: a config patch is
-/// merged into the draft and never touches what runs (item 2.6a, D-1);
-/// display name, description and `enabled` apply directly.
 pub async fn update_tenant_agent_handler(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name)): Path<(String, String)>,
@@ -138,17 +114,14 @@ pub async fn update_tenant_agent_handler(
         .pool()
         .clone();
     if let Some(patch) = req.config.take() {
-        config_actor(&actor)?;
-        let current = get_tenant_agent_publish_state(&__pool_3, &tenant_id, &agent_name).await?;
-        let (merged, forward) = split_merged_config_patch(current.draft_base(), patch);
+        let current = db_get_tenant_agent(&__pool_3, &tenant_id, &agent_name).await?;
+        let (merged, forward) = split_merged_config_patch(&current.config, patch);
         let tools = ctx.get::<ares_tools::Tools>().expect("Tools not provided");
         validate_agent_config_tools(&merged, tools.as_ref(), &ctx, &tenant_id)?;
         req.config = Some(forward);
     }
 
-    let agent =
-        update_tenant_agent_as(&__pool_3, &tenant_id, &agent_name, req, actor.audit_actor())
-            .await?;
+    let agent = db_update_tenant_agent(&__pool_3, &tenant_id, &agent_name, req).await?;
 
     let pool = ctx
         .get::<ares_store::TenantDb>()
@@ -223,24 +196,17 @@ pub async fn list_tenant_agent_versions_handler(
     Ok(Json(records))
 }
 
-/// `POST /admin/tenants/{tenant_id}/agents/{agent_name}/rollback/{version}`:
-/// promote a previously published version (item 2.6a, D-6). A version that
-/// was never published is refused (400); the rollback actor is recorded as
-/// its approver.
 pub async fn rollback_tenant_agent_version_handler(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name, version)): Path<(String, String, String)>,
     actor: AdminActor,
 ) -> Result<Json<TenantAgent>> {
-    let approver = config_actor(&actor)?;
     let __pool_9 = ctx
         .get::<ares_store::TenantDb>()
         .expect("not provided")
         .pool()
         .clone();
-    let rolled_back =
-        rollback_tenant_agent_version(&__pool_9, &tenant_id, &agent_name, &version, approver)
-            .await?;
+    let agent = rollback_tenant_agent_version(&__pool_9, &tenant_id, &agent_name, &version).await?;
 
     let pool = ctx
         .get::<ares_store::TenantDb>()
@@ -248,10 +214,7 @@ pub async fn rollback_tenant_agent_version_handler(
         .pool()
         .clone();
     let resource_id = format!("{}:{}", tenant_id, agent_name);
-    let details = format!(
-        "Rolled back tenant agent to version {} (published digest {})",
-        version, rolled_back.published_digest
-    );
+    let details = format!("Rolled back tenant agent to version {}", version);
     audit_log::record(
         &pool,
         "tenant_agent_rollback",
@@ -263,105 +226,7 @@ pub async fn rollback_tenant_agent_version_handler(
     )
     .await;
 
-    Ok(Json(rolled_back.agent))
-}
-
-/// `GET /admin/tenants/{tenant_id}/agents/{agent_name}/draft` (item 2.6a):
-/// what runs and under which digest, and the pending draft with its digest
-/// and authors. The reviewer approves the `draft_digest` shown here.
-pub async fn get_tenant_agent_draft_handler(
-    State(ctx): State<Arc<Context>>,
-    Path((tenant_id, agent_name)): Path<(String, String)>,
-) -> Result<Json<TenantAgentPublishState>> {
-    let pool = ctx
-        .get::<ares_store::TenantDb>()
-        .expect("not provided")
-        .pool()
-        .clone();
-    let state = get_tenant_agent_publish_state(&pool, &tenant_id, &agent_name).await?;
-    Ok(Json(state))
-}
-
-/// The response to a refused publish: 403 when the approver may not approve
-/// this draft, 409 when there is no draft or it is not the one reviewed.
-fn publish_refusal_response(refusal: PublishRefusal) -> (StatusCode, Json<serde_json::Value>) {
-    let status = match refusal {
-        PublishRefusal::NoRecordedAuthor | PublishRefusal::ApproverIsAuthor => {
-            StatusCode::FORBIDDEN
-        }
-        PublishRefusal::NoDraft | PublishRefusal::DraftChanged => StatusCode::CONFLICT,
-    };
-    (
-        status,
-        Json(serde_json::json!({
-            "published": false,
-            "error": refusal.message(),
-            "code": refusal.code(),
-        })),
-    )
-}
-
-/// `POST /admin/tenants/{tenant_id}/agents/{agent_name}/publish`, body
-/// `{"draft_digest": "<hex>"}` (item 2.6a): publish the stored draft.
-///
-/// The approval is bound to the draft that was reviewed: in one transaction
-/// the server recomputes the stored draft's digest and publishes only if it
-/// equals `draft_digest`; the published digest is computed by the server
-/// from what now runs. The approver may be none of the draft's authors, and
-/// the static admin key is one actor. Status: 200 published; 401 no admin
-/// identity; 403 the approver wrote the draft, or no author is recorded;
-/// 404 no such agent; 409 no draft, or the draft changed after review.
-pub async fn publish_tenant_agent_handler(
-    State(ctx): State<Arc<Context>>,
-    Path((tenant_id, agent_name)): Path<(String, String)>,
-    actor: AdminActor,
-    Json(req): Json<PublishTenantAgentRequest>,
-) -> Result<(StatusCode, Json<serde_json::Value>)> {
-    let approver = config_actor(&actor)?;
-    let pool = ctx
-        .get::<ares_store::TenantDb>()
-        .expect("not provided")
-        .pool()
-        .clone();
-    let outcome =
-        publish_tenant_agent(&pool, &tenant_id, &agent_name, &req.draft_digest, approver).await?;
-    let published = match outcome {
-        PublishOutcome::Published(published) => published,
-        PublishOutcome::Refused(refusal) => return Ok(publish_refusal_response(refusal)),
-    };
-
-    let details = serde_json::json!({
-        "published_digest": &published.published_digest,
-        "draft_authors": &published.draft_authors,
-        "published_by": &published.published_by,
-        "approved_by": &published.approved_by,
-    })
-    .to_string();
-    audit_log::record(
-        &pool,
-        "publish_tenant_agent",
-        "agent",
-        &published.agent.id,
-        Some(&details),
-        actor.ip(),
-        actor.audit_actor(),
-    )
-    .await;
-
-    Ok((
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "published": true,
-            "tenant_id": tenant_id,
-            "agent_name": agent_name,
-            "published_digest": published.published_digest,
-            "published_by": published.published_by,
-            "approved_by": published.approved_by,
-            "published_at": published.published_at,
-            "draft_authors": published.draft_authors,
-            "agent": published.agent,
-        })),
-    ))
+    Ok(Json(agent))
 }
 
 pub async fn list_agents(
@@ -389,14 +254,11 @@ pub async fn get_agent(
     Ok(Json(agent))
 }
 
-/// `POST /admin/agents`: like [`create_tenant_agent_handler`], the new
-/// agent's config is a draft by this admin (item 2.6a).
 pub async fn create_agent(
     State(ctx): State<Arc<Context>>,
     actor: AdminActor,
     Json(req): Json<CreateAgentRequest>,
 ) -> Result<Json<TenantAgent>> {
-    let author = config_actor(&actor)?;
     let config = if let Some(tpl_id) = &req.template_id {
         let __pool_12 = ctx
             .get::<ares_store::TenantDb>()
@@ -430,7 +292,7 @@ pub async fn create_agent(
         .expect("not provided")
         .pool()
         .clone();
-    let agent = create_tenant_agent_as(&__pool_13, &req.tenant_id, db_req, Some(author)).await?;
+    let agent = db_create_tenant_agent(&__pool_13, &req.tenant_id, db_req).await?;
 
     let pool = ctx
         .get::<ares_store::TenantDb>()
@@ -452,9 +314,6 @@ pub async fn create_agent(
     Ok(Json(agent))
 }
 
-/// `PUT /admin/agents/{tenant_id}/{agent_name}`: like
-/// [`update_tenant_agent_handler`], a config patch is merged into the draft
-/// and never touches what runs (item 2.6a).
 pub async fn update_agent(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name)): Path<(String, String)>,
@@ -467,9 +326,8 @@ pub async fn update_agent(
         .pool()
         .clone();
     if let Some(patch) = req.config.take() {
-        config_actor(&actor)?;
-        let current = get_tenant_agent_publish_state(&__pool_14, &tenant_id, &agent_name).await?;
-        let (merged, forward) = split_merged_config_patch(current.draft_base(), patch);
+        let current = db_get_tenant_agent(&__pool_14, &tenant_id, &agent_name).await?;
+        let (merged, forward) = split_merged_config_patch(&current.config, patch);
         let tools = ctx.get::<ares_tools::Tools>().expect("Tools not provided");
         validate_agent_config_tools(&merged, tools.as_ref(), &ctx, &tenant_id)?;
         req.config = Some(forward);
@@ -481,14 +339,7 @@ pub async fn update_agent(
         config: req.config,
         enabled: req.enabled,
     };
-    let agent = update_tenant_agent_as(
-        &__pool_14,
-        &tenant_id,
-        &agent_name,
-        db_req,
-        actor.audit_actor(),
-    )
-    .await?;
+    let agent = db_update_tenant_agent(&__pool_14, &tenant_id, &agent_name, db_req).await?;
 
     let pool = ctx
         .get::<ares_store::TenantDb>()
@@ -563,24 +414,18 @@ pub async fn get_agent_versions(
     Ok(Json(records))
 }
 
-/// `POST /admin/agents/{tenant_id}/{agent_name}/rollback/{version}`: like
-/// [`rollback_tenant_agent_version_handler`], only a previously published
-/// version is promoted (item 2.6a, D-6).
 pub async fn rollback_agent(
     State(ctx): State<Arc<Context>>,
     Path((tenant_id, agent_name, version)): Path<(String, String, String)>,
     actor: AdminActor,
 ) -> Result<Json<TenantAgent>> {
-    let approver = config_actor(&actor)?;
     let __pool_20 = ctx
         .get::<ares_store::TenantDb>()
         .expect("not provided")
         .pool()
         .clone();
-    let rolled_back =
-        rollback_tenant_agent_version(&__pool_20, &tenant_id, &agent_name, &version, approver)
-            .await?;
-    let agent = rolled_back.agent;
+    let agent =
+        rollback_tenant_agent_version(&__pool_20, &tenant_id, &agent_name, &version).await?;
 
     let pool = ctx
         .get::<ares_store::TenantDb>()
@@ -588,10 +433,7 @@ pub async fn rollback_agent(
         .pool()
         .clone();
     let resource_id = format!("{}:{}", tenant_id, agent_name);
-    let details = format!(
-        "Rolled back agent to version {} (published digest {})",
-        version, rolled_back.published_digest
-    );
+    let details = format!("Rolled back agent to version {}", version);
     audit_log::record(
         &pool,
         "agent_rollback",

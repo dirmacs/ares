@@ -16,7 +16,26 @@ const LIST_AGENT_RUNS_SELECT: &str =
                     COALESCE(eruka_context_hit, false) AS eruka_context_hit,
                     COALESCE(eruka_read_count, 0)::BIGINT AS eruka_read_count,
                     COALESCE(eruka_write_count, 0)::BIGINT AS eruka_write_count,
-                    pipeline_id, schedule_id, trigger_id, updated_at";
+                    pipeline_id, schedule_id, trigger_id, updated_at,
+                    resolved_endpoint, region";
+
+/// The one INSERT every `agent_runs` writer goes through: 29 columns, 29 placeholders. A unit
+/// test pins the count on this very statement.
+const INSERT_AGENT_RUN_SQL: &str = "INSERT INTO agent_runs (
+            id, tenant_id, agent_name, user_id, workspace_id, session_id, status,
+            input_tokens, output_tokens, duration_ms, error, created_at,
+            model_name, provider_name, is_streaming, request_source, product,
+            agent_config_source, agent_config_version, eruka_binding_id,
+            eruka_context_hit, eruka_read_count, eruka_write_count, pipeline_id, schedule_id,
+            trigger_id, updated_at, resolved_endpoint, region
+         ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7,
+            $8, $9, $10, $11, $12,
+            $13, $14, $15, $16, $17,
+            $18, $19, $20,
+            $21, $22, $23, $24, $25,
+            $26, $27, $28, $29
+         )";
 
 pub const GET_AGENT_RUN_STATS_SQL: &str = "SELECT
             COUNT(*) as total_runs,
@@ -168,6 +187,8 @@ pub fn agent_run_from_row(row: &sqlx::postgres::PgRow) -> Result<AgentRun> {
         schedule_id: row.get("schedule_id"),
         trigger_id: row.get("trigger_id"),
         updated_at: row.try_get("updated_at").unwrap_or(None),
+        resolved_endpoint: row.get("resolved_endpoint"),
+        region: row.get("region"),
     })
 }
 
@@ -201,6 +222,14 @@ pub struct AgentRun {
     pub trigger_id: Option<String>,
     #[serde(default)]
     pub updated_at: Option<i64>,
+    /// The endpoint of the provider that answered the run (scheme, host, port and path only;
+    /// migration 039). NULL for a run written before 039, a run that failed, and every path that
+    /// cannot name its provider (skill runs, the generic `Execute` fall-through).
+    #[serde(default)]
+    pub resolved_endpoint: Option<String>,
+    /// The region of the provider that answered the run, where it has one (migration 039).
+    #[serde(default)]
+    pub region: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -249,6 +278,13 @@ pub struct AgentRunMetadata {
     pub pipeline_id: Option<String>,
     pub schedule_id: Option<String>,
     pub trigger_id: Option<String>,
+    /// Sanitized endpoint of the provider that answered (`ares_llm::client::Residency`), or
+    /// `None`. Written from the resolved provider, never from a request field.
+    #[serde(default)]
+    pub resolved_endpoint: Option<String>,
+    /// Region of the provider that answered, where it has one, or `None`.
+    #[serde(default)]
+    pub region: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -340,53 +376,39 @@ pub async fn insert_agent_run_with_id_and_metadata(
     let now = now_ts();
     let metadata = metadata.cloned().unwrap_or_default();
 
-    sqlx::query(
-        "INSERT INTO agent_runs (
-            id, tenant_id, agent_name, user_id, workspace_id, session_id, status,
-            input_tokens, output_tokens, duration_ms, error, created_at,
-            model_name, provider_name, is_streaming, request_source, product,
-            agent_config_source, agent_config_version, eruka_binding_id,
-            eruka_context_hit, eruka_read_count, eruka_write_count, pipeline_id, schedule_id,
-            trigger_id, updated_at
-         ) VALUES (
-            $1, $2, $3, $4, $5, $6, $7,
-            $8, $9, $10, $11, $12,
-            $13, $14, $15, $16, $17,
-            $18, $19, $20,
-            $21, $22, $23, $24, $25,
-            $26, $27
-         )",
-    )
-    .bind(id)
-    .bind(tenant_id)
-    .bind(agent_name)
-    .bind(user_id)
-    .bind(&metadata.workspace_id)
-    .bind(&metadata.session_id)
-    .bind(status)
-    .bind(input_tokens)
-    .bind(output_tokens)
-    .bind(duration_ms)
-    .bind(error)
-    .bind(now)
-    .bind(model_name)
-    .bind(provider_name)
-    .bind(is_streaming)
-    .bind(&metadata.request_source)
-    .bind(&metadata.product)
-    .bind(&metadata.agent_config_source)
-    .bind(&metadata.agent_config_version)
-    .bind(&metadata.eruka_binding_id)
-    .bind(metadata.eruka_context_hit)
-    .bind(metadata.eruka_read_count)
-    .bind(metadata.eruka_write_count)
-    .bind(&metadata.pipeline_id)
-    .bind(&metadata.schedule_id)
-    .bind(&metadata.trigger_id)
-    .bind(now)
-    .execute(pool)
-    .await
-    .map_err(|e| AppError::Database(e.to_string()))?;
+    sqlx::query(INSERT_AGENT_RUN_SQL)
+        .bind(id)
+        .bind(tenant_id)
+        .bind(agent_name)
+        .bind(user_id)
+        .bind(&metadata.workspace_id)
+        .bind(&metadata.session_id)
+        .bind(status)
+        .bind(input_tokens)
+        .bind(output_tokens)
+        .bind(duration_ms)
+        .bind(error)
+        .bind(now)
+        .bind(model_name)
+        .bind(provider_name)
+        .bind(is_streaming)
+        .bind(&metadata.request_source)
+        .bind(&metadata.product)
+        .bind(&metadata.agent_config_source)
+        .bind(&metadata.agent_config_version)
+        .bind(&metadata.eruka_binding_id)
+        .bind(metadata.eruka_context_hit)
+        .bind(metadata.eruka_read_count)
+        .bind(metadata.eruka_write_count)
+        .bind(&metadata.pipeline_id)
+        .bind(&metadata.schedule_id)
+        .bind(&metadata.trigger_id)
+        .bind(now)
+        .bind(&metadata.resolved_endpoint)
+        .bind(&metadata.region)
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
 
     Ok(id.to_string())
 }

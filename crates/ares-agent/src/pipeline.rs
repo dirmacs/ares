@@ -400,6 +400,8 @@ pub(crate) fn pipeline_target_run_effects(
             pipeline_id: Some(pipeline.id.clone()),
             schedule_id: origin.and_then(|origin| origin.schedule_id.clone()),
             trigger_id: origin.and_then(|origin| origin.trigger_id.clone()),
+            resolved_endpoint: None,
+            region: None,
         },
         usage: PipelineUsageRecord {
             tenant_id: tenant_id.to_string(),

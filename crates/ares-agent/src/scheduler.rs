@@ -1042,6 +1042,8 @@ async fn execute_scheduled_agent(
             pipeline_id: None,
             schedule_id: Some(sched.id.clone()),
             trigger_id: None,
+            resolved_endpoint: None,
+            region: None,
         };
         agent_runs::insert_agent_run_with_id_and_metadata(
             &pool,
@@ -1148,6 +1150,8 @@ async fn execute_scheduled_agent(
         pipeline_id: None,
         schedule_id: Some(sched.id.clone()),
         trigger_id: None,
+        resolved_endpoint: None,
+        region: None,
     };
     let error_msg = redact_agent_run_error(no_retain, error_msg.as_deref());
     if skill_run {

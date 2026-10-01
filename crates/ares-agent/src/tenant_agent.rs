@@ -1265,9 +1265,7 @@ mod tests {
         }
 
         async fn counting_ollama_chat(
-            axum::extract::State(hits): axum::extract::State<
-                Arc<std::sync::atomic::AtomicUsize>,
-            >,
+            axum::extract::State(hits): axum::extract::State<Arc<std::sync::atomic::AtomicUsize>>,
             body: Json<Value>,
         ) -> Json<Value> {
             hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -1330,8 +1328,8 @@ mod tests {
                 ares_store::PostgresClient { pool: pool.clone() },
             )));
             root.provide(ares_store::FleetSecrets::new());
-            let exec = crate::Execute::new()
-                .with_agent_registry(Arc::new(registry_with_product(&ollama)));
+            let exec =
+                crate::Execute::new().with_agent_registry(Arc::new(registry_with_product(&ollama)));
             let ctx = crate::request_tenant_ctx(
                 &root,
                 ares_types::models::TenantContext::new(

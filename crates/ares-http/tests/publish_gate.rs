@@ -37,8 +37,8 @@ use ares_store::tenant_agents::{
     clone_templates_for_tenant, get_tenant_agent, get_tenant_agent_publish_state,
     list_tenant_agent_versions, publish_tenant_agent, rollback_tenant_agent_version,
     set_tenant_agent_model, update_tenant_agent_as, AgentTemplateStore, CreateTemplateRequest,
-    CreateTenantAgentRequest, PublishOutcome, PublishTenantAgentRequest,
-    TenantAgentPublishState, UpdateTenantAgentRequest, CUTOVER_ACTOR,
+    CreateTenantAgentRequest, PublishOutcome, PublishTenantAgentRequest, TenantAgentPublishState,
+    UpdateTenantAgentRequest, CUTOVER_ACTOR,
 };
 use ares_store::TenantDb;
 use ares_types::types::AppError;
@@ -70,9 +70,9 @@ async fn live_ctx() -> Option<(Arc<Context>, PgPool)> {
     let pool = pg.pool.clone();
     let ctx = Context::new_root();
     ctx.provide_arc(Arc::new(TenantDb::new(Arc::new(pg))));
-    ctx.provide(ares_tools::Tools::from_static(
-        Vec::<Arc<dyn ares_tools::Tool>>::new(),
-    ));
+    ctx.provide(ares_tools::Tools::from_static(Vec::<
+        Arc<dyn ares_tools::Tool>,
+    >::new()));
     Some((ctx, pool))
 }
 
@@ -143,7 +143,12 @@ fn rust_digest(text: &str) -> String {
 
 /// The digest of a stored JSONB column (`config` or `draft_config`),
 /// computed independently: its `::text` read back and hashed in Rust.
-async fn independent_digest(pool: &PgPool, tenant_id: &str, agent_name: &str, column: &str) -> String {
+async fn independent_digest(
+    pool: &PgPool,
+    tenant_id: &str,
+    agent_name: &str,
+    column: &str,
+) -> String {
     assert!(column == "config" || column == "draft_config");
     let text: String = sqlx::query_scalar(&format!(
         "SELECT {column}::text FROM tenant_agents WHERE tenant_id = $1 AND agent_name = $2"
@@ -158,7 +163,11 @@ async fn independent_digest(pool: &PgPool, tenant_id: &str, agent_name: &str, co
 
 /// What the run path serves for the row: the version and config JSON that
 /// `load_tenant_agent_config` returns, or its refusal.
-async fn served(pool: &PgPool, tenant_id: &str, agent_name: &str) -> Result<(String, Value), AppError> {
+async fn served(
+    pool: &PgPool,
+    tenant_id: &str,
+    agent_name: &str,
+) -> Result<(String, Value), AppError> {
     match load_tenant_agent_config(pool, tenant_id, agent_name).await {
         Ok(Some((_config, version, json))) => Ok((version, json)),
         Ok(None) => panic!("no tenant_agents row for {tenant_id}/{agent_name}"),
@@ -187,7 +196,13 @@ async fn state(pool: &PgPool, tenant_id: &str, agent_name: &str) -> TenantAgentP
         .expect("publish state")
 }
 
-async fn create_as(ctx: &Arc<Context>, actor: AdminActor, tenant_id: &str, agent_name: &str, config: Value) {
+async fn create_as(
+    ctx: &Arc<Context>,
+    actor: AdminActor,
+    tenant_id: &str,
+    agent_name: &str,
+    config: Value,
+) {
     create_tenant_agent_handler(
         State(ctx.clone()),
         Path(tenant_id.to_string()),
@@ -203,7 +218,13 @@ async fn create_as(ctx: &Arc<Context>, actor: AdminActor, tenant_id: &str, agent
     .expect("create_tenant_agent_handler");
 }
 
-async fn put_config_as(ctx: &Arc<Context>, actor: AdminActor, tenant_id: &str, agent_name: &str, patch: Value) {
+async fn put_config_as(
+    ctx: &Arc<Context>,
+    actor: AdminActor,
+    tenant_id: &str,
+    agent_name: &str,
+    patch: Value,
+) {
     update_tenant_agent_handler(
         State(ctx.clone()),
         Path((tenant_id.to_string(), agent_name.to_string())),
@@ -252,7 +273,12 @@ async fn publish_as(
 
 /// Created by A and published by B: a row whose `config` runs. Returns the
 /// published digest.
-async fn published_row(ctx: &Arc<Context>, tenant_id: &str, agent_name: &str, config: Value) -> String {
+async fn published_row(
+    ctx: &Arc<Context>,
+    tenant_id: &str,
+    agent_name: &str,
+    config: Value,
+) -> String {
     create_as(ctx, jwt(AUTHOR_A), tenant_id, agent_name, config).await;
     let digest = reviewed_digest(ctx, tenant_id, agent_name).await;
     let (status, body) = publish_as(ctx, jwt(ADMIN_B), tenant_id, agent_name, &digest).await;
@@ -268,7 +294,11 @@ async fn versions(pool: &PgPool, tenant_id: &str, agent_name: &str) -> Vec<Agent
 
 /// `(actor, details)` of every `admin_audit_log` row for one action and
 /// resource.
-async fn audit_rows(pool: &PgPool, action: &str, resource_id: &str) -> Vec<(Option<String>, Option<String>)> {
+async fn audit_rows(
+    pool: &PgPool,
+    action: &str,
+    resource_id: &str,
+) -> Vec<(Option<String>, Option<String>)> {
     sqlx::query(
         "SELECT actor, details FROM admin_audit_log WHERE action = $1 AND resource_id = $2 \
          ORDER BY created_at",
@@ -302,7 +332,11 @@ async fn single_author_approving_is_refused() {
     assert_eq!(body["published"], json!(false), "{body}");
     let s = state(&pool, &tenant, "agent").await;
     assert_eq!(s.published_digest, None, "nothing was published");
-    assert_eq!(s.draft_config, Some(prompt_config("one")), "the draft is kept");
+    assert_eq!(
+        s.draft_config,
+        Some(prompt_config("one")),
+        "the draft is kept"
+    );
     assert_not_published(served(&pool, &tenant, "agent").await);
 }
 
@@ -313,7 +347,14 @@ async fn a_writes_b_edits_a_approves_is_refused() {
     };
     let tenant = unique("t26a-aba");
     create_as(&ctx, jwt(AUTHOR_A), &tenant, "agent", prompt_config("one")).await;
-    put_config_as(&ctx, jwt(ADMIN_B), &tenant, "agent", json!({"system_prompt": "two"})).await;
+    put_config_as(
+        &ctx,
+        jwt(ADMIN_B),
+        &tenant,
+        "agent",
+        json!({"system_prompt": "two"}),
+    )
+    .await;
     assert_eq!(
         state(&pool, &tenant, "agent").await.draft_authors,
         vec![AUTHOR_A.to_string(), ADMIN_B.to_string()],
@@ -356,7 +397,11 @@ async fn a_writes_b_approves_publishes() {
     assert_eq!(s.published_digest.as_deref(), Some(digest.as_str()));
     assert_eq!(
         s.published_digest.as_deref(),
-        Some(independent_digest(&pool, &tenant, "agent", "config").await.as_str()),
+        Some(
+            independent_digest(&pool, &tenant, "agent", "config")
+                .await
+                .as_str()
+        ),
         "the published digest is the digest of what now runs"
     );
     assert_eq!(s.published_by.as_deref(), Some(AUTHOR_A));
@@ -374,17 +419,34 @@ async fn a_writes_b_approves_publishes() {
         .into_iter()
         .filter(|v| v.change_source == format!("publish:{digest}"))
         .collect();
-    assert_eq!(publish_versions.len(), 1, "one Publish version row carrying the digest");
+    assert_eq!(
+        publish_versions.len(),
+        1,
+        "one Publish version row carrying the digest"
+    );
     assert!(publish_versions[0].is_active);
-    assert_eq!(publish_versions[0].config_json["published_digest"], json!(digest));
+    assert_eq!(
+        publish_versions[0].config_json["published_digest"],
+        json!(digest)
+    );
 
-    let row_id = get_tenant_agent(&pool, &tenant, "agent").await.expect("row").id;
+    let row_id = get_tenant_agent(&pool, &tenant, "agent")
+        .await
+        .expect("row")
+        .id;
     let rows = audit_rows(&pool, "publish_tenant_agent", &row_id).await;
     assert_eq!(rows.len(), 1, "one audit row for the publish: {rows:?}");
-    assert_eq!(rows[0].0.as_deref(), Some(ADMIN_B), "the approver is the actor");
+    assert_eq!(
+        rows[0].0.as_deref(),
+        Some(ADMIN_B),
+        "the approver is the actor"
+    );
     let details = rows[0].1.as_deref().expect("details");
     for needle in [digest.as_str(), AUTHOR_A, ADMIN_B] {
-        assert!(details.contains(needle), "details must name {needle}: {details}");
+        assert!(
+            details.contains(needle),
+            "details must name {needle}: {details}"
+        );
     }
 }
 
@@ -394,7 +456,14 @@ async fn static_key_cannot_approve_its_own_draft() {
         return;
     };
     let tenant = unique("t26a-static");
-    create_as(&ctx, static_key(), &tenant, "agent", prompt_config("static")).await;
+    create_as(
+        &ctx,
+        static_key(),
+        &tenant,
+        "agent",
+        prompt_config("static"),
+    )
+    .await;
     assert_eq!(
         state(&pool, &tenant, "agent").await.draft_authors,
         vec!["admin_secret".to_string()],
@@ -410,7 +479,10 @@ async fn static_key_cannot_approve_its_own_draft() {
     // A second actor may approve the key's draft (D-5: "or the reverse").
     let (status, body) = publish_as(&ctx, jwt(ADMIN_B), &tenant, "agent", &digest).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(served_config(&pool, &tenant, "agent").await, prompt_config("static"));
+    assert_eq!(
+        served_config(&pool, &tenant, "agent").await,
+        prompt_config("static")
+    );
 }
 
 #[tokio::test]
@@ -449,7 +521,14 @@ async fn a_draft_changed_after_review_is_refused_and_nothing_is_published() {
     let v1 = prompt_config("v1");
     let d1 = published_row(&ctx, &tenant, "agent", v1.clone()).await;
 
-    put_config_as(&ctx, jwt(AUTHOR_A), &tenant, "agent", json!({"system_prompt": "v2"})).await;
+    put_config_as(
+        &ctx,
+        jwt(AUTHOR_A),
+        &tenant,
+        "agent",
+        json!({"system_prompt": "v2"}),
+    )
+    .await;
     let reviewed = reviewed_digest(&ctx, &tenant, "agent").await;
     put_config_as(
         &ctx,
@@ -464,18 +543,36 @@ async fn a_draft_changed_after_review_is_refused_and_nothing_is_published() {
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["published"], json!(false), "{body}");
     let s = state(&pool, &tenant, "agent").await;
-    assert_eq!(s.published_digest.as_deref(), Some(d1.as_str()), "nothing was published");
+    assert_eq!(
+        s.published_digest.as_deref(),
+        Some(d1.as_str()),
+        "nothing was published"
+    );
     assert_eq!(s.config, v1, "the published config is untouched");
-    assert_eq!(served_config(&pool, &tenant, "agent").await, v1, "v1 still runs");
+    assert_eq!(
+        served_config(&pool, &tenant, "agent").await,
+        v1,
+        "v1 still runs"
+    );
 
     // The request's digest is compared, never stored: the current digest in
     // another spelling is refused too ...
     let current = reviewed_digest(&ctx, &tenant, "agent").await;
     assert_ne!(current, reviewed);
-    let (status, body) = publish_as(&ctx, jwt(ADMIN_B), &tenant, "agent", &current.to_uppercase()).await;
+    let (status, body) = publish_as(
+        &ctx,
+        jwt(ADMIN_B),
+        &tenant,
+        "agent",
+        &current.to_uppercase(),
+    )
+    .await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(
-        state(&pool, &tenant, "agent").await.published_digest.as_deref(),
+        state(&pool, &tenant, "agent")
+            .await
+            .published_digest
+            .as_deref(),
         Some(d1.as_str())
     );
 
@@ -485,9 +582,16 @@ async fn a_draft_changed_after_review_is_refused_and_nothing_is_published() {
     let s = state(&pool, &tenant, "agent").await;
     assert_eq!(
         s.published_digest.as_deref(),
-        Some(independent_digest(&pool, &tenant, "agent", "config").await.as_str())
+        Some(
+            independent_digest(&pool, &tenant, "agent", "config")
+                .await
+                .as_str()
+        )
     );
-    assert_eq!(s.config["system_prompt"], json!("v3, written after the review"));
+    assert_eq!(
+        s.config["system_prompt"],
+        json!("v3, written after the review")
+    );
 }
 
 #[tokio::test]
@@ -504,7 +608,11 @@ async fn publishing_with_no_draft_is_refused() {
     assert_eq!(body["published"], json!(false), "{body}");
     let s = state(&pool, &tenant, "agent").await;
     assert_eq!(s.published_digest.as_deref(), Some(d1.as_str()));
-    assert_eq!(s.approved_by.as_deref(), Some(ADMIN_B), "the last publish stands");
+    assert_eq!(
+        s.approved_by.as_deref(),
+        Some(ADMIN_B),
+        "the last publish stands"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -521,9 +629,18 @@ async fn put_writes_a_draft_and_changes_nothing_that_runs() {
     let tenant = unique("t26a-put");
     let v1 = prompt_config("published");
     let d1 = published_row(&ctx, &tenant, "agent", v1.clone()).await;
-    let before = served(&pool, &tenant, "agent").await.expect("the published row runs");
+    let before = served(&pool, &tenant, "agent")
+        .await
+        .expect("the published row runs");
 
-    put_config_as(&ctx, jwt(AUTHOR_A), &tenant, "agent", json!({"system_prompt": "draft only"})).await;
+    put_config_as(
+        &ctx,
+        jwt(AUTHOR_A),
+        &tenant,
+        "agent",
+        json!({"system_prompt": "draft only"}),
+    )
+    .await;
 
     let after = served(&pool, &tenant, "agent").await.expect("still runs");
     assert_eq!(before, after, "editing a draft changes nothing that runs");
@@ -552,7 +669,9 @@ async fn create_writes_a_never_published_draft() {
     });
     create_as(&ctx, jwt(AUTHOR_A), &tenant, "agent", config.clone()).await;
 
-    let row = get_tenant_agent(&pool, &tenant, "agent").await.expect("row");
+    let row = get_tenant_agent(&pool, &tenant, "agent")
+        .await
+        .expect("row");
     assert_eq!(row.config, json!({}), "a never-published row runs nothing");
     let s = state(&pool, &tenant, "agent").await;
     assert_eq!(s.published_digest, None);
@@ -607,7 +726,10 @@ async fn clone_templates_for_tenant_writes_drafts() {
         prompt_config("from the template")
     );
 
-    templates.delete_template(&template.id).await.expect("cleanup template");
+    templates
+        .delete_template(&template.id)
+        .await
+        .expect("cleanup template");
 }
 
 /// `set_tenant_agent_model` writes the draft (D-4).
@@ -624,17 +746,34 @@ async fn set_tenant_agent_model_writes_a_draft() {
         .await
         .expect("set model");
 
-    assert_eq!(served_config(&pool, &tenant, "agent").await, v1, "model-one still runs");
+    assert_eq!(
+        served_config(&pool, &tenant, "agent").await,
+        v1,
+        "model-one still runs"
+    );
     let s = state(&pool, &tenant, "agent").await;
     assert_eq!(s.published_digest.as_deref(), Some(d1.as_str()));
     assert_eq!(s.draft_config.expect("draft")["model"], json!("model-two"));
     assert_eq!(s.draft_authors, vec![PROVISIONER.to_string()]);
 
     // On a row never published, it stays refused.
-    create_as(&ctx, jwt(AUTHOR_A), &tenant, "unpublished", prompt_config("x")).await;
-    set_tenant_agent_model(&pool, &tenant, "unpublished", "model-two", Some(PROVISIONER))
-        .await
-        .expect("set model");
+    create_as(
+        &ctx,
+        jwt(AUTHOR_A),
+        &tenant,
+        "unpublished",
+        prompt_config("x"),
+    )
+    .await;
+    set_tenant_agent_model(
+        &pool,
+        &tenant,
+        "unpublished",
+        "model-two",
+        Some(PROVISIONER),
+    )
+    .await
+    .expect("set model");
     assert_not_published(served(&pool, &tenant, "unpublished").await);
     let s = state(&pool, &tenant, "unpublished").await;
     assert_eq!(s.draft_config.expect("draft")["model"], json!("model-two"));
@@ -654,7 +793,14 @@ async fn rollback_refuses_an_unpublished_snapshot() {
     let tenant = unique("t26a-rb-refuse");
     let v1 = prompt_config("v1");
     let d1 = published_row(&ctx, &tenant, "agent", v1.clone()).await;
-    put_config_as(&ctx, jwt(AUTHOR_A), &tenant, "agent", json!({"system_prompt": "a draft"})).await;
+    put_config_as(
+        &ctx,
+        jwt(AUTHOR_A),
+        &tenant,
+        "agent",
+        json!({"system_prompt": "a draft"}),
+    )
+    .await;
 
     let records = versions(&pool, &tenant, "agent").await;
     for source in ["admin_create", "admin_update"] {
@@ -693,12 +839,22 @@ async fn rollback_restores_the_previous_digest() {
     let tenant = unique("t26a-rb");
     let v1 = prompt_config("v1");
     let d1 = published_row(&ctx, &tenant, "agent", v1.clone()).await;
-    put_config_as(&ctx, jwt(AUTHOR_A), &tenant, "agent", json!({"system_prompt": "v2"})).await;
+    put_config_as(
+        &ctx,
+        jwt(AUTHOR_A),
+        &tenant,
+        "agent",
+        json!({"system_prompt": "v2"}),
+    )
+    .await;
     let d2 = reviewed_digest(&ctx, &tenant, "agent").await;
     let (status, body) = publish_as(&ctx, jwt(ADMIN_B), &tenant, "agent", &d2).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_ne!(d1, d2);
-    assert_eq!(served_config(&pool, &tenant, "agent").await["system_prompt"], json!("v2"));
+    assert_eq!(
+        served_config(&pool, &tenant, "agent").await["system_prompt"],
+        json!("v2")
+    );
 
     let p1 = versions(&pool, &tenant, "agent")
         .await
@@ -716,12 +872,24 @@ async fn rollback_restores_the_previous_digest() {
 
     assert_eq!(agent.config, v1);
     let s = state(&pool, &tenant, "agent").await;
-    assert_eq!(s.published_digest.as_deref(), Some(d1.as_str()), "the previous digest is restored");
     assert_eq!(
         s.published_digest.as_deref(),
-        Some(independent_digest(&pool, &tenant, "agent", "config").await.as_str())
+        Some(d1.as_str()),
+        "the previous digest is restored"
     );
-    assert_eq!(s.approved_by.as_deref(), Some(ADMIN_C), "the rollback actor approved it");
+    assert_eq!(
+        s.published_digest.as_deref(),
+        Some(
+            independent_digest(&pool, &tenant, "agent", "config")
+                .await
+                .as_str()
+        )
+    );
+    assert_eq!(
+        s.approved_by.as_deref(),
+        Some(ADMIN_C),
+        "the rollback actor approved it"
+    );
     assert_eq!(served_config(&pool, &tenant, "agent").await, v1);
 
     let rollback_versions: Vec<AgentVersionRecord> = versions(&pool, &tenant, "agent")
@@ -730,12 +898,18 @@ async fn rollback_restores_the_previous_digest() {
         .filter(|v| v.change_source == format!("rollback:{p1}"))
         .collect();
     assert_eq!(rollback_versions.len(), 1, "one Rollback version row");
-    assert_eq!(rollback_versions[0].config_json["published_digest"], json!(d1));
+    assert_eq!(
+        rollback_versions[0].config_json["published_digest"],
+        json!(d1)
+    );
 
     let rows = audit_rows(&pool, "tenant_agent_rollback", &format!("{tenant}:agent")).await;
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0].0.as_deref(), Some(ADMIN_C));
-    assert!(rows[0].1.as_deref().expect("details").contains(&d1), "{rows:?}");
+    assert!(
+        rows[0].1.as_deref().expect("details").contains(&d1),
+        "{rows:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -774,7 +948,11 @@ async fn cutover_publishes_every_existing_row_with_the_sql_digest() {
         .filter(|m| m.description.contains("publish gate"))
         .map(|m| m.version)
         .collect();
-    assert_eq!(gate.len(), 1, "exactly one publish-gate migration: {gate:?}");
+    assert_eq!(
+        gate.len(),
+        1,
+        "exactly one publish-gate migration: {gate:?}"
+    );
     let before_gate = sqlx::migrate::Migrator {
         migrations: Cow::Owned(
             ares_store::MIGRATOR
@@ -795,7 +973,11 @@ async fn cutover_publishes_every_existing_row_with_the_sql_digest() {
     let tenant = unique("t26a-cutover");
     let rows: [(&str, Value, bool); 3] = [
         ("conversational-agent", conversational_agent_config(), true),
-        ("disabled-agent", prompt_config("disabled before the cutover"), false),
+        (
+            "disabled-agent",
+            prompt_config("disabled before the cutover"),
+            false,
+        ),
         ("plain-agent", json!({"model": "fast"}), true),
     ];
     for (name, config, enabled) in &rows {
@@ -833,7 +1015,11 @@ async fn cutover_publishes_every_existing_row_with_the_sql_digest() {
             .get::<Option<String>, _>("published_digest")
             .unwrap_or_else(|| panic!("{name}: the cutover publishes every row"));
         // Independently, 1: sha256 in Rust over the `config::text` read back.
-        assert_eq!(digest, rust_digest(&row.get::<String, _>("config_text")), "{name}");
+        assert_eq!(
+            digest,
+            rust_digest(&row.get::<String, _>("config_text")),
+            "{name}"
+        );
         // Independently, 2: the D-2 expression written out in its own statement.
         let written_out: String = sqlx::query_scalar(
             "SELECT encode(sha256(convert_to(config::text, 'UTF8')), 'hex') \
@@ -845,16 +1031,28 @@ async fn cutover_publishes_every_existing_row_with_the_sql_digest() {
         .await
         .expect("written-out digest");
         assert_eq!(digest, written_out, "{name}");
-        assert_eq!(row.get::<Option<String>, _>("published_by").as_deref(), Some(CUTOVER_ACTOR));
-        assert_eq!(row.get::<Option<String>, _>("approved_by").as_deref(), Some(CUTOVER_ACTOR));
+        assert_eq!(
+            row.get::<Option<String>, _>("published_by").as_deref(),
+            Some(CUTOVER_ACTOR)
+        );
+        assert_eq!(
+            row.get::<Option<String>, _>("approved_by").as_deref(),
+            Some(CUTOVER_ACTOR)
+        );
         assert!(
             row.get::<Option<i64>, _>("published_at")
                 .is_some_and(|t| t > 1_700_000_000),
             "{name}: published_at is now"
         );
-        assert!(row.get::<Option<Value>, _>("draft_config").is_none(), "{name}");
+        assert!(
+            row.get::<Option<Value>, _>("draft_config").is_none(),
+            "{name}"
+        );
         assert!(row.get::<Option<String>, _>("draft_by").is_none(), "{name}");
-        assert!(row.get::<Option<Vec<String>>, _>("draft_authors").is_none(), "{name}");
+        assert!(
+            row.get::<Option<Vec<String>>, _>("draft_authors").is_none(),
+            "{name}"
+        );
         assert!(row.get::<Option<i64>, _>("draft_at").is_none(), "{name}");
 
         // The cutover's version record carries the digest (D-6).
@@ -872,7 +1070,11 @@ async fn cutover_publishes_every_existing_row_with_the_sql_digest() {
         // The run path still serves every enabled row, unchanged.
         let now_served = served(&pool, &tenant, name).await;
         if *enabled {
-            assert_eq!(&now_served.expect("an enabled row keeps running").1, config, "{name}");
+            assert_eq!(
+                &now_served.expect("an enabled row keeps running").1,
+                config,
+                "{name}"
+            );
         } else {
             assert!(
                 matches!(&now_served, Err(AppError::NotFound(m)) if m.contains("disabled")),
@@ -896,7 +1098,10 @@ async fn cutover_publishes_every_existing_row_with_the_sql_digest() {
     )
     .await
     .expect("re-enable");
-    assert_eq!(served_config(&pool, &tenant, "disabled-agent").await, rows[1].1);
+    assert_eq!(
+        served_config(&pool, &tenant, "disabled-agent").await,
+        rows[1].1
+    );
 
     // The cutover config stays promotable: publish another, roll back to it.
     let cutover_digest = state(&pool, &tenant, "plain-agent")
@@ -928,12 +1133,19 @@ async fn cutover_publishes_every_existing_row_with_the_sql_digest() {
         PublishOutcome::Published(_) => {}
         other => panic!("expected a publish, got {other:?}"),
     }
-    assert_eq!(served_config(&pool, &tenant, "plain-agent").await["model"], json!("slow"));
-    let rolled_back = rollback_tenant_agent_version(&pool, &tenant, "plain-agent", "cutover", ADMIN_C)
-        .await
-        .expect("roll back to the cutover version");
+    assert_eq!(
+        served_config(&pool, &tenant, "plain-agent").await["model"],
+        json!("slow")
+    );
+    let rolled_back =
+        rollback_tenant_agent_version(&pool, &tenant, "plain-agent", "cutover", ADMIN_C)
+            .await
+            .expect("roll back to the cutover version");
     assert_eq!(rolled_back.published_digest, cutover_digest);
-    assert_eq!(served_config(&pool, &tenant, "plain-agent").await, rows[2].1);
+    assert_eq!(
+        served_config(&pool, &tenant, "plain-agent").await,
+        rows[2].1
+    );
 
     pool.close().await;
     sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))

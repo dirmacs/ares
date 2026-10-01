@@ -774,12 +774,14 @@ impl Fixture {
         );
         let mut config = agent_config();
         if opts.hostile_inputs {
-            config
-                .extra
-                .insert("resolved_endpoint".to_string(), json!(HOSTILE_ENDPOINT));
-            config
-                .extra
-                .insert("region".to_string(), json!(HOSTILE_REGION));
+            config.extra.insert(
+                "resolved_endpoint".to_string(),
+                toml::Value::String(HOSTILE_ENDPOINT.to_string()),
+            );
+            config.extra.insert(
+                "region".to_string(),
+                toml::Value::String(HOSTILE_REGION.to_string()),
+            );
         }
         agent_registry.register(AGENT, config);
         let agent_registry = Arc::new(agent_registry);

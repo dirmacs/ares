@@ -706,6 +706,17 @@ struct Fixture {
     fallback_calls: Option<Arc<AtomicUsize>>,
 }
 
+/// `status, model_name, provider_name, resolved_endpoint, region` and the whole row as JSON, as
+/// read.
+type RunColumns = (
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+);
+
 /// One `agent_runs` row, as the writers left it.
 #[derive(Debug)]
 struct RunRow {
@@ -931,14 +942,7 @@ impl Fixture {
     async fn row(&self) -> RunRow {
         let started = Instant::now();
         loop {
-            let rows: Vec<(
-                String,
-                String,
-                String,
-                Option<String>,
-                Option<String>,
-                String,
-            )> = sqlx::query_as(
+            let rows: Vec<RunColumns> = sqlx::query_as(
                 "SELECT status, COALESCE(model_name, ''), COALESCE(provider_name, ''), \
                             resolved_endpoint, region, row_to_json(agent_runs)::text \
                      FROM agent_runs WHERE tenant_id = $1",

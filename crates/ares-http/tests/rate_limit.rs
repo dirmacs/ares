@@ -8,6 +8,7 @@
 
 #![cfg(feature = "postgres")]
 
+use std::alloc::GlobalAlloc;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -25,6 +26,139 @@ use axum::response::Response;
 use axum::routing::get;
 use axum::Router;
 use tower::ServiceExt;
+
+// ============================================================================
+// Heap bytes, per thread: a counting global allocator. Each test runs on its
+// own thread and the limiter allocates on the thread that calls it, so a test
+// reads its own bytes, whatever the other tests do in parallel. (Gate 2:
+// `capacity()` is not a byte count; tombstones lower it with nothing freed.)
+// ============================================================================
+
+struct CountingAlloc;
+
+thread_local! {
+    static HEAP_LIVE: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };
+    static HEAP_PEAK: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };
+}
+
+fn heap_count(delta: isize) {
+    let _ = HEAP_LIVE.try_with(|live| {
+        let now = live.get() + delta;
+        live.set(now);
+        let _ = HEAP_PEAK.try_with(|peak| {
+            if now > peak.get() {
+                peak.set(now);
+            }
+        });
+    });
+}
+
+unsafe impl std::alloc::GlobalAlloc for CountingAlloc {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        let ptr = unsafe { std::alloc::System.alloc(layout) };
+        if !ptr.is_null() {
+            heap_count(layout.size() as isize);
+        }
+        ptr
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+        let ptr = unsafe { std::alloc::System.alloc_zeroed(layout) };
+        if !ptr.is_null() {
+            heap_count(layout.size() as isize);
+        }
+        ptr
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        unsafe { std::alloc::System.dealloc(ptr, layout) };
+        heap_count(-(layout.size() as isize));
+    }
+
+    unsafe fn realloc(
+        &self,
+        ptr: *mut u8,
+        layout: std::alloc::Layout,
+        new_size: usize,
+    ) -> *mut u8 {
+        let moved = unsafe { std::alloc::System.realloc(ptr, layout, new_size) };
+        if !moved.is_null() {
+            heap_count(new_size as isize - layout.size() as isize);
+        }
+        moved
+    }
+}
+
+#[global_allocator]
+static HEAP: CountingAlloc = CountingAlloc;
+
+/// Bytes allocated and not yet freed on this thread.
+fn heap_live() -> isize {
+    HEAP_LIVE.with(|live| live.get())
+}
+
+/// The most bytes held on this thread since the last reset.
+fn heap_peak() -> isize {
+    HEAP_PEAK.with(|peak| peak.get())
+}
+
+fn heap_reset_peak() {
+    let now = heap_live();
+    HEAP_PEAK.with(|peak| peak.set(now));
+}
+
+/// The limiter in front of a service that always answers 200, driven
+/// synchronously: millions of requests in a test, without the router's cost.
+type OkFn = fn(Request<Body>) -> futures::future::Ready<Result<Response, std::convert::Infallible>>;
+
+fn always_ok(_req: Request<Body>) -> futures::future::Ready<Result<Response, std::convert::Infallible>> {
+    futures::future::ready(Ok(Response::new(Body::empty())))
+}
+
+struct Direct {
+    svc: ares_http::middleware::rate_limit::RateLimitService<tower::util::ServiceFn<OkFn>>,
+    layer: RateLimitLayer,
+    clock: Arc<ManualClock>,
+}
+
+impl Direct {
+    fn new(config: RateLimitConfig) -> Self {
+        let clock = Arc::new(ManualClock::new());
+        let layer = RateLimitLayer::with_clock(config, clock.clone());
+        let svc = tower::Layer::layer(&layer, tower::service_fn(always_ok as OkFn));
+        Self { svc, layer, clock }
+    }
+
+    fn send(&mut self, peer: IpAddr, authorization: Option<&str>) -> StatusCode {
+        use futures::FutureExt;
+        let mut builder = Request::builder().method(Method::GET).uri("/v1/ping");
+        if let Some(value) = authorization {
+            builder = builder.header("authorization", value);
+        }
+        let mut req = builder.body(Body::empty()).expect("request");
+        req.extensions_mut()
+            .insert(ConnectInfo(SocketAddr::new(peer, 40_000)));
+        tower::Service::call(&mut self.svc, req)
+            .now_or_never()
+            .expect("the limiter answers synchronously")
+            .expect("infallible")
+            .status()
+    }
+}
+
+/// The n-th /64 in 2001:db8::/32.
+fn net64(n: u32) -> IpAddr {
+    IpAddr::V6(std::net::Ipv6Addr::new(
+        0x2001,
+        0x0db8,
+        (n >> 16) as u16,
+        n as u16,
+        0,
+        0,
+        0,
+        1,
+    ))
+}
 
 // ============================================================================
 // Harness
@@ -1040,6 +1174,47 @@ async fn ipv6_clients_share_a_bucket_per_64() {
     }
 }
 
+/// rev1 gate-2 F1: X-Real-IP folded into one comma-joined line (RFC 9110
+/// §5.3 lets an intermediary fold the two-line probe below) is not one
+/// address: the client is the peer, and the leftmost entry's bucket is never
+/// spent. Red under rev1's leftmost-entry mutant.
+#[tokio::test]
+async fn x_real_ip_comma_joined_in_one_line_is_not_read() {
+    let h = Harness::new(RateLimitConfig {
+        per_client_requests_per_minute: 60,
+        burst: 1,
+        ..off()
+    });
+    for folded in [
+        "203.0.113.66, 198.51.100.20",
+        "203.0.113.66,198.51.100.20",
+        "203.0.113.66,",
+    ] {
+        assert_eq!(
+            h.client_of("127.0.0.1", &[("x-real-ip", folded)]),
+            Some(ip("127.0.0.1")),
+            "X-Real-IP: {folded}"
+        );
+    }
+    let folded = [("x-real-ip", "203.0.113.66, 198.51.100.20")];
+    assert_eq!(
+        h.get("/v1/ping", "127.0.0.1", &folded).await,
+        StatusCode::OK,
+        "limited as the peer"
+    );
+    assert_eq!(
+        h.get("/v1/ping", "127.0.0.1", &folded).await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "the peer's bucket is spent"
+    );
+    assert_eq!(
+        h.get("/v1/ping", "127.0.0.1", &[("x-real-ip", "203.0.113.66")])
+            .await,
+        StatusCode::OK,
+        "203.0.113.66's bucket was never spent"
+    );
+}
+
 /// rev1 F2: X-Real-IP is read only when it has exactly one line. rev1's
 /// probe sent the client's line first and the proxy's second.
 #[tokio::test]
@@ -1329,44 +1504,122 @@ async fn key_map_is_capped_and_new_keys_share_an_overflow_bucket() {
     }
 }
 
-/// rev2 F2: a sweep gives memory back (capacity, not only length).
-#[tokio::test]
-async fn memory_returns_after_a_sweep() {
-    let h = Harness::new(RateLimitConfig {
+/// rev2 F2 (gates 1 and 2): a sweep that frees most of the table gives the
+/// memory back. Measured in heap bytes on this thread, not `capacity()`,
+/// which tombstones lower with nothing freed. Red with the shrink removed.
+#[test]
+fn memory_returns_after_a_sweep() {
+    let mut d = Direct::new(RateLimitConfig {
         per_client_requests_per_minute: 60,
         burst: 1,
         ..off()
     });
-    for n in 0..5000u32 {
-        let peer = format!("2001:db8:0:{n:x}::1");
-        assert_eq!(h.get("/v1/ping", &peer, &[]).await, StatusCode::OK);
+    let base = heap_live();
+    for n in 0..7000u32 {
+        assert_eq!(d.send(net64(n), None), StatusCode::OK);
     }
-    let before = h.tracked();
-    assert_eq!(before.clients, 5000);
+    let full = heap_live() - base;
+    let before = d.layer.limiter().tracked();
+    assert_eq!(before.clients, 7000);
 
     // 2 s on, every one of those buckets is full again (expired). New clients
-    // arrive until a sweep runs; it must drop the old entries and return the
-    // table's memory.
-    h.clock.advance(Duration::from_secs(2));
+    // arrive until a sweep runs (the held count drops); the sweep must drop
+    // the old entries and free the table's memory.
+    d.clock.advance(Duration::from_secs(2));
     let mut swept = None;
     for n in 0..20_000u32 {
-        let peer = format!("2001:db8:1:{n:x}::1");
-        assert_eq!(h.get("/v1/ping", &peer, &[]).await, StatusCode::OK);
-        let now = h.tracked();
+        assert_eq!(d.send(net64(1_000_000 + n), None), StatusCode::OK);
+        let now = d.layer.limiter().tracked();
         if now.clients < before.clients + n as usize + 1 {
             swept = Some((n as usize, now));
             break;
         }
     }
     let (n, after) = swept.expect("a sweep ran before the table grew");
+    let held = heap_live() - base;
+    eprintln!("memory_returns_after_a_sweep: {full} B for 7000 buckets -> {held} B for {} after the sweep", after.clients);
     assert!(
         after.clients <= n + 1,
         "only the live buckets remain: {before:?} -> {after:?}"
     );
     assert!(
-        after.client_capacity < before.client_capacity,
-        "the table's capacity came back, not only its length: {before:?} -> {after:?}"
+        held * 4 < full,
+        "the sweep freed the table's memory: {full} B -> {held} B"
     );
+}
+
+/// rev2 gate-2 F1: under churn at the default caps (100 000), each table
+/// stays within its cap's size: 131 072 slots, 3 276 816 bytes for clients
+/// (24-byte entries) and 5 373 968 for keys (40-byte entries), the bound in
+/// the config docs. During a sweep the live entries are copied out once, so
+/// the peak is at most `cap` entries more. 70 000 identities stay live and
+/// 40 000 new ones arrive every second. Measured in heap bytes on this thread.
+#[test]
+fn client_and_key_tables_stay_at_their_caps_size_under_churn() {
+    const SLACK: isize = 64 * 1024;
+    for keys in [false, true] {
+        let label = if keys { "keys" } else { "clients" };
+        let entry: isize = if keys { 40 } else { 24 };
+        let table_bound = 131_072 * (entry + 1) + 16;
+        let peak_bound = table_bound + 100_000 * entry;
+        let mut d = Direct::new(RateLimitConfig {
+            per_client_requests_per_minute: if keys { 0 } else { 60 },
+            per_key_requests_per_minute: if keys { 60 } else { 0 },
+            burst: 2,
+            ..off()
+        });
+        let fixed = ip("203.0.113.9");
+        let base = heap_live();
+        heap_reset_peak();
+        let mut worst = 0isize;
+        let mut next = 10_000_000u32;
+        for tick in 0..10 {
+            for i in 0..70_000u32 {
+                if keys {
+                    let auth = format!("Bearer ares_dummy_limiter_churn_p_{i:08}");
+                    d.send(fixed, Some(&auth));
+                } else {
+                    d.send(net64(i), None);
+                }
+            }
+            for _ in 0..40_000 {
+                next += 1;
+                if keys {
+                    let auth = format!("Bearer ares_dummy_limiter_churn_o_{next:08}");
+                    d.send(fixed, Some(&auth));
+                } else {
+                    d.send(net64(next), None);
+                }
+            }
+            let held = heap_live() - base;
+            worst = worst.max(held);
+            assert!(
+                held <= table_bound + SLACK,
+                "{label}, second {tick}: {held} B held; the cap's table is {table_bound} B ({:?})",
+                d.layer.limiter().tracked()
+            );
+            d.clock.advance(Duration::from_secs(1));
+        }
+        let peak = heap_peak() - base;
+        eprintln!(
+            "churn {label}: worst held {worst} B (bound {table_bound}), peak {peak} B (bound {peak_bound})"
+        );
+        assert!(
+            peak <= peak_bound + SLACK,
+            "{label}: peak {peak} B; the bound is {peak_bound} B"
+        );
+        let tracked = d.layer.limiter().tracked();
+        assert_eq!(
+            if keys { tracked.keys } else { tracked.clients },
+            100_000,
+            "the cap is reached and held"
+        );
+        drop(d);
+        assert!(
+            heap_live() - base <= SLACK,
+            "{label}: dropping the limiter frees its tables"
+        );
+    }
 }
 
 /// rev1 F3: with no ConnectInfo, one warning per process while enabled;

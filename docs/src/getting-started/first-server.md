@@ -91,14 +91,15 @@ A `[rag]` block also appears (`embedding_model = "BAAI/bge-small-en-v1.5"`, chun
 
 ### What each block does
 
-**`[server]`** controls the listener and logging. `host` and `port` feed the single `TcpListener::bind` call in `run_server` (`src/main.rs`). Keep `127.0.0.1` while you test; use `0.0.0.0` only when another machine must connect. Two more fields exist beyond the template: `cors_origins` (default `["http://localhost:3000"]`, set explicit origins in production) and the rate-limit pair below.
+**`[server]`** controls the listener and logging. `host` and `port` feed the single `TcpListener::bind` call in `run_server` (`src/main.rs`). Keep `127.0.0.1` while you test; use `0.0.0.0` only when another machine must connect. Two more fields exist beyond the template: `cors_origins` (default `["http://localhost:3000"]`, set explicit origins in production) and the `[server.rate_limit]` table below.
 
 ```toml
-rate_limit_per_second = 100   # Requests per second per IP; 0 disables limiting
-rate_limit_burst = 10         # Bucket size admitted above the steady rate
+[server.rate_limit]                    # every limit is 0 (off) until you set it
+per_client_requests_per_minute = 60    # requests per minute per client
+burst = 10                             # bucket size: requests admitted at once
 ```
 
-The limiter is `tower_governor` (`src/main.rs`, rate-limit layer build): it admits bursts up to `rate_limit_burst` and refills one slot every \\(1/\text{rate\_limit\_per\_second}\\) seconds. Responses carry `x-ratelimit-*` headers.
+The limiter (`ares_http::middleware::rate_limit`) keeps a token bucket per client, plus, when set, one per API key (`per_key_requests_per_minute`) and one shared by all requests (`global_requests_per_minute`). Each refills at its per-minute rate. With every limit at 0, the default, there is no limiter. `trusted_proxies` takes exact IP addresses (a CIDR fails the load). Limits are read at startup, so a change needs a restart. The older `rate_limit_per_second` and `rate_limit_burst` keys are ignored, with a startup warning. The operations chapter lists every key.
 
 **`[auth]`** names the secret environment variables and token lifetimes. `jwt_secret_env = "JWT_SECRET"` means: read the signing key from the environment variable called `JWT_SECRET`. The same pattern applies to `api_key_env`. Lifetimes are seconds: 900 gives 15-minute access tokens; 604800 gives 7-day refresh tokens.
 
@@ -178,7 +179,7 @@ ares-server
 5. **Guard configuration presence** (`src/main.rs:570-585`). No loaded config means a friendly error that points at `ares-server init`, then exit 1.
 6. **Start the entries watcher** (`src/main.rs:592-625`). File events re-compose the program and apply diffs through the loader journal. If the watcher cannot start, a 30-second poll takes over.
 7. **Preload runtime providers and snapshot agent configs** (`src/main.rs:630-707`). Runtime provider registrations load; current agent definitions land in the version history table.
-8. **Build HTTP layers** (`src/main.rs:895-944`). CORS applies from `cors_origins`; the rate-limit layer builds only when `rate_limit_per_second > 0`.
+8. **Build HTTP layers** (`run_server` in `src/main.rs`). CORS applies from `cors_origins`; the rate-limit layer is added only when a `[server.rate_limit]` limit is above 0.
 9. **Bind and serve** (`src/main.rs:949-964`). The listener binds `host:port`, and Axum serves with graceful shutdown on Ctrl+C or SIGTERM.
 
 If step 4 or 9 fails, you see the reason in the log before the process exits. Nothing listens before step 9, so a failure never leaves a half-open port.

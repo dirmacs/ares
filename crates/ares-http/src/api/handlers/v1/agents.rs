@@ -454,9 +454,11 @@ fn skill_run_outcome(
 /// body carries the class through `reason_code` and nothing else.
 const FAILED_RUN_MESSAGE: &str = "The run failed. See reason_code.";
 
-/// Coarse failure class for the wire. Local mapping, not `AppError::code()`:
-/// that collapses `Unavailable` and `RateLimited` into `InternalError`, and
-/// callers need the difference.
+/// Coarse failure class for the wire and for `usage_events.reason_code`. Local
+/// mapping, not `AppError::code()`: that collapses `Unavailable`,
+/// `RateLimited` and `BudgetExceeded` into `InternalError`, and callers need the
+/// difference (a rate limit clears on retry; a used-up budget does not until
+/// its period rolls over).
 fn failure_reason_code(error: &ares_types::types::AppError) -> &'static str {
     use ares_types::types::AppError;
     match error {
@@ -464,9 +466,36 @@ fn failure_reason_code(error: &ares_types::types::AppError) -> &'static str {
         AppError::External(_) => "provider_error",
         AppError::Unavailable(_) => "unavailable",
         AppError::RateLimited(_) => "rate_limited",
+        AppError::BudgetExceeded(_) => "budget_exceeded",
         _ => "internal_error",
     }
 }
+
+/// The `AppError` variant's name for the failure log line: the variant, never
+/// its message, which can carry the provider's error text.
+fn app_error_variant(error: &ares_types::types::AppError) -> &'static str {
+    use ares_types::types::AppError;
+    match error {
+        AppError::Database(_) => "Database",
+        AppError::LLM(_) => "LLM",
+        AppError::Auth(_) => "Auth",
+        AppError::NotFound(_) => "NotFound",
+        AppError::InvalidInput(_) => "InvalidInput",
+        AppError::Configuration(_) => "Configuration",
+        AppError::External(_) => "External",
+        AppError::Internal(_) => "Internal",
+        AppError::Unavailable(_) => "Unavailable",
+        AppError::FeatureDisabled(_) => "FeatureDisabled",
+        AppError::RateLimited(_) => "RateLimited",
+        AppError::BudgetExceeded(_) => "BudgetExceeded",
+    }
+}
+
+/// Model and provider label for a run that failed before its model was
+/// resolved (the agent was never built, so no provider was chosen or called).
+/// Not a model id or a provider name, and distinct from `unknown`, which the
+/// pre-insert writes before the outcome is known.
+const UNRESOLVED_MARKER: &str = "unresolved";
 
 /// Failed-run response + metering pieces: zeroed counts, generic wire error
 /// text plus the failure class, and the caller's model/provider labels. The
@@ -601,8 +630,12 @@ async fn run_configurable_agent_path(
         require_tenant_agent: true,
         ..Default::default()
     };
+    // Execute writes the primary's resolved model and provider here once the
+    // agent is built; the failure arm reads it (empty: failed before that).
+    let resolved = ares_agent::execution::ResolvedModelSlot::new();
+    let run_ctx = state_ctx.with_intercept(resolved.clone());
     let result = exec
-        .run(&req, state_ctx)
+        .run(&req, &run_ctx)
         .await
         .map(|exec_result| exec_result.response);
     let duration_ms = setup.start.elapsed().as_millis() as u64;
@@ -626,6 +659,7 @@ async fn run_configurable_agent_path(
                 &mut run_guard,
                 no_retain,
                 error,
+                resolved.get(),
                 duration_ms,
             )
             .await
@@ -742,14 +776,17 @@ async fn complete_llm_run(
     })
 }
 
-/// Failure arm of the configurable path: terminal `ActiveRuns` update, the
-/// close-out row failed with the redacted error, and zeroed metering pieces.
+/// Failure arm of the configurable path: terminal `ActiveRuns` update, one
+/// warn line naming the failure class, the close-out row failed with the
+/// redacted error and the resolved (or `unresolved`) names, and zeroed
+/// metering pieces.
 async fn fail_llm_run(
     state_ctx: &Arc<Context>,
     setup: &AgentRunSetup,
     guard: &mut RunCompletionGuard,
     no_retain: bool,
     error: ares_types::types::AppError,
+    resolved: Option<ares_agent::execution::ResolvedModel>,
     duration_ms: u64,
 ) -> Result<AgentRunOutcome> {
     state_ctx
@@ -757,16 +794,35 @@ async fn fail_llm_run(
         .expect("not provided")
         .finish(&setup.run_id, "error");
 
+    let reason_code = failure_reason_code(&error);
+    let (model_name, provider_name) = match resolved {
+        Some(r) => (r.model_name, r.provider_name),
+        None => (UNRESOLVED_MARKER.to_string(), UNRESOLVED_MARKER.to_string()),
+    };
+    // The class, never the error text: the message can carry the provider's.
+    tracing::warn!(
+        run_id = %setup.run_id,
+        tenant_id = %setup.tenant_id,
+        agent_name = %setup.agent_name,
+        reason_code,
+        error_variant = app_error_variant(&error),
+        model_name = %model_name,
+        provider_name = %provider_name,
+        "agent run failed"
+    );
+
     // Exactly one row per run: UPDATE the pre-inserted parent.
     let raw_err = error.to_string();
     let err_msg = redact_agent_run_error(no_retain, Some(raw_err.as_str()));
     let duration_ms_i64 = duration_ms as i64;
     sqlx::query(
-        "UPDATE agent_runs SET status = 'failed', input_tokens = 0, output_tokens = 0, duration_ms = $2, error = $3, updated_at = $4 WHERE id = $1",
+        "UPDATE agent_runs SET status = 'failed', input_tokens = 0, output_tokens = 0, duration_ms = $2, error = $3, model_name = $4, provider_name = $5, updated_at = $6 WHERE id = $1",
     )
     .bind(&setup.run_id)
     .bind(duration_ms_i64)
     .bind(err_msg.as_deref())
+    .bind(&model_name)
+    .bind(&provider_name)
     .bind(Utc::now().timestamp())
     .execute(&setup.pool)
     .await
@@ -781,9 +837,9 @@ async fn fail_llm_run(
     Ok(failed_run_outcome(
         setup,
         duration_ms,
-        failure_reason_code(&error),
-        "unknown",
-        "unknown",
+        reason_code,
+        &model_name,
+        &provider_name,
     ))
 }
 
@@ -795,7 +851,7 @@ fn finish_agent_run(
     outcome: AgentRunOutcome,
 ) -> Response {
     if let Some(u) = usage_ctx {
-        u.record(metering_snapshot(
+        let mut snapshot = metering_snapshot(
             outcome.input_tokens as i64,
             outcome.output_tokens as i64,
             Some(outcome.model_name.clone()),
@@ -803,7 +859,10 @@ fn finish_agent_run(
             Some(outcome.provider_name.clone()),
             outcome.metering_ok,
             Some(outcome.counts_source.to_string()),
-        ));
+        );
+        // The wire's failure class, metered as sent; `None` (NULL) on success.
+        snapshot.reason_code = outcome.run.reason_code.clone();
+        u.record(snapshot);
     }
 
     let mut response = usage_response(
@@ -1385,6 +1444,16 @@ mod tests {
             failure_reason_code(&AppError::Database("x".into())),
             "internal_error"
         );
+    }
+
+    #[test]
+    fn budget_refusal_has_its_own_class_and_the_log_names_only_the_variant() {
+        use ares_types::types::AppError;
+        let budget = AppError::BudgetExceeded("Tenant t token budget exceeded (1 / 1)".into());
+        assert_eq!(failure_reason_code(&budget), "budget_exceeded");
+        assert_eq!(app_error_variant(&budget), "BudgetExceeded");
+        let provider = AppError::LLM("provider said: sk-live-12345".into());
+        assert_eq!(app_error_variant(&provider), "LLM");
     }
 
     #[tokio::test]

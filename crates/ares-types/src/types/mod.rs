@@ -677,6 +677,11 @@ pub enum AppError {
     /// Rate limit / quota exceeded.
     #[error("Rate limited: {0}")]
     RateLimited(String),
+
+    /// A tenant budget (tokens or USD) is used up for its period. Not retryable: the budget
+    /// frees only when the period rolls over. Same HTTP status and code as `RateLimited`.
+    #[error("Budget exceeded: {0}")]
+    BudgetExceeded(String),
 }
 
 impl AppError {
@@ -693,6 +698,7 @@ impl AppError {
             AppError::Internal(_) => ErrorCode::InternalError,
             AppError::Unavailable(_) => ErrorCode::InternalError,
             AppError::RateLimited(_) => ErrorCode::InternalError,
+            AppError::BudgetExceeded(_) => ErrorCode::InternalError,
             AppError::FeatureDisabled(_) => ErrorCode::InternalError,
         }
     }
@@ -719,6 +725,7 @@ impl AppError {
             AppError::Internal(_) => 500,
             AppError::Unavailable(_) => 503,
             AppError::RateLimited(_) => 429,
+            AppError::BudgetExceeded(_) => 429,
             AppError::FeatureDisabled(_) => 400,
         }
     }
@@ -1445,6 +1452,23 @@ mod tests {
         for (err, expected) in cases {
             assert_eq!(err.status_code(), expected);
         }
+    }
+
+    /// Item 1.13: the budget refusal keeps `RateLimited`'s status and code (the wire shape does
+    /// not change), says what it is, and is not retryable.
+    #[test]
+    fn budget_exceeded_keeps_rate_limited_status_and_code_but_is_not_retryable() {
+        let budget = AppError::BudgetExceeded("Tenant t monthly USD budget exceeded".into());
+        let rate = AppError::RateLimited("slow".into());
+        assert_eq!(budget.status_code(), rate.status_code());
+        assert!(matches!(rate.code(), ErrorCode::InternalError));
+        assert!(matches!(budget.code(), ErrorCode::InternalError));
+        assert!(rate.is_retryable());
+        assert!(!budget.is_retryable());
+        assert_eq!(
+            budget.to_string(),
+            "Budget exceeded: Tenant t monthly USD budget exceeded"
+        );
     }
 
     #[test]

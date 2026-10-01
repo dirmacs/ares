@@ -270,6 +270,8 @@ pub(crate) fn metering_snapshot(
         provider_name,
         success,
         counts_source,
+        // Set by the caller for a failed run; NULL otherwise.
+        reason_code: None,
     }
 }
 

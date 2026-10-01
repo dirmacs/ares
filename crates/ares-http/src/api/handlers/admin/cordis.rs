@@ -2646,6 +2646,89 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    // --- the loader's trial validation is read under the moved entry's id ---
+
+    /// A PATCH that moves an entry WITH children and carries a `config` its
+    /// factory rejects answers 422 with the structured `issues` of the MOVED
+    /// entry. The loader trial stashes its validation result under the id it
+    /// tried to start, `top:grp`; the handler reads the stash under that same
+    /// id (the first of `renamed`). The last of `renamed` is the child
+    /// `top:grp:svc`, which has no stash, so reading under it answers 422
+    /// with no `issues`. The child's settings are untouched, in the saved
+    /// program and live.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn patch_move_with_children_bad_config_returns_the_moved_entrys_issues() {
+        let (ctx, dir) = boot_move_fixture("patch-move-bad-config", MOVE_TREE_TOML).await;
+        // The group's factory now rejects `{reject: true}` with a placed issue.
+        let registry = ctx.get::<cordis::PluginRegistry>().expect("registry");
+        registry.register(
+            "GroupMarker",
+            Arc::new(|ctx: &Arc<::cordis::Context>, cfg| {
+                if cfg.get("reject").and_then(|x| x.as_bool()) == Some(true) {
+                    return Err(cordis::CordisError::validation(vec![
+                        cordis::ValidationIssue::new("bad group url").at(["grp", "url"]),
+                    ]));
+                }
+                let fut = ctx.plugin(GroupProbe);
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+            }),
+        );
+        // The child as the boot left it; the move renames it and nothing else.
+        let (booted, _) = saved_and_live(&ctx, &dir);
+        let child_before = booted
+            .0
+            .iter()
+            .find(|e| e.id == "grp:svc")
+            .cloned()
+            .expect("grp:svc in the booted program");
+
+        let update = cordis::loader::EntryUpdate {
+            parent: Some(Some("top".into())),
+            config: Some(json!({"reject": true})),
+            ..Default::default()
+        };
+        let (status, Json(body)) = patch_cordis_entry(
+            State(ctx.clone()),
+            AdminActor::default(),
+            Path("grp".into()),
+            axum::Json(update),
+        )
+        .await
+        .expect("resp");
+
+        // The legacy failure shape, then the structured issues of the moved entry.
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .map(|e| e.contains("config pre-flight failed"))
+                .unwrap_or(false),
+            "the legacy error names the pre-flight: {body}"
+        );
+        assert_eq!(
+            body["issues"],
+            json!([{ "message": "bad group url", "path": ["grp", "url"] }]),
+            "the issues of the moved entry accompany the error: {body}"
+        );
+
+        // The child is untouched, in the saved program and live.
+        let (saved, live) = saved_and_live(&ctx, &dir);
+        for (which, tree) in [("saved", &saved), ("live", &live)] {
+            let child = tree
+                .0
+                .iter()
+                .find(|e| e.id == "top:grp:svc")
+                .unwrap_or_else(|| panic!("{which}: no top:grp:svc in {tree:?}"));
+            assert_eq!(child.plugin, child_before.plugin, "{which} plugin");
+            assert_eq!(child.config, child_before.config, "{which} config");
+            assert_eq!(child.disabled, child_before.disabled, "{which} disabled");
+            assert_eq!(child.isolate, child_before.isolate, "{which} isolate");
+            assert_eq!(child.intercept, child_before.intercept, "{which} intercept");
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
 
 #[cfg(test)]

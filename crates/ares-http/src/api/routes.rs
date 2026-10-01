@@ -1418,31 +1418,52 @@ mod tests {
         response.assert_status_unauthorized();
     }
 
-    /// Item 2.6a: the publish route sits behind the admin middleware.
+    /// Item 2.6a: the publish route is registered behind the admin
+    /// middleware. An unmatched path also answers 401 without the secret (the
+    /// middleware wraps the fallback), so registration is checked with the
+    /// secret: the request reaches a handler (the stub database fails its
+    /// query) instead of the 404 fallback.
     #[tokio::test]
     async fn create_router_registers_tenant_agent_publish_route() {
         let _env_guard = lock_admin_env();
-        std::env::remove_var("ADMIN_API_KEY");
+        std::env::set_var("ADMIN_API_KEY", "test-admin-secret");
         let server = test_server(test_app_state());
+        let path = "/admin/tenants/tenant-1/agents/agent-a/publish";
+        let body = serde_json::json!({"draft_digest": "00"});
+        server
+            .post(path)
+            .json(&body)
+            .await
+            .assert_status_unauthorized();
         let response = server
-            .post("/admin/tenants/tenant-1/agents/agent-a/publish")
-            .json(&serde_json::json!({"draft_digest": "00"}))
+            .post(path)
+            .add_header("x-admin-secret", "test-admin-secret")
+            .json(&body)
             .await;
-        assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
-        response.assert_status_unauthorized();
+        assert_ne!(
+            response.status_code(),
+            StatusCode::NOT_FOUND,
+            "the publish route must be registered"
+        );
     }
 
-    /// Item 2.6a: the draft a reviewer approves, and its digest, behind the
-    /// admin middleware.
+    /// Item 2.6a: the draft a reviewer approves, and its digest, registered
+    /// behind the admin middleware (checked as for the publish route).
     #[tokio::test]
     async fn create_router_registers_tenant_agent_draft_route() {
         let _env_guard = lock_admin_env();
-        std::env::remove_var("ADMIN_API_KEY");
+        std::env::set_var("ADMIN_API_KEY", "test-admin-secret");
         let server = test_server(test_app_state());
+        let path = "/admin/tenants/tenant-1/agents/agent-a/draft";
+        server.get(path).await.assert_status_unauthorized();
         let response = server
-            .get("/admin/tenants/tenant-1/agents/agent-a/draft")
+            .get(path)
+            .add_header("x-admin-secret", "test-admin-secret")
             .await;
-        assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
-        response.assert_status_unauthorized();
+        assert_ne!(
+            response.status_code(),
+            StatusCode::NOT_FOUND,
+            "the draft route must be registered"
+        );
     }
 }

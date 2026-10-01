@@ -214,6 +214,15 @@ pub fn create_router(
             "/admin/tenants/{tenant_id}/agents/{agent_name}/rollback/{version}",
             post(crate::api::handlers::admin::rollback_tenant_agent_version_handler),
         )
+        // Item 2.6a: the draft a reviewer approves, and the publish.
+        .route(
+            "/admin/tenants/{tenant_id}/agents/{agent_name}/draft",
+            get(crate::api::handlers::admin::get_tenant_agent_draft_handler),
+        )
+        .route(
+            "/admin/tenants/{tenant_id}/agents/{agent_name}/publish",
+            post(crate::api::handlers::admin::publish_tenant_agent_handler),
+        )
         .route(
             "/admin/tenants/{tenant_id}/agents/{agent_name}/test",
             post(crate::api::handlers::admin::test_tenant_agent_handler),

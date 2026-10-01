@@ -188,6 +188,16 @@ pub struct RefusalCounts {
     pub key: u64,
 }
 
+/// The bucket maps' size now: entries held and allocated capacity (the
+/// number of entries the table can hold without growing).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Tracked {
+    pub clients: usize,
+    pub client_capacity: usize,
+    pub keys: usize,
+    pub key_capacity: usize,
+}
+
 /// One limit: a request every `interval_ns`, with `tolerance_ns` of burst
 /// (`interval_ns * (bucket size - 1)`).
 #[derive(Debug, Clone, Copy)]
@@ -322,6 +332,17 @@ impl RateLimiter {
             global: self.refused_global.load(Ordering::Relaxed),
             client: self.refused_client.load(Ordering::Relaxed),
             key: self.refused_key.load(Ordering::Relaxed),
+        }
+    }
+
+    /// The bucket maps' size now.
+    pub fn tracked(&self) -> Tracked {
+        let state = self.state.lock();
+        Tracked {
+            clients: state.clients.tats.len(),
+            client_capacity: state.clients.tats.capacity(),
+            keys: state.keys.tats.len(),
+            key_capacity: state.keys.tats.capacity(),
         }
     }
 

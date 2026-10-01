@@ -312,10 +312,7 @@ impl Fixture {
                     "system_prompt": "residency probe",
                     "tools": [],
                     "max_tool_iterations": 5,
-                    "parallel_tools": false,
-                    // Keys a tenant could put in its own agent config: never read for the row.
-                    "resolved_endpoint": HOSTILE_ENDPOINT,
-                    "region": HOSTILE_REGION
+                    "parallel_tools": false
                 }),
             },
         )
@@ -663,13 +660,39 @@ async fn v1_responses_do_not_expose_the_residency_fields() {
 }
 
 /// `request_supplied_endpoint_or_region_is_ignored` (section 3.3): a request that carries an
-/// endpoint or a region (headers, body keys, query keys), and a tenant agent whose own config
-/// carries them, change nothing in the row.
+/// endpoint or a region (headers, body keys, query keys) changes nothing in the row. A tenant's
+/// own agent config cannot carry either name at all: the config validator refuses unknown keys
+/// (if either name is ever added to the allowed keys, per-agent region routing is CR-2 and this
+/// test fails so the decision is made on purpose).
 #[tokio::test]
 async fn request_supplied_endpoint_or_region_is_ignored() {
     let Some(fx) = Fixture::new(Stub::Answer, None).await else {
         return;
     };
+    for key in ["resolved_endpoint", "region"] {
+        let outcome = create_tenant_agent(
+            &fx.pool,
+            &fx.tenant_id,
+            CreateTenantAgentRequest {
+                agent_name: format!("config-with-{key}"),
+                display_name: "refused".to_string(),
+                description: None,
+                config: json!({
+                    "model": MODEL_ALIAS,
+                    key: HOSTILE_ENDPOINT,
+                }),
+            },
+        )
+        .await;
+        let error = outcome.expect_err("a tenant agent config with this key must be refused");
+        assert!(
+            error
+                .to_string()
+                .contains("Unknown tenant agent config key"),
+            "{key}: {error}"
+        );
+    }
+
     let bearer = fx.bearer();
     let reply = fx
         .send(

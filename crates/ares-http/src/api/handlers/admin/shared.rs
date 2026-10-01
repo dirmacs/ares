@@ -541,6 +541,8 @@ mod tests {
             schedule_id: None,
             trigger_id: None,
             updated_at: Some(1_700_000_000),
+            resolved_endpoint: Some("https://api.example.test/v1".into()),
+            region: Some("ap-south-1".into()),
         }
     }
 
@@ -1384,6 +1386,30 @@ mod tests {
         let json = serde_json::to_value(&response).unwrap();
         assert_eq!(json["id"], "run-1");
         assert_eq!(json["cost_estimate"]["pricing_known"], true);
+    }
+
+    /// 2.12b: the admin runs list flattens the run, so it carries the residency pair by itself;
+    /// the region key is present and null for a provider with none.
+    #[test]
+    fn agent_run_response_carries_the_residency_fields() {
+        let response = AgentRunResponse::from_run(run("openai", "gpt-test"), &billing());
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["resolved_endpoint"], "https://api.example.test/v1");
+        assert_eq!(json["region"], "ap-south-1");
+
+        let mut no_region = run("openai", "gpt-test");
+        no_region.region = None;
+        let json = serde_json::to_value(AgentRunResponse::from_run(no_region, &billing())).unwrap();
+        assert!(json.as_object().unwrap().contains_key("region"));
+        assert!(json["region"].is_null());
+    }
+
+    /// 2.12b: a skill run (admin skill run) has no single provider, so it writes neither column.
+    #[test]
+    fn admin_skill_run_metadata_records_no_residency() {
+        let metadata = admin_skill_run_metadata("run-1");
+        assert_eq!(metadata.resolved_endpoint, None);
+        assert_eq!(metadata.region, None);
     }
 
     #[test]

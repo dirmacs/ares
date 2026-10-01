@@ -935,12 +935,20 @@ mod tests {
             schedule_id: None,
             trigger_id: None,
             updated_at: Some(1_700_000_000),
+            resolved_endpoint: Some("https://api.example.test/v1".into()),
+            region: Some("ap-south-1".into()),
         };
         let v1 = agent_run_row_to_v1(row);
         assert_eq!(v1.id, "run-1");
         assert_eq!(v1.agent_id, "bot");
         assert_eq!(v1.tokens_used, Some(30));
         assert_eq!(v1.duration_ms, Some(1500));
+        // 2.12b: the client-facing mapper does not gain the residency fields.
+        let wire = serde_json::to_string(&v1).expect("a v1 run serializes");
+        assert!(!wire.contains("api.example.test"), "{wire}");
+        assert!(!wire.contains("ap-south-1"), "{wire}");
+        assert!(!wire.contains("resolved_endpoint"), "{wire}");
+        assert!(!wire.contains("region"), "{wire}");
     }
 
     #[test]

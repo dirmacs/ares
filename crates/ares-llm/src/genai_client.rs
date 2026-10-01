@@ -5,7 +5,7 @@
 
 use crate::client::{
     CacheControl, GenaiProvider, GenerationHints, LLMClient, LLMResponse, LlmStreamEvent,
-    TokenUsage,
+    LlmStreamItem, TokenUsage,
 };
 use crate::coordinator::{ConversationMessage, MessageRole};
 use ares_types::types::{AppError, ContentPart as AresPart, Result, ToolCall, ToolDefinition};
@@ -237,6 +237,43 @@ impl GenaiClient {
         Ok(Box::new(Box::pin(s)))
     }
 
+    async fn exec_stream_with_usage(
+        &self,
+        request: ChatRequest,
+        hints: &GenerationHints,
+    ) -> Result<Box<dyn futures::Stream<Item = Result<LlmStreamItem>> + Send + Unpin>> {
+        let target = self.service_target();
+        let options = self.chat_options(hints, false);
+        let response = self
+            .inner
+            .exec_chat_stream(target, request, Some(&options))
+            .await
+            .map_err(map_error)?;
+        let mut inner = response.stream;
+        let s = async_stream::stream! {
+            while let Some(ev) = inner.next().await {
+                match ev {
+                    Ok(ChatStreamEvent::Chunk(chunk)) => {
+                        yield Ok(LlmStreamItem::Text(chunk.content));
+                    }
+                    // `End.captured_usage` is the only carrier of the provider's
+                    // counts on a stream; `Ok(_) => {}` in the text-only path
+                    // drops it. Yield only when the upstream actually sent
+                    // counts, so "none reported" stays distinguishable from a
+                    // reported zero.
+                    Ok(ChatStreamEvent::End(end)) => {
+                        if let Some(usage) = end.captured_usage.as_ref().and_then(map_usage) {
+                            yield Ok(LlmStreamItem::Usage(usage));
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(err) => yield Err(map_error(err)),
+                }
+            }
+        };
+        Ok(Box::new(Box::pin(s)))
+    }
+
     async fn exec_stream_with_tools(
         &self,
         request: ChatRequest,
@@ -371,6 +408,15 @@ impl LLMClient for GenaiClient {
         let hints = self.snapshot_hints();
         let request = request_from_role_content(messages, None, &hints);
         self.exec_stream(request, &hints).await
+    }
+
+    async fn stream_with_history_and_usage(
+        &self,
+        messages: &[(String, String)],
+    ) -> Result<Box<dyn futures::Stream<Item = Result<LlmStreamItem>> + Send + Unpin>> {
+        let hints = self.snapshot_hints();
+        let request = request_from_role_content(messages, None, &hints);
+        self.exec_stream_with_usage(request, &hints).await
     }
 
     async fn stream_with_tools_and_history(

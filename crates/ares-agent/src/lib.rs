@@ -123,6 +123,11 @@ pub struct ExecutionMetadata {
     pub model_name: String,
     /// The name of the provider used
     pub provider_name: String,
+    /// Where the call that ANSWERED went: the sanitized endpoint and the region of the provider
+    /// that produced the response (a fallback when the primary failed), never of the first
+    /// provider tried. Read from the client that answered, on the server; empty when the path
+    /// cannot say. The writers record it on `agent_runs` (migration 039).
+    pub residency: ares_llm::client::Residency,
 }
 
 /// Base trait for all agents

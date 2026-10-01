@@ -503,16 +503,10 @@ fn normalize_entry_config(mut entry: cordis::loader::Entry) -> cordis::loader::E
 }
 
 /// The `details` of a `patch_cordis_entry` audit row, a row that names
-/// `audited_id`: which fields the patch carried (never their values: `config`
-/// can hold credentials), the entry's previous id `id` after a move, and
-/// `fields_applied_to` when the fields were applied to another entry
-/// (`applied_to`) than the one the row names.
-fn patch_audit_details(
-    update: &cordis::loader::EntryUpdate,
-    id: &str,
-    audited_id: &str,
-    applied_to: &str,
-) -> String {
+/// `audited_id`, the entry the patch's fields were applied to: which fields
+/// the patch carried (never their values: `config` can hold credentials), and
+/// the entry's previous id `id` after a move.
+fn patch_audit_details(update: &cordis::loader::EntryUpdate, id: &str, audited_id: &str) -> String {
     let fields: Vec<&str> = [
         ("config", update.config.is_some()),
         ("disabled", update.disabled.is_some()),
@@ -524,14 +518,11 @@ fn patch_audit_details(
     .into_iter()
     .filter_map(|(name, present)| present.then_some(name))
     .collect();
-    let mut details = serde_json::json!({
+    serde_json::json!({
         "fields": fields,
         "previous_id": (audited_id != id).then_some(id),
-    });
-    if applied_to != audited_id {
-        details["fields_applied_to"] = serde_json::json!(applied_to);
-    }
-    details.to_string()
+    })
+    .to_string()
 }
 
 /// Load the entries file as the desired tree for a mutation. A missing file
@@ -1049,7 +1040,8 @@ pub async fn move_cordis_entry(
 ///
 /// Present `parent` / `position` body fields MOVE the entry first (through
 /// [`cordis::loader::Loader::move_entry`], preserving live fiber identity on
-/// pure structural moves), THEN the remaining field updates land in one call.
+/// pure structural moves), THEN the remaining field updates land in one call,
+/// on the moved entry under its new id (never on one of its descendants).
 /// An invalid move answers 409 without touching the file or the live tree.
 /// Persists to the TOML program file and applies through the same flow as
 /// reload; responds with the post-patch entry (plus `renamed` old→new pairs
@@ -1133,18 +1125,10 @@ pub async fn patch_cordis_entry(
             }
         }
     }
-    // Where the field updates below are applied: the LAST id `renamed` lists,
-    // which is a descendant when the moved entry has children. That is the
-    // separate `cordis-move-fix` item's; the audit row does not follow it.
-    let final_id = renamed
-        .last()
-        .map(|(_, new)| new.clone())
-        .unwrap_or_else(|| id.clone());
     // The entry the request addressed, under its new id after a move:
     // `Loader::move_entry` lists the moved entry first, then its descendants.
-    // The audit row names this entry, and says in `details` where the fields
-    // were applied when that is another entry.
-    let audited_id = renamed
+    // The field updates below land on this entry, and the audit row names it.
+    let target_id = renamed
         .first()
         .map(|(_, new)| new.clone())
         .unwrap_or_else(|| id.clone());
@@ -1156,12 +1140,12 @@ pub async fn patch_cordis_entry(
     // can hold credentials).
     if moved {
         if let Some(pool) = audit_pool(&ctx, "patch_cordis_entry") {
-            let details = patch_audit_details(&update, &id, &audited_id, &final_id);
+            let details = patch_audit_details(&update, &id, &target_id);
             audit_log::record(
                 &pool,
                 "patch_cordis_entry",
                 "cordis_entry",
-                &audited_id,
+                &target_id,
                 Some(&details),
                 actor.ip(),
                 actor.audit_actor(),
@@ -1170,7 +1154,7 @@ pub async fn patch_cordis_entry(
         }
     }
 
-    let Some(entry) = tree.0.iter_mut().find(|e| e.id == final_id) else {
+    let Some(entry) = tree.0.iter_mut().find(|e| e.id == target_id) else {
         return Ok((
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({
@@ -1191,12 +1175,12 @@ pub async fn patch_cordis_entry(
     // change and the audited event; with one, the row was written above.
     if !moved {
         if let Some(pool) = audit_pool(&ctx, "patch_cordis_entry") {
-            let details = patch_audit_details(&update, &id, &audited_id, &final_id);
+            let details = patch_audit_details(&update, &id, &target_id);
             audit_log::record(
                 &pool,
                 "patch_cordis_entry",
                 "cordis_entry",
-                &audited_id,
+                &target_id,
                 Some(&details),
                 actor.ip(),
                 actor.audit_actor(),
@@ -1207,7 +1191,7 @@ pub async fn patch_cordis_entry(
 
     // Structured issues below describe THIS apply only: drop any record an
     // earlier patch left for this entry before running the pre-flights.
-    let _ = cordis::error::take_trial_validation(&final_id);
+    let _ = cordis::error::take_trial_validation(&target_id);
     match apply_entries_from_disk(&ctx).await {
         Ok(actions) => {
             let patched = ctx
@@ -1216,7 +1200,7 @@ pub async fn patch_cordis_entry(
                     ce.tree
                         .lock()
                         .ok()
-                        .map(|t| t.0.iter().find(|e| e.id == final_id).cloned())
+                        .map(|t| t.0.iter().find(|e| e.id == target_id).cloned())
                 })
                 .flatten();
             let Some(patched) = patched else {
@@ -1242,7 +1226,7 @@ pub async fn patch_cordis_entry(
             // When the failing step was a config pre-flight, the loader
             // trial stashed machine-readable issues for this entry; attach
             // them alongside the legacy `error` string.
-            if let Some(validation) = cordis::error::take_trial_validation(&final_id) {
+            if let Some(validation) = cordis::error::take_trial_validation(&target_id) {
                 if let Ok(issues) = serde_json::to_value(&validation.issues) {
                     body["issues"] = issues;
                 }
@@ -2503,7 +2487,10 @@ mod tests {
         assert!(ctx.get::<GroupProbe>().is_none(), "the moved entry stopped");
         assert!(ctx.get::<Probe>().is_some(), "the child still runs");
         assert!(ctx.get::<TopProbe>().is_some(), "the new parent still runs");
-        assert!(journal.get("top:grp").is_none(), "the moved entry's record is retired");
+        assert!(
+            journal.get("top:grp").is_none(),
+            "the moved entry's record is retired"
+        );
         assert_eq!(
             journal.get("top:grp:svc").and_then(|r| r.fiber_id),
             Some(svc_fid),
@@ -2549,7 +2536,10 @@ mod tests {
         assert_eq!(disabled_of(&saved, "top:grp"), Some(true), "{saved:?}");
         assert_eq!(disabled_of(&saved, "top:grp:svc"), Some(false), "{saved:?}");
         assert_eq!(live, saved, "CurrentEntries agrees with the saved program");
-        assert!(ctx.get::<GroupProbe>().is_none(), "the reordered entry stopped");
+        assert!(
+            ctx.get::<GroupProbe>().is_none(),
+            "the reordered entry stopped"
+        );
         assert!(ctx.get::<Probe>().is_some(), "its child still runs");
 
         std::fs::remove_dir_all(&dir).ok();
@@ -2583,10 +2573,17 @@ mod tests {
         assert_eq!(disabled_of(&saved, "top:svc"), Some(true), "{saved:?}");
         assert_eq!(disabled_of(&saved, "grp"), Some(false), "{saved:?}");
         assert_eq!(disabled_of(&saved, "top"), Some(false), "{saved:?}");
-        assert_eq!(disabled_of(&saved, "grp:svc"), None, "old id gone: {saved:?}");
+        assert_eq!(
+            disabled_of(&saved, "grp:svc"),
+            None,
+            "old id gone: {saved:?}"
+        );
         assert_eq!(live, saved, "CurrentEntries agrees with the saved program");
         assert!(ctx.get::<Probe>().is_none(), "the moved leaf stopped");
-        assert!(ctx.get::<GroupProbe>().is_some(), "its old parent still runs");
+        assert!(
+            ctx.get::<GroupProbe>().is_some(),
+            "its old parent still runs"
+        );
         assert!(ctx.get::<TopProbe>().is_some(), "its new parent still runs");
 
         std::fs::remove_dir_all(&dir).ok();
@@ -2620,7 +2617,10 @@ mod tests {
         assert_eq!(disabled_of(&saved, "grp:svc"), Some(false), "{saved:?}");
         assert_eq!(disabled_of(&saved, "top"), Some(false), "{saved:?}");
         assert_eq!(live, saved, "CurrentEntries agrees with the saved program");
-        assert!(ctx.get::<GroupProbe>().is_none(), "the patched entry stopped");
+        assert!(
+            ctx.get::<GroupProbe>().is_none(),
+            "the patched entry stopped"
+        );
         assert!(ctx.get::<Probe>().is_some(), "its child still runs");
 
         std::fs::remove_dir_all(&dir).ok();

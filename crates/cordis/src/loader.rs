@@ -5005,4 +5005,228 @@ plugin = "Bar"
 
         assert_eq!(tree, snapshot, "failed moves never mutate the tree");
     }
+
+    // --- Entry hierarchy: a move can never leave two entries with one id ---
+
+    /// Hierarchy test entry: plugin `Plugin-{id}`, optional parent pointer.
+    fn hier(id: &str, parent: Option<&str>) -> Entry {
+        Entry {
+            id: id.to_string(),
+            plugin: format!("Plugin-{id}"),
+            position: parent.map(|p| EntryPosition {
+                parent: Some(p.to_string()),
+                position: 0,
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn tree_ids(tree: &EntryTree) -> Vec<&str> {
+        tree.0.iter().map(|e| e.id.as_str()).collect()
+    }
+
+    /// cordis-move-fix gate r1, rev1 F1. A pointer-only child keeps an id
+    /// OUTSIDE the `{id}:` namespace, so the subtree rename maps it to ITSELF.
+    /// Moving `x:a` to the root renames it to `a`, which is that child's own
+    /// id: two entries called `a`. The old collision check skipped any new id
+    /// equal to an OLD id of the moved set, on the assumption that old id was
+    /// renamed away, and let this through.
+    #[test]
+    fn move_refuses_when_a_pointer_only_child_would_share_the_new_id() {
+        let mut tree = EntryTree(vec![
+            hier("x", None),
+            hier("a", Some("x:a")), // pointer-only child of `x:a`
+            hier("x:a", Some("x")),
+        ]);
+        let before = tree.clone();
+
+        let err = tree.move_entry("x:a", None, 0).unwrap_err();
+        assert!(
+            err.contains("entries 'x:a' and 'a' would both end up with id 'a'"),
+            "the refusal names both old ids and the duplicated new id: {err}"
+        );
+        assert_eq!(tree, before, "a refused move leaves the tree untouched");
+    }
+
+    /// The same refusal through `Loader::move_entry`: an `Err`, with the tree
+    /// AND every journal record exactly as they were. Before the fix the move
+    /// succeeded and the pointer-only child's journal record was overwritten.
+    #[tokio::test]
+    async fn refused_duplicate_move_leaves_tree_and_journal_untouched() {
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        let ids = ["x", "a", "x:a"];
+        for (i, id) in ids.iter().enumerate() {
+            journal.upsert(id, &format!("Plugin-{id}"), json!({ "v": i }), None);
+        }
+        let records_before: Vec<_> = ids.iter().map(|id| journal.get(id)).collect();
+        let mut current = EntryTree(vec![
+            hier("x", None),
+            hier("a", Some("x:a")),
+            hier("x:a", Some("x")),
+        ]);
+        let tree_before = current.clone();
+
+        let err = Loader::move_entry(&ctx, &mut current, &journal, "x:a", None, 0)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CordisError::Configuration(_)), "{err:?}");
+        assert_eq!(current, tree_before, "the tree is unchanged");
+        assert_eq!(journal.len(), ids.len(), "no journal record lost or added");
+        let records_after: Vec<_> = ids.iter().map(|id| journal.get(id)).collect();
+        assert_eq!(records_after, records_before, "every journal record intact");
+    }
+
+    /// Other shapes that end with two entries under one id, each refused with
+    /// the tree untouched and the error naming both old ids and the new id.
+    #[test]
+    fn move_refuses_any_duplicate_final_id() {
+        struct Shape {
+            label: &'static str,
+            tree: Vec<Entry>,
+            id: &'static str,
+            target: Option<&'static str>,
+            dup: &'static str,
+            old_ids: [&'static str; 2],
+        }
+        let shapes = vec![
+            Shape {
+                label: "pointer-only child `a:b` meets prefix child `x:a:b`",
+                tree: vec![
+                    hier("x", None),
+                    hier("x:a", Some("x")),
+                    hier("a:b", Some("x:a")),
+                    hier("x:a:b", Some("x:a")),
+                ],
+                id: "x:a",
+                target: None,
+                dup: "a:b",
+                old_ids: ["x:a:b", "a:b"],
+            },
+            Shape {
+                label: "pointer-only child `t:a` is the moved entry's own new id",
+                tree: vec![
+                    hier("t", None),
+                    hier("x", None),
+                    hier("x:a", Some("x")),
+                    hier("t:a", Some("x:a")),
+                ],
+                id: "x:a",
+                target: Some("t"),
+                dup: "t:a",
+                old_ids: ["x:a", "t:a"],
+            },
+        ];
+        for s in shapes {
+            let mut tree = EntryTree(s.tree);
+            let before = tree.clone();
+            let err = tree.move_entry(s.id, s.target, 0).unwrap_err();
+            let want = format!(
+                "entries '{}' and '{}' would both end up with id '{}'",
+                s.old_ids[0], s.old_ids[1], s.dup
+            );
+            assert!(
+                err.contains(&want),
+                "{}: wanted '{want}' in: {err}",
+                s.label
+            );
+            assert_eq!(tree, before, "{}: tree must be unchanged", s.label);
+        }
+    }
+
+    /// Control: moves whose final ids are all unique keep working exactly as
+    /// before (leaf, in-place reposition, pointer-only child with a distinct
+    /// id, prefix children plus a pointer-only grandchild). Green before and
+    /// after the fix; it guards the fix against over-refusing.
+    #[test]
+    fn move_with_unique_final_ids_still_succeeds() {
+        let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
+        let parent_of = |tree: &EntryTree, id: &str| {
+            tree.0
+                .iter()
+                .find(|e| e.id == id)
+                .and_then(|e| e.position.as_ref())
+                .and_then(|p| p.parent.clone())
+        };
+
+        // Leaf to the root.
+        let mut tree = EntryTree(vec![hier("x", None), hier("x:a", Some("x"))]);
+        let renames = tree.move_entry("x:a", None, 0).unwrap();
+        assert_eq!(renames, vec![pair("x:a", "a")]);
+        assert_eq!(tree_ids(&tree), vec!["x", "a"]);
+        assert_eq!(parent_of(&tree, "a"), None);
+
+        // In-place reposition: the id does not change.
+        let mut tree = EntryTree(vec![
+            hier("x", None),
+            hier("x:a", Some("x")),
+            hier("x:b", Some("x")),
+        ]);
+        let renames = tree.move_entry("x:a", Some("x"), 1).unwrap();
+        assert_eq!(renames, vec![pair("x:a", "x:a")]);
+        assert_eq!(tree_ids(&tree), vec!["x", "x:a", "x:b"]);
+
+        // Pointer-only child with an id of its own: kept, pointer re-aimed.
+        let mut tree = EntryTree(vec![
+            hier("x", None),
+            hier("x:a", Some("x")),
+            hier("z", Some("x:a")),
+        ]);
+        let renames = tree.move_entry("x:a", None, 0).unwrap();
+        assert_eq!(renames, vec![pair("x:a", "a"), pair("z", "z")]);
+        assert_eq!(tree_ids(&tree), vec!["x", "a", "z"]);
+        assert_eq!(parent_of(&tree, "z"), Some("a".to_string()));
+
+        // Prefix child plus a pointer-only grandchild.
+        let mut tree = EntryTree(vec![
+            hier("x", None),
+            hier("x:a", Some("x")),
+            hier("x:a:b", Some("x:a")),
+            hier("z", Some("x:a:b")),
+        ]);
+        let renames = tree.move_entry("x:a", None, 0).unwrap();
+        assert_eq!(
+            renames,
+            vec![pair("x:a", "a"), pair("x:a:b", "a:b"), pair("z", "z")]
+        );
+        assert_eq!(tree_ids(&tree), vec!["x", "a", "a:b", "z"]);
+        assert_eq!(parent_of(&tree, "z"), Some("a:b".to_string()));
+    }
+
+    /// Control: the existing refusal and its message are kept when the
+    /// colliding entry is OUTSIDE the moved set, here for a deeper descendant.
+    #[test]
+    fn move_still_names_the_plugin_when_the_collision_is_outside_the_moved_set() {
+        let mut tree = EntryTree(vec![
+            hier("x", None),
+            hier("x:a", Some("x")),
+            hier("x:a:b", Some("x:a")),
+            hier("a:b", None), // not under `x:a`: outside the moved set
+        ]);
+        let before = tree.clone();
+
+        let err = tree.move_entry("x:a", None, 0).unwrap_err();
+        assert!(
+            err.contains("cannot rename 'x:a:b' to 'a:b': id already used by plugin 'Plugin-a:b'"),
+            "{err}"
+        );
+        assert_eq!(tree, before);
+    }
+
+    /// Control, and a decision to flag: only a duplicate the move itself
+    /// creates is refused. Two entries that already shared an id and are not
+    /// renamed by the move stay as they were; refusing every move because of
+    /// them would block unrelated edits on a file that is already dirty.
+    #[test]
+    fn move_does_not_refuse_for_a_duplicate_it_does_not_touch() {
+        let mut tree = EntryTree(vec![
+            hier("x", None),
+            hier("x:a", Some("x")),
+            hier("p", None),
+            hier("p", None), // pre-existing duplicate, outside the moved set
+        ]);
+        let renames = tree.move_entry("x:a", None, 0).unwrap();
+        assert_eq!(renames, vec![("x:a".to_string(), "a".to_string())]);
+        assert_eq!(tree_ids(&tree), vec!["x", "a", "p", "p"]);
+    }
 }

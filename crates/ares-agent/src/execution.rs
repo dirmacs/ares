@@ -137,6 +137,51 @@ impl std::fmt::Debug for ResolvedModelSlot {
 
 impl Service for ResolvedModelSlot {}
 
+/// Where the primary provider a run resolved to sends its calls, for a caller that has to record
+/// where a run that FAILED after resolution went.
+///
+/// A sibling of [`ResolvedModelSlot`], which holds names only and keeps its "never a URL"
+/// contract: the endpoint travels on this slot instead. The caller intercepts a fresh slot on the
+/// request context before [`Execute::run`]; `Execute` fills it with the primary's residency right
+/// after it fills the model slot, so the endpoint and region describe the same provider the
+/// slot's names do. Still empty after a failure means the run failed before its provider was
+/// resolved. A run that is answered does not use it: its residency is the answering client's, on
+/// the response metadata.
+///
+/// Holds a [`Residency`](ares_llm::client::Residency), which is sanitized by construction: never
+/// a key, userinfo, a query or a fragment.
+#[derive(Clone, Default)]
+pub struct ResolvedResidencySlot(Arc<std::sync::Mutex<Option<ares_llm::client::Residency>>>);
+
+impl ResolvedResidencySlot {
+    /// An empty slot.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The resolved primary's residency, or `None` when the run never got that far.
+    pub fn get(&self) -> Option<ares_llm::client::Residency> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// Record the resolved primary's residency. Only `Execute` writes the slot (on its
+    /// `postgres` path).
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+    pub(crate) fn set(&self, residency: ares_llm::client::Residency) {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(residency);
+    }
+}
+
+impl std::fmt::Debug for ResolvedResidencySlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ResolvedResidencySlot")
+            .field(&self.get())
+            .finish()
+    }
+}
+
+impl Service for ResolvedResidencySlot {}
+
 use crate::AgentResponse;
 
 pub use ares_tools::Tools;
@@ -456,6 +501,8 @@ impl Execute {
                                 serde_json::json!({
                                     "model_name": m.model_name,
                                     "provider_name": m.provider_name,
+                                    "resolved_endpoint": m.residency.resolved_endpoint(),
+                                    "region": m.residency.region(),
                                 })
                             }),
                             "source": er.source,
@@ -507,6 +554,12 @@ impl Execute {
             Some(crate::ExecutionMetadata {
                 model_name: v.get("model_name")?.as_str()?.to_string(),
                 provider_name: v.get("provider_name")?.as_str()?.to_string(),
+                // Same bridge as the names, sanitized again on the way in. Dropped by a
+                // listener that rebuilds the payload without it: reads as unknown, never guessed.
+                residency: ares_llm::client::Residency::from_raw(
+                    v.get("resolved_endpoint").and_then(|e| e.as_str()),
+                    v.get("region").and_then(|r| r.as_str()),
+                ),
             })
         });
         Ok(ExecutionResult {
@@ -779,6 +832,10 @@ impl Execute {
         if let Some(slot) = ctx.get::<ResolvedModelSlot>() {
             let (model_name, provider_name) = agent.resolved_model_and_provider();
             slot.set(model_name, provider_name);
+        }
+        // Where that primary sends its calls, on its own slot: the names slot never holds a URL.
+        if let Some(slot) = ctx.get::<ResolvedResidencySlot>() {
+            slot.set(agent.resolved_residency());
         }
         if let Some(tools) = ctx.get::<ares_tools::Tools>() {
             agent.set_tools(tools);

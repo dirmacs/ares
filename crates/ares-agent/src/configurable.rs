@@ -11,6 +11,7 @@
 
 use crate::AgentConfig;
 use crate::{Agent, AgentResponse, ExecutionMetadata};
+use ares_llm::client::Residency;
 use ares_llm::compact::Compactor;
 #[cfg(feature = "postgres")]
 use ares_llm::compact::{CompactConfig, CompactionState, TurnEntry};
@@ -55,6 +56,9 @@ struct LlmAttemptResponse {
     response: LLMResponse,
     provider_name: String,
     model_name: String,
+    /// Where the client that answered this attempt sends its calls (the fallback's when a
+    /// fallback answered).
+    residency: Residency,
 }
 
 /// State prepared once per `execute_with_tools` call: the seeded message
@@ -418,6 +422,10 @@ fn attempt_to_generate_json(attempt: &LlmAttemptResponse) -> serde_json::Value {
         "usage": attempt.response.usage,
         "model_name": attempt.model_name,
         "provider_name": attempt.provider_name,
+        // Already sanitized (a `Residency` has no other constructor). The reader below sanitizes
+        // again, so whatever a listener leaves in the payload is reduced the same way.
+        "resolved_endpoint": attempt.residency.resolved_endpoint(),
+        "region": attempt.residency.region(),
         "tool_calls": attempt.response.tool_calls,
         "finish_reason": attempt.response.finish_reason,
     })
@@ -756,6 +764,14 @@ Handle employee info, policies, and benefits."#
         (self.llm.model_name(), &self.provider_name)
     }
 
+    /// Where the primary client sends its calls (sanitized): the residency of the provider
+    /// [`ConfigurableAgent::resolved_model_and_provider`] names. A run that fails after
+    /// resolution records this next to that provider's name; a run that is answered records the
+    /// residency of whichever client answered.
+    pub fn resolved_residency(&self) -> Residency {
+        self.llm.residency()
+    }
+
     /// Get the max tool iterations setting
     pub fn max_tool_iterations(&self) -> usize {
         self.max_tool_iterations
@@ -1005,6 +1021,7 @@ Handle employee info, policies, and benefits."#
                 response,
                 provider_name: self.provider_name.clone(),
                 model_name: self.llm.model_name().to_string(),
+                residency: self.llm.residency(),
             }),
             Err(e) => {
                 let primary_error = e.to_string();
@@ -1027,6 +1044,7 @@ Handle employee info, policies, and benefits."#
                                 response,
                                 provider_name: fallback.provider_name.clone(),
                                 model_name: fallback.llm.model_name().to_string(),
+                                residency: fallback.llm.residency(),
                             });
                         }
                         Err(fallback_error) => {
@@ -1124,6 +1142,7 @@ Handle employee info, policies, and benefits."#
                 response,
                 provider_name: self.provider_name.clone(),
                 model_name: self.llm.model_name().to_string(),
+                residency: self.llm.residency(),
             }),
             Err(e) => {
                 let primary_error = e.to_string();
@@ -1150,6 +1169,7 @@ Handle employee info, policies, and benefits."#
                                 response,
                                 provider_name: fallback.provider_name.clone(),
                                 model_name: fallback.llm.model_name().to_string(),
+                                residency: fallback.llm.residency(),
                             });
                         }
                         Err(fallback_error) => {
@@ -1202,6 +1222,13 @@ Handle employee info, policies, and benefits."#
             .and_then(|v| v.as_str())
             .map(str::to_string)
             .unwrap_or_else(|| self.provider_name.clone());
+        // Residency crosses the same JSON bridge as the names, and is sanitized on the way back
+        // in. Absent (a listener rebuilt the payload without it) reads as unknown, never as the
+        // primary's: when a fallback answered, a guess would name the wrong provider.
+        let residency = Residency::from_raw(
+            out.get("resolved_endpoint").and_then(|v| v.as_str()),
+            out.get("region").and_then(|v| v.as_str()),
+        );
         let tool_calls = out
             .get("tool_calls")
             .cloned()
@@ -1223,6 +1250,7 @@ Handle employee info, policies, and benefits."#
             },
             provider_name,
             model_name,
+            residency,
         })
     }
 
@@ -1367,6 +1395,7 @@ When referencing facts above, cite [E1], [E2] etc.",
         let mut total_usage = TokenUsage::default();
         let mut last_provider_name = self.provider_name.clone();
         let mut last_model_name = self.llm.model_name().to_string();
+        let mut last_residency = self.llm.residency();
 
         for iteration in 0..self.max_tool_iterations {
             let attempt = self
@@ -1374,6 +1403,7 @@ When referencing facts above, cite [E1], [E2] etc.",
                 .await?;
             last_provider_name = attempt.provider_name;
             last_model_name = attempt.model_name;
+            last_residency = attempt.residency;
             let response = attempt.response;
 
             if let Some(usage) = &response.usage {
@@ -1391,6 +1421,7 @@ When referencing facts above, cite [E1], [E2] etc.",
                     metadata: Some(ExecutionMetadata {
                         model_name: last_model_name,
                         provider_name: last_provider_name,
+                        residency: last_residency,
                     }),
                 });
             }
@@ -1423,6 +1454,7 @@ When referencing facts above, cite [E1], [E2] etc.",
         if let Ok(attempt) = &final_response {
             last_provider_name = attempt.provider_name.clone();
             last_model_name = attempt.model_name.clone();
+            last_residency = attempt.residency.clone();
         }
 
         if let Ok(attempt) = &final_response {
@@ -1527,6 +1559,7 @@ When referencing facts above, cite [E1], [E2] etc.",
             metadata: Some(ExecutionMetadata {
                 model_name: last_model_name,
                 provider_name: last_provider_name,
+                residency: last_residency,
             }),
         })
     }
@@ -2033,6 +2066,7 @@ impl Agent for ConfigurableAgent {
         let llm_latency = llm_start.elapsed().as_millis() as i64;
         let provider_name = attempt.provider_name;
         let model_name = attempt.model_name;
+        let residency = attempt.residency;
         let llm_response = attempt.response;
 
         {
@@ -2101,6 +2135,7 @@ impl Agent for ConfigurableAgent {
             metadata: Some(ExecutionMetadata {
                 model_name,
                 provider_name,
+                residency,
             }),
         })
     }

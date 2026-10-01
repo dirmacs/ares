@@ -513,7 +513,13 @@ impl EntryTree {
     /// Refusals (the tree is left untouched):
     /// - unknown `id` or `target`;
     /// - moving an entry under ITSELF or one of its own descendants;
-    /// - any renamed id colliding with an entry outside the moved subtree.
+    /// - any move after which a renamed entry would share its id with
+    ///   another entry. The check is on the FINAL ids (renamed or kept), so it
+    ///   covers an entry outside the moved subtree and also one inside it that
+    ///   keeps its id, such as a pointer-only child (its id is outside the
+    ///   `{id}:` namespace, so the cascade maps it to itself). A duplicate
+    ///   among entries the move leaves alone is not the move's doing and is
+    ///   not refused.
     pub fn move_entry(
         &mut self,
         id: &str,
@@ -555,22 +561,47 @@ impl EntryTree {
             renames.push((desc, new_id));
         }
 
-        // Collision check: each new id must be free outside the moved set.
-        for (old, new) in &renames {
-            let in_subtree = renames.iter().any(|(o, _)| o == new);
-            if !in_subtree {
-                if let Some(existing) = self.0.iter().find(|e| &e.id == new) {
-                    return Err(format!(
-                        "cannot rename '{old}' to '{new}': id already used by plugin '{}'",
-                        existing.plugin
-                    ));
-                }
-            }
-        }
         let map: HashMap<&str, &str> = renames
             .iter()
             .map(|(o, n)| (o.as_str(), n.as_str()))
             .collect();
+
+        // Collision check on the FINAL ids, before anything is mutated. An
+        // entry's final id is its renamed id, or its own id when the cascade
+        // leaves it alone: a pointer-only child lives outside the `{id}:`
+        // namespace and maps to itself. An entry this move RENAMES may not
+        // end up under an id any other entry also ends up under, whether
+        // that entry is outside the moved set or inside it. (The old check
+        // skipped a new id equal to an OLD id of the moved set, assuming that
+        // id was renamed away; a pointer-only child's is not, so two entries
+        // could share the new id.)
+        fn final_id<'a>(map: &HashMap<&str, &'a str>, id: &'a str) -> &'a str {
+            map.get(id).copied().unwrap_or(id)
+        }
+        for (old, new) in renames.iter().filter(|(o, n)| o != n) {
+            for (i, _) in self.0.iter().enumerate().filter(|(_, e)| e.id == *old) {
+                let clash = self
+                    .0
+                    .iter()
+                    .enumerate()
+                    .find(|(j, other)| *j != i && final_id(&map, &other.id) == new.as_str());
+                if let Some((_, other)) = clash {
+                    return Err(if map.contains_key(other.id.as_str()) {
+                        // Both entries belong to the moved set.
+                        format!(
+                            "cannot move entry '{id}': entries '{old}' and '{}' \
+                             would both end up with id '{new}'",
+                            other.id
+                        )
+                    } else {
+                        format!(
+                            "cannot rename '{old}' to '{new}': id already used by plugin '{}'",
+                            other.plugin
+                        )
+                    });
+                }
+            }
+        }
 
         // Apply renames + pointer remaps in one pass.
         for e in self.0.iter_mut() {
@@ -688,11 +719,15 @@ impl Loader {
 
         let noop = Self::composition_equivalent(&before, current);
         if noop {
-            for (old, new) in &renamed {
-                // Re-key the journal record, keeping plugin/config/generation
-                // AND the tracked fiber id — identity preservation is the
-                // whole point of the noop path.
-                let Some(record) = journal.rename(old, new) else {
+            // Re-key every journal record as ONE batch, keeping
+            // plugin/config/generation AND the tracked fiber id — identity
+            // preservation is the whole point of the noop path. A batch
+            // because one pair's new key can be another pair's old key: pair
+            // by pair, an insert overwrote the record the next pair was
+            // about to take.
+            let records = journal.rename_many(&renamed);
+            for ((_, new), record) in renamed.iter().zip(records) {
+                let Some(record) = record else {
                     continue;
                 };
                 let Some(fid) = record.fiber_id else {

@@ -2061,6 +2061,132 @@ mod tests {
         );
     }
 
+    // =====================================================================
+    // Item 2.6a: the draft -> publish gate (pure parts)
+    // =====================================================================
+
+    #[test]
+    fn agent_config_change_source_publish_carries_the_digest() {
+        assert_eq!(
+            super::AgentConfigChangeSource::Publish {
+                digest: "ab12".into()
+            }
+            .as_str(),
+            "publish:ab12"
+        );
+    }
+
+    fn authors(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    #[test]
+    fn publish_refusal_single_author_approving_is_refused() {
+        assert_eq!(
+            publish_refusal(Some("d"), &authors(&["a"]), "a", "d"),
+            Some(PublishRefusal::ApproverIsAuthor)
+        );
+    }
+
+    #[test]
+    fn publish_refusal_any_author_of_the_draft_is_refused() {
+        // A writes, B edits, A approves; and B approves.
+        assert_eq!(
+            publish_refusal(Some("d"), &authors(&["a", "b"]), "a", "d"),
+            Some(PublishRefusal::ApproverIsAuthor)
+        );
+        assert_eq!(
+            publish_refusal(Some("d"), &authors(&["a", "b"]), "b", "d"),
+            Some(PublishRefusal::ApproverIsAuthor)
+        );
+    }
+
+    #[test]
+    fn publish_refusal_lets_a_second_person_publish() {
+        assert_eq!(publish_refusal(Some("d"), &authors(&["a"]), "b", "d"), None);
+    }
+
+    #[test]
+    fn publish_refusal_counts_the_static_key_as_one_actor() {
+        assert_eq!(
+            publish_refusal(Some("d"), &authors(&["admin_secret"]), "admin_secret", "d"),
+            Some(PublishRefusal::ApproverIsAuthor)
+        );
+        assert_eq!(
+            publish_refusal(Some("d"), &authors(&["admin_secret"]), "user-1", "d"),
+            None
+        );
+    }
+
+    #[test]
+    fn publish_refusal_binds_the_approval_to_the_reviewed_digest() {
+        assert_eq!(
+            publish_refusal(Some("new"), &authors(&["a"]), "b", "old"),
+            Some(PublishRefusal::DraftChanged)
+        );
+        // Compared exactly: the request's value is never normalised.
+        assert_eq!(
+            publish_refusal(Some("abc"), &authors(&["a"]), "b", "ABC"),
+            Some(PublishRefusal::DraftChanged)
+        );
+    }
+
+    #[test]
+    fn publish_refusal_needs_a_draft_and_a_recorded_author() {
+        assert_eq!(
+            publish_refusal(None, &authors(&["a"]), "b", "d"),
+            Some(PublishRefusal::NoDraft)
+        );
+        assert_eq!(
+            publish_refusal(Some("d"), &[], "b", "d"),
+            Some(PublishRefusal::NoRecordedAuthor)
+        );
+    }
+
+    #[test]
+    fn never_published_config_names_nothing_runnable() {
+        let config = never_published_config();
+        assert_eq!(config, serde_json::json!({}));
+        assert!(
+            validate_tenant_config(&config).is_err(),
+            "no model: nothing can run from it"
+        );
+        assert!(config.get("skill_id").is_none());
+    }
+
+    #[test]
+    fn only_a_published_snapshot_carries_a_digest() {
+        let agent = sample_agent();
+        let published = published_snapshot(&agent, "d1", Some("a"), "b");
+        assert_eq!(snapshot_published_digest(&published).as_deref(), Some("d1"));
+        assert_eq!(published["published_by"], "a");
+        assert_eq!(published["approved_by"], "b");
+
+        let draft = draft_snapshot(&agent, Some(&serde_json::json!({"model": "m"})));
+        assert_eq!(snapshot_published_digest(&draft), None);
+        assert_eq!(draft["draft_config"]["model"], "m");
+
+        assert_eq!(
+            snapshot_published_digest(&tenant_agent_snapshot(&agent)),
+            None,
+            "a pre-gate snapshot carries none"
+        );
+        assert_eq!(
+            snapshot_published_digest(&serde_json::json!({"published_digest": 7})),
+            None
+        );
+        assert_eq!(
+            snapshot_published_digest(&serde_json::json!({"published_digest": " "})),
+            None
+        );
+        assert_eq!(
+            tenant_agent_from_snapshot(published)
+                .expect("a published snapshot still restores")
+                .agent_name,
+            "listener"
+        );
+    }
+
     #[test]
     fn tenant_agent_not_found_error_message_contains_ids() {
         let msg = tenant_agent_not_found_error("bot", "tenant-x").to_string();

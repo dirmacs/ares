@@ -1264,6 +1264,107 @@ mod tests {
             assert!(err.to_string().contains("disabled"));
         }
 
+        async fn counting_ollama_chat(
+            axum::extract::State(hits): axum::extract::State<
+                Arc<std::sync::atomic::AtomicUsize>,
+            >,
+            body: Json<Value>,
+        ) -> Json<Value> {
+            hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            fake_ollama_chat(body).await
+        }
+
+        /// A mock Ollama that counts the requests reaching it.
+        async fn spawn_counting_ollama() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+            let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let app = Router::new()
+                .route("/api/chat", post(counting_ollama_chat))
+                .with_state(Arc::clone(&hits));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind mock ollama");
+            let addr = listener.local_addr().expect("mock ollama addr");
+            tokio::spawn(async move {
+                axum::serve(listener, app).await.expect("serve mock ollama");
+            });
+            (format!("http://{addr}"), hits)
+        }
+
+        // Item 2.6a (D-7): a row that was never published is refused like a
+        // disabled agent, with "not published". A row written by the store's
+        // create is a draft until a second admin publishes it.
+        #[tokio::test]
+        async fn load_tenant_agent_config_refuses_a_never_published_row() {
+            let pool = test_pool().await;
+            let tenant_id = unique_id("never-published");
+            insert_tenant_agent(&pool, &tenant_id, "product", "draft-prompt").await;
+
+            let err = match load_tenant_agent_config(&pool, &tenant_id, "product").await {
+                Err(err) => err,
+                Ok(loaded) => panic!(
+                    "a never-published row must not load, got {:?}",
+                    loaded.map(|(_, version, json)| (version, json))
+                ),
+            };
+
+            assert!(
+                matches!(&err, AppError::NotFound(m) if m.contains("not published")),
+                "expected a not-published refusal, got {err:?}"
+            );
+        }
+
+        // Item 2.6a (D-7): the required run path refuses a never-published
+        // row, and the same-named registry agent does not run in its place
+        // (no registry fallback).
+        #[tokio::test]
+        async fn never_published_row_runs_nothing_and_does_not_fall_back_to_the_registry() {
+            let (ollama, hits) = spawn_counting_ollama().await;
+            let pool = test_pool().await;
+            let tenant_id = unique_id("never-published-run");
+            // The registry agent would be runnable for this tenant.
+            allow_mock_model(&pool, &tenant_id).await;
+            insert_tenant_agent(&pool, &tenant_id, "product", "draft-prompt").await;
+
+            let root = cordis::Context::new_root();
+            root.provide(ares_store::TenantDb::new(Arc::new(
+                ares_store::PostgresClient { pool: pool.clone() },
+            )));
+            root.provide(ares_store::FleetSecrets::new());
+            let exec = crate::Execute::new()
+                .with_agent_registry(Arc::new(registry_with_product(&ollama)));
+            let ctx = crate::request_tenant_ctx(
+                &root,
+                ares_types::models::TenantContext::new(
+                    tenant_id.clone(),
+                    ares_types::models::TenantTier::Pro,
+                ),
+            );
+            let req = crate::AgentRequest {
+                agent_name: "product".to_string(),
+                message: "hello".to_string(),
+                require_tenant_agent: true,
+                ..Default::default()
+            };
+
+            let err = match exec.run(&req, &ctx).await {
+                Err(err) => err,
+                Ok(result) => panic!(
+                    "a never-published row must not run, but {:?} ran: {:?}",
+                    result.source, result.response.content
+                ),
+            };
+
+            assert!(
+                matches!(&err, AppError::NotFound(m) if m.contains("not published")),
+                "expected a not-published refusal, got {err:?}"
+            );
+            assert_eq!(
+                hits.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "no agent called the model"
+            );
+        }
+
         // Renamed from `resolve_agent_for_tenant_errors_on_invalid_tenant_config` (2.20):
         // the invalid-config error is raised by `load_tenant_agent_config`.
         #[tokio::test]

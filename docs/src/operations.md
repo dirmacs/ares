@@ -40,8 +40,8 @@ Allowed methods cover GET, POST, PUT, PATCH, DELETE, and OPTIONS. Allowed reques
 | `per_key_requests_per_minute` | 0 (off) | One bucket per `Authorization: Bearer` credential, keyed by its SHA-256 and never logged. Nothing is authenticated here. |
 | `burst` | 0 | Bucket size in requests, for each limit. A bucket holds at least 1. |
 | `trusted_proxies` | `["127.0.0.1", "::1"]` | Exact IP addresses whose forwarding headers are read. A CIDR range fails the config load. |
-| `max_tracked_clients` | 100000 | Most client buckets held at once (at most about 3.3 MB). |
-| `max_tracked_keys` | 100000 | Most key buckets held at once (at most about 5.4 MB). |
+| `max_tracked_clients` | 100000 | Most client buckets held at once. The table stays within its cap's size (about 3.3 MB); a sweep briefly copies the live buckets out (up to 2.4 MB more). |
+| `max_tracked_keys` | 100000 | Most key buckets held at once. The table stays within about 5.4 MB; a sweep briefly copies the live buckets out (up to 4 MB more). |
 
 ```toml
 [server.rate_limit]
@@ -50,12 +50,18 @@ burst = 10                            # ...after up to 10 at once
 trusted_proxies = ["127.0.0.1"]       # the exact address your reverse proxy connects from
 ```
 
-- **The client** is the peer address, unless the peer is a trusted proxy. Then it is the rightmost `X-Forwarded-For` address that is not itself a trusted proxy, or `X-Real-IP` when there is no `X-Forwarded-For` and `X-Real-IP` has exactly one line. Forwarding headers from any other peer are never read. Behind a reverse proxy, have it send `X-Forwarded-For` (or `X-Real-IP`) and list its exact address in `trusted_proxies`; otherwise every client shares the proxy's bucket.
+- **The client** is the peer address, unless the peer is a trusted proxy. Then it is the rightmost `X-Forwarded-For` address that is not itself a trusted proxy, or `X-Real-IP` when there is no `X-Forwarded-For` and `X-Real-IP` has exactly one line. Forwarding headers from any other peer are never read. Behind a reverse proxy, list its exact address in `trusted_proxies`, and have the proxy **set** `X-Forwarded-For` itself: replacing what the client sent, or appending the client's address as the rightmost entry. `X-Forwarded-For` always wins over `X-Real-IP`, so a proxy that sets only `X-Real-IP` must strip any `X-Forwarded-For` the client sent, or the client chooses its own bucket. Without either header, every client shares the proxy's bucket.
 - **Exempt:** only `GET` and `HEAD` of exactly `/health`, the container health check.
 - **A refusal** is HTTP 429 with `{"error":"rate limited","code":"RATE_LIMITED"}` and `Retry-After` in whole seconds. Each refusal logs one `warn` line naming the limit and the client's network (/24 or /64), never a key or a full address.
-- **Memory:** when the client or key map is at its cap with only live buckets, new clients or keys share one overflow bucket at the same rate, and a count is logged at most once a minute.
+- **Memory:** when the client or key map is at its cap with only live buckets, new clients or keys share one overflow bucket at the same rate, and a count is logged at most once a minute. The limiter fails closed, so a flood can starve legitimate traffic:
+  - every client or key the map does not hold shares that one bucket, including idle and low-rate clients: their buckets refill, are swept, and they come back as new;
+  - it lasts as long as the flood, and ends as soon as it stops;
+  - keeping a map full takes at least `cap` identities that each stay live, about `cap` × rate / 60 admitted requests per second in all (100 000 per second at the default cap and 60 per minute);
+  - any `Bearer` string enters the key map, authenticated or not.
+
+  `global_requests_per_minute` is the only backstop against a client that holds many /64s.
 - **A change needs a restart:** the limits are read at startup.
-- **The retired keys** `rate_limit_per_second` and `rate_limit_burst` are ignored. They default to 100 and 10, so unless both are set to 0, startup logs one warning that says what they meant: under tower_governor, `per_second(n)` meant one request every `n` seconds per peer IP, and `rate_limit_burst = 0` made the old binary panic at boot. The values are not translated. So a config with no `[server.rate_limit]` table, which the old binary limited per peer IP by default, now runs with no limiter.
+- **The retired keys** `rate_limit_per_second` and `rate_limit_burst` are ignored. They default to 100 and 10, so unless both are set to 0, startup logs one warning that says what they meant: under tower_governor, `per_second(n)` meant one request every `n` seconds per peer IP, and `rate_limit_burst = 0` with `rate_limit_per_second` above 0 made the old binary panic at boot. The values are not translated. So a config with no `[server.rate_limit]` table, which the old binary limited per peer IP by default, now runs with no limiter.
 
 A second, independent limiter lives in the API-key auth middleware: tenant daily usage accumulates in the PostgreSQL `daily_rate_limits` table keyed by `(tenant_id, usage_date)` and caches per tenant in memory (`crates/ares-store/src/tenants.rs`). If the database check itself fails, requests fail closed with HTTP 500 `Failed to check rate limit`.
 

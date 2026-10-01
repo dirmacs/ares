@@ -180,7 +180,7 @@ ares-server
 6. **Start the entries watcher** (`src/main.rs:592-625`). File events re-compose the program and apply diffs through the loader journal. If the watcher cannot start, a 30-second poll takes over.
 7. **Preload runtime providers and snapshot agent configs** (`src/main.rs:630-707`). Runtime provider registrations load; current agent definitions land in the version history table.
 8. **Build HTTP layers** (`run_server` in `src/main.rs`). CORS applies from `cors_origins`; the rate-limit layer is added only when a `[server.rate_limit]` limit is above 0.
-9. **Bind and serve** (`src/main.rs:949-964`). The listener binds `host:port`, and Axum serves with graceful shutdown on Ctrl+C or SIGTERM.
+9. **Bind and serve** (`run_server` in `src/main.rs`). The listener binds `host:port`, and Axum serves with graceful shutdown on Ctrl+C or SIGTERM.
 
 If step 4 or 9 fails, you see the reason in the log before the process exits. Nothing listens before step 9, so a failure never leaves a half-open port.
 

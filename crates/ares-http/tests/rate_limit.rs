@@ -3,8 +3,8 @@
 //!
 //! Pure: no database, no network. Time comes from a `ManualClock`, so no
 //! test sleeps. Addresses come only from the documentation ranges
-//! (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24) and loopback. Keys are
-//! dummies.
+//! (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 2001:db8::/32) and
+//! loopback. Keys are dummies.
 
 #![cfg(feature = "postgres")]
 
@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use ares_http::config::{RateLimitConfig, ServerConfig};
 use ares_http::middleware::rate_limit::{
-    legacy_keys_warning, warn_legacy_keys, ManualClock, RateLimitLayer, RefusalCounts,
+    legacy_keys_warning, warn_legacy_keys, ManualClock, RateLimitLayer, RefusalCounts, Tracked,
     EXEMPT_HEALTH_PATHS,
 };
 use axum::body::Body;
@@ -73,14 +73,32 @@ impl Harness {
         peer: &str,
         headers: &[(&str, &str)],
     ) -> Response {
+        self.send(method, path, Some(peer), headers).await
+    }
+
+    /// `peer = None`: a server that was not built with
+    /// `into_make_service_with_connect_info` (no `ConnectInfo` extension).
+    async fn send(
+        &self,
+        method: Method,
+        path: &str,
+        peer: Option<&str>,
+        headers: &[(&str, &str)],
+    ) -> Response {
         let mut builder = Request::builder().method(method).uri(path);
         for (name, value) in headers {
             builder = builder.header(*name, *value);
         }
         let mut req = builder.body(Body::empty()).expect("request");
-        req.extensions_mut()
-            .insert(ConnectInfo(SocketAddr::new(ip(peer), 40_000)));
+        if let Some(peer) = peer {
+            req.extensions_mut()
+                .insert(ConnectInfo(SocketAddr::new(ip(peer), 40_000)));
+        }
         self.router.clone().oneshot(req).await.expect("infallible")
+    }
+
+    fn tracked(&self) -> Tracked {
+        self.layer.limiter().tracked()
     }
 
     async fn get(&self, path: &str, peer: &str, headers: &[(&str, &str)]) -> StatusCode {
@@ -208,6 +226,8 @@ async fn off_by_default_no_request_is_ever_refused() {
     assert_eq!(config.per_key_requests_per_minute, 0);
     assert_eq!(config.burst, 0);
     assert_eq!(config.trusted_proxies, vec![ip("127.0.0.1"), ip("::1")]);
+    assert_eq!(config.max_tracked_clients, 100_000);
+    assert_eq!(config.max_tracked_keys, 100_000);
 
     let h = Harness::new(config);
     assert!(
@@ -252,6 +272,8 @@ per_client_requests_per_minute = 60
 per_key_requests_per_minute = 120
 burst = 5
 trusted_proxies = ["127.0.0.1", "::1", "192.0.2.10"]
+max_tracked_clients = 5000
+max_tracked_keys = 7000
 "#,
     )
     .expect("[rate_limit] parses inside ServerConfig");
@@ -264,7 +286,15 @@ trusted_proxies = ["127.0.0.1", "::1", "192.0.2.10"]
         rl.trusted_proxies,
         vec![ip("127.0.0.1"), ip("::1"), ip("192.0.2.10")]
     );
+    assert_eq!(rl.max_tracked_clients, 5000);
+    assert_eq!(rl.max_tracked_keys, 7000);
     assert!(rl.any_limit_set());
+
+    // trusted_proxies takes exact addresses: a CIDR range fails the load.
+    let cidr = toml::from_str::<ServerConfig>(
+        "[rate_limit]\ntrusted_proxies = [\"127.0.0.0/8\"]\n",
+    );
+    assert!(cidr.is_err(), "a CIDR trusted proxy must not load");
 
     // No table at all: every limit off.
     let bare: ServerConfig = toml::from_str("host = \"127.0.0.1\"\n").expect("bare server");
@@ -905,4 +935,426 @@ async fn old_keys_warn_once_and_limit_nothing() {
     // The built-in defaults, used when the keys are absent, are 100 and 10.
     let message = legacy_keys_warning(&ServerConfig::default()).expect("defaults are above 0");
     assert!(message.contains("one request every 100 s"), "{message}");
+
+    // rate_limit_burst = 0 with the old limiter on: tower_governor's finish()
+    // returned None, so the old binary panicked at boot. Say so, not "a burst of 0".
+    server.rate_limit_per_second = 50;
+    server.rate_limit_burst = 0;
+    let message = legacy_keys_warning(&server).expect("per_second above 0 is warned about");
+    assert!(message.contains("panicked at boot"), "{message}");
+    assert!(!message.contains("a burst of 0"), "{message}");
+}
+
+// ============================================================================
+// Fix round 1
+// ============================================================================
+
+/// rev1 F1 / rev2 F3: an IPv6 client is its /64, in the bucket and in the log.
+#[tokio::test]
+async fn ipv6_clients_share_a_bucket_per_64() {
+    let capture = Capture::default();
+    let _guard = tracing::subscriber::set_default(capture.clone());
+
+    let h = Harness::new(RateLimitConfig {
+        per_client_requests_per_minute: 60,
+        burst: 1,
+        ..off()
+    });
+
+    // Direct peers: one /64 is one client; the next /64 is another.
+    assert_eq!(h.get("/v1/ping", "2001:db8:1:2::1", &[]).await, StatusCode::OK);
+    assert_eq!(
+        h.get("/v1/ping", "2001:db8:1:2:ffff:ffff:ffff:fffe", &[]).await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "another address in the same /64 shares the bucket"
+    );
+    assert_eq!(
+        h.get("/v1/ping", "2001:db8:1:3::1", &[]).await,
+        StatusCode::OK,
+        "a different /64 is a different client"
+    );
+
+    // Behind the trusted proxy, the same.
+    let a = [("x-forwarded-for", "2001:db8:5:6::7")];
+    let same_64 = [("x-forwarded-for", "2001:db8:5:6:a:b:c:d")];
+    let other_64 = [("x-forwarded-for", "2001:db8:5:7::7")];
+    assert_eq!(h.get("/v1/ping", "127.0.0.1", &a).await, StatusCode::OK);
+    assert_eq!(
+        h.get("/v1/ping", "127.0.0.1", &same_64).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(h.get("/v1/ping", "127.0.0.1", &other_64).await, StatusCode::OK);
+
+    // IPv4-mapped IPv6 is IPv4: a bucket per address, not per /64.
+    assert_eq!(h.get("/v1/ping", "::ffff:203.0.113.7", &[]).await, StatusCode::OK);
+    assert_eq!(
+        h.get("/v1/ping", "203.0.113.7", &[]).await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "the mapped and plain forms are one client"
+    );
+    assert_eq!(
+        h.get("/v1/ping", "::ffff:203.0.113.8", &[]).await,
+        StatusCode::OK,
+        "two mapped IPv4 addresses are two clients, not one /64"
+    );
+
+    // The log names the /64, never an address.
+    let warns = capture.warn_lines();
+    assert_eq!(warns.len(), 3, "one line per refusal: {warns:#?}");
+    assert!(warns[0].contains("client_net=2001:db8:1:2::/64"), "{}", warns[0]);
+    assert!(warns[1].contains("client_net=2001:db8:5:6::/64"), "{}", warns[1]);
+    assert!(warns[2].contains("client_net=203.0.113.0/24"), "{}", warns[2]);
+    let text = capture.all_text();
+    for full in [
+        "2001:db8:1:2::1",
+        "2001:db8:1:2:ffff",
+        "2001:db8:5:6::7",
+        "2001:db8:5:6:a",
+        "203.0.113.7",
+    ] {
+        assert!(!text.contains(full), "a full address was logged: {full}\n{text}");
+    }
+}
+
+/// rev1 F2: X-Real-IP is read only when it has exactly one line. rev1's
+/// probe sent the client's line first and the proxy's second.
+#[tokio::test]
+async fn x_real_ip_with_more_than_one_line_is_not_read() {
+    let h = Harness::new(RateLimitConfig {
+        per_client_requests_per_minute: 60,
+        burst: 2,
+        ..off()
+    });
+    let two_lines = [
+        ("x-real-ip", "198.51.100.20"),
+        ("x-real-ip", "203.0.113.66"),
+    ];
+    let victim = [("x-real-ip", "198.51.100.20")];
+
+    assert_eq!(
+        h.client_of("127.0.0.1", &two_lines),
+        Some(ip("127.0.0.1")),
+        "more than one line: the client is the peer"
+    );
+    assert_eq!(
+        h.client_of(
+            "127.0.0.1",
+            &[("x-real-ip", "203.0.113.66"), ("x-real-ip", "198.51.100.20")]
+        ),
+        Some(ip("127.0.0.1"))
+    );
+    assert_eq!(
+        h.client_of("127.0.0.1", &victim),
+        Some(ip("198.51.100.20")),
+        "exactly one line is read"
+    );
+
+    // The two-line request spends the proxy's bucket, never the victim's.
+    assert_eq!(h.get("/v1/ping", "127.0.0.1", &two_lines).await, StatusCode::OK);
+    assert_eq!(h.get("/v1/ping", "127.0.0.1", &two_lines).await, StatusCode::OK);
+    assert_eq!(
+        h.get("/v1/ping", "127.0.0.1", &two_lines).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        h.get("/v1/ping", "127.0.0.1", &victim).await,
+        StatusCode::OK,
+        "the client could not choose the victim's bucket"
+    );
+    assert_eq!(h.get("/v1/ping", "127.0.0.1", &victim).await, StatusCode::OK);
+}
+
+/// rev2 F1: interpretation 5 (a refused request spends nothing) and the
+/// longest-wait rule, with two dimensions at two rates. rev2's S1 (a refused
+/// request spends the admitting buckets) and S2 (the first refuser binds)
+/// each turn this red.
+#[tokio::test]
+async fn a_refusal_spends_nothing_and_the_longest_wait_binds() {
+    const KEY: &str = "Bearer ares_dummy_limiter_key_two_rates_0004";
+    let key = [("authorization", KEY)];
+
+    // Client 60/min (a token every 1 s), key 1/min (every 60 s), bucket of 1.
+    let h = Harness::new(RateLimitConfig {
+        per_client_requests_per_minute: 60,
+        per_key_requests_per_minute: 1,
+        burst: 1,
+        ..off()
+    });
+    assert_eq!(h.get("/v1/ping", "203.0.113.7", &key).await, StatusCode::OK);
+
+    // 1 s later the client has a token again; the key's is 59 s away.
+    h.clock.advance(Duration::from_secs(1));
+    let refused = h.call(Method::GET, "/v1/ping", "203.0.113.7", &key).await;
+    assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(retry_after(&refused), "59", "the key's wait");
+    assert_eq!(
+        h.refusals(),
+        RefusalCounts {
+            global: 0,
+            client: 0,
+            key: 1
+        }
+    );
+    // That refusal spent nothing: the client's token is still there.
+    assert_eq!(
+        h.get("/v1/ping", "203.0.113.7", &[]).await,
+        StatusCode::OK,
+        "a key refusal must not spend the client bucket (S1)"
+    );
+
+    // Now both refuse: the client's wait is 1 s, the key's 59 s. The longest
+    // binds, for Retry-After and for the counter.
+    let refused = h.call(Method::GET, "/v1/ping", "203.0.113.7", &key).await;
+    assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        retry_after(&refused),
+        "59",
+        "the longest wait binds, not the first refuser (S2)"
+    );
+    assert_eq!(
+        h.refusals(),
+        RefusalCounts {
+            global: 0,
+            client: 0,
+            key: 2
+        },
+        "counted against the binding (longest-wait) dimension"
+    );
+
+    // The converse: client 1/min, key 60/min. The client's wait binds, and a
+    // client refusal leaves the key bucket untouched.
+    let h = Harness::new(RateLimitConfig {
+        per_client_requests_per_minute: 1,
+        per_key_requests_per_minute: 60,
+        burst: 1,
+        ..off()
+    });
+    assert_eq!(h.get("/v1/ping", "198.51.100.9", &key).await, StatusCode::OK);
+    h.clock.advance(Duration::from_secs(1));
+    let refused = h.call(Method::GET, "/v1/ping", "198.51.100.9", &key).await;
+    assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(retry_after(&refused), "59", "the client's wait");
+    assert_eq!(
+        h.refusals(),
+        RefusalCounts {
+            global: 0,
+            client: 1,
+            key: 0
+        }
+    );
+    assert_eq!(
+        h.get("/v1/ping", "198.51.100.10", &key).await,
+        StatusCode::OK,
+        "a client refusal must not spend the key bucket (S1)"
+    );
+}
+
+/// rev2 F2: the client map has a ceiling. Full of live buckets, a new client
+/// shares one overflow bucket at the same rate; expired buckets are swept
+/// before a new one is added; the overflow is logged once a minute, a count.
+#[tokio::test]
+async fn client_map_is_capped_and_new_clients_share_an_overflow_bucket() {
+    let capture = Capture::default();
+    let _guard = tracing::subscriber::set_default(capture.clone());
+    let overflow_lines = |c: &Capture| -> Vec<String> {
+        c.warn_lines()
+            .into_iter()
+            .filter(|l| l.contains("overflow"))
+            .collect()
+    };
+
+    let h = Harness::new(RateLimitConfig {
+        per_client_requests_per_minute: 60,
+        burst: 1,
+        max_tracked_clients: 2,
+        ..off()
+    });
+    assert_eq!(h.get("/v1/ping", "192.0.2.1", &[]).await, StatusCode::OK);
+    assert_eq!(h.get("/v1/ping", "192.0.2.2", &[]).await, StatusCode::OK);
+    assert_eq!(h.tracked().clients, 2);
+
+    // Full of live buckets: the next new client takes the overflow bucket's
+    // token, and the one after it is refused at the same rate.
+    assert_eq!(h.get("/v1/ping", "192.0.2.3", &[]).await, StatusCode::OK);
+    let refused = h.call(Method::GET, "/v1/ping", "192.0.2.4", &[]).await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "the overflow bucket is limited, never unlimited"
+    );
+    assert_eq!(retry_after(&refused), "1");
+    assert_eq!(h.tracked().clients, 2, "the cap holds");
+    assert_eq!(
+        h.get("/v1/ping", "192.0.2.1", &[]).await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "a tracked client keeps its own bucket"
+    );
+    assert_eq!(h.refusals().client, 2);
+
+    let lines = overflow_lines(&capture);
+    assert_eq!(lines.len(), 1, "logged once: {lines:#?}");
+    assert!(lines[0].contains("dimension=\"client\""), "{}", lines[0]);
+    assert!(lines[0].contains("requests=1"), "{}", lines[0]);
+    assert!(!lines[0].contains("192.0.2."), "no address: {}", lines[0]);
+
+    // 1 s later the tracked buckets are full again: they are swept before a
+    // new client is added, and the new clients are tracked.
+    h.clock.advance(Duration::from_secs(1));
+    assert_eq!(h.get("/v1/ping", "192.0.2.5", &[]).await, StatusCode::OK);
+    assert_eq!(h.tracked().clients, 1, "expired buckets swept first");
+    assert_eq!(h.get("/v1/ping", "192.0.2.6", &[]).await, StatusCode::OK);
+    assert_eq!(h.tracked().clients, 2);
+    // Full again: the overflow bucket (its token is back) serves the next one.
+    assert_eq!(h.get("/v1/ping", "192.0.2.7", &[]).await, StatusCode::OK);
+    assert_eq!(h.tracked().clients, 2);
+    assert_eq!(overflow_lines(&capture).len(), 1, "within the minute: no new line");
+
+    // A minute on, the next overflow logs the count since the last line.
+    h.clock.advance(Duration::from_secs(60));
+    assert_eq!(h.get("/v1/ping", "192.0.2.8", &[]).await, StatusCode::OK);
+    assert_eq!(h.get("/v1/ping", "192.0.2.9", &[]).await, StatusCode::OK);
+    assert_eq!(h.get("/v1/ping", "192.0.2.10", &[]).await, StatusCode::OK);
+    assert_eq!(h.tracked().clients, 2);
+    let lines = overflow_lines(&capture);
+    assert_eq!(lines.len(), 2, "{lines:#?}");
+    assert!(lines[1].contains("requests=3"), "{}", lines[1]);
+    for line in &lines {
+        assert!(!line.contains("192.0.2."), "no address: {line}");
+    }
+}
+
+/// rev2 F2: the key map has a ceiling too, with the same overflow.
+#[tokio::test]
+async fn key_map_is_capped_and_new_keys_share_an_overflow_bucket() {
+    let capture = Capture::default();
+    let _guard = tracing::subscriber::set_default(capture.clone());
+
+    let h = Harness::new(RateLimitConfig {
+        per_key_requests_per_minute: 60,
+        burst: 1,
+        max_tracked_keys: 2,
+        ..off()
+    });
+    let k = |n: u32| format!("Bearer ares_dummy_limiter_key_cap_{n:04}");
+    for n in 1..=2 {
+        let auth = k(n);
+        assert_eq!(
+            h.get("/v1/ping", "203.0.113.7", &[("authorization", auth.as_str())])
+                .await,
+            StatusCode::OK
+        );
+    }
+    assert_eq!(h.tracked().keys, 2);
+    let k3 = k(3);
+    let k4 = k(4);
+    let k1 = k(1);
+    assert_eq!(
+        h.get("/v1/ping", "203.0.113.7", &[("authorization", k3.as_str())])
+            .await,
+        StatusCode::OK,
+        "the overflow bucket's token"
+    );
+    assert_eq!(
+        h.get("/v1/ping", "203.0.113.7", &[("authorization", k4.as_str())])
+            .await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "the overflow bucket is limited"
+    );
+    assert_eq!(h.tracked().keys, 2, "the cap holds");
+    assert_eq!(
+        h.get("/v1/ping", "203.0.113.7", &[("authorization", k1.as_str())])
+            .await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "a tracked key keeps its own bucket"
+    );
+    assert_eq!(h.refusals().key, 2);
+
+    let lines: Vec<String> = capture
+        .warn_lines()
+        .into_iter()
+        .filter(|l| l.contains("overflow"))
+        .collect();
+    assert_eq!(lines.len(), 1, "{lines:#?}");
+    assert!(lines[0].contains("dimension=\"key\""), "{}", lines[0]);
+    let text = capture.all_text();
+    for secret in ["ares_dummy_limiter_key_cap", "Bearer"] {
+        assert!(!text.contains(secret), "a key leaked: {secret}\n{text}");
+    }
+}
+
+/// rev2 F2: a sweep gives memory back (capacity, not only length).
+#[tokio::test]
+async fn memory_returns_after_a_sweep() {
+    let h = Harness::new(RateLimitConfig {
+        per_client_requests_per_minute: 60,
+        burst: 1,
+        ..off()
+    });
+    for n in 0..5000u32 {
+        let peer = format!("2001:db8:0:{n:x}::1");
+        assert_eq!(h.get("/v1/ping", &peer, &[]).await, StatusCode::OK);
+    }
+    let before = h.tracked();
+    assert_eq!(before.clients, 5000);
+
+    // 2 s on, every one of those buckets is full again (expired). New clients
+    // arrive until a sweep runs; it must drop the old entries and return the
+    // table's memory.
+    h.clock.advance(Duration::from_secs(2));
+    let mut swept = None;
+    for n in 0..20_000u32 {
+        let peer = format!("2001:db8:1:{n:x}::1");
+        assert_eq!(h.get("/v1/ping", &peer, &[]).await, StatusCode::OK);
+        let now = h.tracked();
+        if now.clients < before.clients + n as usize + 1 {
+            swept = Some((n as usize, now));
+            break;
+        }
+    }
+    let (n, after) = swept.expect("a sweep ran before the table grew");
+    assert!(
+        after.clients <= n + 1,
+        "only the live buckets remain: {before:?} -> {after:?}"
+    );
+    assert!(
+        after.client_capacity < before.client_capacity,
+        "the table's capacity came back, not only its length: {before:?} -> {after:?}"
+    );
+}
+
+/// rev1 F3: with no ConnectInfo, one warning per process while enabled;
+/// behaviour is unchanged (one shared client bucket). This is the only test
+/// in this binary that sends a request with no peer.
+#[tokio::test]
+async fn no_connect_info_warns_once_per_process() {
+    let capture = Capture::default();
+    let _guard = tracing::subscriber::set_default(capture.clone());
+
+    let h = Harness::new(RateLimitConfig {
+        per_client_requests_per_minute: 60,
+        burst: 1,
+        ..off()
+    });
+    let first = h.send(Method::GET, "/v1/ping", None, &[]).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    for _ in 0..3 {
+        let next = h.send(Method::GET, "/v1/ping", None, &[]).await;
+        assert_eq!(
+            next.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "unchanged: requests with no peer share one client bucket"
+        );
+    }
+    let peerless: Vec<String> = capture
+        .warn_lines()
+        .into_iter()
+        .filter(|l| l.contains("ConnectInfo"))
+        .collect();
+    assert_eq!(peerless.len(), 1, "one warning per process: {peerless:#?}");
+    let refusals: Vec<String> = capture
+        .warn_lines()
+        .into_iter()
+        .filter(|l| l.contains("client_net=unknown"))
+        .collect();
+    assert_eq!(refusals.len(), 3, "{refusals:#?}");
 }

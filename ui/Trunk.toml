@@ -2,6 +2,18 @@
 target = "index.html"
 dist = "dist"
 
+# Pinned wasm tools (the same pin as dirmacs-admin 483ea31). Without a pin,
+# trunk runs any wasm-opt on PATH; the VPS's /usr/bin/wasm-opt is binaryen 108,
+# which rewrites the __wbindgen_externrefs export to table 0 (the fixed-size
+# function table): wasm-bindgen's init grow(4) then throws RangeError, a blank
+# page. index.html sets data-wasm-opt="z", so every release build runs wasm-opt.
+# wasm_bindgen must equal the wasm-bindgen version in ui/Cargo.lock (this crate
+# is its own workspace, so ui/Cargo.lock is the lock it builds with).
+# After every build: python3 scripts/check-wasm-exports.py dist
+[tools]
+wasm_bindgen = "0.2.106"
+wasm_opt = "version_123"
+
 [watch]
 watch = ["src", "index.html", "Cargo.toml", "tailwind.config.js", "input.css"]
 ignore = ["target", "dist"]

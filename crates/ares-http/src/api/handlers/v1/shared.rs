@@ -182,6 +182,21 @@ pub fn execution_metadata_names(
         .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()))
 }
 
+/// The endpoint and region of the provider that answered, as the two nullable `agent_runs`
+/// columns take them. Both are `None` when the path names no provider (no metadata).
+pub fn execution_metadata_residency(
+    metadata: Option<&ares_agent::ExecutionMetadata>,
+) -> (Option<String>, Option<String>) {
+    metadata
+        .map(|m| {
+            (
+                m.residency.resolved_endpoint().map(str::to_string),
+                m.residency.region().map(str::to_string),
+            )
+        })
+        .unwrap_or((None, None))
+}
+
 pub fn agent_run_row_to_v1(r: agent_runs::AgentRun) -> V1AgentRun {
     V1AgentRun {
         id: r.id,
@@ -899,10 +914,44 @@ mod tests {
         let meta = ExecutionMetadata {
             model_name: "gpt-test".into(),
             provider_name: "openai".into(),
+            residency: Default::default(),
         };
         let (model, provider) = execution_metadata_names(Some(&meta));
         assert_eq!(model, "gpt-test");
         assert_eq!(provider, "openai");
+    }
+
+    /// 2.12b: the writers read the residency pair off the metadata of the run that answered;
+    /// without metadata there is no pair (NULL, never a guess).
+    #[test]
+    fn execution_metadata_residency_reads_the_answering_providers_pair() {
+        use ares_agent::ExecutionMetadata;
+        assert_eq!(execution_metadata_residency(None), (None, None));
+
+        let meta = ExecutionMetadata {
+            model_name: "gpt-test".into(),
+            provider_name: "openai".into(),
+            residency: ares_llm::client::Residency::from_raw(
+                Some("https://user:SECRET@api.example.test:8443/v1/?k=SECRET#f"),
+                Some("ap-south-1"),
+            ),
+        };
+        assert_eq!(
+            execution_metadata_residency(Some(&meta)),
+            (
+                Some("https://api.example.test:8443/v1".to_string()),
+                Some("ap-south-1".to_string())
+            )
+        );
+
+        let no_region = ExecutionMetadata {
+            residency: ares_llm::client::Residency::from_raw(Some("http://localhost:11434/"), None),
+            ..meta
+        };
+        assert_eq!(
+            execution_metadata_residency(Some(&no_region)),
+            (Some("http://localhost:11434".to_string()), None)
+        );
     }
 
     #[test]

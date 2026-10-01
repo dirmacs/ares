@@ -1417,4 +1417,32 @@ mod tests {
         assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
         response.assert_status_unauthorized();
     }
+
+    /// Item 2.6a: the publish route sits behind the admin middleware.
+    #[tokio::test]
+    async fn create_router_registers_tenant_agent_publish_route() {
+        let _env_guard = lock_admin_env();
+        std::env::remove_var("ADMIN_API_KEY");
+        let server = test_server(test_app_state());
+        let response = server
+            .post("/admin/tenants/tenant-1/agents/agent-a/publish")
+            .json(&serde_json::json!({"draft_digest": "00"}))
+            .await;
+        assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
+        response.assert_status_unauthorized();
+    }
+
+    /// Item 2.6a: the draft a reviewer approves, and its digest, behind the
+    /// admin middleware.
+    #[tokio::test]
+    async fn create_router_registers_tenant_agent_draft_route() {
+        let _env_guard = lock_admin_env();
+        std::env::remove_var("ADMIN_API_KEY");
+        let server = test_server(test_app_state());
+        let response = server
+            .get("/admin/tenants/tenant-1/agents/agent-a/draft")
+            .await;
+        assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
+        response.assert_status_unauthorized();
+    }
 }

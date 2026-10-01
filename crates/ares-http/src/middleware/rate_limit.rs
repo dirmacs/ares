@@ -51,7 +51,11 @@
 //! `max_tracked_keys` buckets. Before a new bucket would grow a map's table,
 //! the map is swept of full (expired) buckets, which never changes a
 //! decision; a sweep that frees most of the table gives the memory back.
-//! When a map is at its cap and full of live buckets, a new client or key
+//! A table never grows past its cap's size (131 072 slots at the default
+//! cap: 3 276 816 bytes for clients, 5 373 968 for keys). A sweep that frees
+//! anything briefly copies the live buckets out, at most `cap` entries of 24
+//! (client) or 40 (key) bytes; nothing else is held.
+//! While a map is at its cap and full of live buckets, a new client or key
 //! shares one **overflow** bucket for that dimension, at the same rate: it
 //! is never admitted unlimited. At the cap a map is swept at most once per
 //! second. The overflow is logged at most once per minute, by an
@@ -212,8 +216,10 @@ pub struct RefusalCounts {
     pub key: u64,
 }
 
-/// The bucket maps' size now: entries held and allocated capacity (the
-/// number of entries the table can hold without growing).
+/// The bucket maps' size now: entries held, and `HashMap::capacity()`, the
+/// number of entries each table can hold before it must grow. A capacity is
+/// not a byte count: a table takes about `capacity × 8/7` slots of entry size
+/// plus one byte (see `RateLimitConfig::max_tracked_clients`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Tracked {
     pub clients: usize,
@@ -368,22 +374,45 @@ impl<K: Hash + Eq + Copy> Buckets<K> {
         }
     }
 
-    /// Drop the full buckets. If that freed most of the table, give the
-    /// memory back; if not, grow the table now (never past the cap), so the
-    /// next sweep is at least as many inserts away as the map now holds.
+    /// Drop the full buckets, then size the table for the next sweep: twice
+    /// the live count, at least one free slot, never past the cap.
     ///
-    /// The table's size is read before `retain`: erasing from a full table
-    /// leaves tombstones, so `capacity()` afterwards understates it.
+    /// Nothing is erased in place. `retain` leaves tombstones that hashbrown
+    /// cannot reuse, and with the table more than half full its next insert
+    /// then doubles the table: gate 2 measured twice the cap's size under
+    /// churn. Instead, when anything has expired, the live entries are copied
+    /// out (briefly, `live` entries) and put back into either the same table,
+    /// cleared (its allocation kept, every slot empty), or, when the target
+    /// is under half the table or above it, a table rebuilt at the target
+    /// after the old one is freed. The map only ever inserts between sweeps,
+    /// so it never holds a tombstone, `capacity()` is exact, and the table
+    /// never grows past the cap's size.
     fn sweep(&mut self, now: u64) {
         self.sweeps = self.sweeps.saturating_add(1);
-        let allocated = self.tats.capacity();
-        self.tats.retain(|_, tat| *tat > now);
-        let len = self.tats.len();
-        if len.saturating_mul(2) < allocated {
-            self.tats.shrink_to(len.saturating_add(len / 2));
-        } else {
-            let room = self.cap.saturating_sub(len).min(len.max(1));
-            self.tats.reserve(room);
+        let live = self.tats.values().filter(|tat| **tat > now).count();
+        let target = live
+            .saturating_mul(2)
+            .max(live.saturating_add(1))
+            .min(self.cap)
+            .max(live);
+        if live < self.tats.len() {
+            let mut kept = Vec::with_capacity(live);
+            kept.extend(
+                self.tats
+                    .iter()
+                    .filter(|(_, tat)| **tat > now)
+                    .map(|(key, tat)| (*key, *tat)),
+            );
+            let capacity = self.tats.capacity();
+            if target <= capacity && target.saturating_mul(2) > capacity {
+                self.tats.clear();
+            } else {
+                self.tats = HashMap::new();
+            }
+            self.tats.reserve(target);
+            self.tats.extend(kept);
+        } else if self.tats.capacity() < target {
+            self.tats.reserve(target - self.tats.len());
         }
     }
 
@@ -956,5 +985,37 @@ mod tests {
             capacity,
             b.tats.capacity()
         );
+    }
+
+    /// Gate 2: with `retain`, tombstones made the next insert double a table
+    /// that was more than half full. Under churn at the cap the table now
+    /// never grows past the cap's own size (no tombstones: `capacity()` is
+    /// exact here).
+    #[test]
+    fn churn_at_the_cap_never_grows_the_table() {
+        let cap = 1_000;
+        let bound = HashMap::<u32, u64>::with_capacity(cap).capacity();
+        let mut b: Buckets<u32> = Buckets::new(cap as u32);
+        let mut next = 10_000u32;
+        for tick in 0..30u64 {
+            let now = tick * NANOS_PER_SECOND;
+            for k in 0..700 {
+                let slot = b.slot(k, now);
+                b.commit(slot, now + 3 * NANOS_PER_SECOND / 2);
+            }
+            for _ in 0..400 {
+                next += 1;
+                let slot = b.slot(next, now);
+                if slot != Slot::Overflow {
+                    b.commit(slot, now + NANOS_PER_SECOND / 2);
+                }
+            }
+            assert!(b.tats.len() <= cap);
+            assert!(
+                b.tats.capacity() <= bound,
+                "second {tick}: capacity {} > the cap's {bound}",
+                b.tats.capacity()
+            );
+        }
     }
 }

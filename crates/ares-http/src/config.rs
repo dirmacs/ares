@@ -122,15 +122,18 @@ pub struct RateLimitConfig {
     pub trusted_proxies: Vec<std::net::IpAddr>,
 
     /// Most client buckets held in memory at once (default 100 000; 0
-    /// behaves as 1). An entry is 24 bytes, so the table stays under about
-    /// 3.3 MB (131 072 slots of 25 bytes). When every held bucket is still
-    /// live, a new client shares one overflow bucket, at the same rate,
-    /// instead of growing the table.
+    /// behaves as 1). An entry is 24 bytes, and the table never grows past
+    /// the cap's size: 131 072 slots of 25 bytes, 3 276 816 bytes at the
+    /// default. A sweep that frees anything briefly copies the live entries
+    /// out (up to 2 400 000 bytes more at the default). When every held
+    /// bucket is still live, a new client shares one overflow bucket, at the
+    /// same rate, instead of growing the table.
     pub max_tracked_clients: u32,
 
     /// Most key buckets held in memory at once (default 100 000; 0 behaves
-    /// as 1). An entry is 40 bytes, so the table stays under about 5.4 MB
-    /// (131 072 slots of 41 bytes). Overflow works as for clients.
+    /// as 1). An entry is 40 bytes: at most 131 072 slots of 41 bytes,
+    /// 5 373 968 bytes at the default, plus up to 4 000 000 bytes during a
+    /// sweep. Overflow works as for clients.
     pub max_tracked_keys: u32,
 }
 

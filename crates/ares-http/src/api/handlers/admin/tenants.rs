@@ -470,20 +470,4 @@ pub async fn delete_tenant(
     })))
 }
 
-pub fn routes() -> axum::Router<Arc<Context>> {
-    use axum::routing::{delete, get, post, put};
-    axum::Router::new()
-        .route("/tenants/create_tenant", post(create_tenant))
-        .route("/tenants/list_tenants", get(list_tenants))
-        .route("/tenants/get_tenant", get(get_tenant))
-        .route("/tenants/create_api_key", post(create_api_key))
-        .route("/tenants/list_api_keys", get(list_api_keys))
-        .route("/tenants/revoke_api_key", delete(revoke_api_key))
-        .route("/tenants/get_tenant_usage", get(get_tenant_usage))
-        .route("/tenants/update_tenant_quota", put(update_tenant_quota))
-        .route("/tenants/provision_client", post(provision_client))
-        .route("/tenants/delete_tenant", delete(delete_tenant))
-}
-
-// cordis Phase6: RouteSet Service — registered via build_routes(ctx)
 use ::cordis::Service;

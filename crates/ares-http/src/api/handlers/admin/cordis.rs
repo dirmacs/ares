@@ -424,27 +424,6 @@ pub async fn cordis_logs() -> crate::Result<(StatusCode, Json<serde_json::Value>
     Ok((StatusCode::OK, Json(serde_json::json!({ "logs": logs }))))
 }
 
-pub fn routes() -> axum::Router<Arc<Context>> {
-    use axum::routing::{get, post};
-    axum::Router::new()
-        .route(
-            "/cordis/services/{name}/retire",
-            post(retire_cordis_service),
-        )
-        .route(
-            "/cordis/services/{name}/provide",
-            post(provide_cordis_service),
-        )
-        .route(
-            "/cordis/services/{name}/replace",
-            post(replace_cordis_service),
-        )
-        .route("/cordis/services", get(list_cordis_services))
-        .route("/cordis/logs", get(cordis_logs))
-        .route("/cordis/undo", get(list_cordis_undo_labels))
-}
-
-// cordis Phase6: RouteSet Service — registered via build_routes(ctx)
 use ::cordis::Service;
 
 /// Shared apply flow behind the reload endpoint and the entries mutations.

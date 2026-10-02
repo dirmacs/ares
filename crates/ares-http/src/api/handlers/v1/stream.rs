@@ -143,13 +143,6 @@ pub async fn semantic_search(
     )))
 }
 
-pub fn routes() -> axum::Router<Arc<Context>> {
-    use axum::routing::{get, post};
-    axum::Router::new()
-        .route("/v1/stream/list_agent_logs", get(list_agent_logs))
-        .route("/v1/stream/semantic_search", post(semantic_search))
-}
-
 // cordis Phase6: RouteSet Service
 use cordis::Service;
 

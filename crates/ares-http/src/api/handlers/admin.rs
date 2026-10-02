@@ -5,7 +5,9 @@ use ares_types::types::AppError;
 use std::sync::Arc;
 // Admin handlers — decomposed via Cordis (Phase 6)
 // Each domain lives in `admin/*.rs`; shared DTOs/helpers in `admin/shared.rs`.
-// This shim re-exports domains and provides middleware + routing.
+// This shim re-exports the domains and provides `admin_middleware`. It builds no
+// router: every `/admin` route is registered in `create_router` (`api/routes.rs`),
+// behind that middleware.
 
 #[path = "admin/agents.rs"]
 pub mod agents;

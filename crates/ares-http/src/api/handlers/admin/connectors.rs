@@ -674,38 +674,4 @@ pub async fn delete_oauth_credential(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub fn routes() -> axum::Router<Arc<Context>> {
-    use axum::routing::{delete, get, post, put};
-    axum::Router::new()
-        .route("/connectors/list_skills", get(list_skills))
-        .route("/connectors/get_skill", get(get_skill))
-        .route("/connectors/create_skill", post(create_skill))
-        .route("/connectors/update_skill", put(update_skill))
-        .route("/connectors/delete_skill", delete(delete_skill))
-        .route("/connectors/run_skill", post(run_skill))
-        .route("/connectors/list_connectors", get(list_connectors))
-        .route("/connectors/create_connector", post(create_connector))
-        .route("/connectors/update_connector", put(update_connector))
-        .route("/connectors/delete_connector", delete(delete_connector))
-        .route(
-            "/connectors/delete_tenant_connector",
-            delete(delete_tenant_connector),
-        )
-        .route("/connectors/oauth_authorize", post(oauth_authorize))
-        .route("/connectors/oauth_callback", post(oauth_callback))
-        .route(
-            "/connectors/list_oauth_credentials",
-            get(list_oauth_credentials),
-        )
-        .route(
-            "/connectors/create_oauth_credential",
-            post(create_oauth_credential),
-        )
-        .route(
-            "/connectors/delete_oauth_credential",
-            delete(delete_oauth_credential),
-        )
-}
-
-// cordis Phase6: RouteSet Service — registered via build_routes(ctx)
 use ::cordis::Service;

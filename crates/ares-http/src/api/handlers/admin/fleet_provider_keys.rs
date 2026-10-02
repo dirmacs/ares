@@ -324,30 +324,4 @@ pub async fn fleet_provider_capabilities() -> Json<FleetProviderCapabilities> {
     })
 }
 
-pub fn routes() -> axum::Router<Arc<Context>> {
-    use axum::routing::{delete, get, post};
-    axum::Router::new()
-        .route(
-            "/fleet_secrets/list_fleet_providers",
-            get(list_fleet_providers),
-        )
-        .route(
-            "/fleet_secrets/upsert_fleet_provider",
-            post(upsert_fleet_provider),
-        )
-        .route(
-            "/fleet_secrets/delete_fleet_provider",
-            delete(delete_fleet_provider),
-        )
-        .route(
-            "/fleet_secrets/verify_fleet_provider",
-            post(verify_fleet_provider),
-        )
-        .route(
-            "/fleet_secrets/fleet_provider_capabilities",
-            get(fleet_provider_capabilities),
-        )
-}
-
-// cordis Phase6: RouteSet Service — registered via build_routes(ctx)
 use ::cordis::Service;

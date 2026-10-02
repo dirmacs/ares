@@ -424,3 +424,295 @@ async fn an_unknown_tenant_is_admitted_as_today() {
     assert_eq!(content, ANSWER);
     assert!(f.calls() > 0, "the run never reached the stub model");
 }
+
+// ---------------------------------------------------------------------------
+// Fix round 1: background runs.
+//
+// The scheduler, the triggers, the pipelines and the workflow engine run `Execute::run` on
+// `tenant_scope(root, tenant)`: a realm (when `TenantRealms` is on the root) or an isolate, and
+// no `TenantContext` (`request_tenant_ctx` is the only place that adds one). `admit` finds the
+// tenant from the isolate label `tenant_scope` sets, so the pause binds those runs too.
+//
+// A `user:` scope (`request_user_scope`, the JWT path with no tenant) carries no tenant.
+// ---------------------------------------------------------------------------
+
+use std::any::TypeId;
+use std::str::FromStr;
+use std::time::Duration;
+
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+impl Fixture {
+    /// The same fixture with `TenantRealms` on the root, as the plugin factory provides it, so
+    /// `tenant_scope` opens a realm instead of isolating.
+    async fn with_realms() -> Self {
+        let f = Self::new().await;
+        f.root.provide(ares_store::TenantRealms::new(
+            TypeId::of::<ares_tools::Tools>(),
+            TypeId::of::<Execute>(),
+        ));
+        assert!(
+            f.root.get::<ares_store::TenantRealms>().is_some(),
+            "the realm fixture must provide TenantRealms"
+        );
+        f
+    }
+
+    /// The context a background job hands to `Execute::run`: `tenant_scope`, no `TenantContext`.
+    fn background_ctx(&self, tenant: &str) -> Arc<Context> {
+        let ctx = ares_agent::tenant_scope(&self.root, tenant);
+        assert!(
+            ctx.get::<TenantContext>().is_none(),
+            "a background ctx carries no TenantContext"
+        );
+        ctx
+    }
+
+    /// One run on the background context.
+    async fn run_background(&self, tenant: &str) -> Result<String, AppError> {
+        self.exec
+            .run(&request(), &self.background_ctx(tenant))
+            .await
+            .map(|result| result.response.content)
+    }
+}
+
+/// A root whose `TenantDb` points at a database that does not exist, with the counter of the
+/// model it carries. The pool is lazy and gives up after three seconds, so the first read fails
+/// with the database's own error. The URL is derived from the test database's and never printed.
+fn root_with_a_missing_database() -> (Arc<Context>, Arc<AtomicUsize>) {
+    let options = PgConnectOptions::from_str(&ares_test_support::test_db_url())
+        .unwrap_or_else(|_| panic!("the test database url does not parse"))
+        .database(&format!("no_such_db_{}", uuid::Uuid::new_v4().simple()));
+    let pool = PgPoolOptions::new()
+        .acquire_timeout(Duration::from_secs(3))
+        .connect_lazy_with(options);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let root = Context::new_root();
+    root.provide(Llm::from_client(Arc::new(CountingLlm {
+        calls: Arc::clone(&calls),
+    })));
+    root.provide(TenantDb::new(Arc::new(PostgresClient { pool })));
+    root.provide(FleetSecrets::new());
+    (root, calls)
+}
+
+/// A failed read is a refusal that carries the database's error, never a pass.
+fn assert_database_refusal(err: &AppError) {
+    match err {
+        AppError::Database(message) => assert!(
+            message.contains("tenants.paused"),
+            "the error must name the failed pause read: {message:?}"
+        ),
+        other => panic!("expected AppError::Database from the failed pause read, got {other:?}"),
+    }
+}
+
+// (a) A paused tenant's background run is refused before any model call.
+
+#[tokio::test]
+async fn a_paused_tenant_is_refused_on_a_background_ctx_before_any_model_call() {
+    let f = Fixture::new().await;
+    let tenant = f.tenant_row().await;
+    f.set_paused(&tenant, true).await;
+
+    let err = f
+        .run_background(&tenant)
+        .await
+        .expect_err("a paused tenant's background run must be refused");
+    assert_pause_refusal(&err, &tenant);
+    assert_eq!(
+        f.calls(),
+        0,
+        "the stub model was called for a paused tenant's background run"
+    );
+
+    f.cleanup(&[&tenant]).await;
+}
+
+#[tokio::test]
+async fn a_paused_tenant_is_refused_on_a_realm_background_ctx_before_any_model_call() {
+    let f = Fixture::with_realms().await;
+    let tenant = f.tenant_row().await;
+    f.set_paused(&tenant, true).await;
+
+    let err = f
+        .run_background(&tenant)
+        .await
+        .expect_err("a paused tenant's realm run must be refused");
+    assert_pause_refusal(&err, &tenant);
+    assert_eq!(
+        f.calls(),
+        0,
+        "the stub model was called for a paused tenant's realm run"
+    );
+
+    f.cleanup(&[&tenant]).await;
+}
+
+/// `run_stream` is the other entry the background jobs and the workflow engine can take.
+#[tokio::test]
+async fn a_paused_tenant_is_refused_on_a_background_ctx_on_the_stream_path() {
+    let f = Fixture::new().await;
+    let tenant = f.tenant_row().await;
+    f.set_paused(&tenant, true).await;
+
+    let err = match f
+        .exec
+        .run_stream(&request(), &f.background_ctx(&tenant))
+        .await
+    {
+        Err(err) => err,
+        Ok(_) => panic!("a paused tenant must not be handed a stream on a background ctx"),
+    };
+    assert_pause_refusal(&err, &tenant);
+    assert_eq!(f.calls(), 0, "the stub model was called");
+
+    f.cleanup(&[&tenant]).await;
+}
+
+/// A pause set while the tenant already has a realm open still binds the next run: the flag is
+/// read on every admit, not when the realm opens.
+#[tokio::test]
+async fn a_pause_set_after_the_realm_opened_binds_the_next_background_run() {
+    let f = Fixture::with_realms().await;
+    let tenant = f.tenant_row().await;
+
+    f.run_background(&tenant)
+        .await
+        .expect("the realm runs before the pause");
+    let before = f.calls();
+    assert!(before > 0);
+
+    f.set_paused(&tenant, true).await;
+    let err = f
+        .run_background(&tenant)
+        .await
+        .expect_err("the next background run after the pause must be refused");
+    assert_pause_refusal(&err, &tenant);
+    assert_eq!(f.calls(), before, "a paused run must not call the model");
+
+    f.cleanup(&[&tenant]).await;
+}
+
+// (b) An unpaused tenant on the same scope still runs. These two are guards against
+// over-blocking: they pass on the base too, and must keep passing.
+
+#[tokio::test]
+async fn an_unpaused_tenant_runs_on_a_background_ctx() {
+    let f = Fixture::new().await;
+    let tenant = f.tenant_row().await;
+    let paused_neighbour = f.tenant_row().await;
+    f.set_paused(&paused_neighbour, true).await;
+
+    let content = f
+        .run_background(&tenant)
+        .await
+        .expect("an unpaused tenant must run on a background ctx");
+    assert_eq!(content, ANSWER);
+    assert!(f.calls() > 0, "the run never reached the stub model");
+
+    f.cleanup(&[&tenant, &paused_neighbour]).await;
+}
+
+#[tokio::test]
+async fn an_unpaused_tenant_runs_on_a_realm_background_ctx() {
+    let f = Fixture::with_realms().await;
+    let tenant = f.tenant_row().await;
+    let paused_neighbour = f.tenant_row().await;
+    f.set_paused(&paused_neighbour, true).await;
+
+    let content = f
+        .run_background(&tenant)
+        .await
+        .expect("an unpaused tenant must run on a realm ctx");
+    assert_eq!(content, ANSWER);
+    assert!(f.calls() > 0, "the run never reached the stub model");
+
+    f.cleanup(&[&tenant, &paused_neighbour]).await;
+}
+
+// (c) A `user:` scope is not a tenant.
+
+/// A user with no tenant runs as today. The sharper half: a paused tenant whose id equals the
+/// user's id must not stop the user, because the `user:` label names a user and `admit` must
+/// not read it as a tenant.
+#[tokio::test]
+async fn a_user_scope_is_not_treated_as_a_tenant() {
+    let f = Fixture::new().await;
+
+    let plain_user = format!("user-no-tenant-{}", uuid::Uuid::new_v4());
+    let user_ctx = ares_agent::request_user_scope(&f.root, &plain_user);
+    let result = f.exec.run(&request(), &user_ctx).await;
+    assert_eq!(
+        result
+            .expect("a user scope with no tenant must run")
+            .response
+            .content,
+        ANSWER
+    );
+    assert!(f.calls() > 0, "the user's run never reached the stub model");
+
+    let same_id_as_a_paused_tenant = f.tenant_row().await;
+    f.set_paused(&same_id_as_a_paused_tenant, true).await;
+    let before = f.calls();
+    let user_ctx = ares_agent::request_user_scope(&f.root, &same_id_as_a_paused_tenant);
+    let result = f.exec.run(&request(), &user_ctx).await;
+    assert_eq!(
+        result
+            .expect("a user whose id equals a paused tenant's id is still a user")
+            .response
+            .content,
+        ANSWER
+    );
+    assert!(
+        f.calls() > before,
+        "the second user run never reached the stub model"
+    );
+
+    f.cleanup(&[&same_id_as_a_paused_tenant]).await;
+}
+
+// (d) A failed pause read refuses the run, and the model is not called.
+
+/// The request path: the context carries a `TenantContext`. The code failed closed already;
+/// this pins it.
+#[tokio::test]
+async fn a_failed_pause_read_refuses_the_run_and_the_model_is_not_called() {
+    let (root, calls) = root_with_a_missing_database();
+    let tenant = format!("tenant-missing-db-{}", uuid::Uuid::new_v4());
+    let ctx = request_tenant_ctx(&root, TenantContext::new(tenant.clone(), TenantTier::Pro));
+
+    let direct = ares_agent::admit::ensure_tenant_not_paused(&ctx, &tenant).await;
+    assert_database_refusal(&direct.expect_err("a failed read is an error, never a pass"));
+
+    let err = Execute::new()
+        .run(&request(), &ctx)
+        .await
+        .expect_err("a failed pause read must refuse the run");
+    assert_database_refusal(&err);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "the model was called after a failed pause read"
+    );
+}
+
+/// The background path: no `TenantContext`, the tenant comes from the isolate label.
+#[tokio::test]
+async fn a_failed_pause_read_refuses_a_background_run_and_the_model_is_not_called() {
+    let (root, calls) = root_with_a_missing_database();
+    let tenant = format!("tenant-missing-db-{}", uuid::Uuid::new_v4());
+    let ctx = ares_agent::tenant_scope(&root, &tenant);
+
+    let err = Execute::new()
+        .run(&request(), &ctx)
+        .await
+        .expect_err("a failed pause read must refuse a background run");
+    assert_database_refusal(&err);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "the model was called after a failed pause read"
+    );
+}

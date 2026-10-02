@@ -131,6 +131,11 @@ pub async fn deep_research(
         &ctx.get::<ares_agent::EmergencyStop>()
             .expect("not provided"),
     )?;
+    // Per-tenant kill switch (item 2.5a): this handler never calls `admit`, so it makes the
+    // same check `admit` makes, through the same function, before any config or model work.
+    if let Some(tc) = ctx.get::<ares_types::models::TenantContext>() {
+        ares_agent::admit::ensure_tenant_not_paused(&ctx, &tc.tenant_id).await?;
+    }
 
     let config = ctx
         .get::<crate::overlay::AresConfigManager>()

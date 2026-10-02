@@ -404,6 +404,9 @@ mod tests {
     /// `verify_webhook_secret`: with no usable secret in the header the request
     /// is refused 401, and the store is never reached (the context has none, so
     /// a lookup would be a 500), whatever the old variable holds.
+    // Deliberate: the lock spans the awaited check, so no other test changes the
+    // process-global `WEBHOOK_SECRET` while this one holds it in a given state.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn authenticate_webhook_refuses_a_header_without_a_usable_secret() {
         let _guard = lock_webhook_secret_env();
@@ -435,6 +438,8 @@ mod tests {
     /// Replaces the 2.16e `verify_webhook_secret_accepts_match`: the old
     /// variable matching the header admits nothing. With a secret in the header
     /// and no store, the answer is a 500 (fail closed), never an admission.
+    // Deliberate: as above, the lock spans the awaited check.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn authenticate_webhook_ignores_the_old_environment_variable() {
         let _guard = lock_webhook_secret_env();

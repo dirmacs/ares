@@ -134,6 +134,9 @@ mod tests {
     /// the check with `document_upload`: no usable secret in the header is a 401
     /// that never reaches the store (this context has none), whatever the old
     /// variable holds.
+    // Deliberate: the lock spans the awaited check, so no other test changes the
+    // process-global `WEBHOOK_SECRET` while this one holds it in a given state.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn field_change_refuses_a_header_without_a_usable_secret() {
         let _guard = lock_webhook_secret_env();
@@ -165,6 +168,8 @@ mod tests {
     /// Replaces the 2.16e `verify_webhook_secret_accepts_match` for this route:
     /// the old variable matching the header admits nothing (no store: 500, fail
     /// closed).
+    // Deliberate: as above, the lock spans the awaited check.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn field_change_ignores_the_old_environment_variable() {
         let _guard = lock_webhook_secret_env();

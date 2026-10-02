@@ -270,25 +270,6 @@ async fn admin_actor_from_token(
     }
 }
 
-/// Merge all admin domain routers into one `Router<Arc<Context>>`.
-pub fn admin_routes() -> axum::Router<Arc<Context>> {
-    axum::Router::new()
-        .merge(tenants::routes())
-        .merge(agents::routes())
-        .merge(providers::routes())
-        .merge(tools::routes())
-        .merge(schedules::routes())
-        .merge(triggers::routes())
-        .merge(pipelines::routes())
-        .merge(billing::routes())
-        .merge(mcp::routes())
-        .merge(fleet_provider_keys::routes())
-        .merge(connectors::routes())
-        .merge(health::routes())
-        .merge(audit::routes())
-        .merge(cordis::routes())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

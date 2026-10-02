@@ -218,26 +218,4 @@ pub async fn delete_tenant_schedule(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub fn routes() -> axum::Router<Arc<Context>> {
-    use axum::routing::{delete, get, post, put};
-    axum::Router::new()
-        .route("/schedules/list_schedules", get(list_schedules))
-        .route(
-            "/schedules/list_schedule_missed_runs",
-            get(list_schedule_missed_runs),
-        )
-        .route("/schedules/create_schedule", post(create_schedule))
-        .route("/schedules/update_schedule", put(update_schedule))
-        .route("/schedules/delete_schedule", delete(delete_schedule))
-        .route(
-            "/schedules/update_tenant_schedule",
-            put(update_tenant_schedule),
-        )
-        .route(
-            "/schedules/delete_tenant_schedule",
-            delete(delete_tenant_schedule),
-        )
-}
-
-// cordis Phase6: RouteSet Service — registered via build_routes(ctx)
 use ::cordis::Service;

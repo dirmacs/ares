@@ -452,13 +452,6 @@ pub async fn v1_research(
     ))
 }
 
-pub fn routes() -> axum::Router<Arc<Context>> {
-    use axum::routing::post;
-    axum::Router::new()
-        .route("/v1/chat/v1_chat", post(v1_chat))
-        .route("/v1/chat/v1_research", post(v1_research))
-}
-
 // cordis Phase6: RouteSet Service
 use cordis::Service;
 

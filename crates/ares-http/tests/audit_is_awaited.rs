@@ -49,8 +49,9 @@
 //!    `head`, `options`, `trace`) in the method-router argument of a
 //!    `.route("literal", ..)` call in a route table: one of the two tables in
 //!    `create_router` (`api/routes.rs`), or a method chain that starts at an
-//!    inline `Router::new()` (the Cordis RouteSet routers, `pub fn routes()`
-//!    in each handler module and `build_routes`; the test prints each such
+//!    inline `Router::new()` elsewhere in the crate (the per-domain `routes()`
+//!    functions and `build_routes` that once held such chains are deleted, and
+//!    one that comes back is still read; the test prints each such
 //!    handler). Named anywhere else, as in `x.post(writer)` on another type,
 //!    `let m = post(writer)` or a `.route(` on another receiver, the function
 //!    is flagged as referenced as a value. The test also asserts that it
@@ -672,9 +673,10 @@ const TABLES: [(&str, &str); 2] = [
 enum RouteTable {
     /// One of the two tables in `create_router` (`api/routes.rs`).
     CreateRouter,
-    /// A method chain that starts at an inline `Router::new()`: the Cordis
-    /// RouteSet routers (`pub fn routes()` in each handler module) and
-    /// `build_routes`.
+    /// A method chain that starts at an inline `Router::new()` outside
+    /// `create_router`'s two tables. The per-domain `routes()` functions and
+    /// `build_routes` that once held such chains are deleted; a chain that
+    /// comes back is still read.
     InlineRouter,
 }
 

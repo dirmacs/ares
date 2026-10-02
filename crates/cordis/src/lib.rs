@@ -612,18 +612,25 @@ impl LoaderJournal {
     /// [`Self::rename`], each record keeps its plugin label, config,
     /// generation and fiber id.
     ///
+    /// It never overwrites a record silently. Under the same write lock, and
+    /// before it changes anything, it applies the check of
+    /// [`Self::rename_conflict`]; when a record would be lost it returns
+    /// [`CordisError::Configuration`] naming the id and leaves the journal
+    /// exactly as it was. A caller that checks first, as
+    /// [`crate::loader::Loader::move_entry`] does, never sees that error.
+    ///
     /// Returns one item per pair, in the same order: the record as it now
     /// sits under its new key, or `None` when `old` was not journaled (that
     /// pair does nothing, and neither does a pair repeating an `old` that an
-    /// earlier pair already took). Two pairs with the same `new` would leave
-    /// the later record in place, so the caller must hand over distinct `new`
-    /// keys; [`crate::loader::EntryTree::move_entry`] guarantees that for a
-    /// move by refusing any move that would leave two entries with one id.
+    /// earlier pair already took).
     pub fn rename_many<O: AsRef<str>, N: AsRef<str>>(
         &self,
         pairs: &[(O, N)],
-    ) -> Vec<Option<JournalRecord>> {
+    ) -> Result<Vec<Option<JournalRecord>>, CordisError> {
         let mut records = self.records.write();
+        if let Some(why) = rename_conflict_in(&records, pairs) {
+            return Err(CordisError::Configuration(why));
+        }
         let taken: Vec<Option<JournalRecord>> = pairs
             .iter()
             .map(|(old, _)| records.remove(old.as_ref()))
@@ -633,7 +640,27 @@ impl LoaderJournal {
                 records.insert(new.as_ref().to_string(), record.clone());
             }
         }
-        taken
+        Ok(taken)
+    }
+
+    /// Why re-keying `pairs` with [`Self::rename_many`] would lose a record,
+    /// or `None` when it would not. The text names the id. Nothing is
+    /// changed. `rename_many` makes this same check itself, under its write
+    /// lock, so a caller that wants to refuse before it mutates anything of
+    /// its own asks here first.
+    ///
+    /// A re-key loses a record in two ways:
+    /// - a record already sits under a pair's `new` key and no pair's `old`
+    ///   key frees it. Re-keying puts a record there and replaces the one
+    ///   that was there: a record the move does not move, and when it
+    ///   carries a fiber id, a live fiber left without its record;
+    /// - two pairs whose `old` keys are both journaled have the same `new`
+    ///   key, and the later insert replaces the earlier.
+    pub fn rename_conflict<O: AsRef<str>, N: AsRef<str>>(
+        &self,
+        pairs: &[(O, N)],
+    ) -> Option<String> {
+        rename_conflict_in(&self.records.read(), pairs)
     }
 
     pub fn get(&self, id: &str) -> Option<JournalRecord> {
@@ -647,6 +674,43 @@ impl LoaderJournal {
     pub fn is_empty(&self) -> bool {
         self.records.read().is_empty()
     }
+}
+
+/// The check behind [`LoaderJournal::rename_conflict`] and
+/// [`LoaderJournal::rename_many`], on a borrowed record map so both run it
+/// on the map they hold the lock for. `None` means re-keying `pairs` replaces
+/// no record that is not itself being moved.
+fn rename_conflict_in<O: AsRef<str>, N: AsRef<str>>(
+    records: &HashMap<String, JournalRecord>,
+    pairs: &[(O, N)],
+) -> Option<String> {
+    // Keys some pair gives up: a record under one of them is taken out
+    // before any record is put in, so it is not overwritten.
+    let freed: HashSet<&str> = pairs.iter().map(|(old, _)| old.as_ref()).collect();
+    // `new` key -> the `old` key whose record is going to land on it.
+    let mut landing: HashMap<&str, &str> = HashMap::new();
+    let mut taken: HashSet<&str> = HashSet::new();
+    for (old, new) in pairs {
+        let (old, new) = (old.as_ref(), new.as_ref());
+        if records.contains_key(new) && !freed.contains(new) {
+            return Some(format!(
+                "cannot re-key '{old}' to '{new}': the journal already holds a record \
+                 under '{new}' that no entry in this move gives up, and re-keying onto it \
+                 would overwrite it and orphan its fiber"
+            ));
+        }
+        // A pair whose `old` has no record, or repeats an `old` an earlier
+        // pair already took, moves nothing.
+        if records.contains_key(old) && taken.insert(old) {
+            if let Some(first) = landing.insert(new, old) {
+                return Some(format!(
+                    "cannot re-key '{old}' to '{new}': the record of '{first}' \
+                     is already being re-keyed to '{new}' in this move"
+                ));
+            }
+        }
+    }
+    None
 }
 
 impl Service for LoaderJournal {}
@@ -1517,7 +1581,9 @@ mod tests {
         journal.update_config("a", serde_json::json!({ "v": 10 }), None);
         assert_eq!(journal.get("a").unwrap().generation, 2);
 
-        let out = journal.rename_many(&[("a", "b"), ("b", "c"), ("missing", "z")]);
+        let out = journal
+            .rename_many(&[("a", "b"), ("b", "c"), ("missing", "z")])
+            .expect("no pair overwrites a record");
 
         // One result per pair, in order; an unjournaled `old` yields None.
         assert_eq!(out.len(), 3);
@@ -1545,9 +1611,73 @@ mod tests {
         swap.rename_many(&[
             ("p".to_string(), "q".to_string()),
             ("q".to_string(), "p".to_string()),
-        ]);
+        ])
+        .expect("a swap overwrites nothing");
         assert_eq!(swap.get("q").unwrap().plugin, "PluginP");
         assert_eq!(swap.get("p").unwrap().plugin, "PluginQ");
         assert_eq!(swap.len(), 2);
+    }
+
+    /// cordis-dup-ids gate r1, rev2 F2: `rename_many` never overwrites a
+    /// record silently. A record under a pair's `new` key that no pair gives
+    /// up, and two journaled records re-keyed to one `new` key, are both
+    /// refused with an error that names the id, and the journal is left as it
+    /// was. `rename_conflict` reports the same text without touching
+    /// anything, and says nothing about a re-key that loses no record.
+    #[test]
+    fn journal_rekey_refuses_instead_of_overwriting() {
+        let snapshot = |j: &LoaderJournal, ids: &[&str]| -> Vec<Option<JournalRecord>> {
+            ids.iter().map(|id| j.get(id)).collect()
+        };
+        let ids = ["a", "b", "stale", "z"];
+        let journal = LoaderJournal::new();
+        journal.upsert("a", "PluginA", serde_json::json!({}), Some(1));
+        journal.upsert("b", "PluginB", serde_json::json!({}), Some(2));
+        journal.upsert("stale", "PluginStale", serde_json::json!({}), Some(3));
+        let before = snapshot(&journal, &ids);
+
+        // A record under `stale` that no pair gives up.
+        let onto_stale = [("a", "stale")];
+        let why = journal.rename_conflict(&onto_stale).expect("a conflict");
+        assert!(why.contains("'stale'"), "the text names the id: {why}");
+        match journal.rename_many(&onto_stale) {
+            Err(CordisError::Configuration(text)) => assert_eq!(text, why),
+            other => panic!("a Configuration error, got {other:?}"),
+        }
+        assert_eq!(snapshot(&journal, &ids), before, "nothing was changed");
+
+        // The same when the pair's own `old` has no record: nothing would be
+        // overwritten by THIS pair, but a record the move does not move sits
+        // under the id the entry takes, and that is refused too.
+        let unjournaled_old = [("missing", "stale")];
+        let why = journal
+            .rename_conflict(&unjournaled_old)
+            .expect("a conflict");
+        assert!(why.contains("'stale'"), "{why}");
+        assert!(journal.rename_many(&unjournaled_old).is_err());
+        assert_eq!(snapshot(&journal, &ids), before);
+
+        // Two journaled records to one new key.
+        let both_to_z = [("a", "z"), ("b", "z")];
+        let why = journal.rename_conflict(&both_to_z).expect("a conflict");
+        assert!(why.contains("'z'") && why.contains("'a'"), "{why}");
+        assert!(journal.rename_many(&both_to_z).is_err());
+        assert_eq!(snapshot(&journal, &ids), before, "nothing was changed");
+
+        // Re-keys that lose nothing are not reported: a record no pair
+        // takes and no pair targets, a pair onto its own key, an unjournaled
+        // `old` onto a free key, a chain, and a repeated `old`.
+        assert_eq!(journal.rename_conflict(&[("a", "z")]), None);
+        assert_eq!(journal.rename_conflict(&[("a", "a")]), None);
+        assert_eq!(journal.rename_conflict(&[("missing", "free")]), None);
+        assert_eq!(journal.rename_conflict(&[("a", "b"), ("b", "c")]), None);
+        assert_eq!(journal.rename_conflict(&[("a", "z"), ("a", "z")]), None);
+        assert_eq!(snapshot(&journal, &ids), before, "a check changes nothing");
+        let out = journal
+            .rename_many(&[("a", "b"), ("b", "c")])
+            .expect("a chain");
+        assert_eq!(out.len(), 2);
+        assert_eq!(journal.get("b").unwrap().plugin, "PluginA");
+        assert_eq!(journal.get("c").unwrap().plugin, "PluginB");
     }
 }

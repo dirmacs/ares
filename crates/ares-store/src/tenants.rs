@@ -624,6 +624,27 @@ impl cordis::Service for TenantDb {
     }
 }
 
+/// Returns whether `tenant_id` is paused: the per-tenant kill switch, `tenants.paused`
+/// (migration 037).
+///
+/// One single-column read per call and no cache, so a pause binds the next run with no
+/// restart (the `tenant_no_retain` pattern, without its in-process fallbacks).
+///
+/// - A tenant with no `tenants` row reads as not paused: the flag lives on the row, so a
+///   row-less tenant cannot have been paused. `admit` already admits such a tenant (its usage
+///   lookup sums to zero and its quota comes from the `TenantContext`), and the JWT path runs
+///   an unknown tenant at the free tier on purpose, so this keeps both as they are.
+/// - A failed read is an error, never `false`: the caller refuses the run, as it already does
+///   when the usage read fails.
+pub async fn tenant_paused(pool: &sqlx::PgPool, tenant_id: &str) -> Result<bool> {
+    let paused = sqlx::query_scalar::<_, bool>("SELECT paused FROM tenants WHERE id = $1")
+        .bind(tenant_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to read tenants.paused: {}", e)))?;
+    Ok(paused.unwrap_or(false))
+}
+
 /// Computes `expires_at` (unix seconds) from a TTL in days.
 /// `None` means never expires. `Some(d)` must be `1..=3650` else `InvalidInput`.
 pub fn expires_at_from_days(expires_in_days: Option<u32>) -> Result<Option<i64>> {

@@ -5264,4 +5264,289 @@ plugin = "Bar"
         assert_eq!(renames, vec![("x:a".to_string(), "a".to_string())]);
         assert_eq!(tree_ids(&tree), vec!["x", "a", "p", "p"]);
     }
+
+    // --- cordis-dup-ids fix round 1: pin the rule, the caller, the journal --
+
+    /// cordis-dup-ids gate r1, rev1 F1: the narrower rule. An entry the move
+    /// renames may not end up under an id that ANOTHER entry also ends up
+    /// under, and that includes a second copy of a renamed id. Both `x:a:b`
+    /// entries are renamed to `a:b`, so two entries would be called `a:b`. A
+    /// check that skipped the other entry because its id is an OLD id of the
+    /// moved set (`other.id != old`) lets this through. The refusal leaves
+    /// the tree and every journal record as they were.
+    #[tokio::test]
+    async fn move_refuses_two_renamed_copies_of_one_id() {
+        let entries = || {
+            vec![
+                hier("x", None),
+                hier("x:a", Some("x")),
+                hier("x:a:b", Some("x:a")),
+                hier("x:a:b", Some("x:a")), // a duplicate INSIDE the moved set
+            ]
+        };
+
+        // The pure tree move.
+        let mut tree = EntryTree(entries());
+        let err = tree.move_entry("x:a", None, 0).unwrap_err();
+        assert!(
+            err.contains("entries 'x:a:b' and 'x:a:b' would both end up with id 'a:b'"),
+            "{err}"
+        );
+        assert_eq!(
+            tree,
+            EntryTree(entries()),
+            "a refused move leaves the tree untouched"
+        );
+
+        // Through the loader, with a live journal.
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        let ids = ["x", "x:a", "x:a:b"];
+        for (i, id) in ids.iter().enumerate() {
+            journal.upsert(
+                id,
+                &format!("Plugin-{id}"),
+                json!({ "v": i }),
+                Some(10 + i as u64),
+            );
+        }
+        let records_before: Vec<_> = ids.iter().map(|id| journal.get(id)).collect();
+        let mut current = EntryTree(entries());
+
+        let err = Loader::move_entry(&ctx, &mut current, &journal, "x:a", None, 0)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CordisError::Configuration(_)), "{err:?}");
+        assert_eq!(
+            current,
+            EntryTree(entries()),
+            "the loader leaves the tree untouched"
+        );
+        assert_eq!(journal.len(), ids.len(), "no journal record lost or added");
+        let records_after: Vec<_> = ids.iter().map(|id| journal.get(id)).collect();
+        assert_eq!(records_after, records_before, "every journal record intact");
+    }
+
+    /// cordis-dup-ids gate r1, rev1 F1: the final-id semantics. `a:a` moved
+    /// to the root becomes `a`, and its child `a:a:a` becomes `a:a`: a new id
+    /// that equals an OLD id of the moved set, but that old id is itself
+    /// renamed away, so the final ids (`a`, `a:a`) are unique and the move
+    /// must succeed. A check that compares a new id with the OLD ids of the
+    /// moved set over-refuses it.
+    #[tokio::test]
+    async fn move_accepts_a_new_id_that_is_an_old_id_renamed_away() {
+        let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
+        let entries = || vec![hier("a:a", None), hier("a:a:a", Some("a:a"))];
+
+        // The pure tree move.
+        let mut tree = EntryTree(entries());
+        let renames = tree
+            .move_entry("a:a", None, 0)
+            .expect("final ids are unique");
+        assert_eq!(renames, vec![pair("a:a", "a"), pair("a:a:a", "a:a")]);
+        assert_eq!(tree_ids(&tree), vec!["a", "a:a"]);
+
+        // Through the loader: every record follows its entry to its final id.
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        journal.upsert("a:a", "Plugin-a:a", json!({ "v": 1 }), Some(100));
+        journal.upsert("a:a:a", "Plugin-a:a:a", json!({ "v": 2 }), Some(101));
+        let mut current = EntryTree(entries());
+        let out = Loader::move_entry(&ctx, &mut current, &journal, "a:a", None, 0)
+            .await
+            .expect("the move succeeds");
+        assert_eq!(out.renamed, vec![pair("a:a", "a"), pair("a:a:a", "a:a")]);
+        assert_eq!(tree_ids(&current), vec!["a", "a:a"]);
+        assert_eq!(journal.len(), 2, "no record lost");
+        let moved = journal.get("a").expect("a:a's record now sits under a");
+        assert_eq!(
+            (moved.plugin.as_str(), moved.fiber_id, moved.generation),
+            ("Plugin-a:a", Some(100), 1)
+        );
+        let child = journal
+            .get("a:a")
+            .expect("a:a:a's record now sits under a:a");
+        assert_eq!(
+            (child.plugin.as_str(), child.fiber_id, child.generation),
+            ("Plugin-a:a:a", Some(101), 1)
+        );
+    }
+
+    /// cordis-dup-ids gate r1, rev2 F1: the CALLER of the journal re-key.
+    /// Moving `a:a` to the root renames `a:a`→`a`, `a:a:a:b`→`a:a:b` and
+    /// `a:a:b`→`a:b`: the second pair's new key is the third pair's OLD key.
+    /// Re-keyed pair by pair, the second pair's insert overwrites the record
+    /// of `a:a:b` before the third pair takes it, and one record is lost.
+    /// `Loader::move_entry` hands the whole move to `rename_many` as one
+    /// batch, so all three keep their plugin, fiber id and generation, and the
+    /// cycle ledger follows each one. An unrelated record is left alone.
+    #[tokio::test]
+    async fn move_rekeys_an_overlapping_chain_without_losing_a_record() {
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        ctx.provide(crate::cycles::CycleLedger::new());
+        journal.upsert("a:a", "Plugin-a:a", json!({ "v": 0 }), Some(100));
+        journal.upsert("a:a:a:b", "Plugin-a:a:a:b", json!({ "v": 1 }), Some(101));
+        journal.upsert("a:a:a:b", "Plugin-a:a:a:b", json!({ "v": 1 }), Some(101)); // generation 2
+        journal.upsert("a:a:b", "Plugin-a:a:b", json!({ "v": 2 }), Some(102));
+        journal.upsert("other", "Plugin-other", json!({ "v": 3 }), Some(103));
+        let mut current = EntryTree(vec![
+            hier("a:a", None),
+            hier("a:a:a:b", Some("a:a")),
+            hier("a:a:b", Some("a:a")),
+            hier("other", None),
+        ]);
+
+        let out = Loader::move_entry(&ctx, &mut current, &journal, "a:a", None, 0)
+            .await
+            .expect("the move succeeds");
+        let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
+        assert_eq!(
+            out.renamed,
+            vec![
+                pair("a:a", "a"),
+                pair("a:a:a:b", "a:a:b"),
+                pair("a:a:b", "a:b")
+            ]
+        );
+        assert!(out.noop);
+        assert_eq!(tree_ids(&current), vec!["a", "a:a:b", "a:b", "other"]);
+
+        assert_eq!(
+            journal.len(),
+            4,
+            "no record lost: three moved, one untouched"
+        );
+        let rec = |id: &str| {
+            journal
+                .get(id)
+                .unwrap_or_else(|| panic!("no record under {id}"))
+        };
+        let key = |id: &str| {
+            let r = rec(id);
+            (r.plugin, r.fiber_id, r.generation)
+        };
+        assert_eq!(key("a"), ("Plugin-a:a".to_string(), Some(100), 1));
+        assert_eq!(key("a:a:b"), ("Plugin-a:a:a:b".to_string(), Some(101), 2));
+        assert_eq!(key("a:b"), ("Plugin-a:a:b".to_string(), Some(102), 1));
+        assert_eq!(key("other"), ("Plugin-other".to_string(), Some(103), 1));
+        assert_eq!(rec("a").config, json!({ "v": 0 }));
+        assert_eq!(rec("a:a:b").config, json!({ "v": 1 }));
+        assert_eq!(rec("a:b").config, json!({ "v": 2 }));
+
+        let ledger = ctx.get::<crate::cycles::CycleLedger>().unwrap();
+        assert_eq!(ledger.entry_id_of(100).as_deref(), Some("a"));
+        assert_eq!(ledger.entry_id_of(101).as_deref(), Some("a:a:b"));
+        assert_eq!(ledger.entry_id_of(102).as_deref(), Some("a:b"));
+    }
+
+    /// cordis-dup-ids gate r1, rev2 F2: a stale record under a renamed id.
+    /// The handler hands `Loader::move_entry` the DISK tree, but the journal
+    /// is LIVE, so it can hold a record the disk tree does not list. Here the
+    /// journal holds `x`(1), `x:a`(2) and `a`(3) and the tree only `x` and
+    /// `x:a`. Moving `x:a` to the root would re-key it to `a`, where it
+    /// overwrote fiber 3's record and left that fiber live and unjournaled.
+    /// No pair of this move gives up `a`, so the move is refused with a
+    /// Configuration error (the handlers answer 409) before anything is
+    /// mutated, and the error names the id.
+    #[tokio::test]
+    async fn move_refuses_to_overwrite_a_stale_journal_record() {
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        journal.upsert("x", "Plugin-x", json!({}), Some(1));
+        journal.upsert("x:a", "Plugin-x:a", json!({}), Some(2));
+        journal.upsert("a", "Plugin-a", json!({}), Some(3)); // live, not in the file
+        let ids = ["x", "x:a", "a"];
+        let records_before: Vec<_> = ids.iter().map(|id| journal.get(id)).collect();
+        let mut current = EntryTree(vec![hier("x", None), hier("x:a", Some("x"))]);
+        let tree_before = current.clone();
+
+        let err = Loader::move_entry(&ctx, &mut current, &journal, "x:a", None, 0)
+            .await
+            .unwrap_err();
+        let CordisError::Configuration(why) = &err else {
+            panic!("a Configuration error (409), got {err:?}");
+        };
+        assert!(why.contains("'a'"), "the refusal names the id: {why}");
+        assert_eq!(current, tree_before, "the tree is unchanged");
+        assert_eq!(journal.len(), ids.len(), "no journal record lost or added");
+        let records_after: Vec<_> = ids.iter().map(|id| journal.get(id)).collect();
+        assert_eq!(records_after, records_before, "every journal record intact");
+        assert_eq!(journal.get("a").unwrap().fiber_id, Some(3));
+    }
+
+    /// The same refusal with REAL fibers, as the handler meets it: the live
+    /// state is `x`, `x:a` and `a`, each with a fiber; the disk tree lists
+    /// only `x` and `x:a`. A refused move leaves the disk tree, the shared
+    /// `CurrentEntries`, the journal, and every fiber (still tracked, same
+    /// epoch label, no factory re-run) exactly as they were.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refused_stale_record_move_leaves_the_live_fibers_alone() {
+        let ctx = Context::new_root();
+        let journal = LoaderJournal::provide_new(&ctx);
+        move_fixture(&ctx);
+        let ops = ctx.provide(LoaderOps::new());
+
+        let child_of_x = |mut e: Entry| {
+            e.position = Some(EntryPosition {
+                parent: Some("x".into()),
+                position: 0,
+            });
+            e
+        };
+        let mut live = EntryTree(vec![]);
+        let desired = EntryTree(vec![
+            move_entry_spec("x", "MoveFactory", 1, false),
+            child_of_x(move_entry_spec("x:a", "MoveFactoryB", 2, false)),
+            move_entry_spec("a", "MoveFactoryC", 3, false),
+        ]);
+        let actions = Loader::apply(&ctx, &mut live, &desired, &journal).await;
+        assert!(actions.iter().all(|a| a.status.is_ok()), "{actions:?}");
+
+        let ids = ["x", "x:a", "a"];
+        let registry = ctx.get::<crate::RegistryService>().unwrap();
+        let fiber_ids: Vec<u64> = ids
+            .iter()
+            .map(|id| journal.get(id).unwrap().fiber_id.unwrap())
+            .collect();
+        let epochs = |registry: &Arc<crate::RegistryService>| -> Vec<String> {
+            fiber_ids
+                .iter()
+                .map(|fid| registry.get_fiber(*fid).expect("fiber tracked").epoch())
+                .collect()
+        };
+        let epochs_before = epochs(&registry);
+        let counts = |ops: &Arc<LoaderOps>| -> Vec<u64> {
+            ids.iter().map(|id| ops.apply_count(id)).collect()
+        };
+        let counts_before = counts(&ops);
+        let records_before: Vec<_> = ids.iter().map(|id| journal.get(id)).collect();
+
+        // The DISK tree: `a` is live but not in the file.
+        let mut disk = EntryTree(vec![
+            move_entry_spec("x", "MoveFactory", 1, false),
+            child_of_x(move_entry_spec("x:a", "MoveFactoryB", 2, false)),
+        ]);
+        let disk_before = disk.clone();
+        let shared = ctx.provide(CurrentEntries {
+            tree: Arc::new(std::sync::Mutex::new(disk.clone())),
+            path: std::path::PathBuf::new(),
+        });
+
+        let err = Loader::move_entry(&ctx, &mut disk, &journal, "x:a", None, 0)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CordisError::Configuration(_)), "{err:?}");
+
+        assert_eq!(disk, disk_before, "the disk tree is unchanged");
+        assert_eq!(
+            *shared.tree.lock().unwrap(),
+            disk_before,
+            "the shared CurrentEntries view is unchanged"
+        );
+        let records_after: Vec<_> = ids.iter().map(|id| journal.get(id)).collect();
+        assert_eq!(records_after, records_before, "every journal record intact");
+        assert_eq!(epochs(&registry), epochs_before, "no fiber was relabelled");
+        assert_eq!(counts(&ops), counts_before, "no factory re-ran");
+    }
 }

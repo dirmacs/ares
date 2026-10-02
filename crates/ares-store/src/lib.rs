@@ -151,6 +151,9 @@ pub mod skills;
 /// Per-tenant allowlist for tools, models, and RAG sources.
 pub mod tenant_allowlist;
 #[cfg(feature = "postgres")]
+/// Per-tenant event-webhook secrets (item 2.16a): only the SHA-256 is stored.
+pub mod tenant_event_secrets;
+#[cfg(feature = "postgres")]
 /// Per-tenant model tier mapping (abstract tier -> concrete provider/model).
 pub mod tenant_model_tiers;
 #[cfg(feature = "postgres")]

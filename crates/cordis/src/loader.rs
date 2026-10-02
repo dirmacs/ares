@@ -677,9 +677,13 @@ pub struct MoveOutcome {
     /// Old → new id for the moved entry and every renamed descendant, in
     /// subtree order (moved entry first). Empty when nothing moved.
     pub renamed: Vec<(String, String)>,
-    /// `true` when the contexts-equivalence gate kept every live fiber
-    /// untouched (pure structural move); `false` when the gate fell back to a
-    /// full reconcile apply (dispose + re-create of renamed entries).
+    /// `true` when the contexts-equivalence gate found the move a pure
+    /// structural one and every journaled record was re-keyed in place, each
+    /// keeping its live fiber. That is every move today: a move writes only
+    /// ids and positions, so the gate always agrees (see
+    /// [`Loader::move_entry`]). `false` would mean the gate fell back to the
+    /// reconcile apply, a branch that cannot be reached and that would not
+    /// re-key anything if it were.
     pub noop: bool,
 }
 
@@ -688,8 +692,18 @@ impl Loader {
     /// `position`, then make the LIVE kernel agree with the moved tree.
     ///
     /// Validation and the rename cascade are [`EntryTree::move_entry`] (pure,
-    /// error → tree untouched). Fiber handling then goes through the
-    /// contexts-equivalence gate:
+    /// error → tree untouched). The journal is then checked before anything
+    /// is changed: `current` is the tree the caller loaded, usually the DISK
+    /// tree, while the journal is LIVE, and it can hold a record the tree
+    /// does not list. When a record already sits under a renamed id that no
+    /// pair of this move gives up (see
+    /// [`crate::LoaderJournal::rename_conflict`]), re-keying onto it would
+    /// overwrite it and leave its fiber live and unjournaled, so the move is
+    /// refused with [`CordisError::Configuration`] naming the id. A refused
+    /// move changes nothing: not `current`, not the journal, not a fiber, not
+    /// the shared [`CurrentEntries`] view.
+    ///
+    /// Fiber handling then goes through the contexts-equivalence gate:
     ///
     /// * **Equivalent composition** (same multiset of plugin/config/disabled/
     ///   isolate across both trees — what every pure structural move is):
@@ -697,13 +711,19 @@ impl Loader {
     ///   PRESERVED (the existing registration fiber handle is refreshed in
     ///   place — epoch label + ledger annotation — never disposed or
     ///   re-created), so consumers keep resolving the same live instances.
-    /// * **Different composition** (mixed edits rode along): fall back to the
-    ///   standard staged [`Self::apply`] reconcile, which restarts renamed
-    ///   entries through Retire + Begin.
+    /// * **Different composition**: not reachable. The move writes only `id`
+    ///   and `position` ([`EntryTree::move_entry`]), and the gate compares
+    ///   plugin, config, disabled and isolate, none of which a move touches,
+    ///   so every move that gets this far is equivalent. The branch is kept
+    ///   as it was, and it is not the fallback it reads like: it runs
+    ///   [`Self::apply`] with the moved tree against a clone of itself, which
+    ///   plans no action, so nothing would be restarted and no journal record
+    ///   re-keyed. Before it can be reached it has to diff the PRE-move tree
+    ///   against the moved one.
     ///
     /// The shared [`CurrentEntries`] view (when provided) is synced to the
-    /// post-move tree either way, so a follow-up disk reload diffs cleanly
-    /// instead of seeing phantom Retire/Begin pairs for the renames.
+    /// post-move tree, so a follow-up disk reload diffs cleanly instead of
+    /// seeing phantom Retire/Begin pairs for the renames.
     pub async fn move_entry(
         ctx: &Arc<crate::Context>,
         current: &mut EntryTree,
@@ -712,12 +732,23 @@ impl Loader {
         target: Option<&str>,
         position: usize,
     ) -> Result<MoveOutcome, CordisError> {
-        let before = current.clone();
-        let renamed = current
+        // Move on a copy: `current` is replaced only once every refusal has
+        // been passed, so a refused move changes nothing.
+        let mut moved = current.clone();
+        let renamed = moved
             .move_entry(id, target, position)
             .map_err(CordisError::Configuration)?;
 
-        let noop = Self::composition_equivalent(&before, current);
+        // Before anything is mutated: refuse a re-key that would overwrite a
+        // live journal record the move does not move. `rename_many` below
+        // makes the same check, so it cannot fail on this journal after this
+        // one has passed (barring a concurrent writer, which it also refuses
+        // rather than overwrites).
+        if let Some(why) = journal.rename_conflict(&renamed) {
+            return Err(CordisError::Configuration(why));
+        }
+
+        let noop = Self::composition_equivalent(current, &moved);
         if noop {
             // Re-key every journal record as ONE batch, keeping
             // plugin/config/generation AND the tracked fiber id — identity
@@ -725,7 +756,8 @@ impl Loader {
             // because one pair's new key can be another pair's old key: pair
             // by pair, an insert overwrote the record the next pair was
             // about to take.
-            let records = journal.rename_many(&renamed);
+            let records = journal.rename_many(&renamed)?;
+            *current = moved;
             for ((_, new), record) in renamed.iter().zip(records) {
                 let Some(record) = record else {
                     continue;
@@ -746,6 +778,11 @@ impl Loader {
                 }
             }
         } else {
+            // Unreachable (see the doc above): a move never changes what the
+            // gate compares. Kept as it was: with `current` already holding
+            // the moved tree this applies it against its own clone, so it
+            // plans no action.
+            *current = moved;
             let desired = current.clone();
             Self::apply(ctx, current, &desired, journal).await;
         }

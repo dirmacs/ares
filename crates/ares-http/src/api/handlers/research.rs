@@ -638,4 +638,72 @@ mod tests {
             Some("acme")
         );
     }
+
+    /// Item 2.5a: `deep_research` refuses a paused tenant right after its emergency-stop check,
+    /// before the config lookup and before any model call.
+    ///
+    /// The context carries only `EmergencyStop`, `TenantDb` and the tenant: no
+    /// `AresConfigManager` and no `Llm`. Past the pause check the handler's next step is the
+    /// config lookup, which panics on this context, so a typed `Unavailable` here proves the
+    /// refusal came first and no model path was reached.
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn deep_research_refuses_a_paused_tenant_before_any_model_call() {
+        use ares_types::models::{TenantContext, TenantTier};
+
+        let pool = ares_test_support::pool().await;
+        let tenant = format!("research-pause-{}", uuid::Uuid::new_v4());
+        sqlx::query(
+            "INSERT INTO tenants (id, name, tier, created_at, updated_at) \
+             VALUES ($1, $1, 'free', 1, 1)",
+        )
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .expect("insert the scratch tenant");
+        sqlx::query("UPDATE tenants SET paused = true WHERE id = $1")
+            .bind(&tenant)
+            .execute(&pool)
+            .await
+            .expect("pause the scratch tenant");
+
+        let ctx = Context::new_root();
+        ctx.provide(ares_agent::EmergencyStop::new(false));
+        ctx.provide(ares_store::TenantDb::new(Arc::new(
+            ares_store::PostgresClient { pool: pool.clone() },
+        )));
+
+        let result = deep_research(
+            State(ctx),
+            AuthUser(sample_claims("user-1", Some(tenant.as_str()))),
+            Some(Extension(TenantContext::new(
+                tenant.clone(),
+                TenantTier::Free,
+            ))),
+            Json(sample_request("anything")),
+        )
+        .await;
+
+        let _ = sqlx::query("DELETE FROM tenants WHERE id = $1")
+            .bind(&tenant)
+            .execute(&pool)
+            .await;
+
+        match result {
+            Err(err) => match err.0 {
+                ares_types::types::AppError::Unavailable(message) => {
+                    assert!(
+                        message.to_lowercase().contains("paused"),
+                        "the message must name the pause: {message:?}"
+                    );
+                    assert!(
+                        !message.contains(&tenant),
+                        "the message must not carry the tenant id: {message:?}"
+                    );
+                }
+                other => panic!("expected Unavailable, got {other:?}"),
+            },
+            Ok(_) => panic!("a paused tenant must not get a research result"),
+        }
+    }
 }

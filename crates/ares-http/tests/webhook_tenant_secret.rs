@@ -239,6 +239,20 @@ async fn store_secret(pool: &PgPool, tenant_id: &str, secret: &str) {
         .expect("store the tenant's event secret hash: migration 041 (tenant_event_secrets)");
 }
 
+/// A hash is unique across tenants, so a world first clears whatever an earlier
+/// world, or an earlier run on this scratch database, left under the dummy
+/// secrets it is about to provision. Safe: every test holds [`ENV_LOCK`] for
+/// its whole body, so exactly one world is live at a time.
+async fn clear_dummy_secrets(pool: &PgPool, secrets: &[&str]) {
+    for secret in secrets {
+        sqlx::query("DELETE FROM tenant_event_secrets WHERE secret_sha256 = $1")
+            .bind(sha256_hex(secret))
+            .execute(pool)
+            .await
+            .expect("clear a dummy secret left by an earlier world (migration 041)");
+    }
+}
+
 async fn make_trigger(
     pool: &PgPool,
     tenant_id: &str,
@@ -353,6 +367,7 @@ impl World {
     async fn boot(db_url: String, with_trigger_service: bool) -> World {
         global_capture();
         let pool = migrated_pool(db_url).await;
+        clear_dummy_secrets(&pool, &[SECRET_A, SECRET_B]).await;
         let pg = Arc::new(PostgresClient { pool: pool.clone() });
         let tenant_db = Arc::new(TenantDb::new(pg.clone()));
 
@@ -1082,6 +1097,7 @@ async fn the_owner_provisioning_sql_provisions_replaces_and_revokes() {
     let c = seed_tenant_without_secret(&tenant_db, &w.pool).await;
     const FIRST: &str = "tenant-c-first-secret-dummy-2-16a";
     const SECOND: &str = "tenant-c-second-secret-dummy-2-16a";
+    clear_dummy_secrets(&w.pool, &[FIRST, SECOND]).await;
     let mut cells = Cells::new();
 
     let o = call(&w, Route::Webhook, Some(FIRST), None, &c.webhook).await;
@@ -1205,7 +1221,13 @@ async fn the_table_stores_only_a_sha256_one_row_per_tenant_unique() {
         }
     };
     let mut cells = Cells::new();
+    clear_dummy_secrets(&w.pool, &["tenant-d-secret-dummy-2-16a"]).await;
     let fresh = sha256_hex("tenant-d-secret-dummy-2-16a");
+    let tenant_db = TenantDb::new(Arc::new(PostgresClient {
+        pool: w.pool.clone(),
+    }));
+    // D has no row yet: the two cases below can fail only on their own constraint.
+    let d = seed_tenant_without_secret(&tenant_db, &w.pool).await;
 
     // A and B already have a row each (seeded by the world).
     let second_row_for_a = insert(w.a.id.clone(), fresh.clone()).await;
@@ -1214,16 +1236,12 @@ async fn the_table_stores_only_a_sha256_one_row_per_tenant_unique() {
         second_row_for_a.is_err(),
         format!("{:?}", second_row_for_a.map(|r| r.rows_affected())),
     );
-    let same_hash_for_b = insert(w.b.id.clone(), sha256_hex(SECRET_A)).await;
+    let same_hash_for_d = insert(d.id.clone(), sha256_hex(SECRET_A)).await;
     cells.fact(
         "a hash another tenant already has".to_string(),
-        same_hash_for_b.is_err(),
-        format!("{:?}", same_hash_for_b.map(|r| r.rows_affected())),
+        same_hash_for_d.is_err(),
+        format!("{:?}", same_hash_for_d.map(|r| r.rows_affected())),
     );
-    let tenant_db = TenantDb::new(Arc::new(PostgresClient {
-        pool: w.pool.clone(),
-    }));
-    let d = seed_tenant_without_secret(&tenant_db, &w.pool).await;
     for (label, value) in [
         (
             "a plaintext secret",

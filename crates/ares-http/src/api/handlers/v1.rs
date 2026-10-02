@@ -181,10 +181,3 @@ pub struct PaginationQuery {
     pub page: Option<u32>,
     pub per_page: Option<u32>,
 }
-
-pub fn v1_routes() -> axum::Router<Arc<Context>> {
-    axum::Router::new()
-        .merge(chat::routes())
-        .merge(stream::routes())
-        .merge(agents::routes())
-}

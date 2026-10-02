@@ -2793,11 +2793,38 @@ pub fn webhook_trigger_matches(trigger: &db_schedules::EventTrigger) -> bool {
 ///
 /// Public webhook endpoint that receives events and triggers the
 /// associated agent when the trigger is enabled.
+///
+/// Not a capability URL (item 2.16a): the trigger id alone does nothing. The
+/// request must present its tenant's own event secret in `X-Webhook-Secret`
+/// (`document_upload::authenticate_webhook`; 401 without one), and the trigger
+/// must belong to that tenant (403 otherwise). The ownership check comes
+/// before the trigger is described, so another tenant's trigger answers the
+/// same whether it is enabled or not.
 pub async fn receive_webhook(
     Path(trigger_id): Path<String>,
     State(ctx): State<Arc<Context>>,
+    headers: HeaderMap,
     Json(payload): Json<serde_json::Value>,
-) -> Result<Json<serde_json::Value>> {
+) -> std::result::Result<Json<serde_json::Value>, crate::api::handlers::document_upload::WebhookError>
+{
+    use crate::api::handlers::document_upload::{authenticate_webhook, Forbidden, WebhookError};
+
+    let tenant_id = authenticate_webhook(&ctx, &headers).await?;
+    let __pool_5 = ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .pool()
+        .clone();
+    let store = db_schedules::EventTriggerStore::new(&__pool_5);
+    let trigger = store.get_trigger(&trigger_id).await?;
+    let Some(trigger) = trigger else {
+        return Err(WebhookError::from(AppError::NotFound(format!(
+            "Trigger {trigger_id} not found"
+        ))));
+    };
+    if trigger.tenant_id != tenant_id {
+        return Err(WebhookError::Forbidden(Forbidden::TriggerOfAnotherTenant));
+    }
     // Prefer TriggerService via Cordis DI (owns DB + Execute).
     if let Some(svc) = ctx.get::<ares_agent::trigger::TriggerService>() {
         match svc
@@ -2806,60 +2833,46 @@ pub async fn receive_webhook(
         {
             Ok(v) => return Ok(Json(v)),
             Err(e) if e.contains("not found") => {
-                return Err(HttpError::from(AppError::NotFound(e)));
+                return Err(WebhookError::from(AppError::NotFound(e)));
             }
             Err(e) => {
                 tracing::warn!(trigger_id=%trigger_id, error=%e, "Webhook TriggerService dispatch failed");
-                return Err(HttpError::from(AppError::Internal(e)));
+                return Err(WebhookError::from(AppError::Internal(e)));
             }
         }
     }
-    let __pool_5 = ctx
-        .get::<ares_store::TenantDb>()
-        .expect("not provided")
-        .pool()
-        .clone();
-    let store = db_schedules::EventTriggerStore::new(&__pool_5);
-    let trigger = store.get_trigger(&trigger_id).await?;
-    if let Some(trigger) = trigger {
-        if !webhook_trigger_matches(&trigger) {
-            return Err(HttpError::from(AppError::NotFound(format!(
-                "Webhook trigger {trigger_id} not found"
-            ))));
-        }
-        if trigger.enabled {
-            let message = serde_json::to_string(&payload).unwrap_or_default();
-            // Payload content is retention-sensitive (tenants can opt into
-            // no-retain); log metadata only, never the body.
-            tracing::info!(
+    if !webhook_trigger_matches(&trigger) {
+        return Err(WebhookError::from(AppError::NotFound(format!(
+            "Webhook trigger {trigger_id} not found"
+        ))));
+    }
+    if trigger.enabled {
+        let message = serde_json::to_string(&payload).unwrap_or_default();
+        // Payload content is retention-sensitive (tenants can opt into
+        // no-retain); log metadata only, never the body.
+        tracing::info!(
+            trigger_id = %trigger_id,
+            tenant_id = %trigger.tenant_id,
+            agent = %trigger.target_agent,
+            payload_bytes = message.len(),
+            "Webhook received — triggering agent"
+        );
+        if let Err(e) = ares_agent::trigger::execute_triggered_agent(&trigger, &message, &ctx).await
+        {
+            tracing::warn!(
                 trigger_id = %trigger_id,
-                tenant_id = %trigger.tenant_id,
                 agent = %trigger.target_agent,
-                payload_bytes = message.len(),
-                "Webhook received — triggering agent"
+                error = %e,
+                "Webhook trigger execution failed"
             );
-            if let Err(e) =
-                ares_agent::trigger::execute_triggered_agent(&trigger, &message, &ctx).await
-            {
-                tracing::warn!(
-                    trigger_id = %trigger_id,
-                    agent = %trigger.target_agent,
-                    error = %e,
-                    "Webhook trigger execution failed"
-                );
-            }
-            Ok(Json(
-                serde_json::json!({"status": "triggered", "agent": trigger.target_agent}),
-            ))
-        } else {
-            Ok(Json(
-                serde_json::json!({"status": "ignored", "reason": "disabled"}),
-            ))
         }
+        Ok(Json(
+            serde_json::json!({"status": "triggered", "agent": trigger.target_agent}),
+        ))
     } else {
-        Err(HttpError::from(AppError::NotFound(format!(
-            "Trigger {trigger_id} not found"
-        ))))
+        Ok(Json(
+            serde_json::json!({"status": "ignored", "reason": "disabled"}),
+        ))
     }
 }
 

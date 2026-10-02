@@ -362,6 +362,11 @@ pub async fn v1_research(
         )));
     }
 
+    // Per-tenant kill switch (item 2.5a): this handler never calls `admit`, so it makes the same
+    // check `admit` makes, through the same function, after the global stop and before any
+    // config, model or coordinator work (`research.rs`'s `deep_research` does the same).
+    ares_agent::admit::ensure_tenant_not_paused(&state_ctx, &tc.tenant_id).await?;
+
     let start = std::time::Instant::now();
     let config = state_ctx
         .get::<crate::overlay::AresConfigManager>()

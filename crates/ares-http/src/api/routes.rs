@@ -823,35 +823,623 @@ mod route_path_tests {
     }
 
     // -----------------------------------------------------------------------
-    // Guard: no unmounted router aggregator (ares-admin-routes-unmounted)
+    // Guard: no router of admin or /v1 routes can be built outside
+    // `create_router` (ares-admin-routes-unmounted).
     //
-    // `create_router` is the one function that builds the live router, and it
-    // layers `admin_middleware` over every `/admin` route. Three other
-    // functions once merged the per-module `routes()` routers (admin WRITE
-    // handlers) into a `Router` with no admin middleware at all. Nothing
-    // mounted them, but mounting any one of them would have exposed those
-    // writes unauthenticated. They are deleted; these tests keep them gone.
-    // A router that carries admin writes must be built by `create_router`,
-    // behind `admin_middleware`.
+    // `create_router` is the one function that builds the live router. It
+    // layers `admin_middleware` over every `/admin` route and the API-key
+    // middleware over every `/v1` route. Three aggregators (`build_routes`,
+    // `admin_routes`, `v1_routes`) and seventeen per-domain `routes()`
+    // functions once built routers of those WRITE handlers with no middleware
+    // at all. Nothing mounted them, but mounting any one would have exposed
+    // the writes unauthenticated. They are deleted. This guard keys on what
+    // such code DOES, not on what it is called, so a rename, a raw identifier
+    // or a macro does not get past it. It fails when:
+    //
+    //   (a) a function that returns a `Router` (`Router`, `axum::Router<..>`,
+    //       `r#Router`, `Result<Router, _>`, a per-file `use .. as` or `type`
+    //       alias of it, or a return type that a macro variable supplies) is
+    //       defined outside `#[cfg(test)]` in `handlers/admin/**`,
+    //       `handlers/v1/**`, `handlers/admin.rs` or `handlers/v1.rs`;
+    //   (b) non-test code in `crates/ares-http/src` or the root `src/` calls a
+    //       function named `routes` (`x::routes()`, a bare `routes()`, a raw
+    //       `r#routes()`), except through a module declared inline in the
+    //       same file (`mod ui { .. }` in `src/main.rs`, the embedded UI);
+    //   (c) `api/routes.rs` does not define `pub fn create_router` exactly
+    //       once. Only non-test definitions count: a `#[cfg(test)]` helper of
+    //       that name is not one. This is also the scan's control: it must
+    //       find the one live builder and see it return a `Router`, so an
+    //       empty result for (a) is a real absence and not a blind scan.
+    //
+    // Comments and the contents of string and char literals are removed
+    // before anything is matched, so a comment that mentions a deleted
+    // function, or a test fixture that holds the text of one, is not a
+    // finding. Items under `#[cfg(test)]` (and `cfg(all(test, ..))`) are
+    // skipped: the test modules may build routers.
+    //
+    // WHAT THIS CANNOT SEE, stated so nobody reads more into a green run:
+    //   - code a proc macro or an attribute macro generates: the scan reads
+    //     source text, it never expands anything, and `include!`d files are
+    //     not followed (a `macro_rules!` body is text, so it IS read);
+    //   - a `Router` reached through an alias or re-export from ANOTHER file
+    //     (aliases are followed inside the file that declares them only), or
+    //     one reached through a `cfg` predicate other than `test`,
+    //     `all(.., test, ..)` and `any(test, ..)`;
+    //   - a router assembled out of handler functions inside a function that
+    //     does not return a `Router` (a `let` in `main`, say), or any router
+    //     builder in a file outside the paths of (a): only the CALLS of
+    //     `routes()` are caught there, by (b);
+    //   - a call through a `use ..::routes as other` alias: the import itself
+    //     is not a call and is not flagged. (`handlers/admin/mod.rs` and
+    //     `handlers/v1/mod.rs` are not compiled, and still carry such
+    //     imports.) With (a) holding, no `routes()` exists in compiled code
+    //     to be imported;
+    //   - other repositories. The wrapper (`ares-dirmacs`) is checked by the
+    //     orchestrator's verify with a grep, not here.
     // -----------------------------------------------------------------------
 
-    /// Names of the deleted aggregators. Kept as bare names, never as
-    /// `fn <name>` text, so this file does not match its own scan.
-    const DELETED_AGGREGATORS: [&str; 3] = ["build_routes", "admin_routes", "v1_routes"];
+    /// One lexical token of a source file.
+    #[derive(Debug, Clone, PartialEq)]
+    enum Tok {
+        /// An identifier or keyword. `raw` marks `r#name`; `name` never keeps
+        /// the `r#`.
+        Ident {
+            name: String,
+            raw: bool,
+        },
+        Punct(char),
+        /// A string, char or number literal, or a lifetime. The content is
+        /// dropped, which is how literal text is kept out of every match.
+        Lit,
+    }
 
-    /// True when `line` defines a function called `name`: the identifier `fn`
-    /// immediately followed by `name`, so any visibility, qualifier or spacing
-    /// is caught. Comment lines and `let` bindings never match.
-    fn defines_fn(line: &str, name: &str) -> bool {
-        let code = line.trim_start();
-        if code.starts_with("//") {
+    #[derive(Debug, Clone)]
+    struct Token {
+        tok: Tok,
+        line: usize,
+    }
+
+    impl Token {
+        /// An identifier called `s`, raw (`r#s`) or not.
+        fn is_name(&self, s: &str) -> bool {
+            matches!(&self.tok, Tok::Ident { name, .. } if name == s)
+        }
+
+        /// The keyword `s` (a raw identifier is never a keyword).
+        fn is_kw(&self, s: &str) -> bool {
+            matches!(&self.tok, Tok::Ident { name, raw: false } if name == s)
+        }
+
+        fn is_punct(&self, c: char) -> bool {
+            self.tok == Tok::Punct(c)
+        }
+
+        fn name(&self) -> Option<&str> {
+            match &self.tok {
+                Tok::Ident { name, .. } => Some(name),
+                _ => None,
+            }
+        }
+    }
+
+    /// Index just past the string literal whose opening quote is at `open`.
+    fn end_of_string(c: &[char], open: usize, line: &mut usize) -> usize {
+        let mut i = open + 1;
+        while i < c.len() {
+            match c[i] {
+                '\\' => {
+                    if c.get(i + 1) == Some(&'\n') {
+                        *line += 1;
+                    }
+                    i += 2;
+                }
+                '"' => return i + 1,
+                '\n' => {
+                    *line += 1;
+                    i += 1;
+                }
+                _ => i += 1,
+            }
+        }
+        c.len()
+    }
+
+    /// Index just past the raw string whose opening quote is at `quote`: it
+    /// closes at a quote followed by `hashes` hashes.
+    fn end_of_raw_string(c: &[char], quote: usize, hashes: usize, line: &mut usize) -> usize {
+        let mut i = quote + 1;
+        while i < c.len() {
+            if c[i] == '\n' {
+                *line += 1;
+            }
+            if c[i] == '"' && (1..=hashes).all(|k| c.get(i + k) == Some(&'#')) {
+                return i + 1 + hashes;
+            }
+            i += 1;
+        }
+        c.len()
+    }
+
+    /// Tokens of `src` with `//` and (nested) `/* .. */` comments, and the
+    /// content of string, raw string, byte string, char and lifetime
+    /// literals, removed. Doc comments are comments.
+    fn lex(src: &str) -> Vec<Token> {
+        let c: Vec<char> = src.chars().collect();
+        let is_id = |ch: char| ch.is_alphanumeric() || ch == '_';
+        let mut out: Vec<Token> = Vec::new();
+        let mut line = 1usize;
+        let mut i = 0usize;
+        while i < c.len() {
+            let ch = c[i];
+            let at = line;
+            if ch == '\n' {
+                line += 1;
+                i += 1;
+            } else if ch.is_whitespace() {
+                i += 1;
+            } else if ch == '/' && c.get(i + 1) == Some(&'/') {
+                while i < c.len() && c[i] != '\n' {
+                    i += 1;
+                }
+            } else if ch == '/' && c.get(i + 1) == Some(&'*') {
+                let mut depth = 1;
+                i += 2;
+                while i < c.len() && depth > 0 {
+                    if c[i] == '/' && c.get(i + 1) == Some(&'*') {
+                        depth += 1;
+                        i += 2;
+                    } else if c[i] == '*' && c.get(i + 1) == Some(&'/') {
+                        depth -= 1;
+                        i += 2;
+                    } else {
+                        if c[i] == '\n' {
+                            line += 1;
+                        }
+                        i += 1;
+                    }
+                }
+            } else if ch == '"' {
+                i = end_of_string(&c, i, &mut line);
+                out.push(Token {
+                    tok: Tok::Lit,
+                    line: at,
+                });
+            } else if ch == '\'' {
+                if c.get(i + 1) == Some(&'\\') {
+                    // An escaped char literal: '\n', '\'', '\u{..}'.
+                    i += 3;
+                    while i < c.len() && c[i] != '\'' {
+                        i += 1;
+                    }
+                    i += 1;
+                } else if c.get(i + 2) == Some(&'\'') {
+                    // A one-char literal, including '"'.
+                    i += 3;
+                } else {
+                    // A lifetime or a loop label.
+                    i += 1;
+                    while i < c.len() && is_id(c[i]) {
+                        i += 1;
+                    }
+                }
+                out.push(Token {
+                    tok: Tok::Lit,
+                    line: at,
+                });
+            } else if ch.is_alphabetic() || ch == '_' {
+                let mut j = i;
+                while j < c.len() && is_id(c[j]) {
+                    j += 1;
+                }
+                let word: String = c[i..j].iter().collect();
+                if matches!(word.as_str(), "r" | "br" | "cr") {
+                    let mut k = j;
+                    while c.get(k) == Some(&'#') {
+                        k += 1;
+                    }
+                    let hashes = k - j;
+                    if c.get(k) == Some(&'"') {
+                        i = end_of_raw_string(&c, k, hashes, &mut line);
+                        out.push(Token {
+                            tok: Tok::Lit,
+                            line: at,
+                        });
+                        continue;
+                    }
+                    if word == "r"
+                        && hashes == 1
+                        && c.get(k).is_some_and(|x| x.is_alphabetic() || *x == '_')
+                    {
+                        let mut e = k;
+                        while e < c.len() && is_id(c[e]) {
+                            e += 1;
+                        }
+                        out.push(Token {
+                            tok: Tok::Ident {
+                                name: c[k..e].iter().collect(),
+                                raw: true,
+                            },
+                            line: at,
+                        });
+                        i = e;
+                        continue;
+                    }
+                }
+                let byte_or_c_string = matches!(word.as_str(), "b" | "c") && c.get(j) == Some(&'"');
+                let byte_char = word == "b" && c.get(j) == Some(&'\'');
+                if byte_or_c_string || byte_char {
+                    // The prefix of a byte or C string, or of a byte char: drop it
+                    // and lex the literal on the next turn.
+                    i = j;
+                    continue;
+                }
+                out.push(Token {
+                    tok: Tok::Ident {
+                        name: word,
+                        raw: false,
+                    },
+                    line: at,
+                });
+                i = j;
+            } else if ch.is_ascii_digit() {
+                while i < c.len() && is_id(c[i]) {
+                    i += 1;
+                }
+                out.push(Token {
+                    tok: Tok::Lit,
+                    line: at,
+                });
+            } else {
+                out.push(Token {
+                    tok: Tok::Punct(ch),
+                    line: at,
+                });
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// Index just past the bracket that closes the `(`, `[` or `{` at `open`.
+    fn skip_balanced(t: &[Token], open: usize) -> usize {
+        let (o, cl) = match t.get(open).map(|x| &x.tok) {
+            Some(Tok::Punct('(')) => ('(', ')'),
+            Some(Tok::Punct('[')) => ('[', ']'),
+            Some(Tok::Punct('{')) => ('{', '}'),
+            _ => return open + 1,
+        };
+        let mut depth = 0i32;
+        for (k, x) in t.iter().enumerate().skip(open) {
+            if x.is_punct(o) {
+                depth += 1;
+            } else if x.is_punct(cl) {
+                depth -= 1;
+                if depth == 0 {
+                    return k + 1;
+                }
+            }
+        }
+        t.len()
+    }
+
+    /// Index just past the `>` that closes the `<` at `open`. The `>` of an
+    /// arrow (`Fn() -> X`) does not close anything.
+    fn skip_angles(t: &[Token], open: usize) -> usize {
+        let mut depth = 0i32;
+        let mut k = open;
+        while k < t.len() {
+            if t[k].is_punct('-') && t.get(k + 1).is_some_and(|x| x.is_punct('>')) {
+                k += 2;
+                continue;
+            }
+            if t[k].is_punct('<') {
+                depth += 1;
+            } else if t[k].is_punct('>') {
+                depth -= 1;
+                if depth == 0 {
+                    return k + 1;
+                }
+            }
+            k += 1;
+        }
+        t.len()
+    }
+
+    /// Index just past the item that starts at `k`: further attributes are
+    /// skipped, then the item ends at the first `;` outside any bracket or at
+    /// the end of its first `{ .. }` block, whichever comes first.
+    fn item_end(t: &[Token], mut k: usize) -> usize {
+        while k + 1 < t.len() && t[k].is_punct('#') {
+            let open = k + 1 + usize::from(t[k + 1].is_punct('!'));
+            if t.get(open).is_some_and(|x| x.is_punct('[')) {
+                k = skip_balanced(t, open);
+            } else {
+                break;
+            }
+        }
+        let mut depth = 0i32;
+        while k < t.len() {
+            match &t[k].tok {
+                Tok::Punct('(') | Tok::Punct('[') => depth += 1,
+                Tok::Punct(')') | Tok::Punct(']') => depth -= 1,
+                Tok::Punct('{') if depth <= 0 => return skip_balanced(t, k),
+                Tok::Punct('{') => depth += 1,
+                Tok::Punct('}') => depth -= 1,
+                Tok::Punct(';') if depth <= 0 => return k + 1,
+                _ => {}
+            }
+            k += 1;
+        }
+        t.len()
+    }
+
+    /// `p` split at the commas that are not inside parentheses.
+    fn split_commas(p: &[Token]) -> Vec<&[Token]> {
+        let mut out = Vec::new();
+        let (mut depth, mut from) = (0i32, 0usize);
+        for (k, x) in p.iter().enumerate() {
+            if x.is_punct('(') {
+                depth += 1;
+            } else if x.is_punct(')') {
+                depth -= 1;
+            } else if x.is_punct(',') && depth == 0 {
+                out.push(&p[from..k]);
+                from = k + 1;
+            }
+        }
+        if from < p.len() {
+            out.push(&p[from..]);
+        }
+        out
+    }
+
+    /// True when the `cfg` predicate `p` holds only under `cfg(test)`: `test`,
+    /// `all(.., test, ..)`, or an `any(..)` whose every arm is such.
+    /// Everything else (`not(test)`, `feature = ".."`, ..) is not test-only.
+    fn cfg_is_test_only(p: &[Token]) -> bool {
+        if p.len() == 1 && p[0].is_name("test") {
+            return true;
+        }
+        let head = p.first().and_then(|x| x.name());
+        if p.len() < 3 || !p[1].is_punct('(') || !p[p.len() - 1].is_punct(')') {
             return false;
         }
-        let idents: Vec<&str> = code
-            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-            .filter(|s| !s.is_empty())
+        let args = split_commas(&p[2..p.len() - 1]);
+        match head {
+            Some("all") => args.iter().any(|a| cfg_is_test_only(a)),
+            Some("any") => !args.is_empty() && args.iter().all(|a| cfg_is_test_only(a)),
+            _ => false,
+        }
+    }
+
+    /// For each token, whether it sits in an item that only exists under
+    /// `cfg(test)`: the item after a test-only `#[cfg(..)]`, attribute
+    /// included. A file that opens with a test-only `#![cfg(..)]` is all test.
+    fn test_mask(t: &[Token]) -> Vec<bool> {
+        let mut mask = vec![false; t.len()];
+        let mut leading = true; // only inner attributes so far
+        let mut i = 0;
+        while i < t.len() {
+            if !t[i].is_punct('#') {
+                leading = false;
+                i += 1;
+                continue;
+            }
+            let inner = t.get(i + 1).is_some_and(|x| x.is_punct('!'));
+            let open = i + 1 + usize::from(inner);
+            if !t.get(open).is_some_and(|x| x.is_punct('[')) {
+                leading = false;
+                i += 1;
+                continue;
+            }
+            let attr_end = skip_balanced(t, open);
+            let is_cfg = t.get(open + 1).is_some_and(|x| x.is_name("cfg"))
+                && t.get(open + 2).is_some_and(|x| x.is_punct('('));
+            if is_cfg {
+                let pred_end = skip_balanced(t, open + 2);
+                let test_only = t
+                    .get(open + 3..pred_end.saturating_sub(1))
+                    .is_some_and(cfg_is_test_only);
+                if test_only && inner && leading {
+                    return vec![true; t.len()];
+                }
+                if test_only && !inner {
+                    let end = item_end(t, attr_end);
+                    for m in &mut mask[i..end] {
+                        *m = true;
+                    }
+                    i = end;
+                    leading = false;
+                    continue;
+                }
+            }
+            if !inner {
+                leading = false;
+            }
+            i = attr_end;
+        }
+        mask
+    }
+
+    /// Every spelling of `Router` a file can use for it: the name itself, a
+    /// `use .. Router as X` alias, and a `type X = ..Router..;` alias.
+    fn router_names(t: &[Token]) -> Vec<String> {
+        let mut names = vec!["Router".to_string()];
+        for (i, x) in t.iter().enumerate() {
+            if x.is_name("Router") && t.get(i + 1).is_some_and(|y| y.is_kw("as")) {
+                if let Some(alias) = t.get(i + 2).and_then(|y| y.name()) {
+                    names.push(alias.to_string());
+                }
+            }
+            if x.is_kw("type") {
+                if let Some(alias) = t.get(i + 1).and_then(|y| y.name()) {
+                    let end = item_end(t, i);
+                    if t[i..end].iter().any(|y| y.is_name("Router")) {
+                        names.push(alias.to_string());
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    /// A function definition found in a token stream.
+    #[derive(Debug)]
+    struct FnDef {
+        /// Index of the `fn` token.
+        idx: usize,
+        line: usize,
+        /// The name; `$name` when a macro variable supplies it.
+        name: String,
+        /// The return type names `Router` (or one of its aliases).
+        returns_router: bool,
+        /// The return type is a macro variable (`-> $ret`): it may be a
+        /// `Router`, and the invocation that decides is not in this text.
+        returns_metavar: bool,
+    }
+
+    /// Every `fn name(..)` (and `fn $name(..)`) in `t`, with what it returns.
+    /// A `fn(..)` pointer type is not a definition.
+    fn fn_defs(t: &[Token]) -> Vec<FnDef> {
+        let routers = router_names(t);
+        let mut out = Vec::new();
+        for i in 0..t.len() {
+            if !t[i].is_kw("fn") {
+                continue;
+            }
+            let (name, mut j) = match (t.get(i + 1), t.get(i + 2)) {
+                (Some(a), _) if a.name().is_some() => (a.name().unwrap().to_string(), i + 2),
+                (Some(a), Some(b)) if a.is_punct('$') && b.name().is_some() => {
+                    (format!("${}", b.name().unwrap()), i + 3)
+                }
+                _ => continue,
+            };
+            if t.get(j).is_some_and(|x| x.is_punct('<')) {
+                j = skip_angles(t, j);
+            }
+            if !t.get(j).is_some_and(|x| x.is_punct('(')) {
+                continue;
+            }
+            j = skip_balanced(t, j);
+            let mut ret: Vec<&Token> = Vec::new();
+            if t.get(j).is_some_and(|x| x.is_punct('-'))
+                && t.get(j + 1).is_some_and(|x| x.is_punct('>'))
+            {
+                let mut k = j + 2;
+                let mut depth = 0i32;
+                while k < t.len() {
+                    if t[k].is_punct('-') && t.get(k + 1).is_some_and(|x| x.is_punct('>')) {
+                        ret.push(&t[k]);
+                        ret.push(&t[k + 1]);
+                        k += 2;
+                        continue;
+                    }
+                    if depth == 0
+                        && (t[k].is_punct('{') || t[k].is_punct(';') || t[k].is_kw("where"))
+                    {
+                        break;
+                    }
+                    if t[k].is_punct('(') || t[k].is_punct('[') {
+                        depth += 1;
+                    } else if t[k].is_punct(')') || t[k].is_punct(']') {
+                        depth -= 1;
+                    }
+                    ret.push(&t[k]);
+                    k += 1;
+                }
+            }
+            out.push(FnDef {
+                idx: i,
+                line: t[i].line,
+                name,
+                returns_router: ret
+                    .iter()
+                    .any(|x| x.name().is_some_and(|n| routers.iter().any(|r| r == n))),
+                returns_metavar: ret.iter().any(|x| x.is_punct('$')),
+            });
+        }
+        out
+    }
+
+    /// (a): `(line, what)` for every function outside `#[cfg(test)]` in `src`
+    /// that returns a `Router`, or whose return type a macro variable supplies.
+    fn router_fns_outside_cfg_test(src: &str) -> Vec<(usize, String)> {
+        let t = lex(src);
+        let mask = test_mask(&t);
+        fn_defs(&t)
+            .into_iter()
+            .filter(|f| !mask[f.idx] && (f.returns_router || f.returns_metavar))
+            .map(|f| {
+                let what = if f.returns_router {
+                    "returns a Router"
+                } else {
+                    "has a macro variable as its return type (it can be a Router)"
+                };
+                (f.line, format!("fn {} {what}", f.name))
+            })
+            .collect()
+    }
+
+    /// (b): `(line, path)` for every call of a function named `routes`
+    /// outside `#[cfg(test)]`: `a::b::routes()`, a bare `routes()`, a raw
+    /// `r#routes()`. A definition (`fn routes`), a method call (`x.routes()`)
+    /// and a call through a module declared inline in the same file
+    /// (`mod ui { .. }`, which cannot be a `handlers` module: those are files)
+    /// are not findings.
+    fn routes_calls_outside_cfg_test(src: &str) -> Vec<(usize, String)> {
+        let t = lex(src);
+        let mask = test_mask(&t);
+        let inline_mods: Vec<&str> = t
+            .windows(3)
+            .filter(|w| w[0].is_kw("mod") && w[2].is_punct('{'))
+            .filter_map(|w| w[1].name())
             .collect();
-        idents.windows(2).any(|w| w[0] == "fn" && w[1] == name)
+        let mut out = Vec::new();
+        for i in 0..t.len() {
+            if mask[i] || !t[i].is_name("routes") {
+                continue;
+            }
+            let called = t.get(i + 1).is_some_and(|x| x.is_punct('('))
+                && t.get(i + 2).is_some_and(|x| x.is_punct(')'));
+            let defined_or_method = i >= 1 && (t[i - 1].is_kw("fn") || t[i - 1].is_punct('.'));
+            if !called || defined_or_method {
+                continue;
+            }
+            let mut segs = vec!["routes".to_string()];
+            let mut k = i;
+            while k >= 3 && t[k - 1].is_punct(':') && t[k - 2].is_punct(':') {
+                match t[k - 3].name() {
+                    Some(n) => segs.push(n.to_string()),
+                    None => break,
+                }
+                k -= 3;
+            }
+            if segs.len() > 1 && inline_mods.contains(&segs[1].as_str()) {
+                continue;
+            }
+            segs.reverse();
+            out.push((t[i].line, format!("{}()", segs.join("::"))));
+        }
+        out
+    }
+
+    /// (c): the number of `pub fn <name>` definitions outside `#[cfg(test)]`
+    /// in `src`, and whether each is seen returning a `Router`.
+    fn pub_fns_named_outside_cfg_test(src: &str, name: &str) -> Vec<bool> {
+        let t = lex(src);
+        let mask = test_mask(&t);
+        let is_plain_pub = |idx: usize| {
+            let mut k = idx;
+            while k > 0 && (t[k - 1].is_name("async") || t[k - 1].is_name("const")) {
+                k -= 1;
+            }
+            k > 0 && t[k - 1].is_kw("pub")
+        };
+        fn_defs(&t)
+            .into_iter()
+            .filter(|f| f.name == name && !mask[f.idx] && is_plain_pub(f.idx))
+            .map(|f| f.returns_router)
+            .collect()
     }
 
     fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -869,80 +1457,265 @@ mod route_path_tests {
         }
     }
 
-    /// The scan's own matcher must see every shape of definition it is meant
-    /// to forbid, and none of the shapes that are not definitions. (A matcher
-    /// that matches nothing would make the guard below pass vacuously.)
+    /// The scan's own matchers must see every shape of function that returns a
+    /// `Router` (any name, any spelling), and none of the shapes that do not.
+    /// A matcher that matches nothing would make the guard below pass
+    /// vacuously.
     #[test]
-    fn aggregator_scan_matches_definitions_and_nothing_else() {
-        for name in DELETED_AGGREGATORS {
-            for def in [
-                "pub fn NAME(ctx: &Arc<Context>) -> Router<Arc<Context>> {",
-                "pub fn NAME() -> axum::Router<Arc<Context>> {",
-                "    pub(crate) fn NAME() -> Router {",
-                "pub async fn NAME<S>() -> Router<S> {",
-                "fn   NAME ( ) {",
-            ] {
-                let line = def.replace("NAME", name);
-                assert!(defines_fn(&line, name), "must match a definition: {line}");
-            }
-            for not_def in [
-                "    let NAME = Router::new()",
-                "        .merge(NAME)",
-                "    .nest(\"/v1\", NAME)",
-                "/// fn NAME is mentioned in a doc comment",
-                "// cordis Phase6: RouteSet Service, registered via NAME(ctx)",
-                "pub fn NAME_with_suffix() {}",
-                "pub fn prefix_NAME() {}",
-            ] {
-                let line = not_def.replace("NAME", name);
-                assert!(!defines_fn(&line, name), "must not match: {line}");
-            }
+    fn router_fn_scan_matches_every_spelling_and_nothing_else() {
+        for src in [
+            "pub fn a(ctx: &Arc<Context>) -> Router<Arc<Context>> { x }",
+            "pub fn a() -> axum::Router<Arc<Context>> { x }",
+            "    pub(crate) fn a() -> Router { x }",
+            "pub async fn a<S>() -> Router<S> { x }",
+            "fn   a ( ) -> :: axum :: Router { x }",
+            "fn a() -> Router where S: Send { x }",
+            "pub fn a<F: Fn() -> u8>(f: F) -> Router { x }",
+            // renamed, raw identifiers (the name and the type)
+            "pub fn all_admin_routes() -> axum::Router<S> { x }",
+            "pub fn r#admin_routes() -> axum::Router<S> { x }",
+            "pub fn a() -> axum::r#Router<S> { x }",
+            // a Router inside another type
+            "pub fn a() -> Result<Router, E> { x }",
+            "pub fn a() -> impl Into<Router> { x }",
+            // a Router under another name, in the same file
+            "use axum::Router as R; pub fn a() -> R { x }",
+            "type Rt = axum::Router<()>; pub fn a() -> Rt { x }",
+            // a macro that defines the function
+            "macro_rules! m { ($n:ident) => { pub fn $n() -> axum::Router { x } }; }",
+            // a macro that supplies the return type: it may be a Router
+            "macro_rules! m { ($n:ident, $r:ty) => { pub fn $n() -> $r { x } }; }",
+            // a Router fn after a test item is still seen
+            "#[cfg(test)] fn t() {} pub fn a() -> Router { x }",
+            // `cfg` predicates that are NOT test-only
+            "#[cfg(not(test))] pub fn a() -> Router { x }",
+            "#[cfg(feature = \"x\")] pub fn a() -> Router { x }",
+            "#[cfg(any(test, feature = \"x\"))] pub fn a() -> Router { x }",
+            // `#![cfg(..)]` that is not test-only, and not at the top
+            "pub fn t() {} #![cfg(test)] pub fn a() -> Router { x }",
+        ] {
+            assert_eq!(
+                router_fns_outside_cfg_test(src).len(),
+                1,
+                "must be flagged exactly once: {src}"
+            );
         }
+        for src in [
+            "// pub fn a() -> Router { x }",
+            "/// pub fn a() -> Router { x }",
+            "//! pub fn a() -> Router { x }",
+            "/* pub fn a() -> Router { x } */",
+            "/* /* nested */ pub fn a() -> Router { x } */",
+            "const S: &str = \"pub fn a() -> Router { x }\";",
+            "const S: &str = \"a \\\" quote \\\" pub fn a() -> Router { x }\";",
+            "const S: &str = r#\"pub fn \"a\"() -> Router { x }\"#;",
+            "const S: &[u8] = b\"pub fn a() -> Router { x }\";",
+            "fn c() { let q = '\"'; let n = '\\n'; } // pub fn a() -> Router { x }",
+            "pub fn a() -> MethodRouter { x }",
+            "pub fn a() -> axum::response::Response { x }",
+            "pub fn a(r: Router) -> u8 { 1 }",
+            "pub fn a<'a>(r: &'a str) -> &'a str { r }",
+            "type F = u8; pub fn a() -> F { x }",
+            "let f: fn() -> u8 = a;",
+            "pub fn Router() {}",
+            // test-only items
+            "#[cfg(test)] pub fn a() -> Router { x }",
+            "#[cfg(test)] mod t { pub fn a() -> Router { x } }",
+            "#[cfg(all(test, feature = \"postgres\"))] #[allow(x)] mod t { fn a() -> Router { x } }",
+            "#[cfg(any(test, test))] fn a() -> Router { x }",
+            "#[cfg(test)] fn a() -> Router where S: Send { x }",
+            "#![cfg(test)] pub fn a() -> Router { x }",
+            "#![allow(x)] #![cfg(test)] pub fn a() -> Router { x }",
+        ] {
+            assert!(
+                router_fns_outside_cfg_test(src).is_empty(),
+                "must not be flagged: {src}"
+            );
+        }
+        // The report names the function and the line it starts on.
+        let found = router_fns_outside_cfg_test("\n\npub fn all_admin_routes() -> Router { x }");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0, 3, "the line of the `fn` token");
+        assert!(found[0].1.contains("all_admin_routes"), "{found:?}");
     }
 
-    /// No function named `build_routes`, `admin_routes` or `v1_routes` exists
-    /// anywhere under `crates/ares-http/src`, whatever its visibility or cfg.
+    /// (b)'s matcher: every way to call a per-domain `routes()`, and none of
+    /// the shapes that are not such a call.
+    #[test]
+    fn routes_call_scan_matches_calls_and_nothing_else() {
+        for src in [
+            "fn f() { crate::api::handlers::admin::cordis::routes() }",
+            "fn f() { tenants::routes ( ) }",
+            "fn f() { ares_http::api::handlers::v1::chat::routes().merge(x) }",
+            "fn f() { routes() }",
+            "fn f() { r#routes() }",
+            "fn f() { a::b::r#routes() }",
+            "fn f() { ::a::routes() }",
+            // a module that is a file, not an inline module
+            "#[path = \"admin/cordis.rs\"] pub mod cordis; fn f() { cordis::routes() }",
+            "#[cfg(not(test))] fn f() { admin::routes() }",
+            "#[cfg(test)] fn t() {} fn f() { admin::routes() }",
+        ] {
+            assert_eq!(
+                routes_calls_outside_cfg_test(src).len(),
+                1,
+                "must be flagged exactly once: {src}"
+            );
+        }
+        for src in [
+            "pub fn routes() -> u8 { 1 }",
+            "fn f(x: X) { x.routes() }",
+            "// admin::routes()",
+            "/* admin::routes() */",
+            "const S: &str = \"admin::routes()\";",
+            "fn f() { let routes = vec![1]; routes.len(); for r in routes {} }",
+            "fn f() { Router::new().route(\"/a\", get(h)) }",
+            "fn f() { routes!() }",
+            "pub use tenants::routes as tenants_routes;",
+            "mod ui { pub fn routes() {} } fn f() { ui::routes() }",
+            "mod ui { pub fn routes() {} } fn f() { crate::ui::routes() }",
+            "#[cfg(test)] fn f() { admin::routes() }",
+            "#[cfg(all(test, feature = \"postgres\"))] mod tests { fn f() { admin::routes() } }",
+        ] {
+            assert!(
+                routes_calls_outside_cfg_test(src).is_empty(),
+                "must not be flagged: {src}"
+            );
+        }
+        let found = routes_calls_outside_cfg_test("\nfn f() { crate::admin::tenants::routes() }");
+        assert_eq!(
+            found,
+            vec![(2, "crate::admin::tenants::routes()".to_string())]
+        );
+    }
+
+    /// (c)'s matcher: only a non-test, plain `pub fn create_router` counts.
+    #[test]
+    fn create_router_definition_scan_counts_definitions_only() {
+        let count = |src: &str| pub_fns_named_outside_cfg_test(src, "create_router").len();
+        assert_eq!(count("pub fn create_router(a: A) -> Router<S> { x }"), 1);
+        assert_eq!(
+            count("pub fn create_router() {} pub fn create_router() {}"),
+            2
+        );
+        assert_eq!(count("pub async fn create_router() {}"), 1);
+        assert_eq!(count("pub fn r#create_router() {}"), 1);
+        assert_eq!(count(""), 0);
+        // not definitions of the live builder
+        assert_eq!(count("#[cfg(test)] fn create_router() {}"), 0);
+        assert_eq!(count("#[cfg(test)] pub fn create_router() {}"), 0);
+        assert_eq!(count("mod t { #[cfg(test)] fn create_router() {} }"), 0);
+        assert_eq!(count("fn create_router() {}"), 0);
+        assert_eq!(count("pub(crate) fn create_router() {}"), 0);
+        assert_eq!(count("pub fn create_router_for_tests() {}"), 0);
+        assert_eq!(count("// pub fn create_router() {}"), 0);
+        assert_eq!(count("const S: &str = \"pub fn create_router() {}\";"), 0);
+        assert_eq!(count("fn f() { create_router(a, b) }"), 0);
+        // and the control reads the return type
+        assert_eq!(
+            pub_fns_named_outside_cfg_test(
+                "pub fn create_router() -> Router<S> { x }",
+                "create_router"
+            ),
+            vec![true]
+        );
+        assert_eq!(
+            pub_fns_named_outside_cfg_test("pub fn create_router() -> u8 { 1 }", "create_router"),
+            vec![false]
+        );
+    }
+
+    /// The guard over the real tree: see the block comment above for what it
+    /// checks, (a), (b) and (c), and for what it cannot see. It reads the
+    /// source at run time, so it follows the tree as it is checked out.
     #[test]
     fn no_unmounted_router_aggregator_is_defined() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut files = Vec::new();
-        collect_rs_files(&root, &mut files);
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let http_src = manifest.join("src");
+        let root_src = manifest.join("..").join("..").join("src");
+        let mut http_files = Vec::new();
+        collect_rs_files(&http_src, &mut http_files);
+        let mut root_files = Vec::new();
+        collect_rs_files(&root_src, &mut root_files);
+
+        // Where (a) looks: the admin and v1 handler trees and their two shims.
+        let handlers = http_src.join("api").join("handlers");
+        let in_admin_or_v1 = |p: &std::path::Path| {
+            p == handlers.join("admin.rs")
+                || p == handlers.join("v1.rs")
+                || p.starts_with(handlers.join("admin"))
+                || p.starts_with(handlers.join("v1"))
+        };
+        let scoped = http_files
+            .iter()
+            .filter(|p| in_admin_or_v1(p.as_path()))
+            .count();
+
+        // The walks must have found the trees, or an empty result means nothing.
         assert!(
-            files.len() > 20,
+            http_files.len() > 20,
             "the scan walked only {} files under {}; the source walk is broken",
-            files.len(),
-            root.display()
+            http_files.len(),
+            http_src.display()
+        );
+        assert!(
+            scoped > 20,
+            "(a) saw only {scoped} files under handlers/admin and handlers/v1; the scope is broken"
+        );
+        assert!(
+            root_files.iter().any(|p| p.ends_with("main.rs")),
+            "(b) did not find the root src/main.rs under {}; the root walk is broken",
+            root_src.display()
         );
 
+        let read = |p: &std::path::Path| {
+            std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+        };
         let mut offenders: Vec<String> = Vec::new();
-        let mut create_router_defs = 0usize;
-        for path in &files {
-            let text = std::fs::read_to_string(path)
-                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            let rel = path.strip_prefix(&root).unwrap_or(path).display();
-            for (i, line) in text.lines().enumerate() {
-                if defines_fn(line, "create_router") {
-                    create_router_defs += 1;
+        for path in &http_files {
+            let text = read(path.as_path());
+            let rel = path.strip_prefix(&http_src).unwrap_or(path).display();
+            if in_admin_or_v1(path.as_path()) {
+                for (line, what) in router_fns_outside_cfg_test(&text) {
+                    offenders.push(format!("(a) crates/ares-http/src/{rel}:{line}: {what}"));
                 }
-                for name in DELETED_AGGREGATORS {
-                    if defines_fn(line, name) {
-                        offenders.push(format!("{rel}:{}: {}", i + 1, line.trim()));
-                    }
-                }
+            }
+            for (line, call) in routes_calls_outside_cfg_test(&text) {
+                offenders.push(format!(
+                    "(b) crates/ares-http/src/{rel}:{line}: non-test code calls {call}"
+                ));
+            }
+        }
+        for path in &root_files {
+            let rel = path.strip_prefix(&root_src).unwrap_or(path).display();
+            for (line, call) in routes_calls_outside_cfg_test(&read(path.as_path())) {
+                offenders.push(format!("(b) src/{rel}:{line}: non-test code calls {call}"));
             }
         }
 
-        // Control: the same matcher finds the one live router builder, so an
-        // empty `offenders` is a real absence and not a blind scan.
-        assert_eq!(
-            create_router_defs, 1,
-            "the scan must find exactly one `create_router` definition"
+        // (c), and the control for (a): `create_router` is defined once, and
+        // the scan sees it return a Router.
+        let live = pub_fns_named_outside_cfg_test(
+            &read(&http_src.join("api").join("routes.rs")),
+            "create_router",
         );
+        if live.len() != 1 {
+            offenders.push(format!(
+                "(c) api/routes.rs defines `pub fn create_router` {} times; it must be exactly once",
+                live.len()
+            ));
+        } else if !live[0] {
+            offenders.push(
+                "(c) the scan did not see `create_router` return a Router, so (a) would be blind"
+                    .to_string(),
+            );
+        }
+
         assert!(
             offenders.is_empty(),
-            "these functions build a Router of admin write handlers with no admin \
-             middleware; delete them (admin routes belong in `create_router`, behind \
-             `admin_middleware`): {offenders:#?}"
+            "a router of admin or /v1 routes must be built by `create_router`, behind its \
+             middleware, and by nothing else. Delete these (or put them under `#[cfg(test)]`): \
+             {offenders:#?}"
         );
     }
 }

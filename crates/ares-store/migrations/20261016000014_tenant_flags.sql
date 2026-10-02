@@ -1,4 +1,4 @@
--- Migration 037: per-tenant flags `paused` and `strict` (item 2.5a).
+-- Migration 20261016000014: per-tenant flags `paused` and `strict` (item 2.5a).
 --
 -- What this does to production:
 --   Adds two NOT NULL boolean columns to `tenants`, both DEFAULT false:

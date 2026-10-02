@@ -191,7 +191,7 @@ impl Fixture {
         }
     }
 
-    /// A `tenants` row written the way code that predates migration 037 writes it.
+    /// A `tenants` row written the way code that predates the flags migration writes it.
     async fn tenant_row(&self) -> String {
         let tenant = format!("v1-research-pause-{}", uuid::Uuid::new_v4());
         sqlx::query(
@@ -379,13 +379,13 @@ async fn an_unpaused_tenant_passes_the_pause_check() {
     f.set_paused(&tenant, false).await;
 
     let outcome = f.research(&tenant).await;
-    if let Err(err) = &outcome {
-        if let AppError::Unavailable(message) = &err.0 {
-            assert!(
-                !message.to_lowercase().contains("paused"),
-                "an unpaused tenant was refused as paused: {message:?}"
-            );
-        }
+    if let Err(err) = &outcome
+        && let AppError::Unavailable(message) = &err.0
+    {
+        assert!(
+            !message.to_lowercase().contains("paused"),
+            "an unpaused tenant was refused as paused: {message:?}"
+        );
     }
     assert!(
         f.calls() > 0,

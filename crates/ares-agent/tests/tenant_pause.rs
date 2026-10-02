@@ -1,4 +1,4 @@
-//! Item 2.5a: a paused tenant runs nothing. `tenants.paused` (migration 037) is read on every
+//! Item 2.5a: a paused tenant runs nothing. `tenants.paused` (migration `20261016000014`) is read on every
 //! pass through `ares_agent::admit`, which `Execute::run` and `Execute::run_stream` call before
 //! anything else, so a paused tenant is refused with `AppError::Unavailable` before any model
 //! call.
@@ -159,7 +159,7 @@ impl Fixture {
         }
     }
 
-    /// A `tenants` row written the way code that predates migration 037 writes it: the insert
+    /// A `tenants` row written the way code that predates the flags migration writes it: the insert
     /// does not mention `paused` or `strict`, so both read the column default.
     async fn tenant_row(&self) -> String {
         let tenant = format!("tenant-pause-{}", uuid::Uuid::new_v4());
@@ -322,7 +322,7 @@ async fn an_unpaused_tenant_runs_as_today() {
     f.cleanup(&[&tenant]).await;
 }
 
-/// A row that predates 037 (its insert never mentions the flags) reads the column default,
+/// A row that predates the flags migration (its insert never mentions the flags) reads the column default,
 /// `false`, and runs unchanged.
 #[tokio::test]
 async fn a_row_predating_the_flags_reads_the_default_and_runs() {

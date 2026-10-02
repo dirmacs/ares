@@ -625,7 +625,7 @@ impl cordis::Service for TenantDb {
 }
 
 /// Returns whether `tenant_id` is paused: the per-tenant kill switch, `tenants.paused`
-/// (migration 037).
+/// (migration `20261016000014`).
 ///
 /// One single-column read per call and no cache, so a pause binds the next run with no
 /// restart (the `tenant_no_retain` pattern, without its in-process fallbacks).

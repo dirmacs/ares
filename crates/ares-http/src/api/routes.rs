@@ -2116,8 +2116,21 @@ mod tests {
         assert_ne!(response.status_code(), StatusCode::NOT_FOUND);
     }
 
+    /// The lifecycle runs through the real router. It used to mount the
+    /// per-domain `admin::cordis::routes()` bare, at a `/cordis/..` path that
+    /// no production router has and with no admin middleware, so the test
+    /// itself carried an unguarded admin router. Now `create_router` serves
+    /// the `/admin/cordis/..` routes behind `admin_middleware`, as in
+    /// production, and the test also proves the credential check holds.
+    ///
+    /// `create_router` needs an `AuthService` and a `TenantDb`; the context
+    /// gets neither of its own accord, so `audit_pool` finds no pool and the
+    /// handlers write no audit row (this test has no database).
     #[tokio::test]
     async fn cordis_service_lifecycle_end_to_end_over_http() {
+        let _env_guard = lock_admin_env();
+        std::env::set_var("ADMIN_API_KEY", "test-admin-secret");
+
         let ctx = Context::new_root();
         ctx.provide(cordis::ReflectService::new());
         ctx.provide(ares_tools::Tools::from_static(Vec::<
@@ -2125,15 +2138,36 @@ mod tests {
         >::new()));
         ctx.provide(cordis::EventsService::new());
 
-        let app = crate::api::handlers::admin::cordis::routes().with_state(ctx.clone());
+        let auth = Arc::new(AuthService::new(
+            "test-secret-at-least-32-characters-long".into(),
+            900,
+            604800,
+        ));
+        let tenant_db = Arc::new(TenantDb::new(Arc::new(
+            ares_store::PostgresClient::new_test(),
+        )));
+        let app = create_router(auth, tenant_db).with_state(ctx.clone());
         let server = axum_test::TestServer::new(app).expect("test server");
 
+        // No credentials: refused by the admin middleware, and nothing moved.
+        let response = server
+            .post("/admin/cordis/services/events_service/retire")
+            .await;
+        assert_eq!(response.status_code(), StatusCode::UNAUTHORIZED);
+        assert!(ctx.get::<cordis::EventsService>().is_some());
+
         // Wrapper-backed name → 409 Conflict (not retirably supported today).
-        let response = server.post("/cordis/services/tool_registry/retire").await;
+        let response = server
+            .post("/admin/cordis/services/tool_registry/retire")
+            .add_header("x-admin-secret", "test-admin-secret")
+            .await;
         assert_eq!(response.status_code(), StatusCode::CONFLICT);
 
         // Real retirement removes EventsService by TypeId.
-        let response = server.post("/cordis/services/events_service/retire").await;
+        let response = server
+            .post("/admin/cordis/services/events_service/retire")
+            .add_header("x-admin-secret", "test-admin-secret")
+            .await;
         assert_eq!(response.status_code(), StatusCode::OK);
         assert_eq!(
             response.json::<serde_json::Value>()["retired"],
@@ -2142,7 +2176,10 @@ mod tests {
         assert!(ctx.get::<cordis::EventsService>().is_none());
 
         // Companion endpoint re-registers it so the cycle repeats.
-        let response = server.post("/cordis/services/events_service/provide").await;
+        let response = server
+            .post("/admin/cordis/services/events_service/provide")
+            .add_header("x-admin-secret", "test-admin-secret")
+            .await;
         assert_eq!(response.status_code(), StatusCode::OK);
         assert_eq!(
             response.json::<serde_json::Value>()["provided"],

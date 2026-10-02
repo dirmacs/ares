@@ -1,6 +1,5 @@
 use crate::HttpError;
 use crate::Result;
-use ::cordis::Context;
 use ares_types::types::AppError;
 use std::sync::Arc;
 // Admin handlers — decomposed via Cordis (Phase 6)

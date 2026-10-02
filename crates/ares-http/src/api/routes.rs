@@ -894,6 +894,130 @@ mod route_path_tests {
         assert!(paths.contains(&"/auth/refresh"));
         assert!(paths.contains(&"/auth/logout"));
     }
+
+    // -----------------------------------------------------------------------
+    // Guard: no unmounted router aggregator (ares-admin-routes-unmounted)
+    //
+    // `create_router` is the one function that builds the live router, and it
+    // layers `admin_middleware` over every `/admin` route. Three other
+    // functions once merged the per-module `routes()` routers (admin WRITE
+    // handlers) into a `Router` with no admin middleware at all. Nothing
+    // mounted them, but mounting any one of them would have exposed those
+    // writes unauthenticated. They are deleted; these tests keep them gone.
+    // A router that carries admin writes must be built by `create_router`,
+    // behind `admin_middleware`.
+    // -----------------------------------------------------------------------
+
+    /// Names of the deleted aggregators. Kept as bare names, never as
+    /// `fn <name>` text, so this file does not match its own scan.
+    const DELETED_AGGREGATORS: [&str; 3] = ["build_routes", "admin_routes", "v1_routes"];
+
+    /// True when `line` defines a function called `name`: the identifier `fn`
+    /// immediately followed by `name`, so any visibility, qualifier or spacing
+    /// is caught. Comment lines and `let` bindings never match.
+    fn defines_fn(line: &str, name: &str) -> bool {
+        let code = line.trim_start();
+        if code.starts_with("//") {
+            return false;
+        }
+        let idents: Vec<&str> = code
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .filter(|s| !s.is_empty())
+            .collect();
+        idents.windows(2).any(|w| w[0] == "fn" && w[1] == name)
+    }
+
+    fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+            .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
+            .map(|e| e.expect("dir entry").path())
+            .collect();
+        entries.sort();
+        for p in entries {
+            if p.is_dir() {
+                collect_rs_files(&p, out);
+            } else if p.extension().and_then(|e| e.to_str()) == Some("rs") {
+                out.push(p);
+            }
+        }
+    }
+
+    /// The scan's own matcher must see every shape of definition it is meant
+    /// to forbid, and none of the shapes that are not definitions. (A matcher
+    /// that matches nothing would make the guard below pass vacuously.)
+    #[test]
+    fn aggregator_scan_matches_definitions_and_nothing_else() {
+        for name in DELETED_AGGREGATORS {
+            for def in [
+                "pub fn NAME(ctx: &Arc<Context>) -> Router<Arc<Context>> {",
+                "pub fn NAME() -> axum::Router<Arc<Context>> {",
+                "    pub(crate) fn NAME() -> Router {",
+                "pub async fn NAME<S>() -> Router<S> {",
+                "fn   NAME ( ) {",
+            ] {
+                let line = def.replace("NAME", name);
+                assert!(defines_fn(&line, name), "must match a definition: {line}");
+            }
+            for not_def in [
+                "    let NAME = Router::new()",
+                "        .merge(NAME)",
+                "    .nest(\"/v1\", NAME)",
+                "/// fn NAME is mentioned in a doc comment",
+                "// cordis Phase6: RouteSet Service, registered via NAME(ctx)",
+                "pub fn NAME_with_suffix() {}",
+                "pub fn prefix_NAME() {}",
+            ] {
+                let line = not_def.replace("NAME", name);
+                assert!(!defines_fn(&line, name), "must not match: {line}");
+            }
+        }
+    }
+
+    /// No function named `build_routes`, `admin_routes` or `v1_routes` exists
+    /// anywhere under `crates/ares-http/src`, whatever its visibility or cfg.
+    #[test]
+    fn no_unmounted_router_aggregator_is_defined() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        collect_rs_files(&root, &mut files);
+        assert!(
+            files.len() > 20,
+            "the scan walked only {} files under {}; the source walk is broken",
+            files.len(),
+            root.display()
+        );
+
+        let mut offenders: Vec<String> = Vec::new();
+        let mut create_router_defs = 0usize;
+        for path in &files {
+            let text = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            let rel = path.strip_prefix(&root).unwrap_or(path).display();
+            for (i, line) in text.lines().enumerate() {
+                if defines_fn(line, "create_router") {
+                    create_router_defs += 1;
+                }
+                for name in DELETED_AGGREGATORS {
+                    if defines_fn(line, name) {
+                        offenders.push(format!("{rel}:{}: {}", i + 1, line.trim()));
+                    }
+                }
+            }
+        }
+
+        // Control: the same matcher finds the one live router builder, so an
+        // empty `offenders` is a real absence and not a blind scan.
+        assert_eq!(
+            create_router_defs, 1,
+            "the scan must find exactly one `create_router` definition"
+        );
+        assert!(
+            offenders.is_empty(),
+            "these functions build a Router of admin write handlers with no admin \
+             middleware; delete them (admin routes belong in `create_router`, behind \
+             `admin_middleware`): {offenders:#?}"
+        );
+    }
 }
 
 #[cfg(all(test, feature = "postgres"))]

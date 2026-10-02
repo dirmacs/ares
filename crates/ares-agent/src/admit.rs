@@ -40,12 +40,52 @@ pub fn quota_exceeded(tenant: &TenantContext, monthly: u64, daily: u64) -> Optio
     tenant.admit(monthly, daily).err()
 }
 
+/// What a paused tenant is told. It names the pause and nothing else about the tenant.
+const TENANT_PAUSED_MESSAGE: &str = "Agent runs are paused for this tenant.";
+
+/// Refuse a run for a paused tenant: the per-tenant kill switch, `tenants.paused`
+/// (migration 037).
+///
+/// This is the one pause check. [`admit`] calls it, and so does the research handler, which
+/// does not pass through `admit`.
+///
+/// - One read of `tenants.paused` per call, no cache and no restart: a pause binds the next
+///   run.
+/// - With no `TenantDb` on the context (a direct library context, or a build without
+///   `postgres`) there is nothing to read and the check passes, the same fallback
+///   `usage_counts` takes.
+/// - A tenant with no `tenants` row reads as not paused (see
+///   `ares_store::tenants::tenant_paused`), as `admit` already admits such a tenant.
+/// - A failed read is returned as an error, so the run is refused.
+///
+/// The refusal is `AppError::Unavailable` (HTTP 503).
+pub async fn ensure_tenant_not_paused(ctx: &Arc<Context>, tenant_id: &str) -> Result<(), AppError> {
+    #[cfg(feature = "postgres")]
+    {
+        if let Some(db) = ctx.get::<ares_store::TenantDb>() {
+            if ares_store::tenants::tenant_paused(db.pool(), tenant_id).await? {
+                return Err(AppError::Unavailable(TENANT_PAUSED_MESSAGE.to_string()));
+            }
+        }
+    }
+    let _ = (ctx, tenant_id);
+    Ok(())
+}
+
 /// Shared quota gate used by `Execute::run` and protocol adapters.
+///
+/// A paused tenant is refused first ([`ensure_tenant_not_paused`]), before any usage read.
+/// The pause is checked here and not in [`admit_with_details`]: that function's
+/// [`AdmissionError`] is matched exhaustively by the API-key middleware, so a pause variant
+/// would change it.
 ///
 /// The event is authoritative when an `EventsService` is available. The typed
 /// `TenantContext::admit` check remains the final fallback, which keeps direct
 /// library contexts safe when no event bus has been installed yet.
 pub async fn admit(ctx: &Arc<Context>) -> Result<(), AppError> {
+    if let Some(tc) = ctx.get::<TenantContext>() {
+        ensure_tenant_not_paused(ctx, &tc.tenant_id).await?;
+    }
     admit_with_details(ctx).await.map_err(Into::into)
 }
 

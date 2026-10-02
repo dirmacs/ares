@@ -1,26 +1,178 @@
-//! Document-upload trigger handler.
+//! Document-upload trigger handler, and the one webhook-secret check the three
+//! public webhook routes share.
 //!
 //! Receives simulated S3 event notifications and executes any matching
 //! document-upload triggers for the tenant.
+//!
+//! # Webhook authentication (item 2.16a)
+//!
+//! `POST /api/events/document-upload`, `POST /api/events/field-change` and
+//! `POST /api/webhooks/{trigger_id}` are public routes with one mechanism: the
+//! caller presents its **tenant's own event secret** in `X-Webhook-Secret`
+//! ([`authenticate_webhook`]). The secret is stored only as its SHA-256
+//! (`tenant_event_secrets`, migration 041), and **the tenant is the tenant of
+//! the secret that matched**: a request body never names the tenant on its own
+//! authority.
+//!
+//! - no secret, an empty or blank one, or one no tenant has: **401**, one body
+//!   for every cause (the 2.16e body);
+//! - a valid secret whose tenant is not the one the request names (a body
+//!   `tenant_id` that differs, or a trigger of another tenant): **403**;
+//! - a database failure while looking the secret up: the request is refused
+//!   with the error's own status (500), never admitted.
+//!
+//! The process-wide `WEBHOOK_SECRET` variable is not read: it is not a
+//! credential any more. Neither a secret nor its hash is ever logged.
 
+use crate::api::handlers::admin::shared::constant_time_eq;
 use crate::HttpError;
 use ares_agent::trigger;
 use ares_store::schedules as db_schedules;
-use ares_types::types::AppError;
+use ares_types::types::{AppError, ErrorCode};
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
     Json,
 };
 use cordis::Context;
 use serde::Deserialize;
 use std::sync::Arc;
 
+/// The header that carries a tenant's event secret.
+const WEBHOOK_SECRET_HEADER: &str = "X-Webhook-Secret";
+
+/// Why a webhook route did not run a trigger.
+#[derive(Debug)]
+pub enum WebhookError {
+    /// 401: no secret, an empty or blank one, or one no tenant has. One body
+    /// for every cause: the caller learns nothing about which it was.
+    Unauthorized,
+    /// 403: the secret is a tenant's, but not valid for what the request names.
+    Forbidden(Forbidden),
+    /// Anything else (a failed lookup, a failed dispatch), answered by its
+    /// [`AppError`]'s own status and body.
+    Failed(HttpError),
+}
+
+/// What a valid secret was refused for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Forbidden {
+    /// The body's `tenant_id` is not the secret's tenant.
+    BodyTenantMismatch,
+    /// The trigger belongs to another tenant than the secret's.
+    TriggerOfAnotherTenant,
+}
+
+impl Forbidden {
+    fn message(self) -> &'static str {
+        match self {
+            Forbidden::BodyTenantMismatch => {
+                "webhook secret is not valid for the tenant named in the request"
+            }
+            Forbidden::TriggerOfAnotherTenant => "webhook secret is not valid for this trigger",
+        }
+    }
+}
+
+impl IntoResponse for WebhookError {
+    fn into_response(self) -> Response {
+        match self {
+            // The 2.16e refusal, byte for byte.
+            WebhookError::Unauthorized => {
+                HttpError::from(AppError::Auth("Invalid webhook secret".to_string()))
+                    .into_response()
+            }
+            WebhookError::Forbidden(reason) => (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "error": format!("Authorization error: {}", reason.message()),
+                    "code": ErrorCode::AuthorizationFailed,
+                })),
+            )
+                .into_response(),
+            WebhookError::Failed(err) => err.into_response(),
+        }
+    }
+}
+
+impl From<HttpError> for WebhookError {
+    fn from(err: HttpError) -> Self {
+        WebhookError::Failed(err)
+    }
+}
+
+impl From<AppError> for WebhookError {
+    fn from(err: AppError) -> Self {
+        WebhookError::Failed(HttpError::from(err))
+    }
+}
+
+/// The tenant whose event secret the request presents, or why it has none.
+///
+/// Reads `X-Webhook-Secret`; a missing header, one that is not visible ASCII,
+/// an empty or blank one and one no tenant has are all
+/// [`WebhookError::Unauthorized`], and the first three never reach the
+/// database. The lookup hashes the secret, finds the row and confirms the two
+/// hashes with the platform's constant-time comparison
+/// (`ares_store::tenant_event_secrets::tenant_for_secret`). A missing store or a
+/// failed lookup is an error, never an admission.
+///
+/// The one check for all three webhook routes. Nothing here logs the secret or
+/// its hash.
+pub(crate) async fn authenticate_webhook(
+    ctx: &Arc<Context>,
+    headers: &HeaderMap,
+) -> Result<String, WebhookError> {
+    let Some(presented) = headers
+        .get(WEBHOOK_SECRET_HEADER)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return Err(WebhookError::Unauthorized);
+    };
+    if presented.trim().is_empty() {
+        return Err(WebhookError::Unauthorized);
+    }
+    let Some(tenant_db) = ctx.get::<ares_store::TenantDb>() else {
+        return Err(WebhookError::Failed(HttpError::from(
+            AppError::Configuration("tenant store is not available".to_string()),
+        )));
+    };
+    match ares_store::tenant_event_secrets::tenant_for_secret(
+        tenant_db.pool(),
+        presented,
+        constant_time_eq,
+    )
+    .await
+    {
+        Ok(Some(tenant_id)) => Ok(tenant_id),
+        Ok(None) => Err(WebhookError::Unauthorized),
+        Err(err) => Err(WebhookError::from(err)),
+    }
+}
+
+/// A body `tenant_id`, when present, must be the secret's tenant. Absent is
+/// fine: the tenant comes from the secret either way.
+pub(crate) fn require_body_tenant(
+    body_tenant: Option<&str>,
+    secret_tenant: &str,
+) -> Result<(), WebhookError> {
+    match body_tenant {
+        Some(named) if named != secret_tenant => {
+            Err(WebhookError::Forbidden(Forbidden::BodyTenantMismatch))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Simulated S3 event payload.
 #[derive(Debug, Deserialize)]
 pub struct DocumentUploadEvent {
-    /// Tenant that owns the bucket.
-    pub tenant_id: String,
+    /// Tenant that owns the bucket. Optional: the tenant is the one whose
+    /// secret the request presents. When present it must equal that tenant, or
+    /// the request is refused with 403.
+    #[serde(default)]
+    pub tenant_id: Option<String>,
     /// S3 bucket name.
     pub bucket: String,
     /// Object key (path within bucket).
@@ -39,20 +191,22 @@ pub struct DocumentUploadEvent {
 /// POST /api/events/document-upload
 ///
 /// Public endpoint that receives document-upload events and triggers
-/// matching agents.  Secured by `X-Webhook-Secret`; refuses every request
-/// until `WEBHOOK_SECRET` is configured (`verify_webhook_secret`).
+/// matching agents of the tenant whose secret the request presents.  Secured
+/// by that tenant's own `X-Webhook-Secret` ([`authenticate_webhook`]); a body
+/// `tenant_id` that is not that tenant is refused.
 pub async fn handle_document_upload(
     State(ctx): State<Arc<Context>>,
     headers: HeaderMap,
     Json(payload): Json<DocumentUploadEvent>,
-) -> crate::Result<StatusCode> {
-    verify_webhook_secret(&headers)?;
+) -> Result<StatusCode, WebhookError> {
+    let tenant_id = authenticate_webhook(&ctx, &headers).await?;
+    require_body_tenant(payload.tenant_id.as_deref(), &tenant_id)?;
 
     // Prefer TriggerService (Cordis DI) — owns DB + Execute.
     // Falls back to direct store + execute_triggered_agent if service absent (tests).
     if let Some(svc) = ctx.get::<ares_agent::trigger::TriggerService>() {
         svc.dispatch_document_upload(
-            &payload.tenant_id,
+            &tenant_id,
             &payload.bucket,
             &payload.key,
             payload.size,
@@ -72,7 +226,7 @@ pub async fn handle_document_upload(
         .clone();
     let store = db_schedules::EventTriggerStore::new(&__pool_1);
     let triggers = store
-        .list_by_event_type(&payload.tenant_id, "document_upload")
+        .list_by_event_type(&tenant_id, "document_upload")
         .await?;
 
     let matching: Vec<_> = triggers
@@ -125,30 +279,9 @@ fn document_upload_trigger_matches(
     }
 }
 
-/// Check the `X-Webhook-Secret` header against the `WEBHOOK_SECRET` env var.
-///
-/// Fails closed: refuses unless `WEBHOOK_SECRET` is non-empty after trimming
-/// **and** the header equals it. Unset, empty and whitespace-only all refuse
-/// every request. The one check for both `/api/events/*` routes
-/// (`field_change` uses it too).
-pub(crate) fn verify_webhook_secret(headers: &HeaderMap) -> crate::Result<()> {
-    let expected = std::env::var("WEBHOOK_SECRET")
-        .ok()
-        .filter(|secret| !secret.trim().is_empty());
-    let provided = headers
-        .get("X-Webhook-Secret")
-        .and_then(|h| h.to_str().ok());
-    match (expected, provided) {
-        (Some(expected), Some(provided)) if provided == expected => Ok(()),
-        _ => Err(HttpError::from(AppError::Auth(
-            "Invalid webhook secret".to_string(),
-        ))),
-    }
-}
-
 /// Serializes the unit tests, here and in `field_change`, that mutate the
-/// process-global `WEBHOOK_SECRET`: both modules test the one check above.
-/// Taken only through [`lock_webhook_secret_env`].
+/// process-global `WEBHOOK_SECRET`: they show that the old variable is not a
+/// credential. Taken only through [`lock_webhook_secret_env`].
 #[cfg(test)]
 static WEBHOOK_SECRET_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -162,47 +295,38 @@ pub(crate) fn lock_webhook_secret_env() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Every `X-Webhook-Secret` a caller can send: none, empty, whitespace-only
-/// and a non-empty value.
+/// Every `X-Webhook-Secret` that cannot be a tenant's secret and must never
+/// reach the database: none, empty, whitespace-only and not visible ASCII.
 #[cfg(test)]
-fn every_webhook_header() -> [(&'static str, HeaderMap); 4] {
-    let with = |value: &'static str| {
+pub(crate) fn headers_without_a_usable_secret() -> [(&'static str, HeaderMap); 4] {
+    let with = |value: axum::http::HeaderValue| {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "X-Webhook-Secret",
-            axum::http::HeaderValue::from_static(value),
-        );
+        headers.insert(WEBHOOK_SECRET_HEADER, value);
         headers
     };
     [
         ("missing", HeaderMap::new()),
-        ("empty", with("")),
-        ("blank", with("   ")),
-        ("non-empty", with("anything")),
+        ("empty", with(axum::http::HeaderValue::from_static(""))),
+        ("blank", with(axum::http::HeaderValue::from_static("   "))),
+        (
+            "not visible ASCII",
+            with(axum::http::HeaderValue::from_bytes(b"\xff\xfe").expect("opaque bytes")),
+        ),
     ]
 }
 
-/// Sets (`Some`) or removes (`None`) `WEBHOOK_SECRET`, runs `check` against
-/// [`every_webhook_header`], removes the variable again, and returns the
-/// headers `check` let through. Each test module passes its own
-/// `verify_webhook_secret`. The caller holds the lock
-/// ([`lock_webhook_secret_env`]).
+/// The response a refusal turns into: status and parsed body.
 #[cfg(test)]
-pub(crate) fn webhook_headers_admitted(
-    check: fn(&HeaderMap) -> crate::Result<()>,
-    secret: Option<&str>,
-) -> Vec<&'static str> {
-    match secret {
-        Some(value) => std::env::set_var("WEBHOOK_SECRET", value),
-        None => std::env::remove_var("WEBHOOK_SECRET"),
-    }
-    let admitted = every_webhook_header()
-        .into_iter()
-        .filter(|(_, headers)| check(headers).is_ok())
-        .map(|(label, _)| label)
-        .collect();
-    std::env::remove_var("WEBHOOK_SECRET");
-    admitted
+pub(crate) async fn refusal_parts(err: WebhookError) -> (StatusCode, serde_json::Value) {
+    let response = err.into_response();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    (
+        status,
+        serde_json::from_slice(&bytes).expect("a refusal body is JSON"),
+    )
 }
 
 #[cfg(test)]
@@ -229,7 +353,7 @@ mod tests {
 
     fn document_event(bucket: &str, key: &str) -> DocumentUploadEvent {
         DocumentUploadEvent {
-            tenant_id: "tenant-1".to_string(),
+            tenant_id: Some("tenant-1".to_string()),
             bucket: bucket.to_string(),
             key: key.to_string(),
             size: 0,
@@ -274,71 +398,138 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn verify_webhook_secret_unset_or_empty_refuses() {
+    /// Replaces the 2.16e `verify_webhook_secret_unset_or_empty_refuses`,
+    /// `..._e7_empty_secret_refuses_every_header`, `..._unset_refuses_every_header`
+    /// and `..._blank_secret_refuses_every_header` on the check that replaced
+    /// `verify_webhook_secret`: with no usable secret in the header the request
+    /// is refused 401, and the store is never reached (the context has none, so
+    /// a lookup would be a 500), whatever the old variable holds.
+    #[tokio::test]
+    async fn authenticate_webhook_refuses_a_header_without_a_usable_secret() {
         let _guard = lock_webhook_secret_env();
-        let no_header = HeaderMap::new();
-        let mut anything = HeaderMap::new();
-        anything.insert("X-Webhook-Secret", HeaderValue::from_static("anything"));
-        let mut empty = HeaderMap::new();
-        empty.insert("X-Webhook-Secret", HeaderValue::from_static(""));
-        let mut blank = HeaderMap::new();
-        blank.insert("X-Webhook-Secret", HeaderValue::from_static("   "));
-
-        std::env::remove_var("WEBHOOK_SECRET");
-        assert!(verify_webhook_secret(&anything).is_err());
-        assert!(verify_webhook_secret(&no_header).is_err());
-        std::env::set_var("WEBHOOK_SECRET", "");
-        assert!(verify_webhook_secret(&no_header).is_err());
-        assert!(verify_webhook_secret(&empty).is_err());
-        std::env::set_var("WEBHOOK_SECRET", "   ");
-        assert!(verify_webhook_secret(&blank).is_err());
+        let ctx = Context::new_root();
+        for env in [None, Some(""), Some("   "), Some("anything")] {
+            match env {
+                Some(value) => std::env::set_var("WEBHOOK_SECRET", value),
+                None => std::env::remove_var("WEBHOOK_SECRET"),
+            }
+            for (label, headers) in headers_without_a_usable_secret() {
+                let err = authenticate_webhook(&ctx, &headers)
+                    .await
+                    .expect_err("no usable secret must be refused");
+                let (status, body) = refusal_parts(err).await;
+                assert_eq!(status, StatusCode::UNAUTHORIZED, "{label}, env {env:?}");
+                assert_eq!(
+                    body,
+                    serde_json::json!({
+                        "error": "Authentication error: Invalid webhook secret",
+                        "code": "AUTHENTICATION_FAILED",
+                    }),
+                    "{label}, env {env:?}"
+                );
+            }
+        }
         std::env::remove_var("WEBHOOK_SECRET");
     }
 
-    #[test]
-    fn verify_webhook_secret_rejects_mismatch() {
+    /// Replaces the 2.16e `verify_webhook_secret_accepts_match`: the old
+    /// variable matching the header admits nothing. With a secret in the header
+    /// and no store, the answer is a 500 (fail closed), never an admission.
+    #[tokio::test]
+    async fn authenticate_webhook_ignores_the_old_environment_variable() {
         let _guard = lock_webhook_secret_env();
+        let ctx = Context::new_root();
         std::env::set_var("WEBHOOK_SECRET", "secret123");
         let mut headers = HeaderMap::new();
-        headers.insert("X-Webhook-Secret", HeaderValue::from_static("wrong"));
-        assert!(verify_webhook_secret(&headers).is_err());
+        headers.insert(WEBHOOK_SECRET_HEADER, HeaderValue::from_static("secret123"));
+        let err = authenticate_webhook(&ctx, &headers)
+            .await
+            .expect_err("the old variable is not a credential");
         std::env::remove_var("WEBHOOK_SECRET");
+        let (status, _) = refusal_parts(err).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// The header is read case-insensitively, like any HTTP header: a secret
+    /// under `x-webhook-secret` gets past the empty-header refusal and reaches
+    /// the store step (here a 500, because this context has no store).
+    #[tokio::test]
+    async fn authenticate_webhook_reads_the_header_case_insensitively() {
+        let ctx = Context::new_root();
+        for name in ["x-webhook-secret", "X-WEBHOOK-SECRET", "X-Webhook-Secret"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                axum::http::HeaderName::from_bytes(name.as_bytes()).expect("header name"),
+                HeaderValue::from_static("a-secret-dummy-2-16a"),
+            );
+            let err = authenticate_webhook(&ctx, &headers)
+                .await
+                .expect_err("no store on this context");
+            let (status, _) = refusal_parts(err).await;
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{name}");
+        }
     }
 
     #[test]
-    fn verify_webhook_secret_accepts_match() {
-        let _guard = lock_webhook_secret_env();
-        std::env::set_var("WEBHOOK_SECRET", "secret123");
-        let mut headers = HeaderMap::new();
-        headers.insert("X-Webhook-Secret", HeaderValue::from_static("secret123"));
-        assert!(verify_webhook_secret(&headers).is_ok());
-        std::env::remove_var("WEBHOOK_SECRET");
+    fn a_null_body_tenant_id_is_absent() {
+        let event: DocumentUploadEvent = serde_json::from_value(
+            serde_json::json!({"tenant_id": null, "bucket": "b", "key": "k"}),
+        )
+        .expect("a null tenant_id parses");
+        assert_eq!(event.tenant_id, None);
     }
 
-    /// Probe E7: `WEBHOOK_SECRET` set empty skipped the check. Every header
-    /// is now refused.
     #[test]
-    fn verify_webhook_secret_e7_empty_secret_refuses_every_header() {
-        let _guard = lock_webhook_secret_env();
-        let admitted = webhook_headers_admitted(verify_webhook_secret, Some(""));
-        assert!(admitted.is_empty(), "E7: let through {admitted:?}");
+    fn a_body_tenant_id_that_is_not_a_string_does_not_parse() {
+        let parsed = serde_json::from_value::<DocumentUploadEvent>(
+            serde_json::json!({"tenant_id": 7, "bucket": "b", "key": "k"}),
+        );
+        assert!(parsed.is_err());
     }
 
-    /// Unset refuses every request (the amending ruling §2.1).
     #[test]
-    fn verify_webhook_secret_unset_refuses_every_header() {
-        let _guard = lock_webhook_secret_env();
-        let admitted = webhook_headers_admitted(verify_webhook_secret, None);
-        assert!(admitted.is_empty(), "unset: let through {admitted:?}");
+    fn a_body_tenant_that_is_absent_or_equal_passes() {
+        assert!(require_body_tenant(None, "tenant-a").is_ok());
+        assert!(require_body_tenant(Some("tenant-a"), "tenant-a").is_ok());
     }
 
-    /// Whitespace-only is treated as unset: not even the same whitespace
-    /// matches.
     #[test]
-    fn verify_webhook_secret_blank_secret_refuses_every_header() {
-        let _guard = lock_webhook_secret_env();
-        let admitted = webhook_headers_admitted(verify_webhook_secret, Some("   "));
-        assert!(admitted.is_empty(), "blank: let through {admitted:?}");
+    fn a_body_tenant_that_differs_in_any_way_is_forbidden() {
+        for named in ["tenant-b", "", " tenant-a", "tenant-a ", "TENANT-A"] {
+            assert!(
+                matches!(
+                    require_body_tenant(Some(named), "tenant-a"),
+                    Err(WebhookError::Forbidden(Forbidden::BodyTenantMismatch))
+                ),
+                "{named:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_two_forbidden_reasons_are_403_with_the_authorization_code() {
+        for reason in [
+            Forbidden::BodyTenantMismatch,
+            Forbidden::TriggerOfAnotherTenant,
+        ] {
+            let (status, body) = refusal_parts(WebhookError::Forbidden(reason)).await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+            assert_eq!(body["code"], "AUTHORIZATION_FAILED");
+            let text = body["error"].as_str().expect("error text");
+            assert!(text.starts_with("Authorization error: "), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_event_body_tenant_id_is_optional() {
+        let without: DocumentUploadEvent =
+            serde_json::from_value(serde_json::json!({"bucket": "b", "key": "k"}))
+                .expect("a body without tenant_id parses");
+        assert_eq!(without.tenant_id, None);
+        let with: DocumentUploadEvent = serde_json::from_value(
+            serde_json::json!({"tenant_id": "t", "bucket": "b", "key": "k"}),
+        )
+        .expect("a body with tenant_id parses");
+        assert_eq!(with.tenant_id.as_deref(), Some("t"));
     }
 }

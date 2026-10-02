@@ -180,23 +180,4 @@ pub async fn delete_tenant_model_tier(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub fn routes() -> axum::Router<Arc<Context>> {
-    use axum::routing::{delete, get, post, put};
-    axum::Router::new()
-        .route("/health/list_health_metrics", get(list_health_metrics))
-        .route("/health/list_model_metrics", get(list_model_metrics))
-        .route("/health/insert_health_metrics", post(insert_health_metrics))
-        .route(
-            "/health/list_tenant_model_tiers",
-            get(list_tenant_model_tiers),
-        )
-        .route("/health/get_tenant_model_tier", get(get_tenant_model_tier))
-        .route("/health/set_tenant_model_tier", put(set_tenant_model_tier))
-        .route(
-            "/health/delete_tenant_model_tier",
-            delete(delete_tenant_model_tier),
-        )
-}
-
-// cordis Phase6: RouteSet Service — registered via build_routes(ctx)
 use ::cordis::Service;

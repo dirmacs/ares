@@ -549,59 +549,6 @@ pub async fn get_cache_hit_stats(
     Ok(Json(stats))
 }
 
-pub fn routes() -> axum::Router<Arc<Context>> {
-    use axum::routing::{delete, get, post, put};
-    axum::Router::new()
-        .route("/billing/list_llm_calls", get(list_llm_calls))
-        .route("/billing/get_llm_call", get(get_llm_call))
-        .route("/billing/insert_llm_call", post(insert_llm_call))
-        .route("/billing/list_tool_calls", get(list_tool_calls))
-        .route("/billing/get_tool_call", get(get_tool_call))
-        .route("/billing/insert_tool_call", post(insert_tool_call))
-        .route("/billing/get_run_cost", get(get_run_cost))
-        .route("/billing/list_run_costs", get(list_run_costs))
-        .route(
-            "/billing/get_tenant_billing_summary",
-            get(get_tenant_billing_summary),
-        )
-        .route(
-            "/billing/get_tenant_billing_line_items",
-            get(get_tenant_billing_line_items),
-        )
-        .route(
-            "/billing/list_billing_model_rates",
-            get(list_billing_model_rates),
-        )
-        .route(
-            "/billing/list_billing_unit_rates",
-            get(list_billing_unit_rates),
-        )
-        .route("/billing/get_tenant_budget", get(get_tenant_budget))
-        .route("/billing/set_tenant_budget", put(set_tenant_budget))
-        .route(
-            "/billing/delete_tenant_budget",
-            delete(delete_tenant_budget),
-        )
-        .route("/billing/get_token_budget", get(get_token_budget))
-        .route("/billing/set_token_budget", put(set_token_budget))
-        .route(
-            "/billing/get_token_budget_status",
-            get(get_token_budget_status),
-        )
-        .route(
-            "/billing/reset_token_budget_period",
-            post(reset_token_budget_period),
-        )
-        .route("/billing/list_token_usage", get(list_token_usage))
-        .route("/billing/list_budget_alerts", get(list_budget_alerts))
-        .route(
-            "/billing/acknowledge_budget_alert",
-            post(acknowledge_budget_alert),
-        )
-        .route("/billing/get_cache_hit_stats", get(get_cache_hit_stats))
-}
-
-// cordis Phase6: RouteSet Service — registered via build_routes(ctx)
 use ::cordis::Service;
 
 #[cfg(test)]

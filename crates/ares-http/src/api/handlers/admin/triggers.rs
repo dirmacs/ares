@@ -237,26 +237,4 @@ pub async fn delete_tenant_trigger(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub fn routes() -> axum::Router<Arc<Context>> {
-    use axum::routing::{delete, get, post, put};
-    axum::Router::new()
-        .route("/triggers/list_triggers", get(list_triggers))
-        .route("/triggers/create_trigger", post(create_trigger))
-        .route("/triggers/delete_trigger", delete(delete_trigger))
-        .route("/triggers/list_tenant_triggers", get(list_tenant_triggers))
-        .route(
-            "/triggers/create_tenant_trigger",
-            post(create_tenant_trigger),
-        )
-        .route(
-            "/triggers/update_tenant_trigger",
-            put(update_tenant_trigger),
-        )
-        .route(
-            "/triggers/delete_tenant_trigger",
-            delete(delete_tenant_trigger),
-        )
-}
-
-// cordis Phase6: RouteSet Service — registered via build_routes(ctx)
 use ::cordis::Service;

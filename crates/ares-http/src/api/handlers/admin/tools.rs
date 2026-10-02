@@ -385,21 +385,4 @@ pub async fn rollback_runtime_tool(
     })))
 }
 
-pub fn routes() -> axum::Router<Arc<Context>> {
-    use axum::routing::{delete, get, post, put};
-    axum::Router::new()
-        .route("/tools/list_runtime_tools", get(list_runtime_tools))
-        .route("/tools/get_runtime_tool", get(get_runtime_tool))
-        .route("/tools/create_runtime_tool", post(create_runtime_tool))
-        .route("/tools/update_runtime_tool", put(update_runtime_tool))
-        .route("/tools/delete_runtime_tool", delete(delete_runtime_tool))
-        .route("/tools/test_runtime_tool", post(test_runtime_tool))
-        .route(
-            "/tools/list_runtime_tool_versions",
-            get(list_runtime_tool_versions),
-        )
-        .route("/tools/rollback_runtime_tool", post(rollback_runtime_tool))
-}
-
-// cordis Phase6: RouteSet Service — registered via build_routes(ctx)
 use ::cordis::Service;

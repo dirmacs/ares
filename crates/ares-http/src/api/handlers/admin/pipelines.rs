@@ -194,28 +194,4 @@ pub async fn delete_tenant_pipeline(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub fn routes() -> axum::Router<Arc<Context>> {
-    use axum::routing::{delete, get, post, put};
-    axum::Router::new()
-        .route("/pipelines/list_pipelines", get(list_pipelines))
-        .route("/pipelines/create_pipeline", post(create_pipeline))
-        .route(
-            "/pipelines/list_tenant_pipelines",
-            get(list_tenant_pipelines),
-        )
-        .route(
-            "/pipelines/create_tenant_pipeline",
-            post(create_tenant_pipeline),
-        )
-        .route(
-            "/pipelines/update_tenant_pipeline",
-            put(update_tenant_pipeline),
-        )
-        .route(
-            "/pipelines/delete_tenant_pipeline",
-            delete(delete_tenant_pipeline),
-        )
-}
-
-// cordis Phase6: RouteSet Service — registered via build_routes(ctx)
 use ::cordis::Service;

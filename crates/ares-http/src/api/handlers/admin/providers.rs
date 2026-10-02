@@ -185,24 +185,4 @@ pub async fn delete_runtime_provider(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub fn routes() -> axum::Router<Arc<Context>> {
-    use axum::routing::{delete, get, post};
-    axum::Router::new()
-        .route("/providers/list_models_handler", get(list_models_handler))
-        .route(
-            "/providers/list_runtime_providers",
-            get(list_runtime_providers),
-        )
-        .route("/providers/get_runtime_provider", get(get_runtime_provider))
-        .route(
-            "/providers/upsert_runtime_provider",
-            post(upsert_runtime_provider),
-        )
-        .route(
-            "/providers/delete_runtime_provider",
-            delete(delete_runtime_provider),
-        )
-}
-
-// cordis Phase6: RouteSet Service — registered via build_routes(ctx)
 use ::cordis::Service;

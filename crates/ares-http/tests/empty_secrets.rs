@@ -1,19 +1,27 @@
-//! Item 2.16e: an empty secret never authenticates, and an unset
-//! `WEBHOOK_SECRET` fails closed.
+//! Item 2.16e: an empty secret never authenticates, and an unset secret fails
+//! closed. Re-based by item 2.16a on the per-tenant webhook secret.
 //!
 //! Rulings: `2026-09-29-DELEGATED-sr-2.16-empty-secrets` (decided A), as
-//! amended by `2026-09-29-DELEGATED-sr-2.16e-webhook-unset`. Probes E1, E6
-//! and E7 are the 2.16 isolation receipt's (Appendix B.6), kept here as
-//! regressions.
+//! amended by `2026-09-29-DELEGATED-sr-2.16e-webhook-unset`, and
+//! `2026-10-02-DELEGATED-sr-2.16a-webhooks-and-2.5-split` §2 (each tenant has
+//! its own webhook secret). Probes E1, E6 and E7 are the 2.16 isolation
+//! receipt's (Appendix B.6), kept here as regressions.
 //!
 //! - `ADMIN_API_KEY` empty or whitespace-only is treated exactly as unset, and
 //!   an empty or whitespace-only `X-Admin-Secret` never matches: only a
 //!   non-empty key with the right header passes the static-secret path.
-//! - `WEBHOOK_SECRET` unset, empty or whitespace-only refuses every request
-//!   on both `/api/events/*` routes: only a non-empty secret with the right
-//!   `X-Webhook-Secret` gets past the check.
-//! - A host with both secrets non-empty behaves as before, and the JWT admin
-//!   path is untouched.
+//! - A tenant with **no event secret provisioned** (the per-tenant "unset")
+//!   refuses every request on both `/api/events/*` routes, and so does a
+//!   missing, empty or whitespace-only `X-Webhook-Secret` for a tenant that has
+//!   one: only the tenant's own non-empty secret in the header gets past the
+//!   check. The old process-wide `WEBHOOK_SECRET` is not a credential: in
+//!   every state (unset, empty, blank, set) it neither admits nor refuses
+//!   anything.
+//! - A host with the admin key and a tenant event secret both set behaves as
+//!   before, and the JWT admin path is untouched.
+//!
+//! The full per-tenant matrix (cross-tenant, body tenant, the third route
+//! `/api/webhooks/{id}`, logging) is `tests/webhook_tenant_secret.rs`.
 //!
 //! Every test drives the real router in-process: `ares_http::build_router`,
 //! which nests `create_router` at `/api` with `admin_middleware` on the admin
@@ -36,8 +44,10 @@
 //!
 //! `ADMIN_API_KEY` and `WEBHOOK_SECRET` are process-global. Every test takes
 //! the one static [`ENV_LOCK`] for its whole body and sets or removes the
-//! variable before each request. The secrets are dummies spelled in this
-//! file; no test reads a real one.
+//! variable before each request. The tenant event secret of the matrix tests
+//! is a row in `tenant_event_secrets`, written through the harness
+//! ([`set_tenant_secret`]) and removed again, under the same lock. The secrets
+//! are dummies spelled in this file; no test reads a real one.
 
 #![cfg(feature = "postgres")]
 // Deliberate: each test holds `ENV_LOCK` across its awaited requests,
@@ -57,6 +67,7 @@ use ares_store::TenantDb;
 use ares_types::models::TenantTier;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
 const ADMIN_ENV: &str = "ADMIN_API_KEY";
@@ -144,8 +155,10 @@ impl Given {
 
 struct Harness {
     router: axum::Router,
+    /// The pool the harness's own writes use (the tenant's event secret row).
+    pool: sqlx::PgPool,
     /// A tenant seeded for this test; an admitted `GET /api/admin/tenants`
-    /// lists it.
+    /// lists it, and an admitted event is that tenant's (when it has a secret).
     tenant_id: String,
 }
 
@@ -192,7 +205,7 @@ async fn boot(db_url: String, jwks_url: Option<String>) -> Harness {
                 .expect("migrate the named test database");
         })
         .await;
-    let pg = Arc::new(ares_store::PostgresClient { pool });
+    let pg = Arc::new(ares_store::PostgresClient { pool: pool.clone() });
     let tenant_db = Arc::new(TenantDb::new(pg));
     let tenant = tenant_db
         .create_tenant(
@@ -211,7 +224,36 @@ async fn boot(db_url: String, jwks_url: Option<String>) -> Harness {
     ctx.provide_arc(Arc::new(auth));
     Harness {
         router: ares_http::build_router(ctx),
+        pool,
         tenant_id: tenant.id,
+    }
+}
+
+/// The form a tenant's event secret is stored in: its SHA-256, lowercase hex.
+fn sha256_hex(secret: &str) -> String {
+    hex::encode(Sha256::digest(secret.as_bytes()))
+}
+
+/// Provision (`Some`) or remove (`None`) the harness tenant's event secret,
+/// through the harness (the owner's step, never the handlers'). A row that
+/// already holds the same hash goes first: the hash is unique across tenants,
+/// and a test that panicked before its cleanup must not block the next one. The
+/// caller holds [`ENV_LOCK`].
+async fn set_tenant_secret(h: &Harness, secret: Option<&str>) {
+    let hash = sha256_hex(secret.unwrap_or(WEBHOOK_TEST_SECRET));
+    sqlx::query("DELETE FROM tenant_event_secrets WHERE tenant_id = $1 OR secret_sha256 = $2")
+        .bind(&h.tenant_id)
+        .bind(&hash)
+        .execute(&h.pool)
+        .await
+        .expect("clear the tenant event secret");
+    if secret.is_some() {
+        sqlx::query("INSERT INTO tenant_event_secrets (tenant_id, secret_sha256) VALUES ($1, $2)")
+            .bind(&h.tenant_id)
+            .bind(&hash)
+            .execute(&h.pool)
+            .await
+            .expect("provision the tenant event secret");
     }
 }
 
@@ -252,15 +294,19 @@ fn admin_get_with_token(token: &str) -> Request<Body> {
 }
 
 fn event_post(route: &str, secret: Option<&str>) -> Request<Body> {
-    let body = if route.ends_with("/document-upload") {
+    event_post_for(route, secret, Some(NO_SUCH_TENANT))
+}
+
+/// An event with `tenant` as the body's `tenant_id`, or with none (`None`):
+/// the tenant is then the one whose secret the request presents.
+fn event_post_for(route: &str, secret: Option<&str>, tenant: Option<&str>) -> Request<Body> {
+    let mut body = if route.ends_with("/document-upload") {
         serde_json::json!({
-            "tenant_id": NO_SUCH_TENANT,
             "bucket": "2-16e-test-bucket",
             "key": "2-16e-test/key.pdf",
         })
     } else {
         serde_json::json!({
-            "tenant_id": NO_SUCH_TENANT,
             "table": "t",
             "column": "c",
             "record_id": "r",
@@ -268,6 +314,9 @@ fn event_post(route: &str, secret: Option<&str>) -> Request<Body> {
             "new_value": 2,
         })
     };
+    if let Some(tenant) = tenant {
+        body["tenant_id"] = serde_json::json!(tenant);
+    }
     let mut builder = Request::builder()
         .method("POST")
         .uri(route)
@@ -458,9 +507,29 @@ async fn e6_empty_header_on_the_wire_is_refused() {
 #[tokio::test]
 async fn webhook_secret_matrix() {
     let db = named_test_db();
+    webhook_matrix(db, true).await;
+}
+
+/// The per-tenant "unset" (2.16e: an unset secret refuses everything): the
+/// tenant has no event secret provisioned, so no header gets past the check,
+/// not even the value that would be its secret, whatever the old process-wide
+/// variable holds.
+#[tokio::test]
+async fn tenant_without_an_event_secret_refuses_every_request() {
+    let db = named_test_db();
+    webhook_matrix(db, false).await;
+}
+
+/// 2 routes x 4 states of the old `WEBHOOK_SECRET` variable x 4 headers.
+/// `provisioned`: the harness tenant has its event secret ([`WEBHOOK_TEST_SECRET`])
+/// in `tenant_event_secrets`. Only a provisioned tenant's own secret in the
+/// header gets past the check, in every state of the old variable; every other
+/// cell is the 401 as at `c0b648f`.
+async fn webhook_matrix(db: String, provisioned: bool) {
     let _env = lock_env();
     set_env(ADMIN_ENV, None);
     let h = boot(db, None).await;
+    set_tenant_secret(&h, provisioned.then_some(WEBHOOK_TEST_SECRET)).await;
 
     let headers = [Given::Missing, Given::Empty, Given::Wrong, Given::Right];
     let (mut cells, mut admitted, mut wrong) = (0usize, 0usize, Vec::new());
@@ -470,10 +539,14 @@ async fn webhook_secret_matrix() {
                 set_env(WEBHOOK_ENV, configured);
                 let (status, _, body) = send(
                     &h.router,
-                    event_post(route, given.value(configured, WEBHOOK_TEST_SECRET)),
+                    event_post_for(
+                        route,
+                        given.value(Some(WEBHOOK_TEST_SECRET), WEBHOOK_TEST_SECRET),
+                        None,
+                    ),
                 )
                 .await;
-                let admit = configured == Some(WEBHOOK_TEST_SECRET) && given == Given::Right;
+                let admit = provisioned && given == Given::Right;
                 let ok = if admit {
                     status == StatusCode::OK
                 } else {
@@ -481,13 +554,13 @@ async fn webhook_secret_matrix() {
                 };
                 let expect = if admit { "admit" } else { "401" };
                 eprintln!(
-                    "CELL webhook | {route} | WEBHOOK_SECRET {state} | X-Webhook-Secret {given:?} | status {} | expect {expect} | {}",
+                    "CELL webhook | {route} | tenant secret provisioned={provisioned} | old WEBHOOK_SECRET {state} | X-Webhook-Secret {given:?} | status {} | expect {expect} | {}",
                     status.as_u16(),
                     if ok { "ok" } else { "WRONG" }
                 );
                 if !ok {
                     wrong.push(format!(
-                        "{route}, WEBHOOK_SECRET {state}, X-Webhook-Secret {given:?}: status {} body {body:?}, expected {expect}",
+                        "{route}, provisioned={provisioned}, old WEBHOOK_SECRET {state}, X-Webhook-Secret {given:?}: status {} body {body:?}, expected {expect}",
                         status.as_u16()
                     ));
                 }
@@ -497,15 +570,17 @@ async fn webhook_secret_matrix() {
         }
     }
     set_env(WEBHOOK_ENV, None);
+    set_tenant_secret(&h, None).await;
 
     eprintln!(
-        "CELLS webhook_secret_matrix | {cells} cells | {admitted} admit | {} refuse",
+        "CELLS webhook_matrix(provisioned={provisioned}) | {cells} cells | {admitted} admit | {} refuse",
         cells - admitted
     );
-    assert_eq!(cells, 32, "2 routes x 4 configured states x 4 headers");
+    assert_eq!(cells, 32, "2 routes x 4 old-variable states x 4 headers");
     assert_eq!(
-        admitted, 2,
-        "only the non-empty secret with the right header, per route"
+        admitted,
+        if provisioned { 8 } else { 0 },
+        "only a provisioned tenant's own secret, per route and per old-variable state"
     );
     assert!(
         wrong.is_empty(),
@@ -635,7 +710,9 @@ async fn correctly_configured_host_behaves_as_before() {
     let h = boot(db, Some(jwks_url)).await;
 
     set_env(ADMIN_ENV, Some(ADMIN_TEST_SECRET));
-    set_env(WEBHOOK_ENV, Some(WEBHOOK_TEST_SECRET));
+    // The old process-wide variable plays no part: the tenant's own secret does.
+    set_env(WEBHOOK_ENV, None);
+    set_tenant_secret(&h, Some(WEBHOOK_TEST_SECRET)).await;
 
     // Admin, static secret: the right one admits, a wrong one refuses.
     let (status, _, body) = send(&h.router, admin_get(Some(ADMIN_TEST_SECRET))).await;
@@ -669,9 +746,14 @@ async fn correctly_configured_host_behaves_as_before() {
         "EdDSA admin token must admit: {status} {body}"
     );
 
-    // Webhook: the right secret gets past the check, a wrong one is refused.
+    // Webhook: the tenant's right secret gets past the check (the tenant is the
+    // secret's: the body names none), a wrong one is refused.
     for route in EVENT_ROUTES {
-        let (status, _, body) = send(&h.router, event_post(route, Some(WEBHOOK_TEST_SECRET))).await;
+        let (status, _, body) = send(
+            &h.router,
+            event_post_for(route, Some(WEBHOOK_TEST_SECRET), None),
+        )
+        .await;
         eprintln!(
             "CONFIGURED webhook | {route} | right X-Webhook-Secret | status {}",
             status.as_u16()
@@ -690,4 +772,5 @@ async fn correctly_configured_host_behaves_as_before() {
 
     set_env(ADMIN_ENV, None);
     set_env(WEBHOOK_ENV, None);
+    set_tenant_secret(&h, None).await;
 }

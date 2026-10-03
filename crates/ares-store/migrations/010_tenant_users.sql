@@ -1,7 +1,7 @@
 -- Migration 010: Tenant Users (Population 2)
 -- End-users of client products (per-client user populations).
 -- These are NOT DIRMACS users — they cannot access Eruka/admin/portal.
--- Managed by internal on behalf of clients.
+-- Managed by dirmacs-core on behalf of clients.
 
 CREATE TABLE IF NOT EXISTS tenant_users (
     id                  TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,

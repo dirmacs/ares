@@ -55,19 +55,30 @@ use ares_store::TenantDb;
 use ares_tools::Tools;
 use ares_types::models::TenantTier;
 
-/// Provider-boundary evidence. A run that spends a model call increments it.
-static PROVIDER_CALLS: AtomicUsize = AtomicUsize::new(0);
+/// Provider-boundary evidence, per mock server rather than process-global.
+///
+/// libtest runs `#[tokio::test]`s on parallel threads in one process. A
+/// process-global counter would be reset by one test while another is asserting
+/// on it, so a green run would be luck rather than evidence. Each server owns
+/// its own counter and the test holds the `Arc` it was handed.
+#[derive(Clone, Default)]
+struct ProviderCalls(Arc<AtomicUsize>);
 
-fn provider_calls() -> usize {
-    PROVIDER_CALLS.load(Ordering::SeqCst)
+impl ProviderCalls {
+    fn get(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    fn reset(&self) {
+        self.0.store(0, Ordering::SeqCst);
+    }
 }
 
-fn reset_provider_calls() {
-    PROVIDER_CALLS.store(0, Ordering::SeqCst);
-}
-
-async fn counting_ollama_chat(Json(payload): Json<Value>) -> Json<Value> {
-    PROVIDER_CALLS.fetch_add(1, Ordering::SeqCst);
+async fn counting_ollama_chat(
+    axum::extract::State(calls): axum::extract::State<ProviderCalls>,
+    Json(payload): Json<Value>,
+) -> Json<Value> {
+    calls.0.fetch_add(1, Ordering::SeqCst);
     Json(json!({
         "model": payload["model"].as_str().unwrap_or("test-model"),
         "created_at": "2026-05-21T00:00:00Z",
@@ -85,8 +96,11 @@ async fn counting_ollama_chat(Json(payload): Json<Value>) -> Json<Value> {
     }))
 }
 
-async fn spawn_counting_mock_provider() -> String {
-    let app = Router::new().route("/api/chat", post(counting_ollama_chat));
+async fn spawn_counting_mock_provider() -> (String, ProviderCalls) {
+    let calls = ProviderCalls::default();
+    let app = Router::new()
+        .route("/api/chat", post(counting_ollama_chat))
+        .with_state(calls.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind mock provider");
@@ -94,14 +108,14 @@ async fn spawn_counting_mock_provider() -> String {
     tokio::spawn(async move {
         axum::serve(listener, app).await.expect("serve mock provider");
     });
-    format!("http://{}", addr)
+    (format!("http://{}", addr), calls)
 }
 
 fn unique_name(prefix: &str) -> String {
     format!("{}-{}", prefix, Uuid::new_v4())
 }
 
-async fn create_counting_test_server() -> (TestServer, Arc<TenantDb>) {
+async fn create_counting_test_server() -> (TestServer, Arc<TenantDb>, ProviderCalls) {
     let db = common::test_db::create_test_db().await;
     let auth_service = AuthService::new(
         "test_jwt_secret_key_for_testing_only".to_string(),
@@ -109,7 +123,7 @@ async fn create_counting_test_server() -> (TestServer, Arc<TenantDb>) {
         604800,
     );
 
-    let provider_url = spawn_counting_mock_provider().await;
+    let (provider_url, provider_calls) = spawn_counting_mock_provider().await;
 
     let mut providers = HashMap::new();
     providers.insert(
@@ -272,7 +286,11 @@ async fn create_counting_test_server() -> (TestServer, Arc<TenantDb>) {
         )
         .with_state(state);
 
-    (TestServer::new(app).expect("create test server"), tenant_db)
+    (
+        TestServer::new(app).expect("create test server"),
+        tenant_db,
+        provider_calls,
+    )
 }
 
 async fn provision_tenant(tenant_db: &Arc<TenantDb>, prefix: &str) -> (String, String) {
@@ -327,7 +345,7 @@ async fn run_as(server: &TestServer, api_key: &str) -> axum_test::TestResponse {
 
 #[tokio::test]
 async fn paused_tenant_is_refused_without_spending_a_model_call() {
-    let (server, tenant_db) = create_counting_test_server().await;
+    let (server, tenant_db, provider_calls) = create_counting_test_server().await;
 
     let (paused_id, paused_key) = provision_tenant(&tenant_db, "pause-paused").await;
     let (other_id, other_key) = provision_tenant(&tenant_db, "pause-other").await;
@@ -340,7 +358,7 @@ async fn paused_tenant_is_refused_without_spending_a_model_call() {
         .expect("pause should succeed");
 
     // --- the control: an unpaused tenant runs on this same server ---
-    reset_provider_calls();
+    provider_calls.reset();
     let other_response = run_as(&server, &other_key).await;
     assert_eq!(
         other_response.status_code(),
@@ -349,13 +367,13 @@ async fn paused_tenant_is_refused_without_spending_a_model_call() {
          tenant would be indistinguishable from a misconfigured server"
     );
     assert!(
-        provider_calls() > 0,
+        provider_calls.get() > 0,
         "control: the unpaused run must actually reach the provider, otherwise the \
          paused assertion below proves nothing"
     );
 
     // --- the subject: the paused tenant ---
-    reset_provider_calls();
+    provider_calls.reset();
     let paused_response = run_as(&server, &paused_key).await;
     assert_eq!(
         paused_response.status_code(),
@@ -363,7 +381,7 @@ async fn paused_tenant_is_refused_without_spending_a_model_call() {
         "a paused tenant must be refused"
     );
     assert_eq!(
-        provider_calls(),
+        provider_calls.get(),
         0,
         "a paused run must not reach the model provider at all — a pause that still \
          spends a model call is not a pause"
@@ -372,7 +390,7 @@ async fn paused_tenant_is_refused_without_spending_a_model_call() {
 
 #[tokio::test]
 async fn unpausing_restores_the_run() {
-    let (server, tenant_db) = create_counting_test_server().await;
+    let (server, tenant_db, provider_calls) = create_counting_test_server().await;
     let (tenant_id, api_key) = provision_tenant(&tenant_db, "pause-restore").await;
     insert_tenant_agent(&tenant_db, &tenant_id, "product", "restore-prompt").await;
 
@@ -387,14 +405,14 @@ async fn unpausing_restores_the_run() {
         .await
         .expect("unpause should succeed");
 
-    reset_provider_calls();
+    provider_calls.reset();
     assert_eq!(
         run_as(&server, &api_key).await.status_code(),
         200,
         "clearing the pause must restore the run"
     );
     assert!(
-        provider_calls() > 0,
+        provider_calls.get() > 0,
         "the restored run must reach the provider"
     );
 }

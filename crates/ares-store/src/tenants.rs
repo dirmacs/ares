@@ -11,6 +11,21 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+/// Per-tenant pause and strict flags, added by migration
+/// `20250615000010_tenant_flags`.
+///
+/// Read separately from [`Tenant`] so the run preamble can answer "is this
+/// tenant paused?" without loading the whole tenant record on every request.
+#[derive(Debug, Clone)]
+pub struct TenantFlags {
+    /// When true, this tenant's runs are refused before any model call.
+    pub paused: bool,
+    /// Who paused the tenant. `None` whenever `paused` is false.
+    pub paused_by: Option<String>,
+    /// Column only for this item; behaviour lands with a later one.
+    pub strict: bool,
+}
+
 pub struct TenantDb {
     postgres: Arc<PostgresClient>,
     monthly_cache: Arc<RwLock<HashMap<String, (i64, u64)>>>,
@@ -115,6 +130,96 @@ impl TenantDb {
         } else {
             Ok(None)
         }
+    }
+
+    /// Returns the pause/strict flags for one tenant.
+    ///
+    /// A tenant with no row yields the same defaults as an unpaused one rather
+    /// than an error: the caller has already authenticated by this point, so an
+    /// absent row is not a reason to fail the request closed here.
+    pub async fn get_tenant_flags(&self, tenant_id: &str) -> Result<TenantFlags> {
+        let row = sqlx::query("SELECT paused, paused_by, strict FROM tenants WHERE id = $1")
+            .bind(tenant_id)
+            .fetch_optional(&self.postgres.pool)
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to get tenant flags: {}", e)))?;
+
+        Ok(match row {
+            Some(row) => TenantFlags {
+                paused: row.get::<bool, _>(0),
+                paused_by: row.get::<Option<String>, _>(1),
+                strict: row.get::<bool, _>(2),
+            },
+            None => TenantFlags {
+                paused: false,
+                paused_by: None,
+                strict: false,
+            },
+        })
+    }
+
+    /// Sets or clears a tenant's pause, recording who did it.
+    ///
+    /// Clearing the pause clears `paused_by`, so an unpaused tenant never
+    /// carries a stale actor. That also means the tenant row cannot answer
+    /// "who stopped this tenant?" after the fact, so every change is
+    /// additionally appended to `tenant_pause_audit`, which is never updated.
+    ///
+    /// Both statements run in one transaction: a state change without its audit
+    /// row would leave exactly the gap the audit table exists to close.
+    pub async fn set_tenant_paused(
+        &self,
+        tenant_id: &str,
+        paused: bool,
+        actor: &str,
+    ) -> Result<()> {
+        let now = Utc::now().timestamp();
+        let mut tx = self
+            .postgres
+            .pool
+            .begin()
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to begin pause transaction: {}", e)))?;
+
+        let updated = sqlx::query(
+            "UPDATE tenants
+                SET paused = $2,
+                    paused_by = CASE WHEN $2 THEN $3 ELSE NULL END,
+                    paused_at = CASE WHEN $2 THEN $4 ELSE NULL END,
+                    updated_at = $4
+              WHERE id = $1",
+        )
+        .bind(tenant_id)
+        .bind(paused)
+        .bind(actor)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to set tenant pause: {}", e)))?;
+
+        if updated.rows_affected() == 0 {
+            return Err(AppError::NotFound(format!(
+                "tenant {} not found",
+                tenant_id
+            )));
+        }
+
+        sqlx::query(
+            "INSERT INTO tenant_pause_audit (tenant_id, paused, actor, changed_at)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(tenant_id)
+        .bind(paused)
+        .bind(actor)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to write pause audit row: {}", e)))?;
+
+        tx.commit().await.map_err(|e| {
+            AppError::Database(format!("Failed to commit pause transaction: {}", e))
+        })?;
+        Ok(())
     }
 
     /// Creates an API key with least-privilege scope and optional TTL.

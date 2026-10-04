@@ -265,11 +265,23 @@ struct AgentRunOutcome {
 
 /// Config provenance for the response headers and run metadata: `tenant-db`
 /// when a tenant agent row exists, the system catalog otherwise.
+///
+/// What the run path reports about the config it used.
+///
+/// The published digest is the value a consumer needs: it names the exact
+/// published version, and it moves only when what runs moves. `updated_at`
+/// moved on a *draft* write, so reporting it named a version that was never
+/// published.
 fn agent_config_provenance(
     row: Option<&tenant_agents::TenantAgent>,
 ) -> (&'static str, Option<String>) {
     match row {
-        Some(row) => ("tenant-db", Some(format!("tenant-db:{}", row.updated_at))),
+        Some(row) => (
+            "tenant-db",
+            row.published_digest
+                .clone()
+                .or_else(|| Some(format!("tenant-db:{}", row.updated_at))),
+        ),
         None => ("system", None),
     }
 }

@@ -1015,6 +1015,10 @@ async fn execute_scheduled_agent(
         .map(str::to_string)
         .unwrap_or_else(|| effective_message.clone());
 
+    // Item 2.6: resolved before `exec_agent_name` moves into the request, so
+    // the run row can record the digest of the published config it ran.
+    let published_digest =
+        crate::tenant_agent::load_published_digest(&pool, &sched.tenant_id, &exec_agent_name).await;
     let req = crate::execution::AgentRequest {
         agent_name: exec_agent_name,
         message: exec_message,
@@ -1034,7 +1038,7 @@ async fn execute_scheduled_agent(
             request_source: Some(request_source.to_string()),
             product: None,
             agent_config_source: Some("tenant_db".to_string()),
-            agent_config_version: None,
+            agent_config_version: published_digest,
             eruka_binding_id: None,
             eruka_context_hit: external_context.is_some(),
             eruka_read_count: if external_context.is_some() { 1 } else { 0 },
@@ -1140,7 +1144,12 @@ async fn execute_scheduled_agent(
         request_source: Some(request_source.to_string()),
         product: None,
         agent_config_source: Some(if skill_run { "tenant_db" } else { "execute" }.to_string()),
-        agent_config_version: None,
+        agent_config_version: crate::tenant_agent::load_published_digest(
+            &pool,
+            &sched.tenant_id,
+            &sched.agent_name,
+        )
+        .await,
         eruka_binding_id: None,
         eruka_context_hit: external_context.is_some(),
         eruka_read_count: if external_context.is_some() { 1 } else { 0 },

@@ -283,7 +283,24 @@ pub struct ResolvedAgent {
     pub config: Option<serde_json::Value>,
 }
 
-fn tenant_config_version(config: &serde_json::Value, updated_at: i64) -> String {
+/// The version a run is stamped with, and the value of the
+/// `x-agent-config-version` response header.
+///
+/// The published digest wins whenever it exists: it is the only value derived
+/// from the resolved config, so it moves exactly when what runs moves. The
+/// `config["version"]` label is admin-authored text and `updated_at` moves on a
+/// draft write, so neither identifies the published version a run used.
+fn tenant_config_version(
+    published_digest: Option<&str>,
+    config: &serde_json::Value,
+    updated_at: i64,
+) -> String {
+    if let Some(digest) = published_digest
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return digest.to_string();
+    }
     config
         .get("version")
         .and_then(|value| value.as_str())
@@ -291,6 +308,28 @@ fn tenant_config_version(config: &serde_json::Value, updated_at: i64) -> String 
         .filter(|value| !value.is_empty())
         .map(|value| value.to_string())
         .unwrap_or_else(|| format!("tenant-db:{}", updated_at))
+}
+
+/// The published digest for one tenant agent, or `None` when the row is
+/// absent or was never published.
+///
+/// This is what a run records and what `x-agent-config-version` reports: the
+/// one value derived from the published config, so it moves exactly when what
+/// runs moves.
+pub async fn load_published_digest(
+    pool: &PgPool,
+    tenant_id: &str,
+    agent_name: &str,
+) -> Option<String> {
+    sqlx::query_scalar(
+        "SELECT published_digest FROM tenant_agents WHERE tenant_id = $1 AND agent_name = $2",
+    )
+    .bind(tenant_id)
+    .bind(agent_name)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
 }
 
 /// The tenant's own row, as the run path executes it: the published config
@@ -331,7 +370,8 @@ pub async fn load_tenant_agent_config(
 
     let config_json: serde_json::Value = row.get("config");
     let updated_at: i64 = row.get("updated_at");
-    let config_version = tenant_config_version(&config_json, updated_at);
+    let config_version =
+        tenant_config_version(published_digest.as_deref(), &config_json, updated_at);
     let agent_config = agent_config_from_json(&config_json)?;
 
     Ok(Some((agent_config, config_version, config_json)))
@@ -426,9 +466,47 @@ mod tests {
             .contains("'parallel_tools' must be a boolean"));
     }
 
+    /// Item 2.6: the digest is what a run is stamped with, so an
+    /// admin-authored `version` label must not shadow it — that label does not
+    /// move when the resolved config changes, which is the case the stamp
+    /// exists to catch.
+    #[test]
+    fn tenant_config_version_prefers_the_published_digest_over_a_version_label() {
+        let version = tenant_config_version(
+            Some("d1g3st-of-the-published-config"),
+            &serde_json::json!({
+                "model": "default",
+                "version": "fleet-42"
+            }),
+            123,
+        );
+
+        assert_eq!(version, "d1g3st-of-the-published-config");
+    }
+
+    /// The stamp must move when the published config changes, and must not
+    /// move when only a draft was written.
+    #[test]
+    fn tenant_config_version_moves_with_the_digest_not_the_row_timestamp() {
+        let config = serde_json::json!({"model": "default"});
+        let first = tenant_config_version(Some("digest-a"), &config, 100);
+        let after_draft_write = tenant_config_version(Some("digest-a"), &config, 200);
+        let after_publish = tenant_config_version(Some("digest-b"), &config, 200);
+
+        assert_eq!(
+            first, after_draft_write,
+            "a draft write must not move the stamp"
+        );
+        assert_ne!(
+            after_publish, first,
+            "a new published config must move the stamp"
+        );
+    }
+
     #[test]
     fn tenant_config_version_uses_explicit_version_when_present() {
         let version = tenant_config_version(
+            None,
             &serde_json::json!({
                 "model": "default",
                 "version": "fleet-42"
@@ -442,6 +520,7 @@ mod tests {
     #[test]
     fn tenant_config_version_falls_back_to_updated_at() {
         let version = tenant_config_version(
+            None,
             &serde_json::json!({
                 "model": "default"
             }),
@@ -565,19 +644,20 @@ mod tests {
 
     #[test]
     fn tenant_config_version_empty_string_falls_back_to_updated_at() {
-        let version = tenant_config_version(&serde_json::json!({ "version": "" }), 99);
+        let version = tenant_config_version(None, &serde_json::json!({ "version": "" }), 99);
         assert_eq!(version, "tenant-db:99");
     }
 
     #[test]
     fn tenant_config_version_whitespace_only_falls_back_to_updated_at() {
-        let version = tenant_config_version(&serde_json::json!({ "version": "   " }), 77);
+        let version = tenant_config_version(None, &serde_json::json!({ "version": "   " }), 77);
         assert_eq!(version, "tenant-db:77");
     }
 
     #[test]
     fn tenant_config_version_trims_explicit_version() {
-        let version = tenant_config_version(&serde_json::json!({ "version": "  fleet-9  " }), 1);
+        let version =
+            tenant_config_version(None, &serde_json::json!({ "version": "  fleet-9  " }), 1);
         assert_eq!(version, "fleet-9");
     }
 

@@ -26,6 +26,11 @@ pub struct TenantAgent {
     pub enabled: bool,
     pub created_at: i64,
     pub updated_at: i64,
+    /// The digest of the published config, as one SQL definition
+    /// (`tenant_agent_config_digest`). `None` when the row was never
+    /// published, or when the query that built this value did not select the
+    /// column.
+    pub published_digest: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,6 +137,7 @@ pub struct TenantAgentRowData {
     pub enabled: bool,
     pub created_at: i64,
     pub updated_at: i64,
+    pub published_digest: Option<String>,
 }
 
 pub fn tenant_agent_disabled_error(agent_name: &str, tenant_id: &str) -> AppError {
@@ -480,6 +486,9 @@ pub fn build_tenant_agent_with_enabled(
         enabled,
         created_at: now,
         updated_at: now,
+        // A row is created unpublished (D-4): it runs only once a second admin
+        // publishes it, so there is no digest yet.
+        published_digest: None,
     }
 }
 
@@ -550,6 +559,7 @@ pub fn agent_from_row_data(data: TenantAgentRowData) -> TenantAgent {
         enabled: data.enabled,
         created_at: data.created_at,
         updated_at: data.updated_at,
+        published_digest: data.published_digest,
     }
 }
 
@@ -564,6 +574,10 @@ pub(crate) fn agent_from_row(row: &sqlx::postgres::PgRow) -> TenantAgent {
         enabled: row.get("enabled"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
+        // Not every query that builds a `TenantAgent` selects the digest, so a
+        // missing column is `None` rather than a runtime error. Only the run
+        // path's query selects it, and it refuses an unpublished row first.
+        published_digest: row.try_get("published_digest").ok().flatten(),
     })
 }
 
@@ -571,7 +585,22 @@ pub fn tenant_agent_version_key(tenant_id: &str, agent_name: &str) -> String {
     format!("tenant:{}:{}", tenant_id, agent_name)
 }
 
+/// The version string a consumer sees for this agent.
+///
+/// The published digest is the answer whenever there is one: it is the only
+/// value that changes when the resolved config changes. The previous
+/// `config["version"]` label is admin-authored text that moves for no
+/// mechanical reason, and `updated_at` moves on a *draft* write — so neither
+/// can name the published version a run used.
 fn active_runtime_config_version(agent: &TenantAgent) -> String {
+    if let Some(digest) = agent
+        .published_digest
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return digest.to_string();
+    }
     agent
         .config
         .get("version")
@@ -963,7 +992,8 @@ pub async fn get_tenant_agent(
     agent_name: &str,
 ) -> Result<TenantAgent> {
     let row = sqlx::query(
-        "SELECT id, tenant_id, agent_name, display_name, description, config, enabled, created_at, updated_at
+        "SELECT id, tenant_id, agent_name, display_name, description, config, enabled, created_at, updated_at,
+                published_digest
          FROM tenant_agents WHERE tenant_id = $1 AND agent_name = $2"
     )
     .bind(tenant_id)
@@ -1781,6 +1811,7 @@ mod tests {
             enabled: true,
             created_at: 10,
             updated_at: 20,
+            published_digest: None,
         }
     }
 
@@ -1798,6 +1829,7 @@ mod tests {
             enabled: true,
             created_at: 100,
             updated_at: 200,
+            published_digest: None,
         }
     }
 
@@ -2549,10 +2581,12 @@ mod tests {
             enabled: false,
             created_at: 1,
             updated_at: 2,
+            published_digest: Some("abc123".into()),
         };
         let agent = agent_from_row_data(data.clone());
         assert_eq!(agent.id, data.id);
         assert!(!agent.enabled);
+        assert_eq!(agent.published_digest.as_deref(), Some("abc123"));
     }
 
     #[test]
@@ -2567,6 +2601,7 @@ mod tests {
             enabled: true,
             created_at: 0,
             updated_at: 0,
+            published_digest: None,
         });
         assert_eq!(agent.description.as_deref(), Some("desc"));
     }

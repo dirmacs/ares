@@ -292,6 +292,7 @@ mod tests {
             enabled,
             created_at: 1_700_000_000,
             updated_at: 1_700_000_100,
+            published_digest: None,
         }
     }
 

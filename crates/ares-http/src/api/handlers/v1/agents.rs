@@ -157,6 +157,22 @@ pub async fn run_agent(
         )));
     }
 
+    // Per-tenant pause switch: stop one tenant's runs without touching anyone
+    // else's. Deliberately in the preamble, before the message is extracted and
+    // before an agent is resolved, so a paused run never reaches a model
+    // provider. Checking after dispatch would make this a pause in name only —
+    // the run would still cost a model call.
+    let tenant_flags = state_ctx
+        .get::<ares_store::TenantDb>()
+        .expect("not provided")
+        .get_tenant_flags(&tc.tenant_id)
+        .await?;
+    if tenant_flags.paused {
+        return Err(HttpError::from(ares_types::types::AppError::Unavailable(
+            "This tenant is currently paused. Please try again later.".to_string(),
+        )));
+    }
+
     // Extract message from input JSON
     let message = extract_agent_run_message(&input);
     let runtime_workspace_id = extract_workspace_id(&input);

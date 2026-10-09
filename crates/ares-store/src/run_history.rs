@@ -1641,6 +1641,19 @@ mod tests {
     }
 
     #[test]
+    fn validate_tool_type_accepts_agent_runner_types() {
+        // The agent runner labels every observed call "builtin" or "runtime";
+        // "agent" is reserved for the Agent Teams delegation tool. All three
+        // must pass the store gate or the call is never logged.
+        for t in ["builtin", "runtime", "agent"] {
+            assert!(validate_tool_type(t).is_ok(), "'{t}' must be accepted");
+        }
+        for t in ["bogus", ""] {
+            assert!(validate_tool_type(t).is_err(), "'{t}' must be refused");
+        }
+    }
+
+    #[test]
     fn validate_alert_type_accepts_valid() {
         for a in ["daily_exceeded", "monthly_exceeded", "threshold_reached"] {
             assert!(validate_alert_type(a).is_ok());

@@ -596,6 +596,7 @@ fn triggered_agent_run_metadata(
         pipeline_id: None,
         schedule_id: None,
         trigger_id: Some(trigger.id.clone()),
+        ..Default::default()
     }
 }
 

@@ -934,6 +934,8 @@ mod tests {
             pipeline_id: None,
             schedule_id: None,
             trigger_id: None,
+            parent_run_id: None,
+            root_run_id: None,
             updated_at: Some(1_700_000_000),
         };
         let v1 = agent_run_row_to_v1(row);

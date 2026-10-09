@@ -16,7 +16,9 @@ const LIST_AGENT_RUNS_SELECT: &str =
                     COALESCE(eruka_context_hit, false) AS eruka_context_hit,
                     COALESCE(eruka_read_count, 0)::BIGINT AS eruka_read_count,
                     COALESCE(eruka_write_count, 0)::BIGINT AS eruka_write_count,
-                    pipeline_id, schedule_id, trigger_id, updated_at";
+                     pipeline_id, schedule_id, trigger_id,
+                     parent_run_id, root_run_id,
+                     updated_at";
 
 pub const GET_AGENT_RUN_STATS_SQL: &str = "SELECT
             COUNT(*) as total_runs,
@@ -167,6 +169,8 @@ pub fn agent_run_from_row(row: &sqlx::postgres::PgRow) -> Result<AgentRun> {
         pipeline_id: row.get("pipeline_id"),
         schedule_id: row.get("schedule_id"),
         trigger_id: row.get("trigger_id"),
+        parent_run_id: row.try_get("parent_run_id").unwrap_or(None),
+        root_run_id: row.try_get("root_run_id").unwrap_or(None),
         updated_at: row.try_get("updated_at").unwrap_or(None),
     })
 }
@@ -199,6 +203,12 @@ pub struct AgentRun {
     pub pipeline_id: Option<String>,
     pub schedule_id: Option<String>,
     pub trigger_id: Option<String>,
+    /// The run that created this one; NULL for a top-level run.
+    #[serde(default)]
+    pub parent_run_id: Option<String>,
+    /// The top of the run tree this run belongs to; NULL for a top-level run.
+    #[serde(default)]
+    pub root_run_id: Option<String>,
     #[serde(default)]
     pub updated_at: Option<i64>,
 }
@@ -249,6 +259,10 @@ pub struct AgentRunMetadata {
     pub pipeline_id: Option<String>,
     pub schedule_id: Option<String>,
     pub trigger_id: Option<String>,
+    /// The run that called this one; NULL for a top-level run.
+    pub parent_run_id: Option<String>,
+    /// The top of the run tree this run belongs to; NULL for a top-level run.
+    pub root_run_id: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -347,14 +361,14 @@ pub async fn insert_agent_run_with_id_and_metadata(
             model_name, provider_name, is_streaming, request_source, product,
             agent_config_source, agent_config_version, eruka_binding_id,
             eruka_context_hit, eruka_read_count, eruka_write_count, pipeline_id, schedule_id,
-            trigger_id, updated_at
+            trigger_id, parent_run_id, root_run_id, updated_at
          ) VALUES (
             $1, $2, $3, $4, $5, $6, $7,
             $8, $9, $10, $11, $12,
             $13, $14, $15, $16, $17,
             $18, $19, $20,
             $21, $22, $23, $24, $25,
-            $26, $27
+            $26, $27, $28, $29
          )",
     )
     .bind(id)
@@ -383,6 +397,8 @@ pub async fn insert_agent_run_with_id_and_metadata(
     .bind(&metadata.pipeline_id)
     .bind(&metadata.schedule_id)
     .bind(&metadata.trigger_id)
+    .bind(&metadata.parent_run_id)
+    .bind(&metadata.root_run_id)
     .bind(now)
     .execute(pool)
     .await
@@ -461,6 +477,34 @@ pub async fn list_agent_runs(
             .await
     }
     .map_err(|e| AppError::Database(e.to_string()))?;
+
+    rows.iter().map(agent_run_from_row).collect()
+}
+
+/// One run tree: the root run plus every run of the same tenant whose
+/// `root_run_id` points at it, oldest first.
+///
+/// The root comes back even when it has no descendants, so an empty result
+/// means "no such run for this tenant". A run is its own root, hence
+/// `id = $2 OR root_run_id = $2`.
+pub async fn list_run_tree(
+    pool: &PgPool,
+    tenant_id: &str,
+    root_run_id: &str,
+) -> Result<Vec<AgentRun>> {
+    let sql = format!(
+        "{LIST_AGENT_RUNS_SELECT}
+         FROM agent_runs
+         WHERE tenant_id = $1 AND (id = $2 OR root_run_id = $2)
+         ORDER BY created_at ASC, id ASC"
+    );
+
+    let rows = sqlx::query(&sql)
+        .bind(tenant_id)
+        .bind(root_run_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
 
     rows.iter().map(agent_run_from_row).collect()
 }
@@ -686,6 +730,8 @@ mod tests {
             pipeline_id: None,
             schedule_id: None,
             trigger_id: None,
+            parent_run_id: None,
+            root_run_id: None,
             updated_at: None,
         };
         let back: AgentRun = serde_json::from_str(&serde_json::to_string(&run).unwrap()).unwrap();
@@ -715,6 +761,7 @@ mod tests {
             eruka_context_hit: true,
             eruka_read_count: 10,
             eruka_write_count: 5,
+            ..Default::default()
         };
         let back: AgentRunMetadata =
             serde_json::from_str(&serde_json::to_string(&meta).unwrap()).unwrap();
@@ -1011,6 +1058,8 @@ mod tests {
             pipeline_id: None,
             schedule_id: None,
             trigger_id: None,
+            parent_run_id: None,
+            root_run_id: None,
             updated_at: Some(1_700_000_000),
         }
     }
@@ -1125,6 +1174,7 @@ mod tests {
             eruka_context_hit: true,
             eruka_read_count: 5,
             eruka_write_count: 2,
+            ..Default::default()
         };
 
         let id = insert_agent_run_with_metadata(

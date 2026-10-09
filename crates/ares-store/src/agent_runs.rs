@@ -1329,6 +1329,253 @@ mod tests {
         cleanup_test_tenant(&pool, &tenant_id).await;
     }
 
+    // ── Integration: run tree (parent_run_id / root_run_id) ──────────────
+
+    /// The insert path stamps `created_at` from the wall clock, so runs made
+    /// in the same second tie. Set it explicitly to keep `ORDER BY created_at`
+    /// assertions deterministic.
+    async fn stamp_created_at(pool: &PgPool, run_id: &str, created_at: i64) {
+        sqlx::query("UPDATE agent_runs SET created_at = $1 WHERE id = $2")
+            .bind(created_at)
+            .bind(run_id)
+            .execute(pool)
+            .await
+            .expect("stamp created_at");
+    }
+
+    fn find_run(runs: &[AgentRun], id: &str) -> AgentRun {
+        runs.iter()
+            .find(|run| run.id == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("run {id} not returned"))
+    }
+
+    #[tokio::test]
+    async fn run_tree_fields_round_trip() {
+        let (_lock, pool) = crate::test_db::pool().await;
+        let tenant_id = unique_tenant();
+        seed_tenant(&pool, &tenant_id).await;
+
+        let parent_metadata = AgentRunMetadata {
+            parent_run_id: None,
+            root_run_id: None,
+            ..Default::default()
+        };
+        let parent_id = insert_agent_run_with_metadata(
+            &pool,
+            &tenant_id,
+            "manager",
+            None,
+            "completed",
+            10,
+            5,
+            100,
+            None,
+            "m",
+            "p",
+            false,
+            Some(&parent_metadata),
+        )
+        .await
+        .expect("insert parent");
+
+        let child_metadata = AgentRunMetadata {
+            parent_run_id: Some(parent_id.clone()),
+            root_run_id: Some(parent_id.clone()),
+            ..Default::default()
+        };
+        let child_id = insert_agent_run_with_metadata(
+            &pool,
+            &tenant_id,
+            "specialist",
+            None,
+            "completed",
+            20,
+            10,
+            200,
+            None,
+            "m",
+            "p",
+            false,
+            Some(&child_metadata),
+        )
+        .await
+        .expect("insert child");
+
+        let runs = list_agent_runs(&pool, &tenant_id, None, 10, 0)
+            .await
+            .expect("list");
+
+        let parent = find_run(&runs, &parent_id);
+        assert_eq!(parent.parent_run_id, None);
+        assert_eq!(parent.root_run_id, None);
+
+        let child = find_run(&runs, &child_id);
+        assert_eq!(child.parent_run_id, Some(parent_id.clone()));
+        assert_eq!(child.root_run_id, Some(parent_id.clone()));
+
+        cleanup_test_tenant(&pool, &tenant_id).await;
+    }
+
+    #[tokio::test]
+    async fn list_run_tree_returns_root_and_descendants_for_one_tenant() {
+        let (_lock, pool) = crate::test_db::pool().await;
+        let tenant_id = unique_tenant();
+        seed_tenant(&pool, &tenant_id).await;
+        let other_tenant_id = unique_tenant();
+        seed_tenant(&pool, &other_tenant_id).await;
+
+        // root R
+        let root_metadata = AgentRunMetadata {
+            parent_run_id: None,
+            root_run_id: None,
+            ..Default::default()
+        };
+        let root_id = insert_agent_run_with_metadata(
+            &pool,
+            &tenant_id,
+            "manager",
+            None,
+            "completed",
+            10,
+            5,
+            100,
+            None,
+            "m",
+            "p",
+            false,
+            Some(&root_metadata),
+        )
+        .await
+        .expect("insert root");
+
+        // child C1 (parent R, root R)
+        let child_metadata = AgentRunMetadata {
+            parent_run_id: Some(root_id.clone()),
+            root_run_id: Some(root_id.clone()),
+            ..Default::default()
+        };
+        let child_id = insert_agent_run_with_metadata(
+            &pool,
+            &tenant_id,
+            "specialist-one",
+            None,
+            "completed",
+            20,
+            10,
+            200,
+            None,
+            "m",
+            "p",
+            false,
+            Some(&child_metadata),
+        )
+        .await
+        .expect("insert child");
+
+        // grandchild C2 (parent C1, root R)
+        let grandchild_metadata = AgentRunMetadata {
+            parent_run_id: Some(child_id.clone()),
+            root_run_id: Some(root_id.clone()),
+            ..Default::default()
+        };
+        let grandchild_id = insert_agent_run_with_metadata(
+            &pool,
+            &tenant_id,
+            "specialist-two",
+            None,
+            "completed",
+            30,
+            15,
+            300,
+            None,
+            "m",
+            "p",
+            false,
+            Some(&grandchild_metadata),
+        )
+        .await
+        .expect("insert grandchild");
+
+        // unrelated top-level run U
+        let unrelated_metadata = AgentRunMetadata {
+            parent_run_id: None,
+            root_run_id: None,
+            ..Default::default()
+        };
+        insert_agent_run_with_metadata(
+            &pool,
+            &tenant_id,
+            "unrelated",
+            None,
+            "completed",
+            40,
+            20,
+            400,
+            None,
+            "m",
+            "p",
+            false,
+            Some(&unrelated_metadata),
+        )
+        .await
+        .expect("insert unrelated");
+
+        // a run with root R but another tenant
+        let foreign_metadata = AgentRunMetadata {
+            parent_run_id: Some(root_id.clone()),
+            root_run_id: Some(root_id.clone()),
+            ..Default::default()
+        };
+        insert_agent_run_with_metadata(
+            &pool,
+            &other_tenant_id,
+            "specialist-one",
+            None,
+            "completed",
+            50,
+            25,
+            500,
+            None,
+            "m",
+            "p",
+            false,
+            Some(&foreign_metadata),
+        )
+        .await
+        .expect("insert foreign-tenant run");
+
+        // Creation order: root, child, grandchild.
+        stamp_created_at(&pool, &root_id, 1_700_000_100).await;
+        stamp_created_at(&pool, &child_id, 1_700_000_200).await;
+        stamp_created_at(&pool, &grandchild_id, 1_700_000_300).await;
+
+        let tree = list_run_tree(&pool, &tenant_id, &root_id)
+            .await
+            .expect("list run tree");
+
+        let ids: Vec<&str> = tree.iter().map(|run| run.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![root_id.as_str(), child_id.as_str(), grandchild_id.as_str()]
+        );
+
+        let root = &tree[0];
+        assert_eq!(root.parent_run_id, None);
+        assert_eq!(root.root_run_id, None);
+
+        let child = &tree[1];
+        assert_eq!(child.parent_run_id, Some(root_id.clone()));
+        assert_eq!(child.root_run_id, Some(root_id.clone()));
+
+        let grandchild = &tree[2];
+        assert_eq!(grandchild.parent_run_id, Some(child_id.clone()));
+        assert_eq!(grandchild.root_run_id, Some(root_id.clone()));
+
+        cleanup_test_tenant(&pool, &tenant_id).await;
+        cleanup_test_tenant(&pool, &other_tenant_id).await;
+    }
+
     // ── Integration: get_agent_run_stats ─────────────────────────────────
 
     #[tokio::test]

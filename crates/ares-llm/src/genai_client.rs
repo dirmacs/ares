@@ -565,7 +565,10 @@ fn request_from_conversation(
     let mut chat_messages = Vec::new();
     let mut prev_id = hints.previous_response_id.clone();
     let mut store = hints.store;
-    for msg in messages {
+    let mut idx = 0;
+    while idx < messages.len() {
+        let msg = &messages[idx];
+        idx += 1;
         if prev_id.is_none() {
             prev_id = msg.previous_response_id.clone();
         }
@@ -610,11 +613,29 @@ fn request_from_conversation(
                 chat_messages.push(message);
             }
             MessageRole::Tool => {
-                let response = ToolResponse::new(
+                // Converse rejects a turn with more than one tool call when the
+                // results arrive as separate user messages: every `toolResult`
+                // must ride inside the single user message that follows the
+                // assistant toolUse message. Agent loops emit tool results
+                // consecutively for one turn, so consecutive tool messages are
+                // collected into a single Tool message. Other adapters iterate
+                // the parts and emit their own per-result protocol shape, so
+                // this grouping is behaviour-preserving for them.
+                let mut responses = vec![ToolResponse::new(
                     msg.tool_call_id.clone().unwrap_or_default(),
                     msg.content.clone(),
-                );
-                chat_messages.push(ChatMessage::from(response));
+                )];
+                while let Some(next) = messages.get(idx) {
+                    if next.role != MessageRole::Tool {
+                        break;
+                    }
+                    responses.push(ToolResponse::new(
+                        next.tool_call_id.clone().unwrap_or_default(),
+                        next.content.clone(),
+                    ));
+                    idx += 1;
+                }
+                chat_messages.push(ChatMessage::from(responses));
             }
         }
     }
@@ -1237,6 +1258,97 @@ mod tests {
             req.messages[0].content.parts()[1],
             ContentPart::Binary(_)
         ));
+    }
+
+    #[test]
+    fn request_from_conversation_groups_consecutive_tool_results() {
+        // Bedrock/Converse rejects a turn with two or more tool calls when the
+        // results arrive as separate user messages: every `toolResult` must
+        // travel inside the single user message that follows the assistant
+        // toolUse message. Grouping multiple tool results into one message
+        // produces the shape the provider accepts.
+        let assistant = ConversationMessage::assistant(
+            "",
+            vec![
+                ToolCall {
+                    id: "call_1".into(),
+                    name: "lookup".into(),
+                    arguments: serde_json::json!({"q": "a"}),
+                },
+                ToolCall {
+                    id: "call_2".into(),
+                    name: "lookup".into(),
+                    arguments: serde_json::json!({"q": "b"}),
+                },
+            ],
+        );
+        let results = [
+            ConversationMessage::tool_result("call_1", &serde_json::json!({"v": 1})),
+            ConversationMessage::tool_result("call_2", &serde_json::json!({"v": 2})),
+        ];
+        let req = request_from_conversation(
+            &[assistant, results[0].clone(), results[1].clone()],
+            &[],
+            &GenerationHints::default(),
+        );
+
+        // The assistant turn, then exactly ONE message carrying both results.
+        assert_eq!(
+            req.messages.len(),
+            2,
+            "each tool result must not get its own user message: {:?}",
+            req.messages
+        );
+        let responses = req.messages[1].content.tool_responses();
+        assert_eq!(
+            responses.len(),
+            2,
+            "both tool results must land in one message"
+        );
+        assert_eq!(responses[0].call_id, "call_1");
+        assert_eq!(responses[1].call_id, "call_2");
+    }
+
+    #[test]
+    fn request_from_conversation_does_not_group_across_an_intervening_message() {
+        // Grouping must be limited to results that belong to the same
+        // assistant turn: a user message in between means separate turns.
+        let assistant = ConversationMessage::assistant(
+            "",
+            vec![ToolCall {
+                id: "call_1".into(),
+                name: "lookup".into(),
+                arguments: serde_json::json!({"q": "a"}),
+            }],
+        );
+        let r1 = ConversationMessage::tool_result("call_1", &serde_json::json!({"v": 1}));
+        let user = ConversationMessage::user("next turn");
+        let assistant2 = ConversationMessage::assistant(
+            "",
+            vec![ToolCall {
+                id: "call_2".into(),
+                name: "lookup".into(),
+                arguments: serde_json::json!({"q": "b"}),
+            }],
+        );
+        let r2 = ConversationMessage::tool_result("call_2", &serde_json::json!({"v": 2}));
+        let req = request_from_conversation(
+            &[assistant, r1, user, assistant2, r2],
+            &[],
+            &GenerationHints::default(),
+        );
+
+        assert_eq!(req.messages.len(), 5);
+        assert_eq!(req.messages[1].content.tool_responses().len(), 1);
+        assert_eq!(
+            req.messages[1].content.tool_responses()[0].call_id,
+            "call_1"
+        );
+        assert_eq!(req.messages[4].content.tool_responses().len(), 1);
+        assert_eq!(
+            req.messages[4].content.tool_responses()[0].call_id,
+            "call_2"
+        );
     }
 
     #[test]

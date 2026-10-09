@@ -182,6 +182,7 @@ pub async fn v1_chat(
                         pipeline_id: None,
                         schedule_id: None,
                         trigger_id: None,
+                        ..Default::default()
                     };
                     let duration_ms = start.elapsed().as_millis() as i64;
                     tokio::spawn(async move {
@@ -258,6 +259,7 @@ pub async fn v1_chat(
                 pipeline_id: None,
                 schedule_id: None,
                 trigger_id: None,
+                ..Default::default()
             };
             tokio::spawn(async move {
                 let _ = agent_runs::insert_agent_run_with_metadata(

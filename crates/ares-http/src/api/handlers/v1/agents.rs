@@ -331,6 +331,7 @@ async fn run_skill_agent_path(
         pipeline_id: None,
         schedule_id: None,
         trigger_id: None,
+        ..Default::default()
     };
     agent_runs::insert_agent_run_with_id_and_metadata(
         &setup.pool,
@@ -587,6 +588,7 @@ async fn run_configurable_agent_path(
         pipeline_id: None,
         schedule_id: None,
         trigger_id: None,
+        ..Default::default()
     };
     agent_runs::insert_agent_run_with_id_and_metadata(
         &setup.pool,

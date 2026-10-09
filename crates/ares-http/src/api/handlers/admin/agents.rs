@@ -586,6 +586,42 @@ pub async fn test_tenant_agent_handler(
     draft_agent.bind_request_ctx(ctx.clone());
     draft_agent.set_run_id(run_id.clone());
 
+    // Record the draft run's own `agent_runs` row (#53): the run's
+    // `run_llm_calls`, `run_costs` and `run_tool_calls` all reference it, so
+    // without the parent every one of those writes fails its foreign key and
+    // the draft run leaves no trace. Best-effort: a failed insert must not
+    // fail the test run.
+    let (draft_model_name, draft_provider_name) = {
+        let (model, provider) = draft_agent.resolved_model_and_provider();
+        (model.to_string(), provider.to_string())
+    };
+    let draft_run_metadata = agent_runs::AgentRunMetadata {
+        agent_config_source: Some("draft".to_string()),
+        agent_config_version: Some("draft".to_string()),
+        request_source: Some("admin_test".to_string()),
+        ..Default::default()
+    };
+    if let Err(error) = agent_runs::insert_agent_run_with_id_and_metadata(
+        &obs.pool,
+        &run_id,
+        &tenant_id,
+        &agent_name,
+        None,
+        "running",
+        0,
+        0,
+        0,
+        None,
+        &draft_model_name,
+        &draft_provider_name,
+        false,
+        Some(&draft_run_metadata),
+    )
+    .await
+    {
+        tracing::warn!(error = %error, run_id = %run_id, "Failed to insert draft run record");
+    }
+
     ctx.get::<crate::active_runs::ActiveRuns>()
         .expect("not provided")
         .start(crate::active_runs::ActiveRun {
@@ -683,6 +719,18 @@ pub async fn test_tenant_agent_handler(
                 .metadata
                 .as_ref()
                 .map(|metadata| metadata.provider_name.clone());
+            finish_draft_run_row(
+                &obs.pool,
+                &run_id,
+                "completed",
+                input_tokens,
+                output_tokens,
+                duration_ms,
+                None,
+                model_name.as_deref().unwrap_or(&draft_model_name),
+                provider_name.as_deref().unwrap_or(&draft_provider_name),
+            )
+            .await;
 
             Ok(Json(TestTenantAgentResponse {
                 status: "completed".to_string(),
@@ -703,6 +751,25 @@ pub async fn test_tenant_agent_handler(
             ctx.get::<crate::active_runs::ActiveRuns>()
                 .expect("not provided")
                 .finish(&run_id, "error");
+            // The row's error honours the tenant's no-retain flag, as the v1
+            // close-out does; the response still carries the raw text.
+            let raw_error = error.to_string();
+            let row_error = ares_store::run_history::redact_agent_run_error(
+                ares_store::run_history::tenant_no_retain(&obs.pool, &tenant_id).await,
+                Some(&raw_error),
+            );
+            finish_draft_run_row(
+                &obs.pool,
+                &run_id,
+                "failed",
+                estimate_tokens(&effective_message) as u64,
+                0,
+                duration_ms,
+                row_error.as_deref(),
+                &draft_model_name,
+                &draft_provider_name,
+            )
+            .await;
             Ok(Json(TestTenantAgentResponse {
                 status: "failed".to_string(),
                 response: None,
@@ -718,6 +785,45 @@ pub async fn test_tenant_agent_handler(
                 eruka_context_injected,
             }))
         }
+    }
+}
+
+/// Best-effort close-out of a Test Draft run's `agent_runs` row (#53): the row
+/// was inserted `running` before the run; here it gets its final status,
+/// tokens, duration and the model/provider names the response carries, the
+/// same shape as the v1 close-out (`complete_llm_run` / `fail_llm_run` in
+/// `handlers/v1/agents.rs`). A failed update is logged and never fails the
+/// test request.
+#[allow(clippy::too_many_arguments)]
+async fn finish_draft_run_row(
+    pool: &sqlx::PgPool,
+    run_id: &str,
+    status: &str,
+    input_tokens: u64,
+    output_tokens: u64,
+    duration_ms: u64,
+    error: Option<&str>,
+    model_name: &str,
+    provider_name: &str,
+) {
+    if let Err(e) = sqlx::query(
+        "UPDATE agent_runs SET status = $2, input_tokens = $3, output_tokens = $4, \
+         duration_ms = $5, error = $6, model_name = $7, provider_name = $8, \
+         updated_at = $9 WHERE id = $1",
+    )
+    .bind(run_id)
+    .bind(status)
+    .bind(input_tokens as i64)
+    .bind(output_tokens as i64)
+    .bind(duration_ms as i64)
+    .bind(error)
+    .bind(model_name)
+    .bind(provider_name)
+    .bind(chrono::Utc::now().timestamp())
+    .execute(pool)
+    .await
+    {
+        tracing::warn!(error = %e, run_id = %run_id, "Failed to finish draft run record");
     }
 }
 

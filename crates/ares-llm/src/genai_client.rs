@@ -563,6 +563,7 @@ fn request_from_conversation(
 ) -> ChatRequest {
     let mut system = String::new();
     let mut chat_messages = Vec::new();
+    let mut pending_tools: Vec<ToolResponse> = Vec::new();
     let mut prev_id = hints.previous_response_id.clone();
     let mut store = hints.store;
     for msg in messages {
@@ -571,6 +572,13 @@ fn request_from_conversation(
         }
         if store.is_none() {
             store = msg.store;
+        }
+        // A non-tool message ends a run of consecutive tool results. Flush the
+        // run as one tool message holding every ToolResponse part, so adapters
+        // that require all tool results for an assistant turn in a single
+        // message (Bedrock Converse) receive the shape they expect.
+        if msg.role != MessageRole::Tool && !pending_tools.is_empty() {
+            chat_messages.push(ChatMessage::from(std::mem::take(&mut pending_tools)));
         }
         match msg.role {
             MessageRole::System => {
@@ -610,13 +618,15 @@ fn request_from_conversation(
                 chat_messages.push(message);
             }
             MessageRole::Tool => {
-                let response = ToolResponse::new(
+                pending_tools.push(ToolResponse::new(
                     msg.tool_call_id.clone().unwrap_or_default(),
                     msg.content.clone(),
-                );
-                chat_messages.push(ChatMessage::from(response));
+                ));
             }
         }
+    }
+    if !pending_tools.is_empty() {
+        chat_messages.push(ChatMessage::from(pending_tools));
     }
     finish_request(system, chat_messages, Some(tools), hints, prev_id, store)
 }

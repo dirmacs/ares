@@ -1,24 +1,42 @@
 # syntax=docker/dockerfile:1.7
 
-FROM rust:1.98-bookworm AS builder
+ARG RUST_IMAGE=rust:1.98-bookworm
+ARG RUNTIME_IMAGE=debian:bookworm-slim
 
+FROM ${RUST_IMAGE} AS chef
+RUN cargo install cargo-chef --locked
 WORKDIR /app
+
+FROM chef AS planner
+COPY Cargo.toml Cargo.lock build.rs ./
+COPY crates/ ./crates/
+COPY src/ ./src/
+COPY ares.example.toml ./ares.example.toml
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
 
 ARG FEATURES="openai,postgres,mcp"
 ARG EXTRA_CARGO_ARGS="--no-default-features"
 
+COPY --from=planner /app/recipe.json recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo chef cook --release ${EXTRA_CARGO_ARGS} --features "${FEATURES}" --recipe-path recipe.json
+
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY crates/ ./crates/
 COPY src/ ./src/
-COPY vendor/ ./vendor/
 COPY ares.example.toml ./ares.example.toml
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
     cargo build --release ${EXTRA_CARGO_ARGS} --features "${FEATURES}" --bin ares-server && \
     cp /app/target/release/ares-server /tmp/ares-server
 
-FROM debian:bookworm-slim AS runtime
+FROM ${RUNTIME_IMAGE} AS runtime
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl && \

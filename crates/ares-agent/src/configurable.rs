@@ -3254,6 +3254,33 @@ mod tests {
         assert_eq!(agent.observed_tool_type("tenant_http", false), "runtime");
     }
 
+    /// Pins the runner's labels to the store's accepted set so the two sides
+    /// cannot drift apart again. `ares_store` is linked into this crate only
+    /// with the `postgres` feature.
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn observed_tool_types_are_accepted_by_the_store() {
+        let agent = ConfigurableAgent::with_params(
+            "router",
+            AgentType::Router,
+            Box::new(MockLLM::new()),
+            "system".to_string(),
+            None,
+            Some(vec!["http".to_string()]),
+            1,
+            false,
+        );
+
+        for is_builtin in [true, false] {
+            let observed = agent.observed_tool_type("http", is_builtin);
+            assert!(
+                ares_store::run_history::TOOL_TYPES.contains(&observed.as_str()),
+                "observed tool_type '{observed}' (is_builtin={is_builtin}) is not in \
+                 ares_store::run_history::TOOL_TYPES"
+            );
+        }
+    }
+
     #[test]
     fn test_set_allowed_tools_intersection() {
         let reg = Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new()));

@@ -51,6 +51,7 @@ pub async fn create_tenant_agent_handler(
 ) -> Result<Json<TenantAgent>> {
     let tools = ctx.get::<ares_tools::Tools>().expect("Tools not provided");
     validate_agent_config_tools(&req.config, tools.as_ref(), &ctx, &tenant_id)?;
+    validate_agent_config_delegations(&req.config, &req.agent_name)?;
 
     let __pool_2 = ctx
         .get::<ares_store::TenantDb>()
@@ -118,6 +119,7 @@ pub async fn update_tenant_agent_handler(
         let (merged, forward) = split_merged_config_patch(&current.config, patch);
         let tools = ctx.get::<ares_tools::Tools>().expect("Tools not provided");
         validate_agent_config_tools(&merged, tools.as_ref(), &ctx, &tenant_id)?;
+        validate_agent_config_delegations(&merged, &agent_name)?;
         req.config = Some(forward);
     }
 
@@ -279,6 +281,7 @@ pub async fn create_agent(
 
     let tools = ctx.get::<ares_tools::Tools>().expect("Tools not provided");
     validate_agent_config_tools(&config, tools.as_ref(), &ctx, &req.tenant_id)?;
+    validate_agent_config_delegations(&config, &req.agent_name)?;
 
     let db_req = CreateTenantAgentRequest {
         agent_name: req.agent_name,
@@ -330,6 +333,7 @@ pub async fn update_agent(
         let (merged, forward) = split_merged_config_patch(&current.config, patch);
         let tools = ctx.get::<ares_tools::Tools>().expect("Tools not provided");
         validate_agent_config_tools(&merged, tools.as_ref(), &ctx, &tenant_id)?;
+        validate_agent_config_delegations(&merged, &agent_name)?;
         req.config = Some(forward);
     }
 
@@ -547,6 +551,7 @@ pub async fn test_tenant_agent_handler(
         .pool()
         .clone();
     db_get_tenant_agent(&__pool_23, &tenant_id, &agent_name).await?;
+    validate_agent_config_delegations(&req.config, &agent_name)?;
     let agent_config = tenant_agent::agent_config_from_json(&req.config)?;
     let __pool_24 = ctx
         .get::<ares_store::TenantDb>()

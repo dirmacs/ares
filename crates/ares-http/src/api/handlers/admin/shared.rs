@@ -193,6 +193,19 @@ pub fn validate_agent_config_tools(
     Ok(())
 }
 
+/// Validates the `agents` config key of a tenant agent: entry count, keys,
+/// text limits, self reference, duplicates and tool name collisions. Existence
+/// and enabled state of the named agents are not checked here (the config is
+/// validated on save, the specialists are resolved at run time).
+pub fn validate_agent_config_delegations(
+    config: &serde_json::Value,
+    agent_name: &str,
+) -> Result<()> {
+    ares_agent::delegation::delegation_entries_from_json(config, agent_name)
+        .map(|_| ())
+        .map_err(HttpError::from)
+}
+
 pub fn parse_agent_config_tool_names(
     field: &str,
     value: &serde_json::Value,

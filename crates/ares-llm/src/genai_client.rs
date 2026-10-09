@@ -1240,6 +1240,110 @@ mod tests {
     }
 
     #[test]
+    fn parallel_tool_results_grouped_into_one_message() {
+        let messages = vec![
+            ConversationMessage::user("run both lookups"),
+            ConversationMessage::assistant(
+                "",
+                vec![
+                    ToolCall {
+                        id: "call_1".into(),
+                        name: "lookup_a".into(),
+                        arguments: serde_json::json!({"q": "a"}),
+                    },
+                    ToolCall {
+                        id: "call_2".into(),
+                        name: "lookup_b".into(),
+                        arguments: serde_json::json!({"q": "b"}),
+                    },
+                ],
+            ),
+            ConversationMessage::tool_result("call_1", &serde_json::json!({"result": "a"})),
+            ConversationMessage::tool_result("call_2", &serde_json::json!({"result": "b"})),
+        ];
+        let req = request_from_conversation(&messages, &[], &GenerationHints::default());
+        assert_eq!(req.messages.len(), 3);
+        let tool_msg = &req.messages[2];
+        assert_eq!(tool_msg.role, genai::chat::ChatRole::Tool);
+        let call_ids: Vec<&str> = tool_msg
+            .content
+            .parts()
+            .iter()
+            .map(|part| match part {
+                ContentPart::ToolResponse(tr) => tr.call_id.as_str(),
+                other => panic!("expected ToolResponse part, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(call_ids, ["call_1", "call_2"]);
+    }
+
+    #[test]
+    fn single_tool_result_unchanged() {
+        let messages = vec![
+            ConversationMessage::user("run one lookup"),
+            ConversationMessage::assistant(
+                "",
+                vec![ToolCall {
+                    id: "call_1".into(),
+                    name: "lookup_a".into(),
+                    arguments: serde_json::json!({"q": "a"}),
+                }],
+            ),
+            ConversationMessage::tool_result("call_1", &serde_json::json!({"result": "a"})),
+        ];
+        let req = request_from_conversation(&messages, &[], &GenerationHints::default());
+        assert_eq!(req.messages.len(), 3);
+        let tool_msg = &req.messages[2];
+        assert_eq!(tool_msg.role, genai::chat::ChatRole::Tool);
+        let parts = tool_msg.content.parts();
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            ContentPart::ToolResponse(tr) => {
+                assert_eq!(tr.call_id, "call_1");
+                assert_eq!(tr.content, "{\"result\":\"a\"}");
+            }
+            other => panic!("expected ToolResponse part, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_groups_do_not_merge_across_assistant_turns() {
+        let messages = vec![
+            ConversationMessage::user("two lookups in two turns"),
+            ConversationMessage::assistant(
+                "",
+                vec![ToolCall {
+                    id: "call_1".into(),
+                    name: "lookup_a".into(),
+                    arguments: serde_json::json!({"q": "a"}),
+                }],
+            ),
+            ConversationMessage::tool_result("call_1", &serde_json::json!({"result": "a"})),
+            ConversationMessage::assistant(
+                "",
+                vec![ToolCall {
+                    id: "call_2".into(),
+                    name: "lookup_b".into(),
+                    arguments: serde_json::json!({"q": "b"}),
+                }],
+            ),
+            ConversationMessage::tool_result("call_2", &serde_json::json!({"result": "b"})),
+        ];
+        let req = request_from_conversation(&messages, &[], &GenerationHints::default());
+        assert_eq!(req.messages.len(), 5);
+        for (idx, call_id) in [(2, "call_1"), (4, "call_2")] {
+            let tool_msg = &req.messages[idx];
+            assert_eq!(tool_msg.role, genai::chat::ChatRole::Tool);
+            let parts = tool_msg.content.parts();
+            assert_eq!(parts.len(), 1);
+            match &parts[0] {
+                ContentPart::ToolResponse(tr) => assert_eq!(tr.call_id, call_id),
+                other => panic!("expected ToolResponse part, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn llm_stream_event_is_send() {
         fn assert_send<T: Send>() {}
         assert_send::<LlmStreamEvent>();

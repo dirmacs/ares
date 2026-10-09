@@ -1365,12 +1365,30 @@ fn sqlx_err(e: sqlx::Error) -> AppError {
     AppError::Database(e.to_string())
 }
 
+/// Every `tool_type` accepted when a tool call is logged. The single source
+/// for the gate in `validate_tool_type` and for producers that want to check
+/// their labels against the store. "builtin" and "runtime" are the agent
+/// runner's observed labels; "agent" is reserved for the Agent Teams
+/// delegation tool.
+pub const TOOL_TYPES: &[&str] = &[
+    "http",
+    "script",
+    "sql",
+    "mcp",
+    "skill_step",
+    "builtin",
+    "runtime",
+    "agent",
+];
+
 fn validate_tool_type(t: &str) -> Result<()> {
-    match t {
-        "http" | "script" | "sql" | "mcp" | "skill_step" => Ok(()),
-        _ => Err(AppError::InvalidInput(format!(
-            "Invalid tool_type '{t}'. Must be one of: http, script, sql, mcp, skill_step"
-        ))),
+    if TOOL_TYPES.contains(&t) {
+        Ok(())
+    } else {
+        Err(AppError::InvalidInput(format!(
+            "Invalid tool_type '{t}'. Must be one of: {}",
+            TOOL_TYPES.join(", ")
+        )))
     }
 }
 

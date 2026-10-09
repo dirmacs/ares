@@ -53,6 +53,8 @@ pub mod checkpoint;
 pub mod configurable;
 /// External context injection trait (OSS: NoOp, Managed: Eruka/custom).
 pub mod context_provider;
+/// One agent calling other agents: the `agents` config key and its tool definitions.
+pub mod delegation;
 pub mod emergency_stop;
 pub mod execution;
 pub mod external_context;

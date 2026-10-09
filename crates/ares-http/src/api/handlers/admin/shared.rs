@@ -629,6 +629,47 @@ mod tests {
         assert!(source.contains("ares_agent::tenant_scope"));
     }
 
+    #[test]
+    fn validate_agent_config_delegations_accepts_absent_and_valid() {
+        validate_agent_config_delegations(&serde_json::json!({}), "manager")
+            .expect("an absent agents key is fine");
+
+        validate_agent_config_delegations(&serde_json::json!({"agents": null}), "manager")
+            .expect("a null agents key is fine");
+
+        let valid = serde_json::json!({
+            "agents": [
+                {"name": "price-analyst", "when_to_use": "Price elasticity by pack size."},
+                {"name": "promotion-analyst", "when_to_use": "Whether a promotion paid back."}
+            ]
+        });
+        validate_agent_config_delegations(&valid, "manager")
+            .expect("two distinct specialists are fine");
+    }
+
+    #[test]
+    fn validate_agent_config_delegations_rejects_self_reference_as_invalid_input() {
+        let config = serde_json::json!({
+            "agents": [{"name": "price-analyst", "when_to_use": "Its own name."}]
+        });
+
+        let err = validate_agent_config_delegations(&config, "price-analyst")
+            .expect_err("an agent may not call itself");
+
+        assert!(
+            matches!(err.0, AppError::InvalidInput(_)),
+            "expected InvalidInput, got {:?}",
+            err.0
+        );
+        assert_eq!(
+            err.0.status_code(),
+            400,
+            "InvalidInput must map to HTTP 400"
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("price-analyst"), "must name the entry: {msg}");
+    }
+
     #[tokio::test]
     async fn validate_agent_config_tools_accepts_builtin_tools() {
         let tools =

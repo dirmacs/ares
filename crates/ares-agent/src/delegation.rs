@@ -1,3 +1,256 @@
+//! The tenant agent `agents` config key: one agent calling other agents.
+//!
+//! A *manager* names the *specialists* it may call in its tenant agent JSON
+//! config; [`delegation_entries_from_json`] parses and refuses bad values so
+//! a save cannot store them, and [`delegation_tool_definitions`] turns the
+//! entries into the tool definitions the manager's model sees.
+//!
+//! Running a delegation, its guardrails and its run rows are separate work
+//! (plan §5.3, §5.4). Nothing here looks agents up: a manager may be saved
+//! before its specialists, and missing or disabled ones are skipped when the
+//! definitions are built.
+
+use std::collections::HashMap;
+
+use ares_types::types::{AppError, Result, ToolDefinition};
+use serde::{Deserialize, Serialize};
+
+/// Specialists one manager may be given.
+pub const MAX_AGENTS_PER_MANAGER: usize = 8;
+
+/// Longest `when_to_use` the model is shown, in characters.
+pub const MAX_WHEN_TO_USE_CHARS: usize = 300;
+
+/// Every delegation tool name starts here, so no other tool name can collide.
+pub const AGENT_TOOL_PREFIX: &str = "agent__";
+
+/// Provider tool names are limited to 64 characters; the prefix takes 7.
+pub const MAX_AGENT_TOOL_NAME_CHARS: usize = 64;
+
+/// One specialist a manager may call, and when to call it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DelegationEntry {
+    /// `agent_name` of another tenant agent of the same tenant.
+    pub name: String,
+    /// When the manager should call this specialist; becomes the tool description.
+    pub when_to_use: String,
+}
+
+/// Parses the optional `agents` key of a tenant agent config.
+///
+/// `agents` must be an array of at most [`MAX_AGENTS_PER_MANAGER`] objects,
+/// each holding exactly `name` and `when_to_use`; any other key is refused, so
+/// a typo cannot be silently ignored. Values are trimmed and stored trimmed.
+/// The agent's own name, duplicate names and tool names that collide after
+/// sanitising are refused too. Every refusal is [`AppError::InvalidInput`] and
+/// names the offending entry, so an operator can find it.
+///
+/// The named agents are not looked up: a manager may be saved before its
+/// specialists, and ones that are missing or disabled are skipped at run time.
+pub fn delegation_entries_from_json(
+    config: &serde_json::Value,
+    own_agent_name: &str,
+) -> Result<Vec<DelegationEntry>> {
+    let raw = match config.get("agents") {
+        None | Some(serde_json::Value::Null) => return Ok(Vec::new()),
+        Some(raw) => raw,
+    };
+
+    let items = raw.as_array().ok_or_else(|| {
+        invalid(format!(
+            "'agents' must be an array of objects, was {}",
+            json_kind(raw)
+        ))
+    })?;
+
+    if items.len() > MAX_AGENTS_PER_MANAGER {
+        let overflow = entry_label(
+            MAX_AGENTS_PER_MANAGER,
+            entry_name(&items[MAX_AGENTS_PER_MANAGER]),
+        );
+        return Err(invalid(format!(
+            "{overflow}: 'agents' holds {} entries, the limit is {MAX_AGENTS_PER_MANAGER}",
+            items.len()
+        )));
+    }
+
+    let own_name = own_agent_name.trim();
+    let mut entries: Vec<DelegationEntry> = Vec::with_capacity(items.len());
+    let mut names: Vec<String> = Vec::with_capacity(items.len());
+    let mut tool_names: Vec<(String, String)> = Vec::with_capacity(items.len());
+
+    for (index, item) in items.iter().enumerate() {
+        let obj = item.as_object().ok_or_else(|| {
+            invalid(format!(
+                "{} must be an object, was {}",
+                entry_label(index, ""),
+                json_kind(item)
+            ))
+        })?;
+
+        let label = entry_label(index, entry_name(item));
+
+        for key in obj.keys() {
+            if key != "name" && key != "when_to_use" {
+                return Err(invalid(format!(
+                    "{label}: unknown key '{key}'; an entry holds exactly 'name' and 'when_to_use'"
+                )));
+            }
+        }
+
+        let name = obj
+            .get("name")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| invalid(format!("{label}: 'name' must be a non-empty string")))?
+            .to_string();
+
+        if name.eq_ignore_ascii_case(own_name) {
+            return Err(invalid(format!(
+                "{label}: an agent cannot be given itself as a specialist"
+            )));
+        }
+
+        let when_to_use = obj
+            .get("when_to_use")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|when| !when.is_empty())
+            .ok_or_else(|| invalid(format!("{label}: 'when_to_use' must be a non-empty string")))
+            .and_then(|when| {
+                let chars = when.chars().count();
+                if chars > MAX_WHEN_TO_USE_CHARS {
+                    Err(invalid(format!(
+                        "{label}: 'when_to_use' is {chars} characters, the limit is {MAX_WHEN_TO_USE_CHARS}"
+                    )))
+                } else {
+                    Ok(when.to_string())
+                }
+            })?;
+
+        if names.iter().any(|seen| seen == &name) {
+            return Err(invalid(format!(
+                "{label}: duplicate specialist; each one may be named once"
+            )));
+        }
+
+        let tool_name = agent_tool_name(&name);
+        if let Some((_, first)) = tool_names.iter().find(|(tool, _)| tool == &tool_name) {
+            return Err(invalid(format!(
+                "{label}: tool name '{tool_name}' collides with specialist '{first}'; rename it"
+            )));
+        }
+        if tool_name.chars().count() > MAX_AGENT_TOOL_NAME_CHARS {
+            return Err(invalid(format!(
+                "{label}: tool name '{tool_name}' is {} characters, the limit is {MAX_AGENT_TOOL_NAME_CHARS}",
+                tool_name.chars().count()
+            )));
+        }
+
+        names.push(name.clone());
+        tool_names.push((tool_name, name.clone()));
+        entries.push(DelegationEntry { name, when_to_use });
+    }
+
+    Ok(entries)
+}
+
+/// The tool name the model calls for one specialist.
+///
+/// The prefix plus the agent name lower-cased, with every character outside
+/// `[a-z0-9_]` replaced by `_`, so `Price-Analyst` becomes `agent__price_analyst`.
+/// Names are sanitised, never rejected, so any `agent_name` stays reachable.
+pub fn agent_tool_name(agent_name: &str) -> String {
+    let mut tool_name = String::with_capacity(AGENT_TOOL_PREFIX.len() + agent_name.len());
+    tool_name.push_str(AGENT_TOOL_PREFIX);
+    for ch in agent_name.trim().to_lowercase().chars() {
+        if ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' {
+            tool_name.push(ch);
+        } else {
+            tool_name.push('_');
+        }
+    }
+    tool_name
+}
+
+/// Whether a tool name is one a manager calls a specialist through.
+pub fn is_agent_tool_name(tool_name: &str) -> bool {
+    tool_name.starts_with(AGENT_TOOL_PREFIX)
+}
+
+/// One tool definition per entry, in entry order.
+///
+/// `display_names` maps an available specialist's `agent_name` to its display
+/// name; the caller fills it from the agents that exist and are enabled. An
+/// entry missing from the map is skipped without an error, so a manager keeps
+/// working while one of its specialists is off.
+pub fn delegation_tool_definitions(
+    entries: &[DelegationEntry],
+    display_names: &HashMap<String, String>,
+) -> Vec<ToolDefinition> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let display_name = display_names.get(entry.name.as_str())?;
+            Some(ToolDefinition {
+                name: agent_tool_name(&entry.name),
+                description: format!("{display_name}: {}", entry.when_to_use),
+                parameters: delegation_tool_parameters(),
+            })
+        })
+        .collect()
+}
+
+/// The one argument every delegation tool takes: a self-contained task.
+fn delegation_tool_parameters() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "task": {
+                "type": "string",
+                "description": "What you need from this agent, self-contained."
+            }
+        },
+        "required": ["task"]
+    })
+}
+
+/// `agents[3]`, plus the entry's trimmed name when it has one.
+fn entry_label(index: usize, name: &str) -> String {
+    if name.is_empty() {
+        format!("agents[{index}]")
+    } else {
+        format!("agents[{index}] ('{name}')")
+    }
+}
+
+/// The raw `name` of an entry, for error messages about entries that are not
+/// objects or whose name is not a usable string.
+fn entry_name(item: &serde_json::Value) -> &str {
+    item.get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .trim()
+}
+
+/// A JSON value's kind, for messages a person reads.
+fn json_kind(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "an array",
+        serde_json::Value::Object(_) => "an object",
+    }
+}
+
+/// Every refusal a bad `agents` key produces.
+fn invalid(detail: String) -> AppError {
+    AppError::InvalidInput(format!("Invalid 'agents' config: {detail}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7,7 +260,9 @@ mod tests {
     }
 
     fn raw_name(item: &serde_json::Value) -> &str {
-        item.get("name").and_then(|v| v.as_str()).unwrap_or_default()
+        item.get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
     }
 
     fn repeated_char(count: usize, ch: &str) -> String {
@@ -19,11 +274,12 @@ mod tests {
         let missing = delegation_entries_from_json(&serde_json::json!({}), "manager").unwrap();
         assert!(missing.is_empty());
 
-        let null = delegation_entries_from_json(&serde_json::json!({"agents": null}), "manager")
-            .unwrap();
+        let null =
+            delegation_entries_from_json(&serde_json::json!({"agents": null}), "manager").unwrap();
         assert!(null.is_empty());
 
-        let empty = delegation_entries_from_json(&config(serde_json::json!([])), "manager").unwrap();
+        let empty =
+            delegation_entries_from_json(&config(serde_json::json!([])), "manager").unwrap();
         assert!(empty.is_empty());
     }
 
@@ -53,9 +309,11 @@ mod tests {
 
     #[test]
     fn rejects_non_array() {
-        let err =
-            delegation_entries_from_json(&config(serde_json::json!({"name": "price-analyst"})), "manager")
-                .expect_err("an object is not an array");
+        let err = delegation_entries_from_json(
+            &config(serde_json::json!({"name": "price-analyst"})),
+            "manager",
+        )
+        .expect_err("an object is not an array");
 
         assert!(matches!(err, AppError::InvalidInput(_)), "got {err:?}");
         assert!(err.to_string().contains("agents"), "got: {err}");
@@ -72,7 +330,10 @@ mod tests {
 
         assert!(matches!(err, AppError::InvalidInput(_)), "got {err:?}");
         let msg = err.to_string();
-        assert!(msg.contains("analyst-8"), "must name the offending entry: {msg}");
+        assert!(
+            msg.contains("analyst-8"),
+            "must name the offending entry: {msg}"
+        );
         assert!(msg.contains('8'), "must name the limit: {msg}");
     }
 
@@ -98,8 +359,11 @@ mod tests {
             serde_json::json!({"name": "   ", "when_to_use": "Price elasticity."}),
             serde_json::json!({"name": 7, "when_to_use": "Price elasticity."}),
         ] {
-            let err = delegation_entries_from_json(&config(serde_json::Value::Array(vec![bad])), "manager")
-                .expect_err("a name is required");
+            let err = delegation_entries_from_json(
+                &config(serde_json::Value::Array(vec![bad])),
+                "manager",
+            )
+            .expect_err("a name is required");
             assert!(matches!(err, AppError::InvalidInput(_)), "got {err:?}");
         }
     }
@@ -112,8 +376,11 @@ mod tests {
             serde_json::json!({"name": "price-analyst"}),
             serde_json::json!({"name": "price-analyst", "when_to_use": repeated_char(301, "é")}),
         ] {
-            let err = delegation_entries_from_json(&config(serde_json::Value::Array(vec![bad])), "manager")
-                .expect_err("when_to_use is required, 1-300 chars");
+            let err = delegation_entries_from_json(
+                &config(serde_json::Value::Array(vec![bad])),
+                "manager",
+            )
+            .expect_err("when_to_use is required, 1-300 chars");
             assert!(matches!(err, AppError::InvalidInput(_)), "got {err:?}");
         }
 
@@ -168,7 +435,10 @@ mod tests {
 
         assert!(matches!(err, AppError::InvalidInput(_)), "got {err:?}");
         let msg = err.to_string();
-        assert!(msg.contains("agent__price_analyst"), "must name the tool: {msg}");
+        assert!(
+            msg.contains("agent__price_analyst"),
+            "must name the tool: {msg}"
+        );
     }
 
     #[test]
@@ -194,7 +464,10 @@ mod tests {
             "manager",
         )
         .expect("64 characters is the limit, not 63");
-        assert_eq!(agent_tool_name(&edge[0].name).chars().count(), MAX_AGENT_TOOL_NAME_CHARS);
+        assert_eq!(
+            agent_tool_name(&edge[0].name).chars().count(),
+            MAX_AGENT_TOOL_NAME_CHARS
+        );
     }
 
     #[test]
@@ -226,7 +499,10 @@ mod tests {
 
         let display_names = HashMap::from([
             ("price-analyst".to_string(), "Price Analyst".to_string()),
-            ("pack-mix-analyst".to_string(), "Pack-mix Analyst".to_string()),
+            (
+                "pack-mix-analyst".to_string(),
+                "Pack-mix Analyst".to_string(),
+            ),
         ]);
 
         let definitions = delegation_tool_definitions(&entries, &display_names);
@@ -238,10 +514,7 @@ mod tests {
             "Price Analyst: Price elasticity."
         );
         assert_eq!(definitions[1].name, "agent__pack_mix_analyst");
-        assert_eq!(
-            definitions[1].description,
-            "Pack-mix Analyst: Pack mix."
-        );
+        assert_eq!(definitions[1].description, "Pack-mix Analyst: Pack mix.");
         assert_eq!(
             definitions[0].parameters,
             serde_json::json!({

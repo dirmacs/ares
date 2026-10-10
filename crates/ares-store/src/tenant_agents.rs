@@ -1630,6 +1630,64 @@ mod tests {
     }
 
     #[test]
+    fn validate_tenant_config_accepts_agents_key() {
+        // `agents` joins the closed schema. The store checks only its shape;
+        // each entry is checked in full by the admin API.
+        let with_entries = validate_tenant_config(&serde_json::json!({
+            "model": "m",
+            "agents": [{"name": "price-analyst", "when_to_use": "Prices."}]
+        }))
+        .expect("agents key is known");
+        assert_eq!(with_entries.model, "m");
+
+        let null = validate_tenant_config(&serde_json::json!({"model": "m", "agents": null}))
+            .expect("null agents is allowed");
+        assert_eq!(null.model, "m");
+
+        let empty = validate_tenant_config(&serde_json::json!({"model": "m", "agents": []}))
+            .expect("an empty agents list is allowed");
+        assert_eq!(empty.model, "m");
+    }
+
+    #[test]
+    fn validate_tenant_config_rejects_non_array_agents() {
+        for value in [
+            serde_json::json!("price-analyst"),
+            serde_json::json!({"name": "x"}),
+        ] {
+            let err = validate_tenant_config(&serde_json::json!({"model": "m", "agents": value}))
+                .expect_err("agents must be an array");
+            assert!(
+                matches!(err, AppError::InvalidInput(_)),
+                "expected InvalidInput, got {err:?}"
+            );
+            let msg = err.to_string();
+            assert!(
+                msg.contains("'agents' must be an array of objects"),
+                "error names the shape: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_tenant_config_rejects_non_object_agents_entry() {
+        let err = validate_tenant_config(&serde_json::json!({
+            "model": "m",
+            "agents": ["price-analyst"]
+        }))
+        .expect_err("every agents entry must be an object");
+        assert!(
+            matches!(err, AppError::InvalidInput(_)),
+            "expected InvalidInput, got {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("'agents' must be an array of objects") && msg.contains("agents[0]"),
+            "error names the entry: {msg}"
+        );
+    }
+
+    #[test]
     fn validate_tenant_config_rejects_non_object() {
         assert!(validate_tenant_config(&serde_json::json!([])).is_err());
     }

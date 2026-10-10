@@ -153,7 +153,10 @@ pub fn tenant_agent_not_found_error(agent_name: &str, tenant_id: &str) -> AppErr
 /// bundle cannot store an inert flag silently (the `sandbox` precedent).
 /// `skill_id` and `allowed_tools` are runtime-consumed keys without a
 /// parsed field on [`TenantAgentConfig`], so they stay in the set.
-pub const TENANT_CONFIG_KNOWN_KEYS: [&str; 14] = [
+/// `agents` is checked fully by the admin API (`validate_agent_config_delegations`);
+/// the store checks only its shape, because the rollback and template paths
+/// reach it without that check.
+pub const TENANT_CONFIG_KNOWN_KEYS: [&str; 15] = [
     "model",
     "system_prompt",
     "tools",
@@ -168,6 +171,7 @@ pub const TENANT_CONFIG_KNOWN_KEYS: [&str; 14] = [
     "frequency_penalty",
     "presence_penalty",
     "skill_id",
+    "agents",
 ];
 
 pub fn validate_tenant_config(value: &serde_json::Value) -> Result<TenantAgentConfig> {
@@ -187,6 +191,8 @@ pub fn validate_tenant_config(value: &serde_json::Value) -> Result<TenantAgentCo
             TENANT_CONFIG_KNOWN_KEYS.join(", ")
         )));
     }
+
+    validate_agents_shape(obj)?;
 
     let model = obj
         .get("model")
@@ -238,6 +244,48 @@ pub fn validate_tenant_config(value: &serde_json::Value) -> Result<TenantAgentCo
 
 /// JSON object handle as returned by `serde_json::Value::as_object`.
 type JsonObject = serde_json::Map<String, serde_json::Value>;
+
+/// `agents` must be absent, `null`, or an array whose every element is an
+/// object.
+///
+/// Only the shape is checked here: the named specialists, their lengths and
+/// their uniqueness are checked by the admin API
+/// (`validate_agent_config_delegations`), and this crate does not depend on
+/// the one that owns that check. A malformed shape is still refused, because
+/// the rollback and template paths reach the store without going through it.
+fn validate_agents_shape(obj: &JsonObject) -> Result<()> {
+    match obj.get("agents") {
+        None | Some(serde_json::Value::Null) => Ok(()),
+        Some(serde_json::Value::Array(items)) => {
+            for (index, item) in items.iter().enumerate() {
+                if !item.is_object() {
+                    return Err(AppError::InvalidInput(format!(
+                        "Tenant agent config field 'agents' must be an array of objects; \
+                         agents[{index}] is {}",
+                        json_kind(item)
+                    )));
+                }
+            }
+            Ok(())
+        }
+        Some(other) => Err(AppError::InvalidInput(format!(
+            "Tenant agent config field 'agents' must be an array of objects, was {}",
+            json_kind(other)
+        ))),
+    }
+}
+
+/// A JSON value's kind, for messages a person reads.
+fn json_kind(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "an array",
+        serde_json::Value::Object(_) => "an object",
+    }
+}
 
 /// Read an optional string field; `null` and absent both mean `None`.
 fn optional_string(obj: &JsonObject, field: &str) -> Result<Option<String>> {

@@ -1,0 +1,65 @@
+# ARES's OpenAPPA TEST posture.
+#
+# This is the policy the funnel unit tests and the CI replay gate judge
+# against. It is a TEST posture: it carries the estate's own rules over the
+# estate's own tool vocabulary (`host/ares/<tool>`), and nothing applies it to
+# a running deployment. The proposed production posture lives in
+# `config/appa.proposed.toml` and its batteries under `config/appa-batteries/`.
+#
+# Run the replay suite over this file:
+#   appa describe --config config/appa.test.toml --check
+#   appa replay --config config/appa.test.toml policy-tests/
+
+[externals]
+timeout_ms = 2000
+max_body_bytes = 65536
+
+[policy]
+version = 2
+trust_chain = ["suspicious", "trusted"]
+
+# Estate rule 4 (design §6): a sensitive read lands in the trajectory as a
+# restriction. The knowledge store (eruka-classified content) is the estate's
+# private corpus: it stays internal and its text is not trusted prose.
+[[policy.tool]]
+name = "host/ares/read_ticket"
+description = "Reads a knowledge-store record."
+tags = ["knowledge"]
+delta = { audience = ["internal"], trust = "suspicious" }
+effects = ["knowledge.read"]
+
+# Estate rule 1: sensitive data must not reach an unrestricted destination.
+# `public` is the audience that leaves the estate.
+[[policy.tool]]
+name = "host/ares/publish_update"
+description = "Publishes data where anyone can read it."
+requires = { audience = { contains = ["public"] } }
+delta = {}
+
+# A side-effecting call requires trusted data: a suspicious read blocks the
+# next mutating call until something raises the trust of the trajectory.
+[[policy.tool]]
+name = "host/ares/apply_change"
+description = "Applies a change with side effects."
+requires = { trust = "trusted" }
+delta = {}
+effects = ["change.applied"]
+
+# Estate rule 4 applied to results: a restricted result from this tool is
+# offered as a withhold plan, and the redaction battery derives what crosses.
+[policy.deployment]
+confined_results = ["host/ares/read_ticket"]
+
+[[policy.sanitizer]]
+name = "redact_private"
+on = ["tool_output"]
+tags = ["knowledge"]
+hint = "Remove private knowledge-store content from a ticket."
+
+[policy.sanitizer.permits]
+audience = { from = ["internal"], to = ["public"] }
+
+# The stock credential redactor stands in for the pii-guard pii_guard battery in
+# the test posture; the proposed posture binds the real service.
+[externals.sanitizers.redact_private]
+builtin = "redact-secrets"

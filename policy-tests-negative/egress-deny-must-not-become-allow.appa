@@ -1,0 +1,12 @@
+# The intentionally mismatched trace: the estate rule 1 deny is written as an
+# allow. `appa replay` MUST fail this file (exit 1), which is what proves the
+# replay gate can fail rather than pass vacuously.
+host/ares/read_ticket {
+  ticket: "acme-4"
+}
+expect allow
+
+host/ares/publish_update {
+  note: "this must be denied, not allowed"
+}
+expect allow

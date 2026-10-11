@@ -1,0 +1,34 @@
+# PROPOSED battery — the estate's classification kernel as the classification
+# source. Not applied: this text composes under config/appa.proposed.toml only.
+#
+# The estate's classification oracle: the kernel's `Confidence` (i64 basis
+# points, 0..=10_000) and `SourceKind` vocabulary, expressed as the audience
+# and trust labels the engine checks. The kernel's MCP tools stay the tool
+# surface; this battery contributes labels, not tools.
+
+[policy]
+version = 2
+
+# A knowledge-store read: content written by a human or an authoritative
+# system keeps trust; anything the models wrote is at the floor.
+[[policy.tool]]
+name = "mcp/eruka/get_context"
+description = "Reads agent context from the knowledge store."
+delta = { audience = ["internal"], trust = "system" }
+
+[[policy.tool]]
+name = "mcp/eruka/search_context"
+description = "Searches the knowledge store."
+delta = { audience = ["internal"], trust = "system" }
+
+[[policy.tool]]
+name = "mcp/eruka/compress"
+description = "Compresses stored context."
+delta = { audience = ["internal"], trust = "system" }
+
+# A write into the store is a side effect: it is gated like any other change.
+[[policy.tool]]
+name = "mcp/eruka/write_context"
+description = "Writes agent context into the knowledge store."
+delta = {}
+effects = ["knowledge.written"]

@@ -1,0 +1,17 @@
+# Estate rule 1: a sensitive read narrows the trajectory, and the next call to
+# an unrestricted destination is denied. The control is the first step: on a
+# fresh trajectory the same call is allowed.
+host/ares/publish_update {
+  note: "published on a fresh trajectory"
+}
+expect allow
+
+host/ares/read_ticket {
+  ticket: "acme-1"
+}
+expect allow
+
+host/ares/publish_update {
+  note: "published after the sensitive read"
+}
+expect deny

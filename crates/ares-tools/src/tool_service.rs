@@ -13,7 +13,7 @@ use ares_types::types::{Result, ToolDefinition};
 use cordis::{CordisError, EventsService, Service};
 use serde_json::{Value, json};
 
-use crate::appa::{AppaGate, PreCall, Withheld};
+use crate::appa::{PreCall, ToolGate, Withheld};
 use crate::registry::{Tool, ToolRegistry};
 
 #[cfg(any(feature = "postgres", test))]
@@ -29,7 +29,10 @@ pub struct Tools {
     /// The OpenAPPA gate, when the hook path is configured. `None` leaves the
     /// funnel exactly as it was: the integration is additive and inert by
     /// default.
-    appa: Option<Arc<AppaGate>>,
+    /// The OpenAPPA gate, when the hook path is configured. Held as a trait
+    /// object so a spawn boundary's auto-trait check never recurses through
+    /// the concrete runtime's type tree.
+    appa: Option<Arc<dyn ToolGate>>,
 }
 
 impl Clone for Tools {
@@ -66,26 +69,24 @@ impl Tools {
         }
     }
 
-    /// Attach an OpenAPPA gate to a static registry. The hook path is live
+    /// Attach an OpenAPPA gate to a static tool set. The hook path is live
     /// from construction: the gate decides every call this service executes.
-    pub fn with_appa(static_registry: Arc<ToolRegistry>, gate: AppaGate) -> Self {
-        Self {
-            static_registry,
-            #[cfg(any(feature = "postgres", test))]
-            runtime: None,
-            appa: Some(Arc::new(gate)),
-        }
+    pub fn with_appa(
+        tools: impl IntoIterator<Item = Arc<dyn Tool>>,
+        gate: impl ToolGate + 'static,
+    ) -> Self {
+        Self::from_static(tools).attach_appa(gate)
     }
 
     /// Attach an OpenAPPA gate to an already-built service, preserving its
     /// runtime registry.
-    pub fn attach_appa(mut self, gate: AppaGate) -> Self {
+    pub fn attach_appa(mut self, gate: impl ToolGate + 'static) -> Self {
         self.appa = Some(Arc::new(gate));
         self
     }
 
     /// The attached OpenAPPA gate, when the hook path is configured.
-    pub fn appa_gate(&self) -> Option<&AppaGate> {
+    pub fn appa_gate(&self) -> Option<&(dyn ToolGate + 'static)> {
         self.appa.as_deref()
     }
 
@@ -311,14 +312,35 @@ impl Tools {
     /// plan inside its mandate envelope and the answer reaches the model as
     /// this call's result.
     async fn control_call(
-        gate: &AppaGate,
+        gate: &(dyn ToolGate + 'static),
         actor: &appa_runtime_api::Actor,
         args: Value,
     ) -> Result<Value> {
-        let plan: appa::api::ExecuteRemedyPlanArgs =
-            serde_json::from_value(args).map_err(|error| {
-                ares_types::AppError::InvalidInput(format!("appa remedy plan: {error}"))
-            })?;
+        let plan: appa_runtime::api::ExecuteRemedyPlanArgs = serde_json::from_value(args.clone())
+            .map_err(|error| {
+            ares_types::AppError::InvalidInput(format!("appa remedy plan: {error}"))
+        })?;
+        // The hook decides the control call first: an accepted quote answers
+        // PassControl and records the vouch the engine spends when the plan
+        // runs. Executing without the hook would leave the remedy unvouched.
+        match gate
+            .check_call(actor, crate::appa::REMEDY_TOOL_SPELLING, &args)
+            .await
+        {
+            Ok(PreCall::Control) => {}
+            Ok(PreCall::Deny { feedback, .. }) => return Ok(json!({ "denied": feedback })),
+            Ok(PreCall::Block { reason }) => {
+                return Err(ares_types::AppError::Unavailable(format!("appa: {reason}")));
+            }
+            Ok(PreCall::Refuse { detail }) => {
+                return Err(ares_types::AppError::Unavailable(format!("appa: {detail}")));
+            }
+            Ok(PreCall::Allow) | Err(_) => {
+                return Err(ares_types::AppError::Unavailable(
+                    "appa: the control call was not answered with PassControl".to_string(),
+                ));
+            }
+        }
         let outcome = gate.execute_remedy(actor, plan).await;
         Ok(remedy_reply(outcome))
     }
@@ -328,7 +350,7 @@ impl Tools {
     /// or refused result stops the turn rather than re-entering the
     /// conversation with the value.
     async fn admit(
-        gate: Option<&AppaGate>,
+        gate: Option<&(dyn ToolGate + 'static)>,
         actor: Option<&appa_runtime_api::Actor>,
         name: &str,
         args: &Value,
@@ -497,9 +519,9 @@ where
 
 /// The gate as an optional borrow, for the post-call admit path.
 fn gate_arg<'a>(
-    gate: &'a Option<Arc<AppaGate>>,
+    gate: &'a Option<Arc<dyn ToolGate>>,
     actor: &Option<appa_runtime_api::Actor>,
-) -> Option<&'a AppaGate> {
+) -> Option<&'a (dyn ToolGate + 'static)> {
     if actor.is_some() {
         gate.as_deref()
     } else {
@@ -510,27 +532,27 @@ fn gate_arg<'a>(
 /// The remedy outcome as the model reads it: the engine's own words for a
 /// refusal or a decline, the executed call for an authorized plan, and the
 /// crossed value for a plan that declares a return.
-fn remedy_reply(outcome: appa::api::RemedyOutcome) -> Value {
+fn remedy_reply(outcome: appa_runtime::api::RemedyOutcome) -> Value {
     match outcome {
-        appa::api::RemedyOutcome::Authorized { call } => json!({
+        appa_runtime::api::RemedyOutcome::Authorized { call } => json!({
             "remedy": "authorized",
             "tool": call.tool,
         }),
-        appa::api::RemedyOutcome::Returned { value } => json!({
+        appa_runtime::api::RemedyOutcome::Returned { value } => json!({
             "remedy": "returned",
             "value": value,
         }),
-        appa::api::RemedyOutcome::Declined { presentation } => json!({
+        appa_runtime::api::RemedyOutcome::Declined { presentation } => json!({
             "remedy": "declined",
             "feedback": presentation.feedback,
         }),
-        appa::api::RemedyOutcome::NoAnswer { feedback } => json!({
+        appa_runtime::api::RemedyOutcome::NoAnswer { feedback } => json!({
             "remedy": "no-answer",
             "feedback": feedback,
         }),
-        appa::api::RemedyOutcome::Refused { reason } => json!({
+        appa_runtime::api::RemedyOutcome::Refused { reason } => json!({
             "remedy": "refused",
-            "reason": reason.to_string(),
+            "reason": format!("{reason:?}"),
         }),
     }
 }

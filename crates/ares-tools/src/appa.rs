@@ -50,21 +50,19 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
-use appa::api::{ExecuteRemedyPlanArgs, OpenError, RemedyOutcome, Runtime};
-use appa::config::{Config, ConfigError, HostDefaults, HostedBattery};
-use appa::hooks;
 use appa_eventlog::{Backend, LogStore};
+use appa_runtime::api::{ExecuteRemedyPlanArgs, OpenError, RemedyOutcome, Runtime};
+use appa_runtime::config::{Config, ConfigError, HostDefaults, HostedBattery};
+use appa_runtime::hooks;
 use appa_runtime_api::{
     Actor, Adapter, AdapterName, CanonicalTool, CanonicalToolError, HookDecision, HookEvent,
     IdentifiedTool, ParseRefusal, ProposedCall, TrajectoryId, ADVERTISED_CONTROL_TOOL,
-    CONTROL_TOOL,
 };
 
-use crate::fence::{Fence, FenceMode, FencePolicy, WriteGuard};
+use crate::fence::{Fence, FencePolicy, WriteGuard};
 
 /// The host spelling of the canonical control tool, as the model calls it.
 pub const REMEDY_TOOL_SPELLING: &str = ADVERTISED_CONTROL_TOOL;
@@ -77,7 +75,6 @@ const HOST_NAMESPACE: &str = "ares";
 /// is what a later `ReplaceIfVersion` write chains off.
 pub const DEFAULT_FENCE_READ_TOOLS: &[&str] = &[
     "read_file",
-    "read_ticket",
     "read_web_page",
     "files_read",
     "get_file_contents",
@@ -92,7 +89,6 @@ pub const DEFAULT_FENCE_WRITE_TOOLS: &[&str] = &[
     "edit_file_lines",
     "insert_after",
     "append_file",
-    "write_ticket",
 ];
 
 /// The argument keys a fence-relevant tool names its path under, in the order
@@ -209,7 +205,7 @@ pub enum Withheld {
 
 /// Which fence contract class a tool's call falls into.
 #[derive(Clone, Debug)]
-struct FenceClasses {
+pub struct FenceClasses {
     read: Vec<String>,
     write: Vec<String>,
 }
@@ -238,6 +234,124 @@ impl FenceClasses {
         } else {
             None
         }
+    }
+}
+
+/// The funnel's view of the gate, as a trait object: the concrete runtime
+/// holds a deep type tree, and an auto-trait check that has to recurse
+/// through it from a spawn boundary overflows the solver on the pinned
+/// toolchain. The object stops that recursion; the bound is what the funnel
+/// and the tokio spawns actually require.
+#[async_trait::async_trait]
+pub trait ToolGate: Send + Sync {
+    /// The trajectory this host's contexts decide under.
+    fn actor_for(&self, tenant: Option<&str>) -> Actor;
+
+    /// Submit the pre-call event and fold the engine's answer.
+    async fn check_call(&self, actor: &Actor, tool: &str, args: &Value) -> Result<PreCall, String>;
+
+    /// Submit the post-call event and fold the engine's answer.
+    async fn admit_result(
+        &self,
+        actor: &Actor,
+        tool: &str,
+        args: &Value,
+        result: &Value,
+    ) -> Result<Value, Withheld>;
+
+    /// Execute one remedy plan the model quoted on the control tool.
+    async fn execute_remedy(&self, actor: &Actor, args: ExecuteRemedyPlanArgs) -> RemedyOutcome;
+
+    /// Report a tool that ran and failed.
+    async fn report_failure(
+        &self,
+        actor: &Actor,
+        tool: &str,
+        args: &Value,
+        failure: appa_runtime_api::ToolOutcome,
+    );
+
+    /// Snapshot of one trajectory's fence audit ring.
+    fn fence_audit(&self, actor: &Actor) -> Vec<crate::fence::AuditEntry>;
+}
+
+/// A shared gate is a gate: the funnel holds `Arc<dyn ToolGate>` and passes
+/// it around by value.
+#[async_trait::async_trait]
+impl<T: ToolGate + Send + Sync + ?Sized> ToolGate for Arc<T> {
+    fn actor_for(&self, tenant: Option<&str>) -> Actor {
+        (**self).actor_for(tenant)
+    }
+
+    async fn check_call(&self, actor: &Actor, tool: &str, args: &Value) -> Result<PreCall, String> {
+        (**self).check_call(actor, tool, args).await
+    }
+
+    async fn admit_result(
+        &self,
+        actor: &Actor,
+        tool: &str,
+        args: &Value,
+        result: &Value,
+    ) -> Result<Value, Withheld> {
+        (**self).admit_result(actor, tool, args, result).await
+    }
+
+    async fn execute_remedy(&self, actor: &Actor, args: ExecuteRemedyPlanArgs) -> RemedyOutcome {
+        (**self).execute_remedy(actor, args).await
+    }
+
+    async fn report_failure(
+        &self,
+        actor: &Actor,
+        tool: &str,
+        args: &Value,
+        failure: appa_runtime_api::ToolOutcome,
+    ) {
+        (**self).report_failure(actor, tool, args, failure).await
+    }
+
+    fn fence_audit(&self, actor: &Actor) -> Vec<crate::fence::AuditEntry> {
+        (**self).fence_audit(actor)
+    }
+}
+
+#[async_trait::async_trait]
+impl ToolGate for AppaGate {
+    fn actor_for(&self, tenant: Option<&str>) -> Actor {
+        AppaGate::actor_for(self, tenant)
+    }
+
+    async fn check_call(&self, actor: &Actor, tool: &str, args: &Value) -> Result<PreCall, String> {
+        AppaGate::check_call(self, actor, tool, args).await
+    }
+
+    async fn admit_result(
+        &self,
+        actor: &Actor,
+        tool: &str,
+        args: &Value,
+        result: &Value,
+    ) -> Result<Value, Withheld> {
+        AppaGate::admit_result(self, actor, tool, args, result).await
+    }
+
+    async fn execute_remedy(&self, actor: &Actor, args: ExecuteRemedyPlanArgs) -> RemedyOutcome {
+        AppaGate::execute_remedy(self, actor, args).await
+    }
+
+    async fn report_failure(
+        &self,
+        actor: &Actor,
+        tool: &str,
+        args: &Value,
+        failure: appa_runtime_api::ToolOutcome,
+    ) {
+        AppaGate::report_failure(self, actor, tool, args, failure).await
+    }
+
+    fn fence_audit(&self, actor: &Actor) -> Vec<crate::fence::AuditEntry> {
+        AppaGate::fence_audit(self, actor)
     }
 }
 
@@ -326,13 +440,20 @@ impl AppaGate {
         args: &Value,
     ) -> Result<PreCall, String> {
         self.ensure_session(actor).await?;
+        // An embedding host names tools the way its own policy does: identify
+        // the raw spelling through this host's adapter and cross the canonical
+        // identity, exactly as the embedded reference does.
+        let identified = identify_tool(tool).map_err(|refusal| match refusal {
+            ParseRefusal::Unreadable { detail } => detail,
+            ParseRefusal::Malformed { detail } => detail,
+        })?;
         let arguments = self.carry(args)?;
         let decision = hooks::handle(
             &self.runtime,
             HookEvent::ToolCall {
                 actor: actor.clone(),
                 call: ProposedCall {
-                    tool: tool.to_string(),
+                    tool: identified.canonical.into_string(),
                     arguments,
                     cwd: None,
                 },
@@ -367,12 +488,18 @@ impl AppaGate {
         let body = serde_json::to_string(result).map_err(|error| Withheld::Refused {
             detail: format!("the result could not be carried: {error}"),
         })?;
+        let identified = identify_tool(tool).map_err(|refusal| Withheld::Refused {
+            detail: match refusal {
+                ParseRefusal::Unreadable { detail } => detail,
+                ParseRefusal::Malformed { detail } => detail,
+            },
+        })?;
         let decision = hooks::handle(
             &self.runtime,
             HookEvent::ToolResult {
                 actor: actor.clone(),
                 call: ProposedCall {
-                    tool: tool.to_string(),
+                    tool: identified.canonical.into_string(),
                     arguments,
                     cwd: None,
                 },
@@ -443,12 +570,15 @@ impl AppaGate {
                 return;
             }
         };
+        let Ok(identified) = identify_tool(tool) else {
+            return;
+        };
         let decision = hooks::handle(
             &self.runtime,
             HookEvent::ToolResult {
                 actor: actor.clone(),
                 call: ProposedCall {
-                    tool: tool.to_string(),
+                    tool: identified.canonical.into_string(),
                     arguments,
                     cwd: None,
                 },
@@ -602,11 +732,16 @@ fn path_argument(args: &Value) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::{Tool, ToolRegistry};
+    use crate::fence::FenceMode;
+    use crate::registry::Tool;
+    use crate::tool_service::Tools;
+    use appa_runtime_api::CONTROL_TOOL;
     use async_trait::async_trait;
     use cordis::{Context, EventsService};
+    use serde_json::json;
+    use std::path::Path;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::SystemTime;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -622,7 +757,10 @@ trust_chain = ["suspicious", "trusted"]
 name = "host/ares/read_ticket"
 description = "Reads a knowledge-store record (eruka-classified content)."
 tags = ["knowledge"]
-delta = { audience = ["internal"], trust = "suspicious" }
+# Audience-only here: the test's sanitizer route carries the audience back to
+# public, so the withheld result can cross. The trust-floor rule is covered by
+# the replay suite's trust-floor trace.
+delta = { audience = ["internal"] }
 effects = ["knowledge.read"]
 
 [[policy.tool]]
@@ -848,7 +986,7 @@ builtin = "redact-secrets"
         ctx
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn the_adapter_spells_the_control_tool_and_round_trips_ares_names() {
         // The control tool is spelled for the model, or the open fails closed.
         assert_eq!(
@@ -877,46 +1015,55 @@ builtin = "redact-secrets"
             "an adapter that spells no control tool is refused at open"
         );
 
-        // The mapping is a bijection over the spellings ARES accepts.
+        // The mapping is a bijection over the spellings ARES accepts: each
+        // host spelling identifies once and spells back to itself.
         for raw in [
             "echo",
             "read_ticket",
             "publish_update",
             "mcp_github_get_file_contents",
             REMEDY_TOOL_SPELLING,
-            CONTROL_TOOL,
         ] {
             let identified = identify_tool(raw).expect("the spelling is in the domain");
             let spelled = spell(&identified.canonical).expect("and it spells back");
             assert_eq!(spelled, raw, "{raw} round-trips through the adapter");
+        }
+        // The canonical control id is what the engine keys on; both spellings
+        // of it identify to the one control tool.
+        for raw in [REMEDY_TOOL_SPELLING, CONTROL_TOOL] {
+            let identified = identify_tool(raw).expect("the control spelling is in the domain");
+            assert!(
+                identified.canonical.is_control(),
+                "{raw} identifies the control tool"
+            );
         }
     }
 
     /// Invariant 1: a denied call never executes. The tool's execute path
     /// records zero invocations and the canary side effect is absent; the
     /// reverse control proves the allow path still runs.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn a_denied_call_never_executes_and_the_allow_path_still_runs() {
         let ws = TempDir::new("deny");
         let publish_ran = Arc::new(AtomicBool::new(false));
         let publish_canary = ws.path().join("published.txt");
         let read_ran = Arc::new(AtomicBool::new(false));
 
-        let mut registry = ToolRegistry::new();
-        registry.register(Arc::new(CanaryTool {
-            name: "read_ticket".to_string(),
-            ran: Arc::clone(&read_ran),
-            body: json!({ "ticket": "acme-1" }),
-            canary_file: None,
-        }));
-        registry.register(Arc::new(CanaryTool {
-            name: "publish_update".to_string(),
-            ran: Arc::clone(&publish_ran),
-            body: json!({ "published": true }),
-            canary_file: Some(publish_canary.clone()),
-        }));
         let tools = Tools::with_appa(
-            Arc::new(registry),
+            vec![
+                Arc::new(CanaryTool {
+                    name: "read_ticket".to_string(),
+                    ran: Arc::clone(&read_ran),
+                    body: json!({ "ticket": "acme-1" }),
+                    canary_file: None,
+                }) as Arc<dyn Tool>,
+                Arc::new(CanaryTool {
+                    name: "publish_update".to_string(),
+                    ran: Arc::clone(&publish_ran),
+                    body: json!({ "published": true }),
+                    canary_file: Some(publish_canary.clone()),
+                }) as Arc<dyn Tool>,
+            ],
             gate(&policy_with_annotator(&closed_port_url()), ws.path()),
         );
         let ctx = events_ctx();
@@ -933,12 +1080,44 @@ builtin = "redact-secrets"
             "the control call executed"
         );
 
-        // The sensitive read narrows the trajectory to internal.
+        // The control arm above wrote the canary; the deny arm asserts the
+        // absence of ITS side effect, so clear the control's first.
+        let _ = std::fs::remove_file(&publish_canary);
         publish_ran.store(false, Ordering::SeqCst);
+        let blocked = tools
+            .execute(&ctx, "read_ticket", json!({}))
+            .await
+            .expect("a narrowing is offered, not applied silently");
+        let feedback = blocked
+            .get("denied")
+            .and_then(Value::as_str)
+            .expect("the block names its offers")
+            .to_string();
+        let offers = blocked
+            .get("offers")
+            .and_then(Value::as_array)
+            .expect("the block carries its offers");
+        let accepted = offers
+            .iter()
+            .filter_map(Value::as_str)
+            .find(|offer| feedback.contains(offer))
+            .expect("the feedback names a standing offer")
+            .to_string();
+        let took = tools
+            .execute(&ctx, REMEDY_TOOL_SPELLING, json!({ "offer_id": accepted }))
+            .await
+            .expect("the control call is answered");
+        assert_eq!(
+            took.get("remedy").and_then(Value::as_str),
+            Some("authorized"),
+            "the accepted narrowing executes: {took}"
+        );
+
+        // The same read now runs.
         let read = tools
             .execute(&ctx, "read_ticket", json!({}))
             .await
-            .expect("the knowledge-store read is allowed");
+            .expect("the accepted read is allowed");
         assert_eq!(read, json!({ "ticket": "acme-1" }));
         assert!(read_ran.load(Ordering::SeqCst));
 
@@ -966,21 +1145,19 @@ builtin = "redact-secrets"
     /// the engine's own: a restricted result from a confined tool offers a
     /// withhold plan, the model takes it on the control tool, and the admitted
     /// value is the sanitizer's derivation — never the raw bytes.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn a_withheld_result_never_reaches_the_model() {
         let ws = TempDir::new("withhold");
         let read_ran = Arc::new(AtomicBool::new(false));
         let body = json!({ "ticket": "acme-7", "api_key": "AKIAIOSFODNN7EXAMPLE" });
 
-        let mut registry = ToolRegistry::new();
-        registry.register(Arc::new(CanaryTool {
-            name: "read_ticket".to_string(),
-            ran: Arc::clone(&read_ran),
-            body,
-            canary_file: None,
-        }));
         let tools = Tools::with_appa(
-            Arc::new(registry),
+            vec![Arc::new(CanaryTool {
+                name: "read_ticket".to_string(),
+                ran: Arc::clone(&read_ran),
+                body,
+                canary_file: None,
+            }) as Arc<dyn Tool>],
             gate(&policy_with_annotator(&closed_port_url()), ws.path()),
         );
         let ctx = events_ctx();
@@ -1000,17 +1177,32 @@ builtin = "redact-secrets"
             feedback.contains(REMEDY_TOOL_SPELLING),
             "the model is told to take the remedy through the control tool: {feedback}"
         );
-        let offer = first
+        let offers = first
             .get("offers")
             .and_then(Value::as_array)
-            .and_then(|offers| offers.first())
-            .and_then(Value::as_str)
-            .expect("the block offers the withhold plan")
+            .expect("the block carries its offers");
+        // The offer that routes the result through the redaction battery is
+        // the one the sanitizer's feedback line names; the accept-narrowing
+        // offer would admit the raw value instead.
+        // The feedback spells each route as a label line followed by the
+        // control-tool line carrying its offer id, so the id for the
+        // sanitizer route is the first offer id after that label.
+        let route_at = feedback
+            .find("Use sanitizer redact_private")
+            .expect("the block offers the sanitizer route");
+        let route_text = &feedback[route_at..];
+        let mut best: Option<(usize, &str)> = None;
+        for offer in offers.iter().filter_map(Value::as_str) {
+            if let Some(at) = route_text.find(offer) {
+                if best.is_none_or(|(best_at, _)| at < best_at) {
+                    best = Some((at, offer));
+                }
+            }
+        }
+        let offer = best
+            .expect("the sanitizer route names its offer")
+            .1
             .to_string();
-        assert!(
-            feedback.contains(&offer),
-            "the feedback names the offer it offers: {feedback}"
-        );
         assert!(
             !read_ran.load(Ordering::SeqCst),
             "the blocked call has not executed"
@@ -1049,7 +1241,7 @@ builtin = "redact-secrets"
     /// Invariant 3: a battery outage stops the flow with a refusal — never a
     /// default allow — and the healthy-battery reverse control proves the same
     /// call proceeds.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn a_battery_outage_refuses_the_turn_and_a_healthy_battery_proceeds() {
         let ws = TempDir::new("outage");
         let ran = Arc::new(AtomicBool::new(false));
@@ -1096,31 +1288,29 @@ builtin = "redact-secrets"
         );
     }
 
-    fn canary_registry(name: &str, body: Value, ran: &Arc<AtomicBool>) -> Arc<ToolRegistry> {
-        let mut registry = ToolRegistry::new();
-        registry.register(canary(name, body, ran));
-        Arc::new(registry)
+    fn canary_registry(name: &str, body: Value, ran: &Arc<AtomicBool>) -> Vec<Arc<dyn Tool>> {
+        vec![canary(name, body, ran)]
     }
 
     /// The fence is the write-contract layer the post-call check rides on: a
     /// write whose path the trajectory observed is admitted, and a write that
     /// never read its path is withheld with the violation in the audit ring.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn a_write_outside_the_write_contract_is_withheld() {
         let ws = TempDir::new("fence");
         let ran = Arc::new(AtomicBool::new(false));
         let read_path = ws.path().join("reads").join("notes.txt");
         let blind_path = ws.path().join("writes").join("blind.txt");
 
-        let mut registry = ToolRegistry::new();
-        registry.register(Arc::new(FileReader {
-            ran: Arc::clone(&ran),
-        }));
-        registry.register(Arc::new(FileWriter {
-            ran: Arc::clone(&ran),
-        }));
         let tools = Tools::with_appa(
-            Arc::new(registry),
+            vec![
+                Arc::new(FileReader {
+                    ran: Arc::clone(&ran),
+                }) as Arc<dyn Tool>,
+                Arc::new(FileWriter {
+                    ran: Arc::clone(&ran),
+                }) as Arc<dyn Tool>,
+            ],
             gate(&policy_with_annotator(&closed_port_url()), ws.path()),
         );
         let ctx = events_ctx();
@@ -1175,7 +1365,7 @@ builtin = "redact-secrets"
     /// waterfall the policy's audit listeners ride on is bypassed without
     /// EventsService, so a configured gate without it fails loudly instead of
     /// running unguarded.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn the_hook_path_without_events_service_fails_loudly() {
         let ws = TempDir::new("no-events");
         let ran = Arc::new(AtomicBool::new(false));
@@ -1197,7 +1387,7 @@ builtin = "redact-secrets"
 
     /// The engine's own default-deny: a tool no rule names is refused before
     /// it runs, which is an operational stop rather than a policy judgment.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn an_undeclared_tool_is_refused_before_it_runs() {
         let ws = TempDir::new("undeclared");
         let ran = Arc::new(AtomicBool::new(false));

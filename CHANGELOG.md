@@ -4,6 +4,57 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ---
 
+## Unreleased
+
+**OpenAPPA (information-flow) integration — the ARES funnel slice.**
+
+### Added
+
+- `appa` (archestra-ai/OpenAPPA, lib `appa_runtime`) pinned at rev
+  `1c52575176330bc88a3c346abe678af5d42083b3` (tag v0.31.1), plus
+  `appa-runtime-api` and `appa-eventlog` at the same rev, behind
+  `default-features = false`: an in-process embed with no daemon stack and
+  `Backend::Memory` trajectories.
+- `ares-tools/src/appa.rs` — the host-side `Adapter` (`AdapterName::Embedded`)
+  and the pre/post-call gate at `Tools::execute`. The control tool
+  `appa/execute_remedy_plan` is spelled for the model as
+  `execute_remedy_plan` and intercepted before tool resolution; the remedy
+  path runs the engine's mandate envelope. Denials return the engine's
+  feedback to the model without entering the tool's execute path; blocks and
+  operational refusals stop the turn — never a default allow.
+- `Fence::verify_write` and `Fence::observed_version` — the L0-L3 write fence
+  extended to judge a landed write without rewriting it, which is the
+  post-call contract check the gate rides on. The fence had zero production
+  callers before this change.
+- `Tools::with_appa` / `Tools::attach_appa` / `Tools::appa_gate` and the
+  `appa` section on the `Tools` cordis entry (or `ARES_APPA_CONFIG`): the hook
+  path is inert unless configured, and a configured path without
+  `EventsService` fails loudly at startup instead of running unguarded.
+- The test posture `config/appa.test.toml`, the replay suites under
+  `policy-tests/` with the intentionally-mismatched set under
+  `policy-tests-negative/`, the gate script `scripts/appa-policy-gate.sh`,
+  and the `policy` job in `.github/workflows/ci.yml`
+  (`appa describe --check`, `appa replay`, and the negative arm that proves
+  the harness can fail).
+- The proposed production posture, clearly marked and applied nowhere:
+  `config/appa.proposed.toml` with batteries under `config/appa-batteries/`
+  (the classification kernel, the PII oracle/redactor, the identity
+  directory).
+
+### Blocked
+
+- The workspace does not resolve with the pin: `appa-eventlog` requires
+  `rusqlite` 0.40 → `libsqlite3-sys` 0.38, while `sqlx` 0.8.6 (through the
+  `json`/`uuid`/`chrono`/`migrate` features) locks `sqlx-sqlite` →
+  `libsqlite3-sys` 0.30.1, and two versions of a `links = "sqlite3"` package
+  cannot coexist. The Rust half of this slice is written and reviewed but
+  unverifiable until that is resolved (a sqlx-side upgrade allowing
+  `libsqlite3-sys` 0.38, or a storage decision on the appa side). The fence
+  extension and the policy gate are independent of the blocker and are
+  verified on their own.
+
+---
+
 ## 0.11.8 - 2026-10-01
 
 **A stream accessor that reports the provider's own token counts, honestly

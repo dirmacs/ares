@@ -8,6 +8,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # The pin the ARES tree integrates against (crates/ares-tools Cargo.toml).
+  APPA_REV: 1c52575176330bc88a3c346abe678af5d42083b3
 
 jobs:
   # CRAP gate notes:
@@ -26,6 +28,17 @@ jobs:
   #    CRAP_THRESHOLD = ceil(650.0 * 1.10) = 715.
   # 4. OPEN follow-up: once the test suite emits lcov.info, feed it with --lcov so the
   #    gate measures risk rather than branching.
+
+  policy:
+    name: OpenAPPA Policy Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the APPA CLI from the pinned source
+        run: cargo install --git https://github.com/archestra-ai/OpenAPPA --rev "$APPA_REV" --locked --bin appa
+      - name: The complete test configuration loads and the replay suite proves it can fail
+        run: ./scripts/appa-policy-gate.sh appa
   crap:
     name: CRAP Score Gate
     runs-on: [self-hosted, Linux, ARM64, dirmacs-ci]

@@ -19,6 +19,15 @@ authors = ["Dirmacs <build@dirmacs.com>"]
 [workspace.dependencies]
 # Shared dependencies across workspace
 ares-vector = { version = "0.1.4", path = "crates/ares-vector" }
+# OpenAPPA (archestra-ai/OpenAPPA) — the deterministic information-flow engine
+# gating the tool-call funnel. Git-pinned: upstream publishes nothing to
+# crates.io and is explicitly preview with breaking minors. `default-features =
+# false` drops the MCP/HTTP/CLI daemon stack; the lib links in-process. The
+# two sibling crates the embed needs: the wire vocabulary (Adapter, HookEvent)
+# and the in-memory trajectory log (Backend::Memory).
+appa = { git = "https://github.com/archestra-ai/OpenAPPA", rev = "1c52575176330bc88a3c346abe678af5d42083b3", default-features = false }
+appa-runtime-api = { git = "https://github.com/archestra-ai/OpenAPPA", rev = "1c52575176330bc88a3c346abe678af5d42083b3" }
+appa-eventlog = { git = "https://github.com/archestra-ai/OpenAPPA", rev = "1c52575176330bc88a3c346abe678af5d42083b3", default-features = false }
 tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "net", "sync", "time", "io-util", "signal", "fs", "process"] }
 tokio-util = "0.7"
 serde = { version = "1.0", features = ["derive"] }

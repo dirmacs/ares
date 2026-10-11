@@ -1,0 +1,103 @@
+# PROPOSED ARES OpenAPPA production posture — FOR OWNER REVIEW, NOT APPLIED.
+#
+# Nothing in the ARES tree loads this file. The test posture lives in
+# `config/appa.test.toml`; this document is the posture the owner is asked to
+# approve (design §6 of the integration design). Applying it is a deployment
+# decision: the ARES boot entry's `appa` section would name this file, and
+# until then no trajectory is judged by it.
+#
+# Shape: the root document plus the batteries the estate already runs — the
+# classification kernel, the PII oracle/redactor, and the identity directory.
+# The Rust embed composes the same texts in memory (`Config::hosted_composed`
+# with one `HostedBattery` per file; `include` here is the file-loading
+# spelling of the same composition).
+
+include = [
+  "appa-batteries/eruka-classification.toml",
+  "appa-batteries/pii-guard.toml",
+  "appa-batteries/directory.toml",
+]
+
+[externals]
+timeout_ms = 2000
+max_body_bytes = 65536
+
+[policy]
+version = 2
+trust_chain = ["ai_generation", "ai_extraction", "system", "human", "authoritative"]
+
+# ---------------------------------------------------------------------------
+# Labels (nothing invented: every name comes from a service the estate runs)
+# ---------------------------------------------------------------------------
+
+# The knowledge store is the estate's private corpus. The classification kernel
+# labels its content: human and authoritative sources keep trust, model
+# generations are at the floor, and knowledge-store reads are
+# audience-restricted by tenant. This is the ARES-side statement that a
+# tenant's data is not public data.
+[[policy.tool]]
+name = "host/ares/read_ticket"
+description = "Reads a knowledge-store record."
+tags = ["knowledge"]
+delta = { audience = ["@tenant"], trust = "ai_extraction" }
+effects = ["knowledge.read"]
+
+# ---------------------------------------------------------------------------
+# Rules (design §6)
+# ---------------------------------------------------------------------------
+
+# Rule 1 — sensitive data must not reach an unrestricted destination: the HTTP
+# tool and any unlisted egress require that what leaves stays inside the
+# estate's readers. `public` is the audience that leaves.
+[[policy.tool]]
+name = "host/ares/http"
+description = "Model-influenced egress to an arbitrary URL."
+parameters = { type = "object", properties = { url = { type = "string" } }, required = ["url"] }
+requires = { audience = { within = ["@tenant", "internal"] } }
+delta = {}
+effects = ["egress"]
+
+# Rule 2 — sensitive data must not reach the LLM egress un-checked: the model
+# boundary is a destination, not a given. `llm.generate_tools` is the ARES
+# waterfall the agent runs before every tool turn; a trajectory holding
+# tenant-restricted data cannot pass it to an external provider without the
+# classification battery clearing the content first.
+[[policy.tool]]
+name = "host/agent/generate_tools"
+description = "The ARES LLM boundary: messages and tools leave for the provider."
+requires = { attention = ["classification-cleared"] }
+delta = {}
+
+# Rule 3 — side-effecting tools require a remedy inside a mandate: the
+# approval battery plus the engine's mandate envelope is #321's "an approval
+# is not authorization", enforced by the engine rather than by convention.
+[[policy.tool]]
+name = "host/ares/apply_change"
+description = "Applies a change with side effects."
+requires = { trust = "system" }
+delta = {}
+effects = ["change.applied"]
+
+# Rule 4 — result admission: a restricted result is offered as a withhold plan
+# and crosses only as the redactor's derivation. Blocked or unadmitted results
+# never re-enter the conversation.
+[policy.deployment]
+confined_results = ["host/ares/read_ticket"]
+
+[[policy.sanitizer]]
+name = "pii_guard_redact"
+on = ["tool_output"]
+tags = ["knowledge", "pii"]
+hint = "Remove personally identifiable information per the PII scanner."
+
+[policy.sanitizer.permits]
+audience = { from = ["@tenant"], to = ["public"] }
+
+# Rule 5 — everything unanswered refuses. Each external below carries the
+# estate's real endpoint; an unanswered one is an operational refusal that
+# stops the turn, never a default allow. The URLs are placeholders: the
+# estate's services do not speak this protocol yet, which is why this posture
+# is proposed rather than applied.
+[externals.sanitizers.pii_guard_redact]
+url = "https://pii-guard.internal/redact_for_upstream"
+token_env = "PII_GUARD_SERVICE_KEY"

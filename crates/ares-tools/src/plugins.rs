@@ -219,7 +219,7 @@ fn appa_gate_from_config(config: &Value) -> Result<Option<crate::AppaGate>, cord
     // Batteries compose under the root document the way a root file's include
     // composes them: every `*.toml` in the batteries directory, sorted, each
     // under its file stem.
-    let mut batteries: Vec<appa::config::HostedBattery<'_>> = Vec::new();
+    let mut batteries: Vec<appa_runtime::config::HostedBattery<'_>> = Vec::new();
     let battery_texts: Vec<(String, String)> =
         match section.get("batteries_dir").and_then(Value::as_str) {
             Some(dir) => {
@@ -251,7 +251,7 @@ fn appa_gate_from_config(config: &Value) -> Result<Option<crate::AppaGate>, cord
             None => Vec::new(),
         };
     for (name, text) in &battery_texts {
-        batteries.push(appa::config::HostedBattery {
+        batteries.push(appa_runtime::config::HostedBattery {
             name,
             policy: text,
             // The runtime never reads a process variable the host did not
@@ -288,7 +288,7 @@ fn appa_gate_from_config(config: &Value) -> Result<Option<crate::AppaGate>, cord
         .and_then(Value::as_u64)
         .unwrap_or(65_536)
         .min(usize::MAX as u64) as usize;
-    let defaults = appa::config::HostDefaults::new(
+    let defaults = appa_runtime::config::HostDefaults::new(
         std::time::Duration::from_millis(timeout_ms),
         max_body_bytes,
     );

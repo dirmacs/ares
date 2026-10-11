@@ -3,6 +3,7 @@
 pub mod config;
 pub use config::ToolConfig;
 
+pub mod appa;
 pub mod calculator;
 pub mod fence;
 pub mod http_tool;
@@ -37,6 +38,7 @@ pub mod mcp_bridge;
 pub mod connectors;
 
 pub use calculator::{Calculator, CalculatorConfig, CalculatorService};
+pub use appa::AppaGate;
 pub use plugins::{register_plugins, ExtraStaticTools};
 pub use registry::Tool;
 #[cfg(feature = "script-tools")]

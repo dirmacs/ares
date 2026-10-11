@@ -157,6 +157,16 @@ impl Fence {
         &self.policy
     }
 
+    /// The version the observed-set holds for `raw`, resolved canonically, if
+    /// the session has observed it. `None` for a path never read.
+    pub fn observed_version(&self, raw: &Path) -> Option<u64> {
+        let decision = check_path(&self.policy, raw, false);
+        let resolved = resolve_allowed(&self.policy, raw, &decision)
+            .ok()
+            .flatten()?;
+        self.lock_state().observed.get(&resolved).copied()
+    }
+
     /// Observe a path for a future guarded write. Runs L0-L2 first; a
     /// denied observation never enters the observed-set. Existing files
     /// record their version fingerprint; missing paths record version `0`.
@@ -297,6 +307,92 @@ impl Fence {
 
         self.record(&resolved, Some(guard), FS_OK);
         Ok(())
+    }
+
+    /// Judge a write that has already landed, without landing it again.
+    ///
+    /// The OpenAPPA post-call check runs after the tool has executed, so
+    /// the write is a fact by the time the contract is judged. This method
+    /// runs the same L0-L3 checks [`Fence::fence_write`] runs — boundary,
+    /// blocklist, read-before-edit observation, and the guard contract
+    /// against the live filesystem — records the same audit entries, and
+    /// writes nothing. A failure is a contract violation on a completed
+    /// write: the caller withholds the result rather than repeat the
+    /// effect. Returns the observed version the write chains off.
+    pub fn verify_write(&self, raw: &Path, guard: WriteGuard) -> Result<u64, FsError> {
+        let blind_ok = BLIND_WRITE_MODES.contains(&self.policy.mode);
+
+        let decision = check_path(&self.policy, raw, true);
+        let Some(resolved) = resolve_allowed(&self.policy, raw, &decision)? else {
+            let reason = decision.denied_reason().to_string();
+            self.record(raw, Some(guard), FsError::FS_FENCE_DENIED);
+            return Err(FsError::new(FsError::FS_FENCE_DENIED, reason));
+        };
+
+        let current = match std::fs::metadata(&resolved) {
+            Ok(metadata) => Some(version_fingerprint(&metadata)),
+            Err(error) if error.kind() == ErrorKind::NotFound => None,
+            Err(error) => {
+                self.record(&resolved, Some(guard), FsError::FS_IO);
+                return Err(FsError::new(FsError::FS_IO, error.to_string()));
+            }
+        };
+        let exists = current.is_some();
+
+        let observed_version = {
+            let state = self.lock_state();
+            state.observed.get(&resolved).copied()
+        };
+        let holds_observation = observed_version.is_some();
+        if !holds_observation && !blind_ok {
+            self.record(&resolved, Some(guard), FsError::FS_NOT_OBSERVED);
+            return Err(FsError::new(
+                FsError::FS_NOT_OBSERVED,
+                format!(
+                    "no recorded read for {}; call fence_read first",
+                    resolved.display()
+                ),
+            ));
+        }
+
+        match guard {
+            WriteGuard::CreateIfAbsent if exists => {
+                self.record(&resolved, Some(guard), FsError::FS_EXISTS);
+                return Err(FsError::new(
+                    FsError::FS_EXISTS,
+                    format!(
+                        "create refused, path already exists: {}",
+                        resolved.display()
+                    ),
+                ));
+            }
+            WriteGuard::ReplaceIfVersion { version } if !exists || current != Some(version) => {
+                self.record(&resolved, Some(guard), FsError::FS_VERSION_CONFLICT);
+                return Err(FsError::new(
+                    FsError::FS_VERSION_CONFLICT,
+                    if exists {
+                        format!(
+                            "file changed since it was read (expected {version}, found {})",
+                            current.unwrap_or_default()
+                        )
+                    } else {
+                        "file disappeared since it was read".to_string()
+                    },
+                ));
+            }
+            _ => {}
+        }
+
+        // A verified write joins the observed-set at the live version, so a
+        // follow-up ReplaceIfVersion write chains off it exactly as a
+        // landed fence_write would.
+        let version = current.unwrap_or(0);
+        {
+            let mut state = self.lock_state();
+            state.observed.insert(resolved.clone(), version);
+        }
+        self.record(&resolved, Some(guard), FS_OK);
+        Ok(version)
     }
 
     /// Snapshot of the bounded audit ring, oldest first.
@@ -844,6 +940,55 @@ mod tests {
             FenceMode::ReadOnly,
             "policy stays immutable"
         );
+    }
+
+    /// The post-call contract check: a write that already landed is judged,
+    /// not repeated. `verify_write` lands nothing on disk, records the same
+    /// audit entries, and a satisfied contract yields the version a
+    /// follow-up chains off.
+    #[test]
+    fn verify_write_judges_a_landed_write_without_rewriting_it() {
+        let ws = TempDir::new("verify-write");
+        let target = ws.path().join("notes.txt");
+        let f = fence(FenceMode::WorkspaceWrite, ws.path());
+
+        // A landed write with no prior observation is a violated contract.
+        std::fs::write(&target, b"tool output").expect("the tool already wrote");
+        let unobserved = f.verify_write(&target, WriteGuard::CreateIfAbsent);
+        assert_eq!(
+            unobserved.unwrap_err().code,
+            FsError::FS_NOT_OBSERVED,
+            "a write nobody read is a contract violation even after it lands"
+        );
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"tool output",
+            "verify_write must not rewrite the file"
+        );
+        assert!(
+            f.audit_log()
+                .iter()
+                .any(|entry| entry.outcome == FsError::FS_NOT_OBSERVED),
+            "the violation lands in the audit ring"
+        );
+
+        // Observed, unchanged: the contract holds and the file is untouched.
+        let (_, observed) = f.fence_read(&target).expect("observe the landed file");
+        let version = f
+            .verify_write(&target, WriteGuard::ReplaceIfVersion { version: observed })
+            .expect("a matching observation satisfies the contract");
+        assert_eq!(version, observed);
+        assert_eq!(std::fs::read(&target).unwrap(), b"tool output");
+
+        // Concurrent change after the observation fails the version guard.
+        std::fs::write(&target, b"someone else").expect("concurrent write");
+        let conflicted =
+            f.verify_write(&target, WriteGuard::ReplaceIfVersion { version: observed });
+        assert_eq!(conflicted.unwrap_err().code, FsError::FS_VERSION_CONFLICT);
+
+        // CreateIfAbsent on an existing path reports FS_EXISTS.
+        let exists = f.verify_write(&target, WriteGuard::CreateIfAbsent);
+        assert_eq!(exists.unwrap_err().code, FsError::FS_EXISTS);
     }
 
     #[test]

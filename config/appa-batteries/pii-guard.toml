@@ -1,0 +1,26 @@
+# PROPOSED battery — the estate's PII oracle and redactor. Not applied: this
+# text composes under config/appa.proposed.toml only.
+#
+# The estate already scans content for personally identifiable information and
+# ships the redaction passes (redact text, redact for upstream). This battery
+# binds those two operations to the engine's sanitizer and annotator roles. An
+# unanswered PII service refuses the flow (design §4); the endpoint below is a
+# placeholder for the estate's real service route, which does not exist yet —
+# that is why this posture is proposed, not applied.
+
+[policy]
+version = 2
+
+# PII is the highest sensitivity class: reading it restricts the trajectory
+# and marks the value for the redactor before anything crosses outward.
+[[policy.tool]]
+name = "mcp/pii-guard/scan_pii"
+description = "Scans content for personally identifiable information."
+tags = ["pii"]
+delta = { audience = ["internal"], trust = "system" }
+
+[[policy.tool]]
+name = "mcp/pii-guard/redact_text"
+description = "Removes PII from content."
+tags = ["pii"]
+delta = {}

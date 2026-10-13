@@ -193,6 +193,18 @@ mod tests {
             checked_test_db_url(Some("postgres://tester@localhost/ares".to_string())),
             Err("database must be named ares_test")
         );
+        assert_eq!(
+            checked_test_db_url(Some(
+                "postgres://tester@localhost/ares_test?dbname=live".to_string()
+            )),
+            Err("database must be named ares_test")
+        );
+        assert_eq!(
+            checked_test_db_url(Some(
+                "postgres://tester@localhost/ares_test?host=remote.example".to_string()
+            )),
+            Err("host must be loopback")
+        );
     }
 
     #[test]

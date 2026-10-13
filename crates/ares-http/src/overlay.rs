@@ -325,9 +325,23 @@ impl AresConfig {
         Ok(())
     }
 
-    /// Validate that every provider env var resolved at boot exists.
+    /// Validate env vars for providers referenced by a configured model.
+    ///
+    /// Provider definitions are often shared across deployments, and unused
+    /// optional providers must not prevent the server from starting. A model
+    /// that names a provider is an explicit selection, so missing credentials
+    /// for that provider remain a configuration error.
     fn validate_provider_env_vars(&self) -> Result<(), ConfigError> {
-        for provider in self.providers.values() {
+        let referenced: std::collections::HashSet<_> = self
+            .models
+            .values()
+            .map(|model| model.provider.as_str())
+            .collect();
+
+        for (provider_name, provider) in &self.providers {
+            if !referenced.contains(provider_name.as_str()) {
+                continue;
+            }
             for env_name in Self::provider_env_names(provider) {
                 self.validate_env_var(env_name)?;
             }
@@ -1928,10 +1942,51 @@ api_key_env = "TEST_API_KEY"
 type = "openai"
 api_key_env = "MISSING_OPENAI_KEY"
 default_model = "gpt-4o"
+[models.required]
+provider = "openai"
+model = "gpt-4o"
 "#;
-        let config: AresConfig = toml::from_str(content).unwrap();
-        let err = config.validate().unwrap_err();
-        assert!(matches!(err, ConfigError::MissingEnvVar(_)));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ares.toml");
+        std::fs::write(&path, content).unwrap();
+        let err = Overlay::new(&path)
+            .err()
+            .expect("selected provider without credentials must reject overlay startup");
+        assert!(matches!(
+            err,
+            ConfigError::MissingEnvVar(ref env) if env == "MISSING_OPENAI_KEY"
+        ));
+    }
+
+    #[test]
+    fn test_validation_ignores_missing_key_for_unused_optional_provider() {
+        set_test_env();
+        // SAFETY: single-threaded test, unique env key per test.
+        unsafe {
+            std::env::remove_var("MISSING_OPTIONAL_PROVIDER_KEY");
+        }
+        let content = r#"
+[server]
+[auth]
+jwt_secret_env = "TEST_JWT_SECRET"
+api_key_env = "TEST_API_KEY"
+[database]
+[providers.ollama]
+type = "ollama"
+base_url = "http://localhost:11434"
+default_model = "local"
+[providers.optional-openai]
+type = "openai"
+api_key_env = "MISSING_OPTIONAL_PROVIDER_KEY"
+default_model = "gpt-4o"
+[models.selected]
+provider = "ollama"
+model = "local"
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ares.toml");
+        std::fs::write(&path, content).unwrap();
+        Overlay::new(&path).expect("unused optional provider must not block overlay startup");
     }
 
     #[test]

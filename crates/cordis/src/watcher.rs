@@ -8,7 +8,7 @@
 //! via re-reading TOON/JSON: the watcher below uses the `notify` crate
 //! (`RecommendedWatcher`, 500 ms defer-not-drop settle window) to watch
 //! `config/agents/*.toon` and `config/entries.json` (or `config/cordis-entries.toon`).
-//! On `Modify`/`Create` it calls `ReflectService::notify(TypeId)` which BFS-walks
+//! On `Modify`/`Create`/`Remove` it calls `ReflectService::notify(TypeId)` which BFS-walks
 //! `dependents` and spawns `Fiber::refresh` for each dependent fiber — the same
 //! `Fiber::refresh` that recomputes `epoch` from `inject` versions. No restart,
 //! no `libloading`.
@@ -97,7 +97,7 @@ impl WatchHandle {
 
 /// Watch `agents_dir` (`config/agents/*.toon` recursively) and `entries_path`
 /// (`config/entries.json` or `config/cordis-entries.toon` parent dir) and, on
-/// debounced modify/create, call `reflect.notify(tid)` which BFS-walks
+/// debounced modify/create/remove, call `reflect.notify(tid)` which BFS-walks
 /// dependents and triggers `Fiber::refresh` (file-watch + full fiber reload
 /// fallback, no `libloading`).
 ///
@@ -167,11 +167,14 @@ pub fn watch_many_with(
 
     let mut watcher =
         notify::recommended_watcher(move |res: Result<Event, notify::Error>| match res {
-            Ok(event) if event.kind.is_modify() || event.kind.is_create() => {
-                // Forward any modify/create; filter to toon/json in the task if desired.
-                // Use first path as representative; debounce will coalesce.
-                let path = event.paths.first().cloned().unwrap_or_default();
-                let _ = tx.send(path);
+            Ok(event)
+                if event.kind.is_modify() || event.kind.is_create() || event.kind.is_remove() =>
+            {
+                // Some backends include multiple paths in one event. Forward every
+                // path so the settle batch cannot silently lose a changed file.
+                for path in event.paths {
+                    let _ = tx.send(path);
+                }
             }
             Ok(_) => {}
             Err(e) => {
@@ -390,6 +393,25 @@ mod tests {
     use super::*;
     use crate::{Context, Fiber, FiberState, ReflectService, Service};
     use std::any::TypeId;
+
+    fn normalized_path(path: &Path) -> PathBuf {
+        if let Ok(path) = std::fs::canonicalize(path) {
+            return path;
+        }
+        if let (Some(parent), Some(name)) = (
+            path.parent()
+                .and_then(|parent| std::fs::canonicalize(parent).ok()),
+            path.file_name(),
+        ) {
+            return parent.join(name);
+        }
+        path.to_path_buf()
+    }
+
+    fn saw_path(paths: &[PathBuf], expected: &Path) -> bool {
+        let expected = normalized_path(expected);
+        paths.iter().any(|path| normalized_path(path) == expected)
+    }
 
     #[derive(Debug)]
     struct FooService(pub i32);
@@ -669,16 +691,21 @@ mod tests {
 
         // Phase 1: apply one change so the (old-style) debounce window arms.
         std::fs::write(&file_a, "a-v2").unwrap();
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                if seen.lock().iter().any(|p| p == &file_a) {
+                if saw_path(&seen.lock(), &file_a) {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
         .await
-        .expect("phase 1: first change must be applied");
+        .unwrap_or_else(|_| {
+            panic!(
+                "phase 1: first change must be applied; observed paths: {:?}",
+                seen.lock()
+            )
+        });
 
         // Phase 2: two writes <100 ms apart, inside the still-open debounce
         // window, then silence.
@@ -689,9 +716,9 @@ mod tests {
         // File B's event must surface in the callback records: deferred into
         // the next batch under the new semantics, silently dropped forever
         // under the old `continue`.
-        let b_applied = tokio::time::timeout(Duration::from_secs(3), async {
+        let b_applied = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                if seen.lock().iter().any(|p| p == &file_b) {
+                if saw_path(&seen.lock(), &file_b) {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -708,6 +735,52 @@ mod tests {
         );
         assert!(*calls.lock() >= 1, "on_change should run at least once");
         drop(_handle);
+    }
+
+    #[tokio::test]
+    async fn file_removal_is_forwarded_to_the_settled_batch() {
+        use parking_lot::Mutex;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("removed.toml");
+        std::fs::write(&file_path, "before removal").unwrap();
+
+        let ctx = Context::new_root();
+        let reflect = ctx.provide(ReflectService::new());
+        let seen = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
+        let seen_cb = seen.clone();
+        let on_change: WatchOnChange = Arc::new(move |_ctx, paths, _outcome| {
+            seen_cb.lock().extend(paths.iter().cloned());
+        });
+
+        let _handle = watch_many_with(
+            ctx,
+            reflect,
+            vec![file_path.clone()],
+            TypeId::of::<ReflectService>(),
+            on_change,
+        )
+        .expect("watch_many_with should accept an existing file");
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        std::fs::remove_file(&file_path).unwrap();
+
+        let removed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if saw_path(&seen.lock(), &file_path) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+
+        assert!(
+            removed,
+            "file removal must reach the settled batch; observed paths: {:?}",
+            seen.lock()
+        );
     }
 
     #[cfg(feature = "hmr")]

@@ -3,8 +3,8 @@
 //! One resolver, one lifecycle, one failure policy for every crate's live
 //! Postgres tests (`ares_test`):
 //!
-//! - URL resolution: `TEST_DATABASE_URL` -> `DATABASE_URL` (postgres URLs only,
-//!   rewritten to `ares_test`) -> unix-socket peer auth, no credentials needed.
+//! - URL resolution: an explicit `TEST_DATABASE_URL` naming the local
+//!   `ares_test` database is required.
 //! - Lifecycle: once per test binary — connect, run migrations, truncate; the
 //!   tables are truncated again when the binary exits, so `ares_test` is left
 //!   empty between runs.
@@ -12,6 +12,8 @@
 //!   fix instructions instead of panicking mid-test or silently skipping.
 
 use std::future::Future;
+use std::net::IpAddr;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static INIT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
@@ -28,7 +30,7 @@ const CLEANUP_TABLES: &[&str] = &[
     "users",
 ];
 
-/// Load `.env` once per test process, so `DATABASE_URL` is available if present.
+/// Load `.env` once per test process so an explicit test URL can be supplied.
 fn ensure_env_loaded() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -36,40 +38,44 @@ fn ensure_env_loaded() {
     });
 }
 
-/// Returns the test database URL.
-///
-/// Priority:
-/// 1. `TEST_DATABASE_URL` env var (CI / custom setups)
-/// 2. `DATABASE_URL` env var rewritten to `ares_test` (postgres URLs only;
-///    non-postgres values such as the sqlite path in `.env.example` are ignored)
-/// 3. Fallback: unix-socket peer auth (`/var/run/postgresql`), which works with
-///    zero configuration for the OS user that owns `ares_test`
+fn validate_test_db_url(url: &str) -> Result<(), &'static str> {
+    let options =
+        sqlx::postgres::PgConnectOptions::from_str(url).map_err(|_| "invalid PostgreSQL URL")?;
+    let host = options.get_host();
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    if !loopback {
+        return Err("host must be loopback");
+    }
+    if options.get_database() != Some("ares_test") {
+        return Err("database must be named ares_test");
+    }
+    Ok(())
+}
+
+fn checked_test_db_url(url: Option<String>) -> Result<String, &'static str> {
+    let url = url.ok_or("TEST_DATABASE_URL is required")?;
+    validate_test_db_url(&url)?;
+    Ok(url)
+}
+
+/// Returns the explicitly configured, validated ARES test database URL.
 pub fn test_db_url() -> String {
     ensure_env_loaded();
-
-    if let Ok(url) = std::env::var("TEST_DATABASE_URL") {
-        return url;
-    }
-    if let Ok(url) = std::env::var("DATABASE_URL") {
-        if url.starts_with("postgres") {
-            if url.contains("/ares") && !url.contains("ares_test") {
-                return url.replace("/ares", "/ares_test");
-            }
-            return url;
-        }
-    }
-    let user = std::env::var("USER").unwrap_or_else(|_| "postgres".into());
-    format!("postgres://{user}@%2Fvar%2Frun%2Fpostgresql/ares_test")
+    checked_test_db_url(std::env::var("TEST_DATABASE_URL").ok())
+        .unwrap_or_else(|reason| panic!("Unsafe TEST_DATABASE_URL for ARES tests: {reason}"))
 }
 
 /// Panic with actionable fix instructions for an unreachable test database.
-fn unreachable_panic(url: &str, reason: impl std::fmt::Display) -> ! {
+fn unreachable_panic(reason: impl std::fmt::Display) -> ! {
     panic!(
-        "live test DB unreachable at {url}\n\
+        "live ARES test database unreachable\n\
          Fix one of:\n  \
          1. start postgres: sudo systemctl start postgresql\n  \
          2. create the test DB: sudo -u postgres psql -c \"CREATE DATABASE ares_test OWNER $USER;\"\n  \
-         3. export TEST_DATABASE_URL=postgres://user:pass@host/ares_test\n\
+         3. export TEST_DATABASE_URL=postgres://user@127.0.0.1:5432/ares_test\n\
          underlying error: {reason}"
     )
 }
@@ -91,7 +97,7 @@ fn connect_or_panic(url: &str) -> impl Future<Output = sqlx::PgPool> {
             .max_connections(5)
             .connect(&url)
             .await
-            .unwrap_or_else(|e| unreachable_panic(&url, e))
+            .unwrap_or_else(|e| unreachable_panic(e))
     }
 }
 
@@ -99,7 +105,7 @@ async fn init() {
     let url = test_db_url();
     let pool = connect_or_panic(&url).await;
     if let Err(e) = ares_store::MIGRATOR.run(&pool).await {
-        unreachable_panic(&url, format!("migration failed: {e}"));
+        unreachable_panic(format!("migration failed: {e}"));
     }
     truncate_all(&pool).await;
     READY.store(true, Ordering::SeqCst);
@@ -125,7 +131,12 @@ pub async fn client() -> ares_store::PostgresClient {
 /// Truncate again when the test binary exits, leaving `ares_test` empty.
 /// Runs only if this binary actually connected; teardown errors are reported
 /// but never mask test results.
-#[dtor::dtor]
+// On macOS the `dtor` hook runs after Rust has destroyed the main thread's
+// thread-local state. Building a Tokio runtime there panics before it can
+// clean the disposable test database. CI and Linux retain the exit cleanup;
+// on macOS the next invocation still clears the database during `init`.
+#[cfg_attr(not(target_os = "macos"), dtor::dtor)]
+#[cfg(not(target_os = "macos"))]
 unsafe fn truncate_after_run() {
     if !READY.load(Ordering::SeqCst) {
         return;
@@ -164,53 +175,35 @@ unsafe fn truncate_after_run() {
 mod tests {
     use super::*;
 
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock().unwrap_or_else(|p| p.into_inner())
-    }
-
     #[test]
-    fn fallback_is_socket_peer_auth() {
-        let _g = env_lock();
-        let saved_test = std::env::var("TEST_DATABASE_URL").ok();
-        let saved_db = std::env::var("DATABASE_URL").ok();
-        std::env::remove_var("TEST_DATABASE_URL");
-        std::env::remove_var("DATABASE_URL");
-        let url = test_db_url();
-        if let Some(v) = saved_test {
-            std::env::set_var("TEST_DATABASE_URL", v);
-        }
-        if let Some(v) = saved_db {
-            std::env::set_var("DATABASE_URL", v);
-        }
-        assert!(
-            url.contains("%2Fvar%2Frun%2Fpostgresql"),
-            "unexpected: {url}"
+    fn accepts_only_loopback_ares_test_database() {
+        assert!(checked_test_db_url(Some(
+            "postgres://tester@127.0.0.1:5432/ares_test".to_string()
+        ))
+        .is_ok());
+        assert!(checked_test_db_url(Some(
+            "postgres://tester@localhost:5432/ares_test".to_string()
+        ))
+        .is_ok());
+        assert_eq!(
+            checked_test_db_url(Some("postgres://tester@example.com/ares_test".to_string())),
+            Err("host must be loopback")
         );
-        assert!(url.ends_with("/ares_test"), "unexpected: {url}");
-        assert!(
-            !url.contains("localhost"),
-            "no TCP fallback expected: {url}"
+        assert_eq!(
+            checked_test_db_url(Some("postgres://tester@localhost/ares".to_string())),
+            Err("database must be named ares_test")
         );
     }
 
     #[test]
-    fn sqlite_database_url_is_ignored() {
-        let _g = env_lock();
-        let saved_test = std::env::var("TEST_DATABASE_URL").ok();
-        let saved_db = std::env::var("DATABASE_URL").ok();
-        std::env::remove_var("TEST_DATABASE_URL");
-        std::env::set_var("DATABASE_URL", "./data/ares.db");
-        let url = test_db_url();
-        if let Some(v) = saved_test {
-            std::env::set_var("TEST_DATABASE_URL", v);
-        }
-        if let Some(v) = saved_db {
-            std::env::set_var("DATABASE_URL", v);
-        }
-        assert!(
-            url.contains("%2Fvar%2Frun%2Fpostgresql"),
-            "unexpected: {url}"
+    fn refuses_missing_or_non_postgres_test_url() {
+        assert_eq!(
+            checked_test_db_url(None),
+            Err("TEST_DATABASE_URL is required")
+        );
+        assert_eq!(
+            checked_test_db_url(Some("./data/ares.db".to_string())),
+            Err("invalid PostgreSQL URL")
         );
     }
 

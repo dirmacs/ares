@@ -91,3 +91,72 @@ No `dirty=true` debt in this round — `--allow-dirty` was on every
 command line but the worktree was clean, which the stamps confirm.
 
 ares-test-support remains deliberately unpublished (index 404).
+
+## Release summary (both rounds, 2026-10-14)
+
+**0.11.7** — 11 crates + ares-vector 0.1.5. Tag `v0.11.7` is a
+pre-existing annotated tag (4cd56093, bkataru, 2026-09-19) pointing at
+5f8be30. Four tarballs (cordis, types, store, mcp) shipped
+`dirty=true`, so no commit reproduces those bytes; documented in
+`RELEASE-PROVENANCE-0.11.7.md` on `release/ares-0.11.7`.
+
+**0.11.8** — 11 crates + ares-vector 0.1.6. All tarballs clean, stamped
+either d8eff95 (release marker) or d2f26b9 (member dev-dep patches).
+Documented above and committed as `RELEASE-PROVENANCE-0.11.8.md` on
+`release/ares-0.11.8` (abad5a3).
+
+`ares-test-support` remains deliberately unpublished in both rounds: it
+has never been public (sparse index 404), and the `ares-test-support`
+dev-dependency was repointed at the range `>=0.11.0, <0.12.0` precisely
+so it would not need to be disclosed.
+
+## Root cause worth fixing before the next round
+
+`[workspace.dependencies] ares-test-support = { version = "0.11.x" }`
+(Cargo.toml line 42) is inherited by every member via
+`workspace = true`, and `cargo publish` resolves it even for
+[dev-dependencies]. Each round required patching the root manifest plus
+five consumers individually. A single edit at line 42 to
+`>=0.11.0, <0.12.0` removes the whole class of blocker.
+
+## Release summary (both rounds, 2026-10-14)
+
+**0.11.7** — 11 crates + ares-vector 0.1.5. Tag `v0.11.7` is a
+pre-existing annotated tag (4cd56093, bkataru, 2026-09-19) pointing at
+5f8be30. Four tarballs (cordis, types, store, mcp) shipped
+`dirty=true`, so no commit reproduces those bytes; documented in
+`RELEASE-PROVENANCE-0.11.7.md` on `release/ares-0.11.7`.
+
+**0.11.8** — 11 crates + ares-vector 0.1.6. All tarballs clean, stamped
+either d8eff95 (release marker) or d2f26b9 (member dev-dep patches).
+
+`ares-test-support` remains deliberately unpublished in both rounds: it
+has never been public (sparse index 404), and the `ares-test-support`
+dev-dependency was repointed at the range `>=0.11.0, <0.12.0` so it did
+not need disclosing.
+
+### Verified after publication
+
+- The published graph resolves for a fresh consumer: a probe with only
+  `ares-server = "0.11.8"` pulls all 11 crates from the index.
+- `ares-store` and `ares-http` require `^0.1.6` of `ares-vector`
+  (caret, not exact), so future minor bumps won't break consumers.
+
+## Root cause worth fixing before the next round
+
+`[workspace.dependencies] ares-test-support = { version = "0.11.x" }`
+(Cargo.toml line 42) is inherited by every member via
+`workspace = true`, and `cargo publish` resolves it even for
+[dev-dependencies]. Each round required patching the root manifest plus
+five consumers individually. A single edit at line 42 to
+`>=0.11.0, <0.12.0` removes the whole class of blocker.
+
+## Consumer-side follow-up
+
+A downstream consumer converted its 10 `/opt` ares path references to
+`version = "0.11.8"`; its own manifests now carry zero such references.
+Note the consumer's repo is private, so it is not named here.
+
+It still cannot resolve on a fresh runner: the `dirmacs/core` crate
+(private, unpublished) deep-links ares-agent by path, so `cargo metadata`
+exits 101 until that repo gets the same conversion.

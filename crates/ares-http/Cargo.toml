@@ -77,7 +77,7 @@ inventory = { workspace = true, optional = true }
 thulp-skill-files = { version = "0.3", optional = true }
 
 [dev-dependencies]
-ares-test-support = { workspace = true }
+ares-test-support = { version = ">=0.11.0, <0.12.0", path = "../ares-test-support" }
 axum-test = "18.4.1"
 tempfile = "3.23.0"
 tokio = { workspace = true }

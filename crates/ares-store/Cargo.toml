@@ -51,7 +51,7 @@ chromadb = { workspace = true, optional = true }
 pinecone-sdk = { workspace = true, optional = true }
 rust_decimal = { workspace = true }
 [dev-dependencies]
-ares-test-support = { workspace = true }
+ares-test-support = { version = ">=0.11.0, <0.12.0", path = "../ares-test-support" }
 chrono = { workspace = true }
 matches = "0.1"
 rust_decimal_macros = { version = "1.36" }

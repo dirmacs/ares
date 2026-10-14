@@ -72,3 +72,36 @@ jobs:
             echo "::error::headless build pulled a web/CLI/script dependency into the tree"
             exit 1
           fi
+  test:
+    name: PostgreSQL Workspace Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ares_test
+          POSTGRES_PASSWORD: ares_test
+          POSTGRES_DB: ares_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ares_test -d ares_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgres://ares_test:ares_test@localhost:5432/ares_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run workspace tests against the isolated PostgreSQL service
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --workspace --no-fail-fast -- --test-threads=1 2>&1 | tee /tmp/ares-workspace-test.log
+          passed=$(sed -nE 's/^test result: ok\. ([0-9]+) passed;.*/\1/p' /tmp/ares-workspace-test.log | awk '{ total += $1 } END { print total + 0 }')
+          if [[ "$passed" -eq 0 ]]; then
+            echo "::error::Cargo completed without any passing tests"
+            exit 1
+          fi

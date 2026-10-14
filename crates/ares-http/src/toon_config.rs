@@ -32,12 +32,7 @@
 //! ```
 
 use arc_swap::ArcSwap;
-#[cfg(unix)]
-type ConfigFsNotify = notify::INotifyWatcher;
-#[cfg(windows)]
-type ConfigFsNotify = notify::ReadDirectoryChangesWatcher;
-#[cfg(not(any(unix, windows)))]
-type ConfigFsNotify = notify::PollWatcher;
+type ConfigFsNotify = notify::RecommendedWatcher;
 use notify::{Event, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::any::TypeId;

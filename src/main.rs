@@ -73,6 +73,33 @@ fn main() {
 
 // Phase3: start_background_reload removed — reload via ReflectService::notify + Fiber::refresh
 
+/// Convert a configured **requests-per-second** rate into the replenishment
+/// **interval** that `tower_governor` expects.
+///
+/// `GovernorConfigBuilder::per_second(n)` sets `period = Duration::from_secs(n)`
+/// — "the interval after which one element of the quota is replenished" (see
+/// tower_governor 0.8 `src/governor.rs`). It is an interval, not a rate:
+/// `per_second(100)` means one token per 100 seconds.
+///
+/// Passing our rate straight into it made the shipped default
+/// (`rate_limit_per_second = 100`) a one-token-per-100-seconds limiter, which
+/// serves the burst of 10 and then appears never to refill. The config field's
+/// own doc comment says "requests per second per IP (default: 100, 0 = disabled)".
+///
+/// `rate_to_interval_ms(100) == 10` — i.e. 10 ms per token, 100 req/sec.
+#[cfg(feature = "postgres")]
+fn rate_to_interval_ms(rate_per_second: u32) -> u64 {
+    if rate_per_second == 0 {
+        // The call site is inside `if rate > 0`, so this is unreachable today.
+        // Handled rather than asserted because integer division by zero panics;
+        // the function is total, so a future caller cannot crash the server.
+        return 1_000;
+    }
+    // 1000 / rate floors to 0 once the rate exceeds 1000/sec; the builder
+    // rejects a zero interval, so clamp to 1 ms (an effective ceiling of 1000/sec).
+    u64::from((1000 / rate_per_second).max(1))
+}
+
 #[cfg(feature = "postgres")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -895,10 +922,14 @@ async fn run_server(
         use std::time::Duration;
         use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 
-        // Configure per-IP rate limiting
+        // Configure per-IP rate limiting.
+        // NOT `.per_second(rate)`: tower_governor's `per_second(n)` sets the
+        // replenishment interval in SECONDS, not a rate. See `rate_to_interval_ms`.
         let governor_conf = Arc::new(
             GovernorConfigBuilder::default()
-                .per_second(config.server.rate_limit_per_second as u64)
+                .per_millisecond(rate_to_interval_ms(
+                    config.server.rate_limit_per_second,
+                ))
                 .burst_size(config.server.rate_limit_burst)
                 .use_headers() // Include x-ratelimit-* headers in responses
                 .finish()
@@ -1628,5 +1659,50 @@ mod boot_tests {
 
         std::env::set_current_dir(original).ok();
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(all(test, feature = "postgres"))]
+mod rate_limit_interval_tests {
+    use super::rate_to_interval_ms;
+
+    /// The regression this pins: the shipped default is 100 req/sec, and the
+    /// builder call it used to feed was `.per_second(100)`, which means one
+    /// token per 100 SECONDS. The correct interval is 10 ms.
+    #[test]
+    fn default_rate_of_100_per_sec_is_10ms_not_100s() {
+        assert_eq!(
+            rate_to_interval_ms(100),
+            10,
+            "100 req/sec must be a 10ms replenishment interval, not 100_000ms"
+        );
+    }
+
+    /// The old call's interval, for contrast: what `per_second(100)` produced.
+    #[test]
+    fn old_behaviour_would_have_been_100_000ms() {
+        assert_eq!(1000 * 100, 100_000, "the old interval was 100 seconds");
+    }
+
+    #[test]
+    fn converts_representative_rates() {
+        assert_eq!(rate_to_interval_ms(1), 1000); // 1/sec
+        assert_eq!(rate_to_interval_ms(10), 100); // 10/sec
+        assert_eq!(rate_to_interval_ms(1000), 1); // 1000/sec
+    }
+
+    /// Above 1000/sec the integer division floors to 0, and the builder
+    /// rejects a zero interval, so the clamp must hold at 1ms.
+    #[test]
+    fn clamps_above_one_thousand_per_sec() {
+        assert_eq!(rate_to_interval_ms(5_000), 1);
+        assert_eq!(rate_to_interval_ms(u32::MAX), 1);
+    }
+
+    /// 0 is the "disabled" sentinel handled by the caller; it must never reach
+    /// the builder as a zero interval.
+    #[test]
+    fn zero_rate_does_not_produce_a_zero_interval() {
+        assert_eq!(rate_to_interval_ms(0), 1_000, "clamped, never 0");
     }
 }

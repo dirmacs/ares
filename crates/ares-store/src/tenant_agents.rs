@@ -156,7 +156,10 @@ pub fn tenant_agent_not_found_error(agent_name: &str, tenant_id: &str) -> AppErr
 /// `agents` is checked fully by the admin API (`validate_agent_config_delegations`);
 /// the store checks only its shape, because the rollback and template paths
 /// reach it without that check.
-pub const TENANT_CONFIG_KNOWN_KEYS: [&str; 15] = [
+/// `persistence_mode` is the User Memory setting; the store checks only that
+/// the value is one of the four listed strings, because what the non-default
+/// modes do is run-time work in the crate that owns it.
+pub const TENANT_CONFIG_KNOWN_KEYS: [&str; 16] = [
     "model",
     "system_prompt",
     "tools",
@@ -172,6 +175,7 @@ pub const TENANT_CONFIG_KNOWN_KEYS: [&str; 15] = [
     "presence_penalty",
     "skill_id",
     "agents",
+    "persistence_mode",
 ];
 
 pub fn validate_tenant_config(value: &serde_json::Value) -> Result<TenantAgentConfig> {
@@ -193,6 +197,8 @@ pub fn validate_tenant_config(value: &serde_json::Value) -> Result<TenantAgentCo
     }
 
     validate_agents_shape(obj)?;
+
+    validate_persistence_mode_value(obj)?;
 
     let model = obj
         .get("model")
@@ -270,6 +276,31 @@ fn validate_agents_shape(obj: &JsonObject) -> Result<()> {
         }
         Some(other) => Err(AppError::InvalidInput(format!(
             "Tenant agent config field 'agents' must be an array of objects, was {}",
+            json_kind(other)
+        ))),
+    }
+}
+
+/// `persistence_mode` must be absent, `null`, or one of the four exact
+/// lowercase strings naming where per-user memory is held (User Memory, P1).
+///
+/// Only the value is checked here: the non-default modes (`session`,
+/// `client_fields`, `eruka_user_graph`) are not built yet, and a run with one
+/// is refused before any model call by the crate that owns the run-time
+/// behaviour. The four strings are duplicated from that crate because this
+/// crate does not depend on it (the `agents` precedent).
+fn validate_persistence_mode_value(obj: &JsonObject) -> Result<()> {
+    const ALLOWED: [&str; 4] = ["none", "session", "client_fields", "eruka_user_graph"];
+    match obj.get("persistence_mode") {
+        None | Some(serde_json::Value::Null) => Ok(()),
+        Some(serde_json::Value::String(value)) if ALLOWED.contains(&value.as_str()) => Ok(()),
+        Some(serde_json::Value::String(value)) => Err(AppError::InvalidInput(format!(
+            "Tenant agent config field 'persistence_mode' must be one of '{}', was '{value}'",
+            ALLOWED.join("', '")
+        ))),
+        Some(other) => Err(AppError::InvalidInput(format!(
+            "Tenant agent config field 'persistence_mode' must be one of '{}', was {}",
+            ALLOWED.join("', '"),
             json_kind(other)
         ))),
     }

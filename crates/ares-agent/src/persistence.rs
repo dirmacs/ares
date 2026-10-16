@@ -138,9 +138,8 @@ mod tests {
     #[test]
     fn from_json_parses_each_listed_value() {
         for value in PERSISTENCE_MODE_VALUES {
-            let mode =
-                persistence_mode_from_json(&serde_json::json!({"persistence_mode": value}))
-                    .expect("a listed value parses");
+            let mode = persistence_mode_from_json(&serde_json::json!({"persistence_mode": value}))
+                .expect("a listed value parses");
             assert_eq!(mode.as_str(), value);
         }
     }

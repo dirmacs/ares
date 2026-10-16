@@ -12,7 +12,7 @@
 //! - `POST /api/webhooks/{trigger_id}`
 //!
 //! Each tenant has one event secret, stored only as its SHA-256 in
-//! `tenant_event_secrets` (migration 041). A request presents it in
+//! `tenant_event_secrets` (migration 20261016000011). A request presents it in
 //! `X-Webhook-Secret`:
 //!
 //! - no secret, an empty or blank one, an unknown one: 401 (the 2.16e body,
@@ -236,7 +236,7 @@ async fn store_secret(pool: &PgPool, tenant_id: &str, secret: &str) {
         .bind(sha256_hex(secret))
         .execute(pool)
         .await
-        .expect("store the tenant's event secret hash: migration 041 (tenant_event_secrets)");
+        .expect("store the tenant's event secret hash: migration 20261016000011 (tenant_event_secrets)");
 }
 
 /// A hash is unique across tenants, so a world first clears whatever an earlier
@@ -249,7 +249,7 @@ async fn clear_dummy_secrets(pool: &PgPool, secrets: &[&str]) {
             .bind(sha256_hex(secret))
             .execute(pool)
             .await
-            .expect("clear a dummy secret left by an earlier world (migration 041)");
+            .expect("clear a dummy secret left by an earlier world (migration 20261016000011)");
     }
 }
 

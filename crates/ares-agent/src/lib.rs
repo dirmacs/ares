@@ -65,6 +65,8 @@ pub mod loop_mode;
 pub mod memory;
 /// Multi-agent orchestration for complex tasks.
 pub mod orchestrator;
+/// Per-user memory location: the `persistence_mode` config key.
+pub mod persistence;
 pub mod plugins;
 pub mod registry;
 pub mod research;

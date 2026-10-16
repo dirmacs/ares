@@ -1736,6 +1736,92 @@ mod tests {
     }
 
     #[test]
+    fn validate_tenant_config_accepts_persistence_mode_key() {
+        // `persistence_mode` joins the closed schema (User Memory, P1). The
+        // store checks only that the value is one of the four exact lowercase
+        // strings; what the non-default modes do is run-time work, and until
+        // it exists a run with a non-default mode is refused before any model
+        // call.
+        for mode in ["none", "session", "client_fields", "eruka_user_graph"] {
+            let cfg = validate_tenant_config(&serde_json::json!({
+                "model": "m",
+                "persistence_mode": mode
+            }))
+            .expect("a listed persistence_mode is known");
+            assert_eq!(cfg.model, "m");
+        }
+
+        let absent = validate_tenant_config(&serde_json::json!({"model": "m"}))
+            .expect("an absent persistence_mode is allowed");
+        assert_eq!(absent.model, "m");
+
+        let null =
+            validate_tenant_config(&serde_json::json!({"model": "m", "persistence_mode": null}))
+                .expect("a null persistence_mode is treated as absent");
+        assert_eq!(null.model, "m");
+    }
+
+    #[test]
+    fn validate_tenant_config_rejects_unknown_persistence_mode() {
+        for value in ["None", "memory", ""] {
+            let err = validate_tenant_config(&serde_json::json!({
+                "model": "m",
+                "persistence_mode": value
+            }))
+            .expect_err("an unlisted persistence_mode string is rejected");
+            assert!(
+                matches!(err, AppError::InvalidInput(_)),
+                "expected InvalidInput, got {err:?}"
+            );
+            let msg = err.to_string();
+            assert!(
+                msg.contains("persistence_mode"),
+                "error names the key: {msg}"
+            );
+            for allowed in ["none", "session", "client_fields", "eruka_user_graph"] {
+                assert!(msg.contains(allowed), "error lists '{allowed}': {msg}");
+            }
+        }
+    }
+
+    #[test]
+    fn validate_tenant_config_rejects_non_string_persistence_mode() {
+        for value in [
+            serde_json::json!(1),
+            serde_json::json!(true),
+            serde_json::json!([]),
+            serde_json::json!({"mode": "none"}),
+        ] {
+            let err = validate_tenant_config(&serde_json::json!({
+                "model": "m",
+                "persistence_mode": value
+            }))
+            .expect_err("persistence_mode must be a string");
+            assert!(
+                matches!(err, AppError::InvalidInput(_)),
+                "expected InvalidInput, got {err:?}"
+            );
+            let msg = err.to_string();
+            assert!(
+                msg.contains("persistence_mode"),
+                "error names the key: {msg}"
+            );
+            for allowed in ["none", "session", "client_fields", "eruka_user_graph"] {
+                assert!(msg.contains(allowed), "error lists '{allowed}': {msg}");
+            }
+        }
+    }
+
+    #[test]
+    fn tenant_config_known_keys_include_persistence_mode() {
+        assert!(
+            TENANT_CONFIG_KNOWN_KEYS.contains(&"persistence_mode"),
+            "the closed schema lists persistence_mode: {}",
+            TENANT_CONFIG_KNOWN_KEYS.join(", ")
+        );
+    }
+
+    #[test]
     fn validate_tenant_config_rejects_non_object() {
         assert!(validate_tenant_config(&serde_json::json!([])).is_err());
     }

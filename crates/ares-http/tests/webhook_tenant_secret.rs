@@ -236,7 +236,9 @@ async fn store_secret(pool: &PgPool, tenant_id: &str, secret: &str) {
         .bind(sha256_hex(secret))
         .execute(pool)
         .await
-        .expect("store the tenant's event secret hash: migration 20261016000011 (tenant_event_secrets)");
+        .expect(
+            "store the tenant's event secret hash: migration 20261016000011 (tenant_event_secrets)",
+        );
 }
 
 /// A hash is unique across tenants, so a world first clears whatever an earlier

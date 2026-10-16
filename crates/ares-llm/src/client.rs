@@ -295,7 +295,7 @@ const MAX_REGION_LEN: usize = 64;
 
 /// Where a model call goes: the endpoint it is sent to and the region it runs in. Each agent run
 /// records this for the provider that ANSWERED it (`agent_runs.resolved_endpoint` and
-/// `agent_runs.region`, migration 039).
+/// `agent_runs.region`, migration 20261016000012).
 ///
 /// This type is the one place a value becomes recordable. The fields are private and
 /// [`Residency::from_raw`] is the only constructor that takes text, so everything that reaches a

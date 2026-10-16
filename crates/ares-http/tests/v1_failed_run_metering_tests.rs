@@ -671,7 +671,7 @@ async fn completed_run_reason_code_stays_null() {
 }
 
 // ---------------------------------------------------------------------------
-// Item 2.12b: residency on the same rows (`resolved_endpoint`, `region`, migration 039)
+// Item 2.12b: residency on the same rows (`resolved_endpoint`, `region`, migration 20261016000012)
 //
 // The invariant: the endpoint and region on a row describe the provider the row's
 // `provider_name` names. A completed run names the provider that answered; a run that failed

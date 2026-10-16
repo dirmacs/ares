@@ -335,6 +335,17 @@ impl Fixture {
     }
 
     async fn insert_tenant_row(&self, system_prompt: &str) {
+        self.insert_tenant_row_with_config(json!({
+            "model": "default",
+            "system_prompt": system_prompt,
+            "tools": [],
+            "max_tool_iterations": 5,
+            "parallel_tools": false
+        }))
+        .await;
+    }
+
+    async fn insert_tenant_row_with_config(&self, config: Value) {
         create_tenant_agent(
             &self.pool,
             &self.tenant,
@@ -342,13 +353,7 @@ impl Fixture {
                 agent_name: AGENT.to_string(),
                 display_name: "product display".to_string(),
                 description: None,
-                config: json!({
-                    "model": "default",
-                    "system_prompt": system_prompt,
-                    "tools": [],
-                    "max_tool_iterations": 5,
-                    "parallel_tools": false
-                }),
+                config,
             },
         )
         .await
@@ -625,4 +630,79 @@ async fn required_request_without_row_is_not_found_and_runs_nothing() {
         matches!(&err, AppError::NotFound(m) if m.contains("not found for tenant")),
         "expected AppError::NotFound on the stream path, got {err:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// User Memory (P1): a run goes ahead only when `persistence_mode` is `none`
+// or absent; every other mode is refused where the run is resolved, before
+// any model call.
+// ---------------------------------------------------------------------------
+
+/// An absent `persistence_mode`, and an explicit `none`, run the tenant agent
+/// exactly as before.
+#[tokio::test]
+async fn persistence_mode_none_or_absent_runs_as_before() {
+    // Absent key: today's behaviour.
+    let f = Fixture::new(Missing::Nothing).await;
+    f.insert_tenant_row("tenant-row-prompt").await;
+    let result = f
+        .exec
+        .run(&request(true), &f.ctx)
+        .await
+        .expect("an absent persistence_mode must run");
+    assert_eq!(result.source, AgentSource::Tenant);
+    assert_eq!(result.agent_name, AGENT);
+    assert_eq!(result.response.content, "SYSTEM_PROMPT=tenant-row-prompt");
+    assert!(f.ollama_calls.load(Ordering::SeqCst) > 0, "{}", f.calls());
+    assert_eq!(f.llm_calls.load(Ordering::SeqCst), 0, "{}", f.calls());
+
+    // Explicit `none`: the default, the same behaviour.
+    let f = Fixture::new(Missing::Nothing).await;
+    f.insert_tenant_row_with_config(json!({
+        "model": "default",
+        "system_prompt": "tenant-row-prompt",
+        "tools": [],
+        "persistence_mode": "none"
+    }))
+    .await;
+    let result = f
+        .exec
+        .run(&request(true), &f.ctx)
+        .await
+        .expect("persistence_mode 'none' must run");
+    assert_eq!(result.source, AgentSource::Tenant);
+    assert_eq!(result.response.content, "SYSTEM_PROMPT=tenant-row-prompt");
+    assert!(f.ollama_calls.load(Ordering::SeqCst) > 0, "{}", f.calls());
+    assert_eq!(f.llm_calls.load(Ordering::SeqCst), 0, "{}", f.calls());
+}
+
+/// Each non-default mode is refused with `AppError::Unavailable` naming the
+/// mode, on the run path and on the stream path. `run_refused` and
+/// `stream_refused` assert that the refused run made zero model calls: no
+/// generic fall-through `Llm` call and no request to the mock provider.
+#[tokio::test]
+async fn persistence_mode_non_none_is_refused_and_runs_nothing() {
+    for mode in ["session", "client_fields", "eruka_user_graph"] {
+        let f = Fixture::new(Missing::Nothing).await;
+        f.insert_tenant_row_with_config(json!({
+            "model": "default",
+            "system_prompt": "tenant-row-prompt",
+            "tools": [],
+            "persistence_mode": mode
+        }))
+        .await;
+
+        let expected = format!("persistence_mode '{mode}' is not available yet");
+        let err = f.run_refused(&request(true)).await;
+        assert!(
+            matches!(&err, AppError::Unavailable(m) if m.contains(&expected)),
+            "{mode}: expected AppError::Unavailable(\"{expected}\"), got {err:?}"
+        );
+
+        let err = f.stream_refused(&request(true)).await;
+        assert!(
+            matches!(&err, AppError::Unavailable(m) if m.contains(&expected)),
+            "{mode}: expected AppError::Unavailable(\"{expected}\") on the stream path, got {err:?}"
+        );
+    }
 }

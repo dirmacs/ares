@@ -1,7 +1,7 @@
 //! Item 2.12b over HTTP: the three HTTP writers record where the run went, the admin runs list
 //! shows it, and no client-facing response carries it.
 //!
-//! `agent_runs.resolved_endpoint` and `agent_runs.region` (migration 039) name the provider that
+//! `agent_runs.resolved_endpoint` and `agent_runs.region` (migration 20261016000012) name the provider that
 //! ANSWERED the run: its endpoint (scheme, host, port, path only) and its region where it has
 //! one. A request never supplies either (DELEGATED ruling 2026-09-29 section 3.3).
 //!

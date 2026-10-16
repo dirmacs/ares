@@ -1,6 +1,6 @@
 //! Item 2.12b: every agent run records where it went.
 //!
-//! `agent_runs.resolved_endpoint` and `agent_runs.region` (migration 039) name the provider that
+//! `agent_runs.resolved_endpoint` and `agent_runs.region` (migration 20261016000012) name the provider that
 //! ANSWERED the run: its endpoint reduced to scheme, host, port and path (no userinfo, no query,
 //! no fragment, no trailing slash) and its region where the provider has one. Both come from the
 //! resolved provider, on the server; a request never supplies either (DELEGATED ruling

@@ -231,15 +231,15 @@ pub struct AgentRun {
     pub root_run_id: Option<String>,
     #[serde(default)]
     pub updated_at: Option<i64>,
-    /// The endpoint (scheme, host, port and path only; migration 039) of the provider this row's
-    /// `provider_name` names: the one that answered the run, or, for a v1 run that failed after
-    /// its provider was resolved, the primary it had resolved to. NULL for a row written before
-    /// 039 and for every path that names no provider: a run that failed before resolution, a
-    /// trigger, scheduler or pipeline failure, a skill run, the generic `Execute` fall-through
-    /// and a chat stream.
+    /// The endpoint (scheme, host, port and path only; migration 20261016000012) of the provider
+    /// this row's `provider_name` names: the one that answered the run, or, for a v1 run that
+    /// failed after its provider was resolved, the primary it had resolved to. NULL for a row
+    /// written before 20261016000012 and for every path that names no provider: a run that failed
+    /// before resolution, a trigger, scheduler or pipeline failure, a skill run, the generic
+    /// `Execute` fall-through and a chat stream.
     #[serde(default)]
     pub resolved_endpoint: Option<String>,
-    /// The region of that provider, where it has one (migration 039); NULL otherwise.
+    /// The region of that provider, where it has one (migration 20261016000012); NULL otherwise.
     #[serde(default)]
     pub region: Option<String>,
 }
@@ -727,7 +727,7 @@ mod tests {
         assert_eq!(back.region, run.region);
     }
 
-    /// 2.12b: the row has 31 columns on the wire (29 before migration 039: the 27 of the old
+    /// 2.12b: the row has 31 columns on the wire (29 before migration 20261016000012: the 27 of the old
     /// branch plus the run-tree pair `parent_run_id` / `root_run_id` that main added since).
     #[test]
     fn agent_run_serializes_31_fields_including_the_residency_pair() {
@@ -740,14 +740,15 @@ mod tests {
         assert_eq!(json["region"], "ap-south-1");
     }
 
-    /// 2.12b: JSON written before migration 039 has no residency keys; it still reads, as NULL.
+    /// 2.12b: JSON written before migration 20261016000012 has no residency keys; it still reads, as NULL.
     #[test]
     fn agent_run_json_without_residency_keys_still_deserializes() {
         let mut json = serde_json::to_value(sample_agent_run_full()).unwrap();
         let object = json.as_object_mut().unwrap();
         object.remove("resolved_endpoint");
         object.remove("region");
-        let run: AgentRun = serde_json::from_value(json).expect("a pre-039 row still reads");
+        let run: AgentRun =
+            serde_json::from_value(json).expect("a pre-20261016000012 row still reads");
         assert_eq!(run.resolved_endpoint, None);
         assert_eq!(run.region, None);
     }
@@ -1058,7 +1059,7 @@ mod tests {
     }
 
     /// 2.12b: the select lists the two residency columns as plain columns, with no COALESCE:
-    /// a run written before migration 039 reads NULL, never a made-up value.
+    /// a run written before migration 20261016000012 reads NULL, never a made-up value.
     #[test]
     fn list_agent_runs_select_reads_residency_as_plain_nullable_columns() {
         assert!(
@@ -1309,7 +1310,7 @@ mod tests {
     }
 
     /// 2.12b: a run written without residency (every path that cannot know its provider, and every
-    /// row written before migration 039) reads back with both fields NULL, through the same
+    /// row written before migration 20261016000012) reads back with both fields NULL, through the same
     /// writer and reader.
     #[tokio::test]
     async fn integration_run_without_residency_reads_null() {
@@ -1344,27 +1345,27 @@ mod tests {
         cleanup_test_tenant(&pool, &tenant_id).await;
     }
 
-    /// 2.12b: a row inserted by a statement that predates migration 039 (the explicit column list
+    /// 2.12b: a row inserted by a statement that predates migration 20261016000012 (the explicit column list
     /// of the older raw writers, no residency columns) still reads, with both fields NULL.
     #[tokio::test]
-    async fn integration_row_from_a_pre_039_statement_still_reads() {
+    async fn integration_row_from_a_pre_20261016000012_statement_still_reads() {
         let (_lock, pool) = crate::test_db::pool().await;
         let tenant_id = unique_tenant();
         seed_tenant(&pool, &tenant_id).await;
-        let id = format!("run-pre039-{}", uuid::Uuid::new_v4());
+        let id = format!("run-pre20261016000012-{}", uuid::Uuid::new_v4());
 
         sqlx::query(
             "INSERT INTO agent_runs (id, tenant_id, agent_name, status, input_tokens, \
              output_tokens, duration_ms, created_at) \
-             VALUES ($1, $2, 'pre-039', 'completed', 0, 0, 0, 1)",
+             VALUES ($1, $2, 'pre-20261016000012', 'completed', 0, 0, 0, 1)",
         )
         .bind(&id)
         .bind(&tenant_id)
         .execute(&pool)
         .await
-        .expect("insert with the pre-039 column list");
+        .expect("insert with the pre-20261016000012 column list");
 
-        let runs = list_agent_runs(&pool, &tenant_id, Some("pre-039"), 10, 0)
+        let runs = list_agent_runs(&pool, &tenant_id, Some("pre-20261016000012"), 10, 0)
             .await
             .expect("list");
         assert_eq!(runs.len(), 1);
@@ -1375,11 +1376,11 @@ mod tests {
         cleanup_test_tenant(&pool, &tenant_id).await;
     }
 
-    /// 2.12b, migration 039: two nullable TEXT columns with no default (so Postgres adds them
+    /// 2.12b, migration 20261016000012: two nullable TEXT columns with no default (so Postgres adds them
     /// without rewriting the table), and the documented reversal drops exactly those two. The
     /// reversal runs inside a transaction that is rolled back.
     #[tokio::test]
-    async fn integration_migration_039_columns_are_nullable_text_and_reversible() {
+    async fn integration_migration_20261016000012_columns_are_nullable_text_and_reversible() {
         let (_lock, pool) = crate::test_db::pool().await;
 
         let columns: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
@@ -1408,11 +1409,11 @@ mod tests {
                     None
                 ),
             ],
-            "migration 039 adds two nullable text columns with no default"
+            "migration 20261016000012 adds two nullable text columns with no default"
         );
 
         let mut tx = pool.begin().await.expect("begin");
-        sqlx::query(MIGRATION_039_REVERSAL_SQL)
+        sqlx::query(MIGRATION_20261016000012_REVERSAL_SQL)
             .execute(&mut *tx)
             .await
             .expect("the documented reversal runs");
@@ -1441,15 +1442,15 @@ mod tests {
         );
     }
 
-    /// The reversal documented in the header of `039_agent_run_residency.sql`. Not part of the
-    /// migrator (there are no down files); SR runs it by hand to undo 039.
-    const MIGRATION_039_REVERSAL_SQL: &str = "ALTER TABLE agent_runs \
+    /// The reversal documented in the header of `20261016000012_agent_run_residency.sql`. Not part of the
+    /// migrator (there are no down files); SR runs it by hand to undo 20261016000012.
+    const MIGRATION_20261016000012_REVERSAL_SQL: &str = "ALTER TABLE agent_runs \
          DROP COLUMN IF EXISTS resolved_endpoint, DROP COLUMN IF EXISTS region";
 
     /// 2.12b: the migration file states its reversal, and the test constant above is that text.
     #[test]
-    fn migration_039_header_documents_the_reversal() {
-        let sql = include_str!("../migrations/039_agent_run_residency.sql");
+    fn migration_20261016000012_header_documents_the_reversal() {
+        let sql = include_str!("../migrations/20261016000012_agent_run_residency.sql");
         // The header comment, with the leading `--` of each line removed.
         let header = sql
             .lines()
@@ -2181,7 +2182,7 @@ mod tests {
     }
 
     /// The placeholder pin, now on the statement the writer really executes
-    /// (`INSERT_AGENT_RUN_SQL`) and not on a copy of it: 29 placeholders before migration 039
+    /// (`INSERT_AGENT_RUN_SQL`) and not on a copy of it: 29 placeholders before migration 20261016000012
     /// (the 27 of the old branch plus the run-tree pair main added since), 31 with
     /// `resolved_endpoint` and `region`.
     #[test]

@@ -1,4 +1,4 @@
-//! Per-tenant event-webhook secrets (item 2.16a, migration 041).
+//! Per-tenant event-webhook secrets (item 2.16a, migration 20261016000011).
 //!
 //! `tenant_event_secrets` holds one row per tenant: the SHA-256 (lowercase hex)
 //! of that tenant's event secret. **Only the hash is stored.** The secret is

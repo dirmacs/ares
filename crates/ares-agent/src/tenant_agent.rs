@@ -310,6 +310,9 @@ pub(crate) async fn load_tenant_agent_config(
     let updated_at: i64 = row.get("updated_at");
     let config_version = tenant_config_version(&config_json, updated_at);
     let agent_config = agent_config_from_json(&config_json)?;
+    // User Memory (P1): only `persistence_mode: none` can run today; any other
+    // mode is refused here, before the agent or its model client is built.
+    crate::persistence::ensure_runnable(&config_json)?;
 
     Ok(Some((agent_config, config_version, config_json)))
 }

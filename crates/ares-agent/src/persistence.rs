@@ -77,6 +77,24 @@ pub fn persistence_mode_from_json(config: &serde_json::Value) -> Result<Persiste
     }
 }
 
+/// Refuses a stored tenant agent config whose `persistence_mode` cannot run yet.
+///
+/// Only [`PersistenceMode::None`] (or an absent key) runs today. Any other
+/// mode is refused with `AppError::Unavailable` (HTTP 503, the family the
+/// neighbouring "not available" refusals use), and an invalid stored value is
+/// refused as invalid. It is called where a tenant agent's config is loaded for
+/// a run, so a run fails closed before the agent or its model client is built
+/// instead of silently behaving like `none`.
+pub fn ensure_runnable(config: &serde_json::Value) -> Result<()> {
+    match persistence_mode_from_json(config)? {
+        PersistenceMode::None => Ok(()),
+        mode => Err(AppError::Unavailable(format!(
+            "persistence_mode '{}' is not available yet",
+            mode.as_str()
+        ))),
+    }
+}
+
 /// A JSON value's kind, for messages a person reads.
 fn json_kind(value: &serde_json::Value) -> &'static str {
     match value {

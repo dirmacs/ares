@@ -771,27 +771,7 @@ impl Execute {
             )
             .await
             {
-                Ok(Some((config, _config_version, config_json))) => {
-                    // User Memory (P1): only `persistence_mode: none` can run
-                    // today. Any other mode is refused here — where the run is
-                    // resolved, after the tenant row's config is read and
-                    // before the agent (and its model client) is built — so a
-                    // run fails closed instead of silently behaving like
-                    // `none`. `AppError::Unavailable` (HTTP 503) is the same
-                    // variant family the neighbouring "not available" refusals
-                    // (`tenant_tier_unavailable_error`, `strict_fallbacks`)
-                    // use.
-                    match crate::persistence::persistence_mode_from_json(&config_json) {
-                        Ok(crate::persistence::PersistenceMode::None) => Some(config),
-                        Ok(mode) => {
-                            return Some(Err(AppError::Unavailable(format!(
-                                "persistence_mode '{}' is not available yet",
-                                mode.as_str()
-                            ))))
-                        }
-                        Err(e) => return Some(Err(e)),
-                    }
-                }
+                Ok(Some((config, _config_version, _config_json))) => Some(config),
                 Ok(None) => {
                     return Some(Err(crate::tenant_agent::tenant_agent_not_found_error(
                         &req.agent_name,

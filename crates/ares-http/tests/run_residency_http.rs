@@ -35,7 +35,10 @@ use ares_http::overlay::{
 };
 use ares_llm::{ModelConfig, ProviderConfig, ProviderRegistry};
 use ares_store::fleet_secrets::ProviderOverride;
-use ares_store::tenant_agents::{create_tenant_agent, CreateTenantAgentRequest};
+use ares_store::tenant_agents::{
+    create_tenant_agent, create_tenant_agent_as, get_tenant_agent_publish_state,
+    publish_tenant_agent, CreateTenantAgentRequest, PublishOutcome,
+};
 use ares_store::{FleetSecrets, TenantDb};
 use ares_tools::Tools;
 use ares_types::models::TenantTier;
@@ -303,7 +306,9 @@ impl Fixture {
             .create_api_key(&tenant.id, "t212b-key".to_string(), None, None)
             .await
             .expect("create the API key");
-        create_tenant_agent(
+        // Item 2.6a: only a published agent runs, so the fixture is written by
+        // one admin and published by a second, through the real publish path.
+        create_tenant_agent_as(
             &pool,
             &tenant.id,
             CreateTenantAgentRequest {
@@ -318,9 +323,24 @@ impl Fixture {
                     "parallel_tools": false
                 }),
             },
+            Some("fixture-author"),
         )
         .await
         .expect("create the tenant agent");
+        let draft_digest = get_tenant_agent_publish_state(&pool, &tenant.id, AGENT)
+            .await
+            .expect("publish state")
+            .draft_digest
+            .expect("the new row is a draft");
+        match publish_tenant_agent(&pool, &tenant.id, AGENT, &draft_digest, "fixture-approver")
+            .await
+            .expect("publish the tenant agent")
+        {
+            PublishOutcome::Published(_) => {}
+            PublishOutcome::Refused(refusal) => {
+                panic!("the fixture publish was refused: {refusal:?}")
+            }
+        }
 
         let now = chrono::Utc::now().timestamp();
         let jwt = jsonwebtoken::encode(

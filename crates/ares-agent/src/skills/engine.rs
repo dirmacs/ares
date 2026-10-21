@@ -637,6 +637,18 @@ impl SkillEngine {
         run_id: &str,
         ctx: &Arc<cordis::Context>,
     ) -> Result<serde_json::Value, String> {
+        // The same per-tenant pause the admission gate applies. A skill run
+        // spends model calls, so a paused tenant's skill is refused before the
+        // first of them.
+        //
+        // The check is here because a skill is reachable without passing
+        // through `Execute::run`, which is where the admission gate runs: the
+        // admin connector route and the event triggers call the engine
+        // directly. Those paths check the global emergency stop at the
+        // call boundary, and the pause belongs beside it.
+        crate::admit::ensure_tenant_not_paused(ctx, tenant_id)
+            .await
+            .map_err(|e| e.to_string())?;
         self.execute_skill_at_depth(skill_id, tenant_id, input, run_id, ctx, 0)
             .await
     }

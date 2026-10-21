@@ -2,11 +2,14 @@
 //!
 //! Scope note: these cover the store contract — the flag, its defaults, and
 //! attribution. The run-path gate itself lives in
-//! `crates/ares-http/src/api/handlers/v1/agents.rs`, and the "a paused run makes
-//! no model call" assertion belongs to an HTTP-level test that drives
-//! `POST /v1/agents/{name}/run` and then reads `run_llm_calls`. That end-to-end
-//! test is NOT in this file; the PR description states what is and is not
-//! covered.
+//! `crates/ares-http/src/api/handlers/v1/agents.rs`, and the end-to-end
+//! "a paused run makes no model call" assertion is in
+//! `tests/tenant_pause_run_path_tests.rs`, which drives
+//! `POST /v1/agents/{name}/run` against a mock provider and asserts at the
+//! provider boundary: the mock counts the calls it receives, and the paused
+//! run's count must be zero. That is the stronger form of the assertion —
+//! it fails if a call is made, rather than failing if a call was recorded
+//! — and it is what a run that reached a provider would break.
 //!
 //! Each test names its own tenant, so it neither depends on nor disturbs any
 //! pre-existing rows. `create_tenant` takes a *name* and mints the id, so the

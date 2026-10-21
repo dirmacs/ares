@@ -29,13 +29,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use axum::{
-    Json, Router,
-    response::IntoResponse,
-    routing::{get, post},
-};
+use axum::{Router, response::IntoResponse, routing::get};
 use axum_test::TestServer;
-use serde_json::{Value, json};
+use serde_json::json;
 use uuid::Uuid;
 
 use cordis::Context;
@@ -52,7 +48,10 @@ use ares_http::{
 };
 use ares_llm::{ConfigBasedLLMFactory, ProviderRegistry};
 use ares_store::TenantDb;
-use ares_store::tenant_agents::{CreateTenantAgentRequest, create_tenant_agent};
+use ares_store::tenant_agents::{
+    CreateTenantAgentRequest, PublishOutcome, create_tenant_agent_as,
+    get_tenant_agent_publish_state, publish_tenant_agent,
+};
 use ares_tools::Tools;
 use ares_types::models::TenantTier;
 
@@ -76,7 +75,8 @@ impl ProviderCalls {
 }
 
 async fn spawn_counting_mock_provider() -> (String, ProviderCalls) {
-    let counter = Arc::clone(&calls);
+    let calls = ProviderCalls::default();
+    let counter = calls.0.clone();
     let app = Router::new().fallback(move || {
         let counter = Arc::clone(&counter);
         async move {
@@ -315,7 +315,7 @@ async fn insert_tenant_agent(
     agent_name: &str,
     system_prompt: &str,
 ) {
-    create_tenant_agent(
+    create_tenant_agent_as(
         tenant_db.pool(),
         tenant_id,
         CreateTenantAgentRequest {
@@ -330,9 +330,39 @@ async fn insert_tenant_agent(
                 "parallel_tools": false
             }),
         },
+        Some("test-author"),
     )
     .await
     .expect("insert tenant agent");
+
+    // A tenant agent row is a draft until it is published, and the run path
+    // refuses an unpublished one (item 2.6a): the row is found, it is simply
+    // not the agent that runs. Without this the run fails for the wrong
+    // reason, the provider is never called, and the paused assertion below
+    // would pass for the wrong reason too.
+    //
+    // The publish needs an author on the draft and an approver who is not
+    // that author, so the row is created with one and published with another.
+    let draft_digest = get_tenant_agent_publish_state(tenant_db.pool(), tenant_id, agent_name)
+        .await
+        .expect("publish state")
+        .draft_digest
+        .expect("the new row is a draft");
+    match publish_tenant_agent(
+        tenant_db.pool(),
+        tenant_id,
+        agent_name,
+        &draft_digest,
+        "test-approver",
+    )
+    .await
+    .expect("publish the tenant agent row")
+    {
+        PublishOutcome::Published(_) => {}
+        PublishOutcome::Refused(refusal) => {
+            panic!("the fixture publish was refused: {refusal:?}")
+        }
+    }
 }
 
 async fn run_as(server: &TestServer, api_key: &str) -> axum_test::TestResponse {

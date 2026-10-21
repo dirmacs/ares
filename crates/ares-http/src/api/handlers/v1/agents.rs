@@ -162,16 +162,10 @@ pub async fn run_agent(
     // before an agent is resolved, so a paused run never reaches a model
     // provider. Checking after dispatch would make this a pause in name only —
     // the run would still cost a model call.
-    let tenant_flags = state_ctx
-        .get::<ares_store::TenantDb>()
-        .expect("not provided")
-        .get_tenant_flags(&tc.tenant_id)
-        .await?;
-    if tenant_flags.paused {
-        return Err(HttpError::from(ares_types::types::AppError::Unavailable(
-            "This tenant is currently paused. Please try again later.".to_string(),
-        )));
-    }
+    //
+    // This is the shared check, the one the admission gate and the research
+    // handler use, so there is one mechanism and one read of `tenants.paused`.
+    ares_agent::admit::ensure_tenant_not_paused(&state_ctx, &tc.tenant_id).await?;
 
     // Extract message from input JSON
     let message = extract_agent_run_message(&input);

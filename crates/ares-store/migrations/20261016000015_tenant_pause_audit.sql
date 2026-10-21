@@ -3,7 +3,14 @@
 -- `tenants.paused_by` records the *current* actor and is cleared when the tenant
 -- is unpaused, so on its own it cannot answer "who stopped this tenant, and
 -- when?" after the fact — which is exactly the question an incident review asks.
--- This table can: one row per change, never updated, never deleted.
+-- This table is written one row per change and is meant to be read as
+-- append-only.
+--
+-- That is a convention, not an enforced property: nothing in the database
+-- prevents an UPDATE or a DELETE on this table, and the application has no
+-- code path that does either. Enforcing it would take a rule or a trigger,
+-- which is more machinery than the question needs today; if the audit ever
+-- has to survive a tampered row, that is when it earns its place.
 --
 -- Kept separate from `20261016000014_tenant_flags` rather than appended to
 -- it, so that migration's checksum stays stable for databases that have

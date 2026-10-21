@@ -18,22 +18,22 @@
 //! panics when it is unreachable, so nothing here skips.
 #![cfg(feature = "postgres")]
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use ares_http::HttpError;
 use ares_http::api::handlers::v1::v1_research;
 use ares_http::config::{AuthConfig, ServerConfig};
 use ares_http::overlay::{
     AresConfig, AresConfigManager, BillingConfig, DatabaseConfig, DynamicConfigPaths, RagConfig,
 };
-use ares_http::HttpError;
 use ares_llm::{LLMClient, LLMResponse, Llm, LlmStreamEvent};
 use ares_store::{PostgresClient, TenantDb};
 use ares_types::models::{TenantContext, TenantTier};
 use ares_types::types::{AppError, ResearchRequest, ToolDefinition};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::{extract::State, Extension, Json};
+use axum::{Extension, Json, extract::State};
 use cordis::Context;
 use sqlx::PgPool;
 

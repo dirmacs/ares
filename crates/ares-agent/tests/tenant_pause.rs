@@ -15,10 +15,10 @@
 //! the test's own pool, never through a service.
 #![cfg(feature = "postgres")]
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use ares_agent::{request_tenant_ctx, AgentRequest, Execute};
+use ares_agent::{AgentRequest, Execute, request_tenant_ctx};
 use ares_llm::{LLMClient, LLMResponse, Llm, LlmStreamEvent};
 use ares_store::{FleetSecrets, PostgresClient, TenantDb};
 use ares_types::models::{TenantContext, TenantTier};

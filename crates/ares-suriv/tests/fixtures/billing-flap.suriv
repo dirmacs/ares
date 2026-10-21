@@ -1,0 +1,16 @@
+this harness begins as billing-flap
+
+bring in billing-router, an agent, in support.
+The router dispatches billing work and notices when the ledger comes back.
+require billing-ledger.
+watch billing-ledger.
+  when billing-ledger is present
+    hand this to billing-ledger.
+    call this ledger-result.
+  when billing-ledger is absent
+    hand this to a human.
+    No ledger, escalating to a person.
+on change of billing-ledger.
+  call this flap.
+  The ledger flapped, recording the new epoch.
+this harness ends

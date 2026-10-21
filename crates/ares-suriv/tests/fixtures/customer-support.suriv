@@ -1,0 +1,46 @@
+this harness begins as customer-support
+
+bring in router, an agent, in support.
+Router reads customer messages and decides which specialist handles them.
+It considers topic, urgency, and history. If unsure, it asks rather than guesses.
+It uses claude-3.5-sonnet. It can classify and escalate.
+It understands its role through @file("prompts/router.md").
+require billing-specialist, product-docs.
+
+bring in billing-specialist, an agent.
+The billing specialist handles refunds, account lookups, and payment disputes.
+It uses gpt-4o. It can look-up-account and process-refund.
+It answers timing questions from @inline("Refunds take 5-7 business days.").
+
+bring in product-docs, a knowledge source.
+Our product documentation lives in @dir("docs/products/").
+
+bring in customer-db, a connector, in billing.
+The customer database speaks postgres at @env("DATABASE_URL").
+It can look-up-account.
+
+bring in tech-agent, an agent.
+The technical agent resolves faults using documentation and account history.
+It uses gpt-4o. It can diagnose and respond.
+
+when a customer inquiry arrives
+  hand this to router.
+
+  when the topic is billing
+    hand this to billing-specialist.
+    call this account.
+    when the customer disputes a charge
+      recall account.
+      hand this to billing-specialist.
+
+  when the topic is technical
+    at the same time
+      hand this to product-docs.
+      hand this to customer-db.
+    call this findings.
+    hand this to tech-agent.
+
+  when triage needs a person
+    hand this to a human.
+
+this harness ends

@@ -5,6 +5,7 @@ members = [
     "crates/ares-rag", "crates/ares-tools", "crates/ares-llm",
     "crates/ares-store", "crates/ares-mcp", "crates/ares-agent",
     "crates/ares-http", "crates/cordis", "crates/ares-test-support",
+    "crates/ares-suriv",
 ]
 exclude = ["ui"]
 resolver = "2"
@@ -49,6 +50,7 @@ ares-agent = { version = "0.11.8", path = "crates/ares-agent" }
 ares-http = { version = "0.11.8", path = "crates/ares-http" }
 cordis = { version = "0.11.8", path = "crates/cordis", package = "ares-cordis", default-features = false }
 ares-test-support = { version = "0.11.8", path = "crates/ares-test-support" }
+ares-suriv = { version = "0.11.8", path = "crates/ares-suriv" }
 anyhow = "1.0.100"
 hex = "0.4"
 rand = "0.9.2"
@@ -172,6 +174,13 @@ inventory = [
     "ares-agent/inventory",
 ]
 
+# Suriv language support — the lexer/parser/codegen that compiles Suriv
+# surface text to Cordis entry records plus the require coeffect map.
+# Optional and off by default, like the other non-core surfaces
+# (`skills`, `email`, `search-tools`): the crate is pure and dependency-free,
+# so enabling it costs nothing at build time beyond itself.
+suriv = ["dep:ares-suriv"]
+
 # ============= LLM Providers =============
 # HTTP adapters ship through ares-llm's default genai feature.
 # Optional in-process GGUF via llama.cpp.
@@ -288,6 +297,9 @@ ares-agent = { workspace = true }
 ares-http = { workspace = true, optional = true }
 cordis = { workspace = true }
 inventory = { workspace = true, optional = true }
+
+# Suriv language (optional; `suriv` feature)
+ares-suriv = { workspace = true, optional = true }
 
 # CLI and TUI (optional; `cli` feature)
 clap = { version = "4.5", features = ["derive", "color", "env", "suggestions"], optional = true }

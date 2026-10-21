@@ -1,0 +1,16 @@
+[package]
+name = "ares-suriv"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.99"
+description = "Suriv language lexer, parser, and code generator: surface text to Cordis entry records plus the require coeffect map"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["language", "compiler", "parser", "configuration", "agent"]
+categories = ["compilers", "parser-implementations"]
+readme = "README.md"
+publish = true
+
+[features]
+default = []

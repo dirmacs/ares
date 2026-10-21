@@ -69,8 +69,10 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        # Use "ui" to include embedded web UI, or "ollama,local-db" for minimal
-        - FEATURES=${ARES_FEATURES:-ollama,local-db}
+        # `http` and `cli` are required by the `ares-server` binary target.
+        # There is no `ollama` or `local-db` feature; `ui` adds the embedded
+        # web UI.
+        - FEATURES=${ARES_FEATURES:-postgres,mcp,http,cli}
     container_name: ares-server
     ports:
       - "3000:3000"
@@ -122,7 +124,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        - FEATURES=ollama,local-db
+        - FEATURES=postgres,mcp,http,cli
     container_name: ares-init
     volumes:
       - ares_data:/app/data

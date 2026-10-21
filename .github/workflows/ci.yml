@@ -36,7 +36,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Build the APPA CLI from the pinned source
-        run: cargo install --git https://github.com/archestra-ai/OpenAPPA --rev "$APPA_REV" --locked --bin appa
+        run: cargo install --git https://github.com/archestra-ai/OpenAPPA --rev "$APPA_REV" --locked appa
       - name: The complete test configuration loads and the replay suite proves it can fail
         run: ./scripts/appa-policy-gate.sh appa
   crap:

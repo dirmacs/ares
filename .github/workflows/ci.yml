@@ -46,6 +46,18 @@ jobs:
       CRAP_THRESHOLD: "715"
     steps:
       - uses: actions/checkout@v4
+      # The rustup shims live in $CARGO_HOME/bin. The dtolnay action probes
+      # `rustc` to compute its cache key, and it does that BEFORE it exports
+      # that directory - so the probe finds no rustc on a runner whose
+      # ambient PATH does not carry it, and the job dies with
+      # "rustc: command not found" and exit 127. That is what made this
+      # gate fail one run in five: every other step was skipped, so nothing
+      # about the tree was ever measured.
+      #
+      # $GITHUB_PATH reaches the steps AFTER this one, which is exactly the
+      # step the action needs.
+      - name: Put the toolchain's shims on PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install pinned cargo-crap
@@ -72,6 +84,9 @@ jobs:
     runs-on: [self-hosted, Linux, ARM64, dirmacs-ci]
     steps:
       - uses: actions/checkout@v4
+      # The same probe, and the same fix: see the CRAP gate's step above.
+      - name: Put the toolchain's shims on PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Check headless library build

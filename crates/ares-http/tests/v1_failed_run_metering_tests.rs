@@ -33,7 +33,10 @@ use ares_http::active_runs::ActiveRuns;
 use ares_http::auth::jwt::AuthService;
 use ares_llm::{ModelConfig, ProviderConfig, ProviderRegistry};
 use ares_store::run_history::{LogLlmCallRequest, RunHistoryStore, SetTenantBudgetRequest};
-use ares_store::tenant_agents::{create_tenant_agent, CreateTenantAgentRequest};
+use ares_store::tenant_agents::{
+    create_tenant_agent_as, get_tenant_agent_publish_state, publish_tenant_agent,
+    CreateTenantAgentRequest, PublishOutcome,
+};
 use ares_store::token_budgets::TokenBudgetStore;
 use ares_store::TenantDb;
 use ares_tools::Tools;
@@ -242,7 +245,9 @@ impl Fixture {
             .create_api_key(&tenant.id, "t113-key".to_string(), None, None)
             .await
             .expect("create the API key");
-        create_tenant_agent(
+        // Item 2.6a: only a published agent runs, so the fixture is written by
+        // one admin and published by a second, through the real publish path.
+        create_tenant_agent_as(
             &pool,
             &tenant.id,
             CreateTenantAgentRequest {
@@ -257,9 +262,24 @@ impl Fixture {
                     "parallel_tools": false
                 }),
             },
+            Some("fixture-author"),
         )
         .await
         .expect("create the tenant agent");
+        let draft_digest = get_tenant_agent_publish_state(&pool, &tenant.id, AGENT)
+            .await
+            .expect("publish state")
+            .draft_digest
+            .expect("the new row is a draft");
+        match publish_tenant_agent(&pool, &tenant.id, AGENT, &draft_digest, "fixture-approver")
+            .await
+            .expect("publish the tenant agent")
+        {
+            PublishOutcome::Published(_) => {}
+            PublishOutcome::Refused(refusal) => {
+                panic!("the fixture publish was refused: {refusal:?}")
+            }
+        }
 
         Some(Self {
             app,

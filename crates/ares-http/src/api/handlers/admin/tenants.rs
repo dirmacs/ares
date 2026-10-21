@@ -287,13 +287,17 @@ pub async fn provision_client(
     )
     .await;
 
-    let agents = clone_templates_for_tenant(&pool, &tenant.id, &product_type).await?;
+    // Item 2.6a (D-4): the cloned agents are drafts by this admin. They run
+    // once a second admin publishes them (`POST .../publish`); until then the
+    // run path refuses them as not published.
+    let agents =
+        clone_templates_for_tenant(&pool, &tenant.id, &product_type, actor.audit_actor()).await?;
 
-    // Row 34: a provisioned tenant must be runnable without a second pass.
+    // Row 34: provisioning sets up everything a publish needs, in one pass.
     // With a provider spec the tenant gets its own runtime provider and every
-    // cloned agent targets it by name; without one, template models that do
-    // not resolve fall back to the config alias `fast`. The resolved model
-    // ids join the tenant allowlist, which the run path enforces.
+    // cloned agent's draft targets it by name; without one, template models
+    // that do not resolve fall back to the config alias `fast`. The resolved
+    // model ids join the tenant allowlist, which the run path enforces.
     let mut provider_name: Option<String> = None;
     if let Some(spec) = &req.provider {
         validate_provider_spec(spec)?;
@@ -334,7 +338,7 @@ pub async fn provision_client(
     let mut allowlist: Vec<String> = req.allowed_models.clone().unwrap_or_default();
     for agent in &agents {
         let current = agent
-            .config
+            .draft_base()
             .get("model")
             .and_then(|v| v.as_str())
             .unwrap_or_default();
@@ -351,7 +355,14 @@ pub async fn provision_client(
             None
         };
         if let Some(model) = &target {
-            set_tenant_agent_model(&pool, &tenant.id, &agent.agent_name, model).await?;
+            set_tenant_agent_model(
+                &pool,
+                &tenant.id,
+                &agent.agent_name,
+                model,
+                actor.audit_actor(),
+            )
+            .await?;
         }
         let final_model = target.as_deref().unwrap_or(current);
         if let Some(resolved) = known_models

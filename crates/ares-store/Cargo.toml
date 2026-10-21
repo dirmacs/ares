@@ -11,7 +11,7 @@ description = "Database and vector store clients for ARES"
 default = []
 # Compile-time factory collection (mirrors the server root feature)
 inventory = ["dep:inventory", "cordis/inventory"]
-postgres = ["dep:sqlx"]
+postgres = ["dep:sqlx", "dep:sqlx-core", "dep:sqlx-postgres"]
 turso = ["dep:libsql"]
 ares-vector = ["dep:ares-vector"]
 lancedb = ["dep:lancedb"]
@@ -40,6 +40,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 sqlx = { workspace = true, optional = true }
+sqlx-core = { workspace = true, optional = true }
+# The Postgres `Migrate` impl (`Migrate for PgConnection`) that `Migrator::run`
+# needs for a `PgPool`. Its `migrate` feature is a forward to `sqlx-core/migrate`;
+# it does not pull in the sqlite driver.
+sqlx-postgres = { workspace = true, optional = true }
 libsql = { workspace = true, optional = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -50,6 +55,13 @@ lancedb = { workspace = true, optional = true }
 chromadb = { workspace = true, optional = true }
 pinecone-sdk = { workspace = true, optional = true }
 rust_decimal = { workspace = true }
+[build-dependencies]
+# The build script computes each migration's sha384 itself, matching
+# `sqlx_core::migrate::Migration::new` exactly (sha2 + hex, same digest, same
+# byte order), so the generated `checksum` literal is what sqlx would have
+# recorded. sqlx-core is a build dependency only for the `Migration` type path.
+sha2 = { workspace = true }
+hex = { workspace = true }
 [dev-dependencies]
 ares-test-support = { workspace = true }
 chrono = { workspace = true }

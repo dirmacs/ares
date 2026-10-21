@@ -1,7 +1,7 @@
 //! Google connector — shared OAuth and HTTP client for Google APIs.
 
 use crate::connectors::{
-    execute_with_retry, get_valid_access_token, ConnectorConfig, ConnectorError,
+    ConnectorConfig, ConnectorError, execute_with_retry, get_valid_access_token,
 };
 use ares_store::MasterKey;
 use ares_types::types::Result;

@@ -1,14 +1,14 @@
-use crate::auth::middleware::AuthUser;
 use crate::HttpError;
 use crate::Result;
+use crate::auth::middleware::AuthUser;
 use crate::{
     db::postgres::UserAgent, db::traits::DatabaseClient, types::AppError,
     utils::toml_config::AgentConfig,
 };
 use axum::{
+    Json,
     extract::{Path, State},
     response::{IntoResponse, Response},
-    Json,
 };
 use cordis::Context;
 use serde::{Deserialize, Serialize};

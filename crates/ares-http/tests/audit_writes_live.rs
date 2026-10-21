@@ -40,19 +40,19 @@ use ares_http::api::handlers::admin::shared::{
     ProvisionProviderSpec, RuntimeProviderScopeQuery, SetTokenBudgetRequest,
 };
 use ares_http::api::handlers::admin::tenants::provision_client;
-use ares_http::api::handlers::admin::{update_tenant_agent_handler, AdminActor};
+use ares_http::api::handlers::admin::{AdminActor, update_tenant_agent_handler};
 use ares_http::api::handlers::v1::{
-    create_api_key, delete_tenant_data, revoke_api_key, rotate_api_key, CreateApiKeyRequest,
-    RotateApiKeyRequest,
+    CreateApiKeyRequest, RotateApiKeyRequest, create_api_key, delete_tenant_data, revoke_api_key,
+    rotate_api_key,
 };
-use ares_store::tenant_agents::{create_tenant_agent, CreateTenantAgentRequest};
 use ares_store::TenantDb;
+use ares_store::tenant_agents::{CreateTenantAgentRequest, create_tenant_agent};
 use ares_types::models::{TenantContext, TenantTier};
 use ares_types::types::AppError;
+use axum::Json;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
-use axum::Json;
 use cordis::Context;
 use sqlx::PgPool;
 use sqlx::Row;
@@ -688,22 +688,26 @@ async fn audit_row_lands_before_response_v1_key_rotate() {
     assert_eq!(minted[0].action, "rotate_api_key");
     assert_eq!(minted[0].resource_type, "api_key");
     assert_eq!(minted[0].actor.as_deref(), Some(tenant.id.as_str()));
-    assert!(minted[0]
-        .details
-        .as_deref()
-        .expect("details")
-        .contains(&old_key.id));
+    assert!(
+        minted[0]
+            .details
+            .as_deref()
+            .expect("details")
+            .contains(&old_key.id)
+    );
 
     let revoked = rows_for_resource(&pool, &old_key.id).await;
     assert_eq!(revoked.len(), 1, "revoke rows: {revoked:?}");
     assert_eq!(revoked[0].action, "revoke_api_key");
     assert_eq!(revoked[0].resource_type, "api_key");
     assert_eq!(revoked[0].actor.as_deref(), Some(tenant.id.as_str()));
-    assert!(revoked[0]
-        .details
-        .as_deref()
-        .expect("details")
-        .contains(&new_id));
+    assert!(
+        revoked[0]
+            .details
+            .as_deref()
+            .expect("details")
+            .contains(&new_id)
+    );
 }
 
 /// `rotate_api_key` mints first, then revokes the old key with `?`. When the
@@ -806,11 +810,13 @@ async fn rotate_audits_the_mint_when_the_revoke_fails() {
     assert_eq!(minted[0].action, "rotate_api_key");
     assert_eq!(minted[0].resource_type, "api_key");
     assert_eq!(minted[0].actor.as_deref(), Some(tenant.id.as_str()));
-    assert!(minted[0]
-        .details
-        .as_deref()
-        .expect("details")
-        .contains(&old_key.id));
+    assert!(
+        minted[0]
+            .details
+            .as_deref()
+            .expect("details")
+            .contains(&old_key.id)
+    );
 
     // The revoke did not happen, so the old key has no revoke row.
     assert!(

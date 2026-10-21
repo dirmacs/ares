@@ -19,18 +19,18 @@
 #![cfg(feature = "postgres")]
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ares_agent::{
-    request_tenant_ctx, AgentConfig, AgentRegistry, AgentRequest, AgentSource, Execute,
+    AgentConfig, AgentRegistry, AgentRequest, AgentSource, Execute, request_tenant_ctx,
 };
 use ares_llm::{
     LLMClient, LLMResponse, Llm, LlmStreamEvent, ModelConfig, ProviderConfig, ProviderRegistry,
 };
 use ares_store::tenant_agents::{
-    create_tenant_agent_as, get_tenant_agent_publish_state, publish_tenant_agent,
-    CreateTenantAgentRequest, PublishOutcome,
+    CreateTenantAgentRequest, PublishOutcome, create_tenant_agent_as,
+    get_tenant_agent_publish_state, publish_tenant_agent,
 };
 use ares_store::tenant_allowlist::TenantAllowlistStore;
 use ares_store::{FleetSecrets, PostgresClient, TenantDb};
@@ -42,7 +42,7 @@ use axum::routing::post;
 use axum::{Json, Router};
 use cordis::Context;
 use futures::StreamExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgPool;
 
 /// The agent name used everywhere: it exists as a system agent in the registry.

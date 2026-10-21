@@ -776,10 +776,11 @@ mod tests {
     #[test]
     fn default_dir_initializes_manager() {
         let mgr = CheckpointManager::default_dir().expect("default_dir should succeed");
-        assert!(mgr
-            .checkpoint_dir
-            .to_string_lossy()
-            .ends_with("checkpoints"));
+        assert!(
+            mgr.checkpoint_dir
+                .to_string_lossy()
+                .ends_with("checkpoints")
+        );
     }
 
     #[test]

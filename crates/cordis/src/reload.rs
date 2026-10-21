@@ -49,7 +49,7 @@ pub async fn reload_entries_from_disk(
     ctx: &Arc<crate::Context>,
     entries_path: &Path,
 ) -> ReloadOutcome {
-    use crate::{compose_all, Loader};
+    use crate::{Loader, compose_all};
 
     let lock = reload_lock();
     let _guard = lock.lock().await;
@@ -159,8 +159,7 @@ mod tests {
     struct Probe(pub AtomicU64);
     impl crate::Service for Probe {}
 
-    const PROBE_TOML: &str =
-        "[[entry]]\nid = \"probe\"\nplugin = \"ProbeService\"\ndisabled = false\n\n[entry.config]\nv = 1\n";
+    const PROBE_TOML: &str = "[[entry]]\nid = \"probe\"\nplugin = \"ProbeService\"\ndisabled = false\n\n[entry.config]\nv = 1\n";
 
     /// Full fixture: loader context + temp TOML program seeded with
     /// `initial_toml`, `CurrentEntries` starting from `current`.

@@ -16,8 +16,8 @@
 #![cfg(feature = "postgres")]
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ares_agent::{Agent, AgentConfig, AgentResponse, ConfigurableAgent};
 use ares_llm::{LLMClient, LLMResponse, LlmStreamEvent};

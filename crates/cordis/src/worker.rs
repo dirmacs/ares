@@ -189,8 +189,8 @@ pub fn watch_plugin_dirs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
     fn exit_codes_are_distinct() {

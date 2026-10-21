@@ -61,7 +61,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use ares_http::auth::jwks::{encode_token_with_pem_key, IssuerClaims, JwksCache, RoleEntry};
+use ares_http::auth::jwks::{IssuerClaims, JwksCache, RoleEntry, encode_token_with_pem_key};
 use ares_http::auth::jwt::AuthService;
 use ares_store::TenantDb;
 use ares_types::models::TenantTier;
@@ -102,8 +102,10 @@ fn lock_env() -> MutexGuard<'static, ()> {
 /// Set (`Some`) or remove (`None`) one variable. The caller holds [`ENV_LOCK`].
 fn set_env(name: &str, value: Option<&str>) {
     match value {
-        Some(v) => std::env::set_var(name, v),
-        None => std::env::remove_var(name),
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        Some(v) => unsafe { std::env::set_var(name, v) },
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        None => unsafe { std::env::remove_var(name) },
     }
 }
 
@@ -480,7 +482,9 @@ async fn e6_empty_header_on_the_wire_is_refused() {
 
     set_env(ADMIN_ENV, Some(""));
     let (status_line, body) = raw_admin_get(addr, "X-Admin-Secret:\r\n").await;
-    eprintln!("PROBE E6 | real socket, ADMIN_API_KEY set-empty, raw `X-Admin-Secret:` | {status_line:?} | body {body:?}");
+    eprintln!(
+        "PROBE E6 | real socket, ADMIN_API_KEY set-empty, raw `X-Admin-Secret:` | {status_line:?} | body {body:?}"
+    );
     assert!(
         status_line.starts_with("HTTP/1.1 401"),
         "E6 must be refused, got {status_line:?}"
@@ -607,7 +611,10 @@ async fn e7_empty_webhook_secret_refuses_every_request() {
             ("any header", Some(WRONG_TEST_SECRET)),
         ] {
             let (status, _, body) = send(&h.router, event_post(route, secret)).await;
-            eprintln!("PROBE E7 | {route} | WEBHOOK_SECRET set-empty, {label} | status {} | body {body:?}", status.as_u16());
+            eprintln!(
+                "PROBE E7 | {route} | WEBHOOK_SECRET set-empty, {label} | status {} | body {body:?}",
+                status.as_u16()
+            );
             if !webhook_refused(status, &body) {
                 wrong.push(format!(
                     "{route}, {label}: status {} body {body:?}",

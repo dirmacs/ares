@@ -289,7 +289,8 @@ fn test_llm_client_factory_creation() {
 
 #[test]
 fn test_provider_from_config_openai_mapping() {
-    std::env::set_var("TEST_ARES_LLM_OPENAI_KEY", "sk-test");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("TEST_ARES_LLM_OPENAI_KEY", "sk-test") };
     let config = ProviderConfig::OpenAI {
         api_key_env: "TEST_ARES_LLM_OPENAI_KEY".to_string(),
         api_base: "https://api.openai.com/v1".to_string(),
@@ -297,7 +298,8 @@ fn test_provider_from_config_openai_mapping() {
     };
     let provider = Provider::from_config(&config, None).expect("from_config openai");
     assert_eq!(provider.name(), "openai");
-    std::env::remove_var("TEST_ARES_LLM_OPENAI_KEY");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("TEST_ARES_LLM_OPENAI_KEY") };
 }
 
 // ============= Multi-Message Conversation Tests =============

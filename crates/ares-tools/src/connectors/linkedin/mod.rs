@@ -1,14 +1,14 @@
 //! LinkedIn connector tools.
 
 use crate::connectors::{
-    execute_with_retry, get_valid_access_token, require_tenant_id, ConnectorConfig, ConnectorError,
+    ConnectorConfig, ConnectorError, execute_with_retry, get_valid_access_token, require_tenant_id,
 };
 use crate::registry::Tool;
 use ares_store::MasterKey;
 use ares_types::types::{AppError, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgPool;
 
 const LINKEDIN_TOKEN_URL: &str = "https://www.linkedin.com/oauth/v2/accessToken";

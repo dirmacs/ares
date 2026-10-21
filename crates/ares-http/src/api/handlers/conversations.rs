@@ -14,8 +14,8 @@ use crate::{
     types::{AppError, ContentPart, Message, MessageRole},
 };
 use axum::{
-    extract::{Path, State},
     Json,
+    extract::{Path, State},
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -334,7 +334,8 @@ mod tests {
 
     #[test]
     fn ensure_conversation_owner_does_not_depend_on_env() {
-        std::env::remove_var("DATABASE_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
         assert!(ensure_conversation_owner("u1", "u1", "delete").is_ok());
     }
 

@@ -222,8 +222,8 @@ fn test_provider_registry_from_config() {
 
 #[tokio::test]
 async fn test_workflow_engine_from_config() {
-    use ares_agent::workflows::WorkflowEngine;
     use ares_agent::AgentRegistry;
+    use ares_agent::workflows::WorkflowEngine;
     use ares_http::{AresConfigManager, DynamicConfigManager};
     use ares_llm::ConfigBasedLLMFactory;
     use ares_llm::ProviderRegistry;

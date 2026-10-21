@@ -1,8 +1,8 @@
 [package]
 name = "ares-vector"
 version = "0.1.4"
-edition = "2021"
-rust-version = "1.75"
+edition = "2024"
+rust-version = "1.99"
 description = "Embedded vector database with HNSW indexing for ARES"
 license = "MIT"
 repository = "https://github.com/dirmacs/ares"

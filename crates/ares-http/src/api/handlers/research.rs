@@ -7,8 +7,8 @@ use crate::{
     utils::toml_config::{AresConfig, WorkflowConfig},
 };
 use axum::{
-    extract::{Extension, State},
     Json,
+    extract::{Extension, State},
 };
 use cordis::Context;
 use std::sync::Arc;
@@ -399,9 +399,12 @@ mod tests {
 
     #[test]
     fn orchestrator_model_name_does_not_read_llm_env() {
-        std::env::remove_var("OPENAI_API_KEY");
-        std::env::remove_var("ANTHROPIC_API_KEY");
-        std::env::remove_var("OLLAMA_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("OPENAI_API_KEY") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("OLLAMA_URL") };
         let config = config_with_orchestrator("local-model");
         assert_eq!(orchestrator_model_name(&config), "local-model");
     }

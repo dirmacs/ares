@@ -302,8 +302,8 @@ pub fn spawn_self_supervised() -> Result<SupervisedChild, io::Error> {
 mod tests {
     use super::*;
 
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Serialises every test that touches the process-wide environment.
     ///
@@ -345,7 +345,8 @@ mod tests {
     #[tokio::test]
     async fn child_exit_codes_drive_loop() {
         let _guard = ENV_LOCK.lock().await;
-        std::env::remove_var(CHILD_ENV_MARKER);
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var(CHILD_ENV_MARKER) };
 
         let script = Script::new(vec![Some(EXIT_RESTART), Some(0)]);
         let result = supervise(|| script.clone().step()).await;
@@ -357,7 +358,8 @@ mod tests {
     #[tokio::test]
     async fn rapid_restart_cap_trips() {
         let _guard = ENV_LOCK.lock().await;
-        std::env::remove_var(CHILD_ENV_MARKER);
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var(CHILD_ENV_MARKER) };
 
         let script = Script::new(vec![Some(EXIT_RESTART); RAPID_RESTART_LIMIT]);
         let result = supervise(|| script.clone().step()).await;
@@ -409,7 +411,8 @@ mod tests {
     #[tokio::test]
     async fn long_lived_run_resets_rapid_restart_ladder() {
         let _guard = ENV_LOCK.lock().await;
-        std::env::remove_var(CHILD_ENV_MARKER);
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var(CHILD_ENV_MARKER) };
 
         const HEALTHY_MS: u64 = HEALTHY_RUN_DURATION.as_millis() as u64;
         const BASE: u64 = 1_000_000_000;
@@ -444,7 +447,8 @@ mod tests {
     #[tokio::test]
     async fn all_rapid_runs_without_reset_still_trip_cap() {
         let _guard = ENV_LOCK.lock().await;
-        std::env::remove_var(CHILD_ENV_MARKER);
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var(CHILD_ENV_MARKER) };
 
         const BASE: u64 = 2_000_000_000;
         let exits: Vec<u64> = (1..=5).map(|i| BASE + i).collect();
@@ -462,7 +466,8 @@ mod tests {
     #[tokio::test]
     async fn supervised_mode_short_circuits() {
         let _guard = ENV_LOCK.lock().await;
-        std::env::set_var(CHILD_ENV_MARKER, "1");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var(CHILD_ENV_MARKER, "1") };
         assert!(is_supervised());
 
         let script = Script::new(Vec::new());
@@ -471,7 +476,8 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(script.calls(), 0);
 
-        std::env::remove_var(CHILD_ENV_MARKER);
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var(CHILD_ENV_MARKER) };
     }
 
     /// Grace constant is part of the daemon's operational contract: a hung
@@ -546,7 +552,8 @@ mod tests {
     #[tokio::test]
     async fn healthy_run_resets_backoff_counter() {
         let _guard = ENV_LOCK.lock().await;
-        std::env::remove_var(CHILD_ENV_MARKER);
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var(CHILD_ENV_MARKER) };
 
         const HEALTHY_MS: u64 = HEALTHY_RUN_DURATION.as_millis() as u64;
         const BASE: u64 = 3_000_000_000;

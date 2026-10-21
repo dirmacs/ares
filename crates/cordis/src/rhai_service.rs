@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 #[cfg(feature = "rhai")]
-use rhai::{Dynamic, Engine, EvalAltResult, Scope, AST};
+use rhai::{AST, Dynamic, Engine, EvalAltResult, Scope};
 #[cfg(feature = "rhai")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "rhai")]

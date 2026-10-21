@@ -322,16 +322,16 @@ impl VectorStore for AresVectorStore {
             // Use score directly (already converted from distance)
             let similarity = result.score;
 
-            if similarity >= threshold {
-                if let Some(doc) = collection_docs.get(&result.id) {
-                    results.push(SearchResult {
-                        document: doc.clone(),
-                        score: similarity,
-                    });
+            if similarity >= threshold
+                && let Some(doc) = collection_docs.get(&result.id)
+            {
+                results.push(SearchResult {
+                    document: doc.clone(),
+                    score: similarity,
+                });
 
-                    if results.len() >= limit {
-                        break;
-                    }
+                if results.len() >= limit {
+                    break;
                 }
             }
         }
@@ -357,10 +357,10 @@ impl VectorStore for AresVectorStore {
             if let Ok(true) = self.db.delete(collection, id).await {
                 // Remove from document storage
                 let mut docs = self.documents.write();
-                if let Some(collection_docs) = docs.get_mut(collection) {
-                    if collection_docs.remove(id).is_some() {
-                        deleted += 1;
-                    }
+                if let Some(collection_docs) = docs.get_mut(collection)
+                    && collection_docs.remove(id).is_some()
+                {
+                    deleted += 1;
                 }
             }
         }

@@ -6,8 +6,8 @@
 //! an empty map — the service does not refuse to start.
 
 use crate::fleet_secrets::{
-    decrypt_api_key, encrypt_api_key, EncryptedPayload, FleetSecretsError, MasterKey,
-    ProviderOverride,
+    EncryptedPayload, FleetSecretsError, MasterKey, ProviderOverride, decrypt_api_key,
+    encrypt_api_key,
 };
 use ares_types::types::{AppError, Result};
 use sqlx::{PgPool, Row};
@@ -324,7 +324,7 @@ fn sqlx_err(e: sqlx::Error) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fleet_secrets::{last_n_visible, MasterKey};
+    use crate::fleet_secrets::{MasterKey, last_n_visible};
 
     // These tests do not require a live DB; they exercise the in-memory map
     // contract. Integration tests against a real Postgres instance should
@@ -349,10 +349,12 @@ mod tests {
     #[test]
     fn master_key_from_env_handles_missing() {
         let prev = std::env::var("FLEET_SECRETS_KEY").ok();
-        std::env::remove_var("FLEET_SECRETS_KEY");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("FLEET_SECRETS_KEY") };
         assert!(MasterKey::from_env().is_none());
         if let Some(p) = prev {
-            std::env::set_var("FLEET_SECRETS_KEY", p);
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("FLEET_SECRETS_KEY", p) };
         }
     }
 }

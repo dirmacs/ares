@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{Context, CordisError, Fiber, FiberId, Service, Symbol};
 
@@ -317,7 +317,7 @@ impl RegistryService {
                 Err(payload) => {
                     return Err(CordisError::Fiber(format!(
                         "plugin factory panicked: {payload}"
-                    )))
+                    )));
                 }
             };
             let provides = applied?;
@@ -680,10 +680,12 @@ mod tests {
             .expect("failed fiber should be tracked");
         match existing.state() {
             FiberState::Failed { error } => {
-                assert!(error
-                    .as_deref()
-                    .unwrap_or("")
-                    .contains("intentional failure"));
+                assert!(
+                    error
+                        .as_deref()
+                        .unwrap_or("")
+                        .contains("intentional failure")
+                );
             }
             other => panic!("expected Failed state, got {other:?}"),
         }
@@ -1277,10 +1279,12 @@ mod tests {
         let fiber = registry.get_fiber(fid).expect("tracked");
         match fiber.state() {
             crate::FiberState::Failed { error } => {
-                assert!(error
-                    .as_deref()
-                    .unwrap_or("")
-                    .contains("availability predicate rejected service"));
+                assert!(
+                    error
+                        .as_deref()
+                        .unwrap_or("")
+                        .contains("availability predicate rejected service")
+                );
             }
             other => panic!("expected Failed state, got {other:?}"),
         }

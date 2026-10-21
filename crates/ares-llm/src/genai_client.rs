@@ -303,8 +303,8 @@ impl GenaiClient {
                         });
                     }
                     Ok(ChatStreamEvent::End(end)) => {
-                        if let Some(captured) = end.captured_into_tool_calls() {
-                            if !captured.is_empty() {
+                        if let Some(captured) = end.captured_into_tool_calls()
+                            && !captured.is_empty() {
                                 tool_calls = captured
                                     .into_iter()
                                     .map(|tc| ToolCall {
@@ -314,7 +314,6 @@ impl GenaiClient {
                                     })
                                     .collect();
                             }
-                        }
                     }
                     Ok(_) => {}
                     Err(err) => yield Err(map_error(err)),
@@ -1243,9 +1242,11 @@ mod tests {
         assert_eq!(mapped.len(), 2);
         assert_eq!(mapped[0].name.as_str(), "lookup");
         assert!(matches!(mapped[1].name, genai::chat::ToolName::WebSearch));
-        assert!(mapped
-            .iter()
-            .all(|t| t.name.as_str() != PROVIDER_WEB_SEARCH));
+        assert!(
+            mapped
+                .iter()
+                .all(|t| t.name.as_str() != PROVIDER_WEB_SEARCH)
+        );
 
         let hint_only = map_tools(&[], true);
         assert_eq!(hint_only.len(), 1);

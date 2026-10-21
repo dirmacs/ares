@@ -13,18 +13,19 @@ use ares_store::agent_runs;
 use ares_store::agent_versions;
 use ares_store::audit_log;
 use ares_store::tenant_agents::{
-    create_tenant_agent_as, deep_merge_config, delete_tenant_agent as db_delete_tenant_agent,
-    get_tenant_agent as db_get_tenant_agent, get_tenant_agent_publish_state, list_agent_templates,
-    list_tenant_agent_versions, list_tenant_agents as db_list_tenant_agents, publish_tenant_agent,
-    rollback_tenant_agent_version, update_tenant_agent_as, AgentTemplate, AgentTemplateStore,
-    CreateTemplateRequest, CreateTenantAgentRequest, PublishOutcome, PublishRefusal,
-    PublishTenantAgentRequest, TenantAgent, TenantAgentPublishState, UpdateTenantAgentRequest,
+    AgentTemplate, AgentTemplateStore, CreateTemplateRequest, CreateTenantAgentRequest,
+    PublishOutcome, PublishRefusal, PublishTenantAgentRequest, TenantAgent,
+    TenantAgentPublishState, UpdateTenantAgentRequest, create_tenant_agent_as, deep_merge_config,
+    delete_tenant_agent as db_delete_tenant_agent, get_tenant_agent as db_get_tenant_agent,
+    get_tenant_agent_publish_state, list_agent_templates, list_tenant_agent_versions,
+    list_tenant_agents as db_list_tenant_agents, publish_tenant_agent,
+    rollback_tenant_agent_version, update_tenant_agent_as,
 };
 use ares_types::types::{AgentContext, AppError};
 use axum::{
+    Json,
     extract::{Path, Query, State},
     http::StatusCode,
-    Json,
 };
 use sha2::Digest;
 use std::collections::HashMap;
@@ -112,12 +113,12 @@ fn split_merged_config_patch(
 ) -> (serde_json::Value, serde_json::Value) {
     let merged = deep_merge_config(current, &patch);
     let mut forward = merged.clone();
-    if let (Some(cur_obj), Some(merged_obj)) = (current.as_object(), merged.as_object()) {
-        if let Some(fwd_obj) = forward.as_object_mut() {
-            for key in cur_obj.keys() {
-                if !merged_obj.contains_key(key) {
-                    fwd_obj.insert(key.clone(), serde_json::Value::Null);
-                }
+    if let (Some(cur_obj), Some(merged_obj)) = (current.as_object(), merged.as_object())
+        && let Some(fwd_obj) = forward.as_object_mut()
+    {
+        for key in cur_obj.keys() {
+            if !merged_obj.contains_key(key) {
+                fwd_obj.insert(key.clone(), serde_json::Value::Null);
             }
         }
     }

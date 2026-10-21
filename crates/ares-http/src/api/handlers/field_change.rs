@@ -5,15 +5,15 @@
 //! request presents (`document_upload::authenticate_webhook`), never the body's.
 
 use crate::api::handlers::document_upload::{
-    authenticate_webhook, require_body_tenant, WebhookError,
+    WebhookError, authenticate_webhook, require_body_tenant,
 };
 use ares_agent::trigger;
 use ares_store::schedules as db_schedules;
 use ares_types::types::AppError;
 use axum::{
+    Json,
     extract::State,
     http::{HeaderMap, StatusCode},
-    Json,
 };
 use cordis::Context;
 use serde::Deserialize;
@@ -143,8 +143,10 @@ mod tests {
         let ctx = Context::new_root();
         for env in [None, Some(""), Some("   "), Some("anything")] {
             match env {
-                Some(value) => std::env::set_var("WEBHOOK_SECRET", value),
-                None => std::env::remove_var("WEBHOOK_SECRET"),
+                // FIXME: Audit that the environment access only happens in single-threaded code.
+                Some(value) => unsafe { std::env::set_var("WEBHOOK_SECRET", value) },
+                // FIXME: Audit that the environment access only happens in single-threaded code.
+                None => unsafe { std::env::remove_var("WEBHOOK_SECRET") },
             }
             for (label, headers) in headers_without_a_usable_secret() {
                 let payload = FieldChangeEvent {
@@ -162,7 +164,8 @@ mod tests {
                 assert_eq!(status, StatusCode::UNAUTHORIZED, "{label}, env {env:?}");
             }
         }
-        std::env::remove_var("WEBHOOK_SECRET");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("WEBHOOK_SECRET") };
     }
 
     /// Replaces the 2.16e `verify_webhook_secret_accepts_match` for this route:
@@ -174,7 +177,8 @@ mod tests {
     async fn field_change_ignores_the_old_environment_variable() {
         let _guard = lock_webhook_secret_env();
         let ctx = Context::new_root();
-        std::env::set_var("WEBHOOK_SECRET", "secret456");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("WEBHOOK_SECRET", "secret456") };
         let mut headers = HeaderMap::new();
         headers.insert("X-Webhook-Secret", HeaderValue::from_static("secret456"));
         let payload = FieldChangeEvent {
@@ -186,7 +190,8 @@ mod tests {
             new_value: serde_json::json!(2),
         };
         let result = handle_field_change(State(ctx), headers, Json(payload)).await;
-        std::env::remove_var("WEBHOOK_SECRET");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("WEBHOOK_SECRET") };
         let (status, _) = refusal_parts(result.expect_err("not admitted")).await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     }

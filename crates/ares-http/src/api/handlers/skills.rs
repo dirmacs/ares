@@ -3,9 +3,9 @@
 //! Requires the `skills` feature flag.
 
 use axum::{
+    Json,
     extract::{Path, State},
     http::StatusCode,
-    Json,
 };
 use cordis::Context;
 use serde::Serialize;

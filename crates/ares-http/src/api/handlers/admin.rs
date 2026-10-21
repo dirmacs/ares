@@ -129,14 +129,12 @@ fn admin_client_ip(req: &axum::extract::Request) -> Option<String> {
         .headers()
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
-    {
-        if let Some(last) = forwarded
+        && let Some(last) = forwarded
             .split(',')
             .map(str::trim)
             .rfind(|entry| !entry.is_empty())
-        {
-            return Some(last.to_string());
-        }
+    {
+        return Some(last.to_string());
     }
     if let Some(real_ip) = req.headers().get("x-real-ip").and_then(|v| v.to_str().ok()) {
         let real_ip = real_ip.trim();
@@ -206,16 +204,16 @@ pub async fn admin_middleware(mut req: axum::extract::Request, next: Next) -> Re
         .and_then(|v| v.to_str().ok())
         .filter(|given| !given.trim().is_empty())
         .map(String::from);
-    if let (Some(expected), Some(given)) = (&admin_secret, &header_secret) {
-        if expected == given {
-            req.extensions_mut().insert(AdminActor {
-                subject: None,
-                email: None,
-                auth: Some("admin_secret"),
-                client_ip,
-            });
-            return next.run(req).await;
-        }
+    if let (Some(expected), Some(given)) = (&admin_secret, &header_secret)
+        && expected == given
+    {
+        req.extensions_mut().insert(AdminActor {
+            subject: None,
+            email: None,
+            auth: Some("admin_secret"),
+            client_ip,
+        });
+        return next.run(req).await;
     }
 
     // JWT path. Only EdDSA and RS256 tokens verified against the issuer
@@ -260,7 +258,7 @@ async fn admin_actor_from_token(
         jsonwebtoken::Algorithm::EdDSA | jsonwebtoken::Algorithm::RS256 => {
             let jwks = jwks.unwrap_or_else(crate::auth::jwks::JwksCache::shared);
             let user = jwks.validate(token).await.ok()?;
-            user_context_has_admin_role(&user).then(|| AdminActor {
+            user_context_has_admin_role(&user).then_some(AdminActor {
                 subject: Some(user.user_id),
                 email: Some(user.email),
                 auth: Some("jwt"),
@@ -525,8 +523,9 @@ mod tests {
         use crate::auth::test_keys::{eddsa_token, jwks_json, jwks_stub, rewrite_alg};
         use tower::ServiceExt;
 
-        let env_guard = shared::lock_admin_env();
-        std::env::set_var("ADMIN_API_KEY", "test-admin-secret");
+        let env_guard = shared::lock_admin_env().await;
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("ADMIN_API_KEY", "test-admin-secret") };
 
         let seed = 24u8;
         let kid = "eruka-admin-4";
@@ -574,7 +573,8 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
-        std::env::remove_var("ADMIN_API_KEY");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ADMIN_API_KEY") };
         drop(env_guard);
     }
 
@@ -614,8 +614,10 @@ mod tests {
             header: Option<&str>,
         ) -> (StatusCode, String) {
             match key {
-                Some(value) => std::env::set_var("ADMIN_API_KEY", value),
-                None => std::env::remove_var("ADMIN_API_KEY"),
+                // FIXME: Audit that the environment access only happens in single-threaded code.
+                Some(value) => unsafe { std::env::set_var("ADMIN_API_KEY", value) },
+                // FIXME: Audit that the environment access only happens in single-threaded code.
+                None => unsafe { std::env::remove_var("ADMIN_API_KEY") },
             }
             let mut builder = Request::builder().uri("/");
             if let Some(value) = header {
@@ -627,7 +629,8 @@ mod tests {
                 .unwrap();
             let status = response.status();
             let body = response_body(response).await;
-            std::env::remove_var("ADMIN_API_KEY");
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::remove_var("ADMIN_API_KEY") };
             (status, body)
         }
 
@@ -635,7 +638,7 @@ mod tests {
         /// were admitted as actor `admin_secret`.
         #[tokio::test]
         async fn e1_empty_admin_key_and_empty_header_is_refused() {
-            let _env = shared::lock_admin_env();
+            let _env = shared::lock_admin_env().await;
             let (status, body) = static_secret_status(Some(""), Some("")).await;
             assert_eq!(status, StatusCode::UNAUTHORIZED, "E1 admitted: {body:?}");
             assert_eq!(body, REFUSAL);
@@ -644,7 +647,7 @@ mod tests {
         /// A whitespace-only key never matches, not even the same whitespace.
         #[tokio::test]
         async fn blank_admin_key_and_blank_header_is_refused() {
-            let _env = shared::lock_admin_env();
+            let _env = shared::lock_admin_env().await;
             let (status, body) = static_secret_status(Some("   "), Some("   ")).await;
             assert_eq!(status, StatusCode::UNAUTHORIZED, "blank admitted: {body:?}");
             assert_eq!(body, REFUSAL);
@@ -654,7 +657,7 @@ mod tests {
         /// still admitted through the static path.
         #[tokio::test]
         async fn configured_admin_key_with_right_header_is_admitted() {
-            let _env = shared::lock_admin_env();
+            let _env = shared::lock_admin_env().await;
             let (status, body) = static_secret_status(Some(TEST_SECRET), Some(TEST_SECRET)).await;
             assert_eq!(status, StatusCode::OK, "configured key refused: {body:?}");
             assert_eq!(body, "admin_secret");
@@ -692,21 +695,24 @@ mod tests {
         /// would drop the header, so the request is written by hand).
         #[tokio::test]
         async fn e6_empty_header_on_the_wire_is_refused() {
-            let _env = shared::lock_admin_env();
+            let _env = shared::lock_admin_env().await;
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
             tokio::spawn(async move {
                 let _ = axum::serve(listener, secret_only_app()).await;
             });
 
-            std::env::set_var("ADMIN_API_KEY", "");
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("ADMIN_API_KEY", "") };
             let (status_line, body) = raw_get(addr, "X-Admin-Secret:\r\n").await;
             // Control: the same socket admits the right secret when the key
             // is non-empty, so a 401 above is the middleware's refusal.
-            std::env::set_var("ADMIN_API_KEY", TEST_SECRET);
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("ADMIN_API_KEY", TEST_SECRET) };
             let (control_line, control_body) =
                 raw_get(addr, &format!("X-Admin-Secret: {TEST_SECRET}\r\n")).await;
-            std::env::remove_var("ADMIN_API_KEY");
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::remove_var("ADMIN_API_KEY") };
 
             assert!(
                 status_line.starts_with("HTTP/1.1 401"),

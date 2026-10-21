@@ -52,18 +52,18 @@ mod common;
 
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
+use ares_agent::ContextProviderHandle;
 use ares_agent::context_provider::NoOpContextProvider;
 use ares_agent::execution::Execute;
 use ares_agent::trigger::TriggerService;
-use ares_agent::ContextProviderHandle;
 use ares_http::auth::jwt::AuthService;
 use ares_store::schedules::{CreateTriggerRequest, EventTriggerStore};
-use ares_store::tenant_agents::{create_tenant_agent, CreateTenantAgentRequest};
+use ares_store::tenant_agents::{CreateTenantAgentRequest, create_tenant_agent};
 use ares_store::{PostgresClient, TenantDb};
 use ares_types::models::TenantTier;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tower::ServiceExt;
@@ -108,8 +108,10 @@ fn lock_env() -> MutexGuard<'static, ()> {
 /// Set (`Some`) or remove (`None`) the variable. The caller holds [`ENV_LOCK`].
 fn set_env(value: Option<&str>) {
     match value {
-        Some(v) => std::env::set_var(WEBHOOK_ENV, v),
-        None => std::env::remove_var(WEBHOOK_ENV),
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        Some(v) => unsafe { std::env::set_var(WEBHOOK_ENV, v) },
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        None => unsafe { std::env::remove_var(WEBHOOK_ENV) },
     }
 }
 

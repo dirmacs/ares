@@ -340,7 +340,7 @@ pub enum ProviderConfig {
 }
 
 macro_rules! type_name_match {
-    ($self:expr, $($variant:ident => $name:literal),* $(,)?) => {
+    ($self:expr_2021, $($variant:ident => $name:literal),* $(,)?) => {
         match $self {
             $(ProviderConfig::$variant { .. } => $name,)*
         }

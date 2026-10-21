@@ -459,12 +459,14 @@ mod tests {
     fn detect_loop_no_loop_for_varied_outputs() {
         let config = sample_config();
         let state = LoopState::default();
-        assert!(detect_loop(
-            &config,
-            &state,
-            "First unique output that is definitely long enough."
-        )
-        .is_none());
+        assert!(
+            detect_loop(
+                &config,
+                &state,
+                "First unique output that is definitely long enough."
+            )
+            .is_none()
+        );
     }
 
     #[test]

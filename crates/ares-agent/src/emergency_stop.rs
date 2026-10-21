@@ -6,8 +6,8 @@
 //! types; handlers `ctx.get` them directly.
 
 use cordis::Context;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use cordis::Service;
 

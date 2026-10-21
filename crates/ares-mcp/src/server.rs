@@ -19,21 +19,21 @@
 //! - ares_deploy_agent — deploy a .toon config
 //! - ares_get_usage    — check usage/quota
 
-use crate::auth::{extract_api_key_from_env, validate_mcp_api_key, McpSession};
-use crate::extension::{dispatch_extensions, McpToolExtension};
+use crate::auth::{McpSession, extract_api_key_from_env, validate_mcp_api_key};
+use crate::extension::{McpToolExtension, dispatch_extensions};
 use crate::tools::*;
-use crate::usage::{record_mcp_usage, McpOperation};
+use crate::usage::{McpOperation, record_mcp_usage};
 use ares_store::tenants::TenantDb;
+use rmcp::ServerHandler;
+use rmcp::ServiceExt;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
     PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
 use rmcp::transport::stdio;
-use rmcp::ServerHandler;
-use rmcp::ServiceExt;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -2138,7 +2138,8 @@ mod tests {
     #[allow(clippy::await_holding_lock)] // ARES_API_KEY is process-global; guard must span the awaits so concurrent test threads can't mutate it mid-authenticate (deadlock impossible: each test owns a current-thread runtime on its own OS thread)
     async fn authenticate_missing_api_key_returns_error() {
         let _guard = AUTH_ENV_LOCK.lock().expect("auth env lock");
-        std::env::remove_var("ARES_API_KEY");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ARES_API_KEY") };
         let server = test_server().await;
         let err = server.authenticate().await.unwrap_err();
         assert!(err.contains("MCP auth failed"));
@@ -2150,7 +2151,8 @@ mod tests {
     #[allow(clippy::await_holding_lock)] // see authenticate_missing_api_key_returns_error: guard spans awaits by design
     async fn authenticate_invalid_key_format_returns_error() {
         let _guard = AUTH_ENV_LOCK.lock().expect("auth env lock");
-        std::env::set_var("ARES_API_KEY", "not-a-valid-key");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("ARES_API_KEY", "not-a-valid-key") };
         let server = test_server().await;
         let err = server.authenticate().await.unwrap_err();
         assert!(err.contains("MCP auth failed"));
@@ -2161,7 +2163,8 @@ mod tests {
     #[allow(clippy::await_holding_lock)] // see authenticate_missing_api_key_returns_error: guard spans awaits by design
     async fn authenticate_valid_format_db_failure_returns_error() {
         let _guard = AUTH_ENV_LOCK.lock().expect("auth env lock");
-        std::env::set_var("ARES_API_KEY", "ares_abcdefgh12345678");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("ARES_API_KEY", "ares_abcdefgh12345678") };
         let server = test_server().await;
         let err = server.authenticate().await.unwrap_err();
         assert!(err.contains("MCP auth failed"));
@@ -2702,10 +2705,12 @@ mod tests {
     }
     #[test]
     fn app_state_require_session_unauthenticated() {
-        assert!(McpSessionState::unauthenticated()
-            .require_session()
-            .unwrap_err()
-            .contains("Not authenticated"));
+        assert!(
+            McpSessionState::unauthenticated()
+                .require_session()
+                .unwrap_err()
+                .contains("Not authenticated")
+        );
     }
     #[test]
     fn app_state_enforce_quota_blocks_when_exceeded() {
@@ -2766,7 +2771,7 @@ mod tests {
         CallToolRequestParams, ClientRequest, InitializeRequest, InitializeRequestParams,
         NumberOrString, ProtocolVersion,
     };
-    use rmcp::service::{serve_directly, RequestContext, RoleServer};
+    use rmcp::service::{RequestContext, RoleServer, serve_directly};
 
     fn dummy_request_context(peer: rmcp::service::Peer<RoleServer>) -> RequestContext<RoleServer> {
         RequestContext::new(NumberOrString::Number(1), peer)
@@ -2824,7 +2829,8 @@ mod tests {
         let pool = client.pool.clone();
         let tenant_db = Arc::new(TenantDb::new(Arc::new(client)));
         let _guard = AUTH_ENV_LOCK.lock().expect("auth env lock");
-        std::env::remove_var("ARES_API_KEY");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ARES_API_KEY") };
         let result = start_mcp_server(tenant_db, pool, "https://api.test.com", None).await;
         assert!(result.is_err());
     }

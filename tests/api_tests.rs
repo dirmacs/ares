@@ -1,6 +1,6 @@
 #![cfg(feature = "http")]
 
-use axum::{routing::get, Router};
+use axum::{Router, routing::get};
 use axum_test::TestServer;
 use serde_json::json;
 use std::collections::HashMap;
@@ -14,13 +14,13 @@ fn unique_email(prefix: &str) -> String {
 
 use ares_agent::AgentRegistry;
 use ares_http::{
+    AresConfigManager, DynamicConfigManager,
     auth::jwt::AuthService,
     config::{AuthConfig as TomlAuthConfig, ServerConfig as TomlServerConfig},
     overlay::{
         AgentConfig, AresConfig, BillingConfig, DatabaseConfig as TomlDatabaseConfig,
         DynamicConfigPaths, ModelConfig, ProviderConfig, RagConfig,
     },
-    AresConfigManager, DynamicConfigManager,
 };
 use ares_llm::{ConfigBasedLLMFactory, LLMClient, ProviderRegistry};
 use ares_tools::Tools;

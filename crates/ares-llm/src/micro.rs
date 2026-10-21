@@ -258,18 +258,18 @@ impl MicroEngine {
         let mut retries = 0u32;
         let mut json_retries = 0u32;
         let key = self.cache_key(task);
-        if self.cache_config.enabled {
-            if let Some(hit) = self.cache.lock().get(key, self.cache_config.ttl) {
-                tracing::debug!(task = task.name, "micro answer served from cache");
-                return Ok(MicroOutcome {
-                    task: task.name.to_string(),
-                    json: hit.json,
-                    text: hit.text,
-                    latency_ms: 0,
-                    retries: 0,
-                    cache_hit: true,
-                });
-            }
+        if self.cache_config.enabled
+            && let Some(hit) = self.cache.lock().get(key, self.cache_config.ttl)
+        {
+            tracing::debug!(task = task.name, "micro answer served from cache");
+            return Ok(MicroOutcome {
+                task: task.name.to_string(),
+                json: hit.json,
+                text: hit.text,
+                latency_ms: 0,
+                retries: 0,
+                cache_hit: true,
+            });
         }
 
         loop {
@@ -418,12 +418,11 @@ pub(crate) fn salvage_json(text: &str) -> Option<Value> {
         return Some(value);
     }
     for (open, close) in [('{', '}'), ('[', ']')] {
-        if let (Some(start), Some(end)) = (stripped.find(open), stripped.rfind(close)) {
-            if start < end {
-                if let Ok(value) = serde_json::from_str::<Value>(&stripped[start..=end]) {
-                    return Some(value);
-                }
-            }
+        if let (Some(start), Some(end)) = (stripped.find(open), stripped.rfind(close))
+            && start < end
+            && let Ok(value) = serde_json::from_str::<Value>(&stripped[start..=end])
+        {
+            return Some(value);
         }
     }
     None

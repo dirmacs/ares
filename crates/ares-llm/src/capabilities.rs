@@ -676,11 +676,7 @@ impl ModelCapabilities {
 
     /// Bonus for local models, which avoid network latency and cost.
     fn local_bonus(&self) -> u32 {
-        if self.is_local {
-            20
-        } else {
-            0
-        }
+        if self.is_local { 20 } else { 0 }
     }
 
     /// Bonus for capabilities the model has beyond what was required.
@@ -758,10 +754,10 @@ impl ModelCapabilities {
         {
             return true;
         }
-        if let Some(family) = &self.family {
-            if requirements.excluded_families.contains(family) {
-                return true;
-            }
+        if let Some(family) = &self.family
+            && requirements.excluded_families.contains(family)
+        {
+            return true;
         }
         false
     }

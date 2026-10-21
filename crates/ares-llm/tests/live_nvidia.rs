@@ -69,10 +69,10 @@ fn skip_without_key(test: &str) -> bool {
 
 fn redact(msg: &str) -> String {
     let mut out = msg.to_string();
-    if let Ok(key) = std::env::var(KEY_ENV) {
-        if !key.is_empty() {
-            out = out.replace(&key, "[REDACTED]");
-        }
+    if let Ok(key) = std::env::var(KEY_ENV)
+        && !key.is_empty()
+    {
+        out = out.replace(&key, "[REDACTED]");
     }
     out
 }
@@ -763,8 +763,7 @@ async fn live_stream_with_tools_once() -> Result<(), String> {
 
 /// 1x1 red PNG, base64-encoded. Small enough to send inline; enough for a
 /// "what color" prompt on any vision-capable model.
-const TINY_PNG_BASE64: &str =
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+const TINY_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 #[tokio::test]
 #[ignore]

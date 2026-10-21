@@ -403,15 +403,19 @@ mod tests {
         cleanup_test_tenant(&pool, &tenant_id).await;
 
         let store = TenantAllowlistStore::new(&pool);
-        assert!(!store
-            .is_tool_allowed(&tenant_id, "web_search")
-            .await
-            .unwrap());
+        assert!(
+            !store
+                .is_tool_allowed(&tenant_id, "web_search")
+                .await
+                .unwrap()
+        );
         assert!(!store.is_model_allowed(&tenant_id, "gpt-4o").await.unwrap());
-        assert!(!store
-            .is_rag_source_allowed(&tenant_id, "docs")
-            .await
-            .unwrap());
+        assert!(
+            !store
+                .is_rag_source_allowed(&tenant_id, "docs")
+                .await
+                .unwrap()
+        );
 
         cleanup_test_tenant(&pool, &tenant_id).await;
     }

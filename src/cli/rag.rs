@@ -305,10 +305,10 @@ async fn bearer_token(
     user: Option<&str>,
     password: Option<&str>,
 ) -> Result<String, Box<dyn Error>> {
-    if let Some(token) = token {
-        if !token.is_empty() {
-            return Ok(token.to_owned());
-        }
+    if let Some(token) = token
+        && !token.is_empty()
+    {
+        return Ok(token.to_owned());
     }
 
     let user = user.ok_or("--user is required unless --token is provided")?;

@@ -91,10 +91,12 @@ mod tests {
     #[test]
     fn attach_provides_execution_service() {
         let runner = ExecutionAgentRunner::attach(cordis::Context::new_root());
-        assert!(runner
-            .context()
-            .get::<ares_agent::execution::Execute>()
-            .is_some());
+        assert!(
+            runner
+                .context()
+                .get::<ares_agent::execution::Execute>()
+                .is_some()
+        );
     }
 
     #[test]

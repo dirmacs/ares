@@ -10,8 +10,8 @@ use crate::Result;
 use ares_store::audit_log;
 use ares_types::types::AppError;
 use axum::{
-    extract::{Path, State},
     Json,
+    extract::{Path, State},
 };
 use sha2::Digest;
 

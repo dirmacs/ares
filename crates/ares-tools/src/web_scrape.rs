@@ -6,7 +6,7 @@
 use crate::registry::Tool;
 use ares_types::Result;
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Web scraping tool that fetches a URL and extracts clean text content.
 pub struct WebScrape {
@@ -181,10 +181,12 @@ mod tests {
         let schema = tool.parameters_schema();
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["url"].is_object());
-        assert!(schema["required"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("url")));
+        assert!(
+            schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("url"))
+        );
     }
 
     #[test]

@@ -241,7 +241,7 @@ async fn execute_python(
         Ok(Err(e)) => {
             return Err(ares_types::AppError::External(format!(
                 "Python subprocess error: {e}"
-            )))
+            )));
         }
         Err(_) => {
             let _ = child.start_kill();

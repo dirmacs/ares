@@ -657,12 +657,12 @@ impl<'a> RunHistoryStore<'a> {
                 "monthly_limit_usd must not be negative".into(),
             ));
         }
-        if let Some(daily) = req.daily_limit_usd {
-            if daily < Decimal::ZERO {
-                return Err(AppError::InvalidInput(
-                    "daily_limit_usd must not be negative".into(),
-                ));
-            }
+        if let Some(daily) = req.daily_limit_usd
+            && daily < Decimal::ZERO
+        {
+            return Err(AppError::InvalidInput(
+                "daily_limit_usd must not be negative".into(),
+            ));
         }
         if !(0..=100).contains(&req.alert_threshold_pct) {
             return Err(AppError::InvalidInput(
@@ -2142,11 +2142,13 @@ mod tests {
             .await
             .expect("delete_tenant_budget");
         assert_eq!(deleted, 1);
-        assert!(store
-            .get_tenant_budget(&tenant_id)
-            .await
-            .expect("get after delete")
-            .is_none());
+        assert!(
+            store
+                .get_tenant_budget(&tenant_id)
+                .await
+                .expect("get after delete")
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -2715,17 +2717,21 @@ mod tests {
             Some(NO_RETAIN_REDACTED_TEXT.to_string())
         );
         assert!(!inserted.arguments.to_string().contains(canary));
-        assert!(!inserted
-            .result
-            .as_ref()
-            .expect("result")
-            .to_string()
-            .contains(canary));
-        assert!(!inserted
-            .error_message
-            .as_ref()
-            .expect("error")
-            .contains(canary));
+        assert!(
+            !inserted
+                .result
+                .as_ref()
+                .expect("result")
+                .to_string()
+                .contains(canary)
+        );
+        assert!(
+            !inserted
+                .error_message
+                .as_ref()
+                .expect("error")
+                .contains(canary)
+        );
 
         // Read-back agrees with the RETURNING row.
         let fetched = store
@@ -2807,23 +2813,29 @@ mod tests {
             inserted.error_message,
             Some(NO_RETAIN_REDACTED_TEXT.to_string())
         );
-        assert!(!inserted
-            .request_payload
-            .as_ref()
-            .expect("req payload")
-            .to_string()
-            .contains(canary));
-        assert!(!inserted
-            .response_payload
-            .as_ref()
-            .expect("resp payload")
-            .to_string()
-            .contains(canary));
-        assert!(!inserted
-            .error_message
-            .as_ref()
-            .expect("error")
-            .contains(canary));
+        assert!(
+            !inserted
+                .request_payload
+                .as_ref()
+                .expect("req payload")
+                .to_string()
+                .contains(canary)
+        );
+        assert!(
+            !inserted
+                .response_payload
+                .as_ref()
+                .expect("resp payload")
+                .to_string()
+                .contains(canary)
+        );
+        assert!(
+            !inserted
+                .error_message
+                .as_ref()
+                .expect("error")
+                .contains(canary)
+        );
 
         let _ = sqlx::query("DELETE FROM run_llm_calls WHERE tenant_id = $1")
             .bind(&tenant_id)

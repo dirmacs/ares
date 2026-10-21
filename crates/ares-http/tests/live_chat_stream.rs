@@ -66,8 +66,7 @@ const OVERALL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// 1x1 red PNG, base64-encoded — copied from `ares-llm/tests/live_nvidia.rs`
 /// (`TINY_PNG_BASE64`).
-const TINY_PNG_BASE64: &str =
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+const TINY_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 /// Mirrors `api::handlers::chat::StreamEvent`'s wire shape (private to the
 /// crate, so the test decodes SSE payloads against its own copy).

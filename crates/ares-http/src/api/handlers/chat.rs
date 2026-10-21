@@ -13,9 +13,9 @@ use crate::{
 };
 use ares_store::postgres::UserAgent;
 use axum::{
+    Extension, Json,
     extract::{Query, State},
     response::{IntoResponse, Response},
-    Extension, Json,
 };
 use cordis::Context;
 use std::sync::Arc;
@@ -696,13 +696,12 @@ fn chat_stream_response(
             return;
         }
         // Setup conversation
-        if !db.conversation_exists(&context_id_clone).await.unwrap_or(false) {
-            if let Err(e) = db
+        if !db.conversation_exists(&context_id_clone).await.unwrap_or(false)
+            && let Err(e) = db
                 .create_conversation(&context_id_clone, &claims_clone.sub, None)
                 .await {
                 tracing::warn!("Failed to create conversation {}: {}", context_id_clone, e);
             }
-        }
 
         let history = db.get_conversation_history(&context_id_clone).await.unwrap_or_else(|e| {
             tracing::warn!("Failed to get conversation history for {}: {}", context_id_clone, e);

@@ -29,25 +29,26 @@ use std::sync::Arc;
 
 use ares_agent::tenant_agent::load_tenant_agent_config;
 use ares_http::api::handlers::admin::{
-    create_tenant_agent_handler, get_tenant_agent_draft_handler, publish_tenant_agent_handler,
-    rollback_tenant_agent_version_handler, update_tenant_agent_handler, AdminActor,
-};
-use ares_store::agent_versions::AgentVersionRecord;
-use ares_store::tenant_agents::{
-    clone_templates_for_tenant, get_tenant_agent, get_tenant_agent_publish_state,
-    list_tenant_agent_versions, publish_tenant_agent, rollback_tenant_agent_version,
-    set_tenant_agent_model, update_tenant_agent_as, AgentTemplateStore, CreateTemplateRequest,
-    CreateTenantAgentRequest, PublishOutcome, PublishTenantAgentRequest, TenantAgentPublishState,
-    UpdateTenantAgentRequest, CUTOVER_ACTOR,
+    AdminActor, create_tenant_agent_handler, get_tenant_agent_draft_handler,
+    publish_tenant_agent_handler, rollback_tenant_agent_version_handler,
+    update_tenant_agent_handler,
 };
 use ares_store::TenantDb;
+use ares_store::agent_versions::AgentVersionRecord;
+use ares_store::tenant_agents::{
+    AgentTemplateStore, CUTOVER_ACTOR, CreateTemplateRequest, CreateTenantAgentRequest,
+    PublishOutcome, PublishTenantAgentRequest, TenantAgentPublishState, UpdateTenantAgentRequest,
+    clone_templates_for_tenant, get_tenant_agent, get_tenant_agent_publish_state,
+    list_tenant_agent_versions, publish_tenant_agent, rollback_tenant_agent_version,
+    set_tenant_agent_model, update_tenant_agent_as,
+};
 use ares_types::types::AppError;
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
 use cordis::Context;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::Digest;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{PgPool, Row};

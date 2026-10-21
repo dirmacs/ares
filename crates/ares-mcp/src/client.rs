@@ -111,15 +111,15 @@ pub fn build_client_request(
     };
 
     let mut url = format!("{base_url}{relative}");
-    if let Some(query) = &request.query {
-        if !query.is_empty() {
-            let qs: Vec<String> = query
-                .iter()
-                .map(|(k, v)| format!("{}={}", urlencoding_encode(k), urlencoding_encode(v)))
-                .collect();
-            url.push('?');
-            url.push_str(&qs.join("&"));
-        }
+    if let Some(query) = &request.query
+        && !query.is_empty()
+    {
+        let qs: Vec<String> = query
+            .iter()
+            .map(|(k, v)| format!("{}={}", urlencoding_encode(k), urlencoding_encode(v)))
+            .collect();
+        url.push('?');
+        url.push_str(&qs.join("&"));
     }
 
     let mut headers = BTreeMap::new();
@@ -605,14 +605,16 @@ timeout_secs: 30
 
     #[test]
     fn resolve_env_value_missing_var_errors() {
-        std::env::remove_var(MISSING_ENV);
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var(MISSING_ENV) };
         let err = resolve_env_value(&format!("${{{MISSING_ENV}}}")).unwrap_err();
         assert_eq!(err, McpConfigError::MissingEnvVar(MISSING_ENV.to_string()));
     }
 
     #[test]
     fn normalize_mcp_config_resolves_api_key_placeholder() {
-        std::env::remove_var(MISSING_ENV);
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var(MISSING_ENV) };
         let err = normalize_mcp_config(McpServerConfig {
             api_key: Some(format!("${{{MISSING_ENV}}}")),
             ..sample_config()

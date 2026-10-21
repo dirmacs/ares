@@ -160,30 +160,40 @@ fn test_init_creates_toon_files() {
 
     // Check agent TOON files
     assert!(temp_dir.path().join("config/agents/router.toon").exists());
-    assert!(temp_dir
-        .path()
-        .join("config/agents/orchestrator.toon")
-        .exists());
+    assert!(
+        temp_dir
+            .path()
+            .join("config/agents/orchestrator.toon")
+            .exists()
+    );
 
     // Check tool TOON files
-    assert!(temp_dir
-        .path()
-        .join("config/tools/calculator.toon")
-        .exists());
-    assert!(temp_dir
-        .path()
-        .join("config/tools/web_search.toon")
-        .exists());
+    assert!(
+        temp_dir
+            .path()
+            .join("config/tools/calculator.toon")
+            .exists()
+    );
+    assert!(
+        temp_dir
+            .path()
+            .join("config/tools/web_search.toon")
+            .exists()
+    );
 
     // Check workflow TOON files
-    assert!(temp_dir
-        .path()
-        .join("config/workflows/default.toon")
-        .exists());
-    assert!(temp_dir
-        .path()
-        .join("config/workflows/research.toon")
-        .exists());
+    assert!(
+        temp_dir
+            .path()
+            .join("config/workflows/default.toon")
+            .exists()
+    );
+    assert!(
+        temp_dir
+            .path()
+            .join("config/workflows/research.toon")
+            .exists()
+    );
 }
 
 #[test]

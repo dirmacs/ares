@@ -644,15 +644,24 @@ mod tests {
     use chrono::Utc;
 
     fn clear_vector_env() {
-        std::env::remove_var("ARES_VECTOR_PATH");
-        std::env::remove_var("LANCEDB_PATH");
-        std::env::remove_var("QDRANT_URL");
-        std::env::remove_var("QDRANT_API_KEY");
-        std::env::remove_var("PGVECTOR_URL");
-        std::env::remove_var("CHROMADB_URL");
-        std::env::remove_var("PINECONE_API_KEY");
-        std::env::remove_var("PINECONE_ENVIRONMENT");
-        std::env::remove_var("PINECONE_INDEX");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ARES_VECTOR_PATH") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("LANCEDB_PATH") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("QDRANT_URL") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("QDRANT_API_KEY") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("PGVECTOR_URL") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("CHROMADB_URL") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("PINECONE_API_KEY") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("PINECONE_ENVIRONMENT") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("PINECONE_INDEX") };
     }
 
     fn create_test_document(id: &str, content: &str, embedding: Vec<f32>) -> Document {

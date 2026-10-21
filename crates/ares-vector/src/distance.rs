@@ -258,11 +258,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     }
 
     let denom = (norm_a * norm_b).sqrt();
-    if denom == 0.0 {
-        0.0
-    } else {
-        dot / denom
-    }
+    if denom == 0.0 { 0.0 } else { dot / denom }
 }
 
 /// Compute Euclidean (L2) distance between two vectors.
@@ -348,11 +344,7 @@ fn cosine_similarity_scalar(a: &[f32], b: &[f32]) -> f32 {
     let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
     let denom = norm_a * norm_b;
-    if denom == 0.0 {
-        0.0
-    } else {
-        dot / denom
-    }
+    if denom == 0.0 { 0.0 } else { dot / denom }
 }
 
 #[cfg(test)]
@@ -382,8 +374,8 @@ fn dot_product_scalar(a: &[f32], b: &[f32]) -> f32 {
 // HNSW Distance Adapter
 // ============================================================================
 
-use anndists::dist::distances::{DistCosine, DistDot, DistL1, DistL2};
 use anndists::dist::Distance;
+use anndists::dist::distances::{DistCosine, DistDot, DistL1, DistL2};
 
 /// Trait for creating HNSW distance instances.
 pub trait HnswDistance: Clone + Send + Sync + 'static {

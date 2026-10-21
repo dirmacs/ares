@@ -49,10 +49,10 @@ impl TenantRealms {
     /// Drop the cached child and dispose its fiber (LIFO undoes that realm's provides).
     pub async fn dispose(&self, tenant_id: &str) {
         let child = self.realms.write().remove(tenant_id);
-        if let Some(child) = child {
-            if let Err(error) = child.fiber().dispose().await {
-                tracing::error!(tenant_id, %error, "TenantRealms: fiber stuck in transition during dispose");
-            }
+        if let Some(child) = child
+            && let Err(error) = child.fiber().dispose().await
+        {
+            tracing::error!(tenant_id, %error, "TenantRealms: fiber stuck in transition during dispose");
         }
     }
 }

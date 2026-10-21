@@ -185,8 +185,10 @@ mod tests {
 
     #[test]
     fn resolve_pinecone_credentials_prefers_explicit_overrides() {
-        std::env::remove_var("PINECONE_API_KEY");
-        std::env::remove_var("PINECONE_ENVIRONMENT");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("PINECONE_API_KEY") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("PINECONE_ENVIRONMENT") };
         let (api_key, environment) =
             resolve_pinecone_credentials(Some("  override-key  "), Some(" eu-west1 "));
         assert_eq!(api_key.as_deref(), Some("override-key"));
@@ -195,8 +197,10 @@ mod tests {
 
     #[test]
     fn resolve_pinecone_credentials_falls_back_to_defaults() {
-        std::env::remove_var("PINECONE_API_KEY");
-        std::env::remove_var("PINECONE_ENVIRONMENT");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("PINECONE_API_KEY") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("PINECONE_ENVIRONMENT") };
         let (api_key, environment) = resolve_pinecone_credentials(None, None);
         assert!(api_key.is_none());
         assert_eq!(environment, default_pinecone_environment());
@@ -204,8 +208,10 @@ mod tests {
 
     #[test]
     fn resolve_pinecone_credentials_ignores_blank_overrides() {
-        std::env::remove_var("PINECONE_API_KEY");
-        std::env::remove_var("PINECONE_ENVIRONMENT");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("PINECONE_API_KEY") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("PINECONE_ENVIRONMENT") };
         let (api_key, environment) = resolve_pinecone_credentials(Some("   "), Some("   "));
         assert!(api_key.is_none());
         assert_eq!(environment, default_pinecone_environment());

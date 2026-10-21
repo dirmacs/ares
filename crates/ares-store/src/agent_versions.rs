@@ -10,7 +10,7 @@ use anyhow::Result;
 use sqlx::PgPool;
 use tracing::{info, instrument, warn};
 
-use crate::query_builders::{agent_version_upsert_sql, AGENT_VERSION_HISTORY_SQL};
+use crate::query_builders::{AGENT_VERSION_HISTORY_SQL, agent_version_upsert_sql};
 
 /// Snapshot of an agent config recorded in `agent_config_versions`.
 #[derive(Debug, Clone)]
@@ -114,11 +114,11 @@ pub struct AgentVersionRecord {
 #[cfg(test)]
 mod version_tests {
     use super::{
-        get_agent_version_history, record_agent_versions, AgentVersionInput, AgentVersionRecord,
+        AgentVersionInput, AgentVersionRecord, get_agent_version_history, record_agent_versions,
     };
 
-    use sqlx::postgres::PgPoolOptions;
     use sqlx::PgPool;
+    use sqlx::postgres::PgPoolOptions;
 
     fn unreachable_postgres_pool() -> PgPool {
         PgPoolOptions::new()

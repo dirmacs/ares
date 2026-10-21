@@ -635,13 +635,12 @@ mod tests {
                 while end < bytes.len() && bytes[end].is_ascii_digit() {
                     end += 1;
                 }
-                if end > start {
-                    if let Ok(idx) = std::str::from_utf8(&bytes[start..end])
+                if end > start
+                    && let Ok(idx) = std::str::from_utf8(&bytes[start..end])
                         .unwrap_or("0")
                         .parse::<usize>()
-                    {
-                        max_idx = max_idx.max(idx);
-                    }
+                {
+                    max_idx = max_idx.max(idx);
                 }
                 i = end;
             } else {
@@ -984,8 +983,10 @@ mod tests {
 
     #[test]
     fn build_list_agent_runs_orders_deterministically() {
-        assert!(build_list_agent_runs(&AgentRunListFilter::new("t"), 1, 0)
-            .contains("ORDER BY created_at DESC, id ASC"));
+        assert!(
+            build_list_agent_runs(&AgentRunListFilter::new("t"), 1, 0)
+                .contains("ORDER BY created_at DESC, id ASC")
+        );
     }
 
     #[test]

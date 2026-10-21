@@ -269,8 +269,13 @@ fn sqlx_err(e: sqlx::Error) -> AppError {
 
 fn validate_provider_type(t: &str) -> Result<()> {
     match t {
-        "openai-compatible" | "anthropic-compatible" | "azure" | "azure-compatible"
-        | "bedrock" | "bedrock-compatible" | "custom" => Ok(()),
+        "openai-compatible"
+        | "anthropic-compatible"
+        | "azure"
+        | "azure-compatible"
+        | "bedrock"
+        | "bedrock-compatible"
+        | "custom" => Ok(()),
         _ => Err(AppError::InvalidInput(format!(
             "Invalid provider_type '{}'. Must be: openai-compatible, anthropic-compatible, azure, azure-compatible, bedrock, bedrock-compatible, or custom",
             t
@@ -414,11 +419,13 @@ mod tests {
             .expect("tenant row");
         assert_eq!(global_fetched.display_name, "Global Shared");
         assert_eq!(tenant_fetched.display_name, "Tenant Shared");
-        assert!(store
-            .get_scoped(Some("tenant-b"), name)
-            .await
-            .expect("tenant-b fetch")
-            .is_none());
+        assert!(
+            store
+                .get_scoped(Some("tenant-b"), name)
+                .await
+                .expect("tenant-b fetch")
+                .is_none()
+        );
 
         let updated_tenant = provider_req(
             name,
@@ -444,11 +451,13 @@ mod tests {
             store.delete_scoped(Some("tenant-a"), name).await.unwrap(),
             1
         );
-        assert!(store
-            .get_scoped(Some("tenant-a"), name)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .get_scoped(Some("tenant-a"), name)
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert!(store.get_scoped(None, name).await.unwrap().is_some());
         assert_eq!(store.delete_scoped(None, name).await.unwrap(), 1);
     }

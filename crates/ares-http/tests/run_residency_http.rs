@@ -22,8 +22,8 @@
 mod common;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use ares_agent::{AgentConfig, AgentRegistry};
@@ -36,18 +36,18 @@ use ares_http::overlay::{
 use ares_llm::{ModelConfig, ProviderConfig, ProviderRegistry};
 use ares_store::fleet_secrets::ProviderOverride;
 use ares_store::tenant_agents::{
-    create_tenant_agent, create_tenant_agent_as, get_tenant_agent_publish_state,
-    publish_tenant_agent, CreateTenantAgentRequest, PublishOutcome,
+    CreateTenantAgentRequest, PublishOutcome, create_tenant_agent, create_tenant_agent_as,
+    get_tenant_agent_publish_state, publish_tenant_agent,
 };
 use ares_store::{FleetSecrets, TenantDb};
 use ares_tools::Tools;
 use ares_types::models::TenantTier;
+use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::IntoResponse;
-use axum::Router;
 use cordis::Context;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
 
@@ -211,7 +211,8 @@ impl Fixture {
         common::live_db_url(&common::current_test_name()).await?;
         // The admin routes authenticate on this variable; a dummy value, set to the same thing
         // by every test of this binary.
-        std::env::set_var("ADMIN_API_KEY", ADMIN_SECRET);
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("ADMIN_API_KEY", ADMIN_SECRET) };
 
         let pg = Arc::new(ares_test_support::client().await);
         let pool = pg.pool.clone();

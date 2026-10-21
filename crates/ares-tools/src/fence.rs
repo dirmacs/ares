@@ -415,10 +415,10 @@ pub fn check_path(policy: &FencePolicy, raw: &Path, write: bool) -> FenceDecisio
     if let Some(hit) = first_blocklisted(raw, &policy.blocklist) {
         return FenceDecision::deny(FenceLayer::L2Blocklist, format!("blocked name: {hit}"));
     }
-    if let Some(resolved) = &resolved {
-        if let Some(hit) = first_blocklisted(resolved, &policy.blocklist) {
-            return FenceDecision::deny(FenceLayer::L2Blocklist, format!("blocked name: {hit}"));
-        }
+    if let Some(resolved) = &resolved
+        && let Some(hit) = first_blocklisted(resolved, &policy.blocklist)
+    {
+        return FenceDecision::deny(FenceLayer::L2Blocklist, format!("blocked name: {hit}"));
     }
 
     FenceDecision::Allowed
@@ -956,9 +956,10 @@ mod tests {
         assert_eq!(log.len(), AUDIT_CAPACITY);
         // The oldest 25 entries left; the ring holds the last 200 writes.
         assert!(log.iter().all(|entry| entry.outcome == FS_OK));
-        assert!(log
-            .iter()
-            .all(|entry| entry.guard_kind == Some(WriteGuard::Unconditional)));
+        assert!(
+            log.iter()
+                .all(|entry| entry.guard_kind == Some(WriteGuard::Unconditional))
+        );
         assert!(
             log.first().expect("ring nonempty").ts_millis > 0,
             "entries carry timestamps"

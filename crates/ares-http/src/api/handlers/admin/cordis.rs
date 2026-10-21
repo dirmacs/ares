@@ -8,7 +8,7 @@
 //! (`crate::context_services::*Service`) hold an inner `Arc<T>` under a
 //! distinct TypeId, so removal would not cascade — those answer 409.
 
-use super::{audit_pool, AdminActor};
+use super::{AdminActor, audit_pool};
 use crate::HttpError;
 use ares_store::audit_log;
 use std::collections::HashMap;
@@ -16,9 +16,9 @@ use std::sync::{Arc, LazyLock, RwLock};
 
 use ::cordis::{Context, EventsService, ReflectService, RegistryService};
 use axum::{
+    Json,
     extract::{Path, State},
     http::StatusCode,
-    Json,
 };
 
 /// Outcome of one retirability probe.
@@ -130,19 +130,19 @@ pub async fn retire_cordis_service(
         "cordis service retire requested via admin API"
     );
     // Only a retire that actually removed the service is a write.
-    if removed_type.is_some() {
-        if let Some(pool) = audit_pool(&ctx, "retire_cordis_service") {
-            audit_log::record(
-                &pool,
-                "retire_cordis_service",
-                "cordis_service",
-                &name,
-                None,
-                actor.ip(),
-                actor.audit_actor(),
-            )
-            .await;
-        }
+    if removed_type.is_some()
+        && let Some(pool) = audit_pool(&ctx, "retire_cordis_service")
+    {
+        audit_log::record(
+            &pool,
+            "retire_cordis_service",
+            "cordis_service",
+            &name,
+            None,
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
     }
     Ok((
         StatusCode::OK,
@@ -451,7 +451,7 @@ async fn apply_entries_from_disk(
                         "reloaded": false,
                         "error": "CurrentEntries is not provided on this context",
                     }),
-                ))
+                ));
             }
         }
     })
@@ -1138,20 +1138,18 @@ pub async fn patch_cordis_entry(
     // still fail with a 500: audit the patch now, before anything else. The
     // row names which fields the patch carried, never their values (`config`
     // can hold credentials).
-    if moved {
-        if let Some(pool) = audit_pool(&ctx, "patch_cordis_entry") {
-            let details = patch_audit_details(&update, &id, &target_id);
-            audit_log::record(
-                &pool,
-                "patch_cordis_entry",
-                "cordis_entry",
-                &target_id,
-                Some(&details),
-                actor.ip(),
-                actor.audit_actor(),
-            )
-            .await;
-        }
+    if moved && let Some(pool) = audit_pool(&ctx, "patch_cordis_entry") {
+        let details = patch_audit_details(&update, &id, &target_id);
+        audit_log::record(
+            &pool,
+            "patch_cordis_entry",
+            "cordis_entry",
+            &target_id,
+            Some(&details),
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
     }
 
     let Some(entry) = tree.0.iter_mut().find(|e| e.id == target_id) else {
@@ -1173,20 +1171,18 @@ pub async fn patch_cordis_entry(
     }
     // Without a move, the durable write of the program file is the first
     // change and the audited event; with one, the row was written above.
-    if !moved {
-        if let Some(pool) = audit_pool(&ctx, "patch_cordis_entry") {
-            let details = patch_audit_details(&update, &id, &target_id);
-            audit_log::record(
-                &pool,
-                "patch_cordis_entry",
-                "cordis_entry",
-                &target_id,
-                Some(&details),
-                actor.ip(),
-                actor.audit_actor(),
-            )
-            .await;
-        }
+    if !moved && let Some(pool) = audit_pool(&ctx, "patch_cordis_entry") {
+        let details = patch_audit_details(&update, &id, &target_id);
+        audit_log::record(
+            &pool,
+            "patch_cordis_entry",
+            "cordis_entry",
+            &target_id,
+            Some(&details),
+            actor.ip(),
+            actor.audit_actor(),
+        )
+        .await;
     }
 
     // Structured issues below describe THIS apply only: drop any record an
@@ -1226,10 +1222,10 @@ pub async fn patch_cordis_entry(
             // When the failing step was a config pre-flight, the loader
             // trial stashed machine-readable issues for this entry; attach
             // them alongside the legacy `error` string.
-            if let Some(validation) = cordis::error::take_trial_validation(&target_id) {
-                if let Ok(issues) = serde_json::to_value(&validation.issues) {
-                    body["issues"] = issues;
-                }
+            if let Some(validation) = cordis::error::take_trial_validation(&target_id)
+                && let Ok(issues) = serde_json::to_value(&validation.issues)
+            {
+                body["issues"] = issues;
             }
             Ok((status, Json(body)))
         }
@@ -1283,7 +1279,7 @@ mod tests {
         .await
         .expect("handler");
         assert_eq!(resp.0, StatusCode::CONFLICT);
-        assert_eq!(resp.1 .0["retired"], json!(false));
+        assert_eq!(resp.1.0["retired"], json!(false));
 
         // Real retirement: store entry dropped by TypeId.
         let resp = retire_cordis_service(
@@ -1294,12 +1290,12 @@ mod tests {
         .await
         .expect("handler");
         assert_eq!(resp.0, StatusCode::OK);
-        assert_eq!(resp.1 .0["retired"], json!(true));
+        assert_eq!(resp.1.0["retired"], json!(true));
         assert_eq!(
-            resp.1 .0["removed_type"],
+            resp.1.0["removed_type"],
             json!(std::any::type_name::<EventsService>())
         );
-        assert_eq!(resp.1 .0["cascaded_notify"], json!(true));
+        assert_eq!(resp.1.0["cascaded_notify"], json!(true));
         assert!(ctx.get::<EventsService>().is_none());
 
         // Retiring again reports already-absent, still 200.
@@ -1311,7 +1307,7 @@ mod tests {
         .await
         .expect("handler");
         assert_eq!(resp.0, StatusCode::OK);
-        assert_eq!(resp.1 .0["retired"], json!(false));
+        assert_eq!(resp.1.0["retired"], json!(false));
 
         // Re-provide flips dependent fibers back on; cycle repeatable.
         let resp = provide_cordis_service(
@@ -1322,7 +1318,7 @@ mod tests {
         .await
         .expect("handler");
         assert_eq!(resp.0, StatusCode::OK);
-        assert_eq!(resp.1 .0["provided"], json!(true));
+        assert_eq!(resp.1.0["provided"], json!(true));
         assert!(ctx.get::<EventsService>().is_some());
 
         // Providing while present reports already-present.
@@ -1333,16 +1329,18 @@ mod tests {
         )
         .await
         .expect("handler");
-        assert_eq!(resp.1 .0["provided"], json!(false));
+        assert_eq!(resp.1.0["provided"], json!(false));
 
         // Unknown constructors are rejected as invalid input.
-        assert!(provide_cordis_service(
-            State(ctx.clone()),
-            AdminActor::default(),
-            Path("nope".into())
-        )
-        .await
-        .is_err());
+        assert!(
+            provide_cordis_service(
+                State(ctx.clone()),
+                AdminActor::default(),
+                Path("nope".into())
+            )
+            .await
+            .is_err()
+        );
     }
 
     /// Registry-backed plugin providing `BarService`; used to build a real
@@ -1395,9 +1393,9 @@ mod tests {
         .await
         .expect("handler");
         assert_eq!(resp.0, StatusCode::CONFLICT);
-        assert_eq!(resp.1 .0["retired"], json!(false));
-        assert_eq!(resp.1 .0["reason"], json!("guarded"));
-        assert_eq!(resp.1 .0["consumers"], json!(1));
+        assert_eq!(resp.1.0["retired"], json!(false));
+        assert_eq!(resp.1.0["reason"], json!("guarded"));
+        assert_eq!(resp.1.0["consumers"], json!(1));
         assert!(
             ctx.get::<EventsService>().is_some(),
             "service stays provided under guard"
@@ -1416,7 +1414,7 @@ mod tests {
         .await
         .expect("handler");
         assert_eq!(resp.0, StatusCode::OK);
-        assert_eq!(resp.1 .0["retired"], json!(true));
+        assert_eq!(resp.1.0["retired"], json!(true));
         assert!(ctx.get::<EventsService>().is_none());
     }
 
@@ -1617,7 +1615,9 @@ mod tests {
     async fn list_cordis_entries_reports_current_and_pending_diff() {
         use cordis::loader::EntryTree;
 
-        let toml_body = format!("{CALC_TOML_BLOCK}\n[[entry]]\nid = \"calc2\"\nplugin = \"CalculatorService\"\ndisabled = false\n\n[entry.config]\n");
+        let toml_body = format!(
+            "{CALC_TOML_BLOCK}\n[[entry]]\nid = \"calc2\"\nplugin = \"CalculatorService\"\ndisabled = false\n\n[entry.config]\n"
+        );
         let (ctx, dir) =
             build_entries_fixture("list-diff", &toml_body, vec![probe_entry("calc", false)]);
         let path = dir.join("cordis-entries.toml");
@@ -2801,9 +2801,9 @@ mod event_metrics_tests {
             .await
             .expect("handler");
         assert_eq!(resp.0, StatusCode::OK);
-        assert_eq!(resp.1 .0["total_dispatched"], json!(3));
-        assert_eq!(resp.1 .0["by_event"]["agent.usage"], json!(2));
-        assert_eq!(resp.1 .0["by_event"]["scheduler.admit"], json!(1));
+        assert_eq!(resp.1.0["total_dispatched"], json!(3));
+        assert_eq!(resp.1.0["by_event"]["agent.usage"], json!(2));
+        assert_eq!(resp.1.0["by_event"]["scheduler.admit"], json!(1));
     }
 
     #[tokio::test]
@@ -2812,7 +2812,7 @@ mod event_metrics_tests {
         let resp = cordis_event_metrics(State(ctx)).await.expect("handler");
         assert_eq!(resp.0, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
-            resp.1 .0["error"],
+            resp.1.0["error"],
             json!("EventsService is not provided on this context")
         );
     }
@@ -2849,7 +2849,7 @@ mod event_metrics_tests {
             .await
             .expect("handler");
         assert_eq!(resp.0, StatusCode::OK);
-        let fibers = resp.1 .0["fibers"].as_array().unwrap();
+        let fibers = resp.1.0["fibers"].as_array().unwrap();
         let entry = fibers
             .iter()
             .find(|f| f["fiber_id"] == json!(fid))
@@ -2868,7 +2868,7 @@ mod event_metrics_tests {
         let resp = list_cordis_undo_labels(State(ctx.clone()))
             .await
             .expect("handler");
-        let fibers = resp.1 .0["fibers"].as_array().unwrap();
+        let fibers = resp.1.0["fibers"].as_array().unwrap();
         assert!(
             !fibers.iter().any(|f| f["fiber_id"] == json!(fid)),
             "disposed+pruned fiber must vanish from introspection"
@@ -2938,7 +2938,7 @@ mod event_metrics_tests {
             .await
             .expect("handler");
         assert_eq!(resp.0, StatusCode::OK);
-        let fibers = resp.1 .0["fibers"].as_array().unwrap();
+        let fibers = resp.1.0["fibers"].as_array().unwrap();
 
         // Healthy sibling: Active, not disposed, error absent.
         let active = fibers
@@ -3001,7 +3001,7 @@ mod event_metrics_tests {
             let resp = cordis_logs().await.expect("handler");
             assert_eq!(resp.0, StatusCode::OK);
             assert_eq!(
-                resp.1 .0["logs"].as_array().unwrap().len(),
+                resp.1.0["logs"].as_array().unwrap().len(),
                 0,
                 "no ring installed means an empty log list"
             );
@@ -3025,7 +3025,7 @@ mod event_metrics_tests {
 
         let resp = cordis_logs().await.expect("handler");
         assert_eq!(resp.0, StatusCode::OK);
-        let logs = resp.1 .0["logs"].as_array().unwrap();
+        let logs = resp.1.0["logs"].as_array().unwrap();
         assert!(!logs.is_empty(), "seeded ring must surface records");
         let ours = logs
             .iter()

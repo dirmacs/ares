@@ -19,7 +19,7 @@ use jsonwebtoken::jwk::{
     AlgorithmParameters, EllipticCurve, Jwk, JwkSet, KeyAlgorithm, KeyOperations, PublicKeyUse,
 };
 use jsonwebtoken::{
-    decode, decode_header, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
+    Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, decode_header, encode,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -203,7 +203,7 @@ impl JwksKeySet {
                 _ => {
                     return Err(AuthError::InvalidToken(
                         "token has no kid and the key set does not hold one key".to_string(),
-                    ))
+                    ));
                 }
             },
         };
@@ -247,7 +247,7 @@ fn verifying_key_from_jwk(jwk: &Jwk) -> Result<Option<VerifyingKey>, AuthError> 
         AlgorithmParameters::OctetKey(_) => {
             return Err(AuthError::InvalidJwks(
                 "symmetric (oct) key is not allowed".to_string(),
-            ))
+            ));
         }
         AlgorithmParameters::OctetKeyPair(params) if params.curve == EllipticCurve::Ed25519 => {
             Algorithm::EdDSA
@@ -265,10 +265,10 @@ fn verifying_key_from_jwk(jwk: &Jwk) -> Result<Option<VerifyingKey>, AuthError> 
         return Ok(None);
     }
     // A key with declared operations must allow signature verify.
-    if let Some(ops) = &jwk.common.key_operations {
-        if !ops.iter().any(|op| matches!(op, KeyOperations::Verify)) {
-            return Ok(None);
-        }
+    if let Some(ops) = &jwk.common.key_operations
+        && !ops.iter().any(|op| matches!(op, KeyOperations::Verify))
+    {
+        return Ok(None);
     }
 
     // A declared algorithm must name the algorithm used here.
@@ -455,10 +455,10 @@ impl JwksCache {
     async fn keys(&self) -> Result<JwksKeySet, JwksError> {
         {
             let state = self.state.read().await;
-            if let (Some(keys), Some(fetched_at)) = (&state.keys, state.fetched_at) {
-                if fetched_at.elapsed() < self.ttl {
-                    return Ok(keys.clone());
-                }
+            if let (Some(keys), Some(fetched_at)) = (&state.keys, state.fetched_at)
+                && fetched_at.elapsed() < self.ttl
+            {
+                return Ok(keys.clone());
             }
         }
 

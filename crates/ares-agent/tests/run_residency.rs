@@ -30,8 +30,8 @@
 ))]
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use ares_agent::context_provider::{ContextProviderHandle, NoOpContextProvider};
@@ -48,15 +48,15 @@ use ares_store::fleet_secrets::ProviderOverride;
 use ares_store::schedules::{
     CreatePipelineRequest, CreateScheduleRequest, EventTrigger, PipelineStore, ScheduleStore,
 };
-use ares_store::tenant_agents::{create_tenant_agent, CreateTenantAgentRequest};
+use ares_store::tenant_agents::{CreateTenantAgentRequest, create_tenant_agent};
 use ares_store::tenant_allowlist::TenantAllowlistStore;
 use ares_store::{FleetSecrets, PostgresClient, TenantDb};
 use ares_tools::{Tool, Tools};
 use ares_types::models::TenantTier;
 use ares_types::types::{AgentContext, AppError};
+use axum::Router;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Router;
 use cordis::Context;
 use serde_json::json;
 use sqlx::PgPool;
@@ -309,7 +309,9 @@ async fn vertex_region_is_the_configured_location() {
     assert_eq!(
         parts(&client_of(regional).await.residency()),
         (
-            Some("https://asia-south1-aiplatform.googleapis.com/v1/projects/proj-212b/locations/asia-south1"),
+            Some(
+                "https://asia-south1-aiplatform.googleapis.com/v1/projects/proj-212b/locations/asia-south1"
+            ),
             Some("asia-south1")
         )
     );
@@ -334,8 +336,10 @@ async fn bedrock_region_comes_from_server_config() {
     // Names private to this test binary, so no other test reads or races them. Dummy values.
     const KEY_ENV: &str = "ARES_2_12B_TEST_BEDROCK_KEY";
     const REGION_ENV: &str = "ARES_2_12B_TEST_BEDROCK_REGION";
-    std::env::set_var(KEY_ENV, "dummy-bedrock-token-212b");
-    std::env::set_var(REGION_ENV, "ap-south-1");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var(KEY_ENV, "dummy-bedrock-token-212b") };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var(REGION_ENV, "ap-south-1") };
 
     let mut registry = ProviderRegistry::new();
     registry.register_provider(
@@ -395,7 +399,8 @@ async fn bedrock_region_comes_from_server_config() {
     );
 
     // A second server config, a second region: the row follows the config, nothing else.
-    std::env::set_var(REGION_ENV, "eu-central-1");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var(REGION_ENV, "eu-central-1") };
     let client = registry
         .create_client_for_model("bedrock-alias-212b")
         .await

@@ -1,6 +1,6 @@
 use crate::query_builders::{
-    build_list_alerts_sql, list_alerts_select_sql, ACTIVE_ALERT_COUNT_SQL, CREATE_ALERT_SQL,
-    RESOLVE_ALERT_SQL,
+    ACTIVE_ALERT_COUNT_SQL, CREATE_ALERT_SQL, RESOLVE_ALERT_SQL, build_list_alerts_sql,
+    list_alerts_select_sql,
 };
 use ares_types::types::{AppError, Result};
 use serde::{Deserialize, Serialize};
@@ -152,8 +152,8 @@ mod alert_tests {
     use super::*;
     use crate::query_builders::{build_list_alerts_sql, list_alerts_select_sql};
 
-    use sqlx::postgres::PgPoolOptions;
     use sqlx::PgPool;
+    use sqlx::postgres::PgPoolOptions;
 
     fn unreachable_postgres_pool() -> PgPool {
         PgPoolOptions::new()

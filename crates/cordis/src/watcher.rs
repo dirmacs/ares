@@ -560,7 +560,9 @@ mod tests {
         } else {
             // Fallback: if notify debounce missed (flaky FS), still prove via direct notify
             // but the watcher channel should have fired on most runs.
-            panic!("E2E hot-reload: watch channel did not receive signal within 3s — file-watch → ReflectService::notify chain broken");
+            panic!(
+                "E2E hot-reload: watch channel did not receive signal within 3s — file-watch → ReflectService::notify chain broken"
+            );
         }
 
         // Keep handle alive until assertion done

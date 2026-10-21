@@ -503,8 +503,7 @@ async fn skill_llm_response(
 /// Kept byte-stable across calls so provider-side prompt caches hit on the
 /// template; only the per-call tail (skill id, input, result) varies.
 #[cfg(feature = "postgres")]
-const DELEGATED_REVIEW_TEMPLATE: &str =
-    "You are reviewing the result of a delegated sub-workflow step.\n\
+const DELEGATED_REVIEW_TEMPLATE: &str = "You are reviewing the result of a delegated sub-workflow step.\n\
                                          Judge the result for consistency with the requested input \
                                          and overall task fit.\n\
                                          Reply with ACCEPT or REJECT on the first line, then one \
@@ -1670,7 +1669,7 @@ mod tool_call_tests {
 
 #[cfg(test)]
 mod review_gate_tests {
-    use super::{Execute, SkillsService, MAX_SKILL_CALL_DEPTH};
+    use super::{Execute, MAX_SKILL_CALL_DEPTH, SkillsService};
     use ares_llm::{ClientPool, Llm, ModelConfig, ProviderConfig, ProviderRegistry};
     use cordis::{Context, EventsService};
     use serde_json::json;
@@ -1819,8 +1818,8 @@ mod review_gate_tests {
 #[cfg(test)]
 mod tool_hygiene_tests {
     use super::{
-        check_tool_round_cap, sanitize_result_text, sanitize_result_value, validate_delegated_step,
-        Execute, SkillsService, MAX_SKILL_CALL_DEPTH,
+        Execute, MAX_SKILL_CALL_DEPTH, SkillsService, check_tool_round_cap, sanitize_result_text,
+        sanitize_result_value, validate_delegated_step,
     };
     use ares_tools::{Tool, Tools};
     use cordis::{Context, EventsService};
@@ -2073,7 +2072,7 @@ mod tool_hygiene_tests {
 }
 #[cfg(all(test, feature = "postgres"))]
 mod delegation_flag_tests {
-    use super::{parse_delegation_args, DelegationArgs, MAX_PARALLEL_DELEGATED_TASKS};
+    use super::{DelegationArgs, MAX_PARALLEL_DELEGATED_TASKS, parse_delegation_args};
 
     #[test]
     fn parse_flags_quote_aware_tokens() {

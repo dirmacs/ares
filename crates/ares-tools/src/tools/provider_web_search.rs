@@ -1,7 +1,7 @@
 use crate::registry::Tool;
 use ares_types::Result;
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Marker tool that opts the LLM adapter into provider-native web search.
 ///

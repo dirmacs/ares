@@ -1,9 +1,9 @@
 //! Inter-agent pipeline execution engine.
 
 use crate::execution::{AgentRequest, Execute};
+use ares_store::PostgresClient;
 use ares_store::agent_runs::{self, AgentRunMetadata};
 use ares_store::schedules::{AgentPipeline, PipelineStore};
-use ares_store::PostgresClient;
 use cordis::{Context, Disposable, Service};
 use serde_json::Value;
 use std::sync::Arc;
@@ -181,12 +181,12 @@ impl PipelineService {
             _ => input.to_string(),
         };
 
-        if let Some(condition) = &pipeline.condition {
-            if !evaluate_condition(condition, &input_str) {
-                return Err(format!(
-                    "pipeline {pipeline_id} condition not met: {condition}"
-                ));
-            }
+        if let Some(condition) = &pipeline.condition
+            && !evaluate_condition(condition, &input_str)
+        {
+            return Err(format!(
+                "pipeline {pipeline_id} condition not met: {condition}"
+            ));
         }
 
         // Execute is the only production execution boundary. The field is
@@ -452,10 +452,10 @@ pub async fn execute_pipeline_with_origin(
 
     let mut triggered = Vec::new();
     for pipeline in pipelines {
-        if let Some(condition) = &pipeline.condition {
-            if !evaluate_condition(condition, source_output) {
-                continue;
-            }
+        if let Some(condition) = &pipeline.condition
+            && !evaluate_condition(condition, source_output)
+        {
+            continue;
         }
 
         tracing::info!(
@@ -825,30 +825,30 @@ pub fn evaluate_condition(condition: &str, output: &str) -> bool {
         return true;
     }
 
-    if let Some(inner) = condition.strip_prefix("output.contains(\"") {
-        if let Some(val) = inner.strip_suffix("\")") {
-            return output.contains(val);
-        }
+    if let Some(inner) = condition.strip_prefix("output.contains(\"")
+        && let Some(val) = inner.strip_suffix("\")")
+    {
+        return output.contains(val);
     }
-    if let Some(inner) = condition.strip_prefix("output.starts_with(\"") {
-        if let Some(val) = inner.strip_suffix("\")") {
-            return output.starts_with(val);
-        }
+    if let Some(inner) = condition.strip_prefix("output.starts_with(\"")
+        && let Some(val) = inner.strip_suffix("\")")
+    {
+        return output.starts_with(val);
     }
-    if let Some(inner) = condition.strip_prefix("output.ends_with(\"") {
-        if let Some(val) = inner.strip_suffix("\")") {
-            return output.ends_with(val);
-        }
+    if let Some(inner) = condition.strip_prefix("output.ends_with(\"")
+        && let Some(val) = inner.strip_suffix("\")")
+    {
+        return output.ends_with(val);
     }
-    if let Some(inner) = condition.strip_prefix("output == \"") {
-        if let Some(val) = inner.strip_suffix("\"") {
-            return output == val;
-        }
+    if let Some(inner) = condition.strip_prefix("output == \"")
+        && let Some(val) = inner.strip_suffix("\"")
+    {
+        return output == val;
     }
-    if let Some(inner) = condition.strip_prefix("output != \"") {
-        if let Some(val) = inner.strip_suffix("\"") {
-            return output != val;
-        }
+    if let Some(inner) = condition.strip_prefix("output != \"")
+        && let Some(val) = inner.strip_suffix("\"")
+    {
+        return output != val;
     }
 
     // Fallback: treat as simple substring check

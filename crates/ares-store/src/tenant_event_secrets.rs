@@ -100,9 +100,11 @@ mod tests {
         let padded = secret_sha256_hex(" abc ").expect("hash");
         assert_ne!(plain, padded, "a padded secret is a different secret");
         assert_eq!(padded.len(), 64);
-        assert!(padded
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+        assert!(
+            padded
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        );
     }
 
     #[test]

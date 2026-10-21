@@ -236,13 +236,12 @@ impl ProviderRegistry {
     ) -> Option<RuntimeProviderEntry> {
         let runtime = self.runtime_providers.load();
         let entries = runtime.get(name)?;
-        if let Some(requester) = tenant_id {
-            if let Some(entry) = entries
+        if let Some(requester) = tenant_id
+            && let Some(entry) = entries
                 .iter()
                 .find(|entry| entry.tenant_id.as_deref() == Some(requester))
-            {
-                return Some(entry.clone());
-            }
+        {
+            return Some(entry.clone());
         }
         entries
             .iter()
@@ -1016,10 +1015,10 @@ impl ProviderRegistry {
         &self,
         requirements: Option<CapabilityRequirements>,
     ) -> Result<Box<dyn crate::client::LLMClient>> {
-        if let Some(req) = requirements {
-            if let Ok(client) = self.create_client_for_requirements(&req).await {
-                return Ok(client);
-            }
+        if let Some(req) = requirements
+            && let Ok(client) = self.create_client_for_requirements(&req).await
+        {
+            return Ok(client);
         }
         self.create_default_client().await
     }
@@ -1709,12 +1708,16 @@ mod tests {
         assert!(!registry.has_provider("tenant-runtime"));
         assert!(registry.has_provider_for_tenant("tenant-runtime", Some("tenant-a")));
         assert!(!registry.has_provider_for_tenant("tenant-runtime", Some("tenant-b")));
-        assert!(registry
-            .provider_for_tenant("tenant-runtime", Some("tenant-a"))
-            .is_some());
-        assert!(registry
-            .provider_for_tenant("tenant-runtime", Some("tenant-b"))
-            .is_none());
+        assert!(
+            registry
+                .provider_for_tenant("tenant-runtime", Some("tenant-a"))
+                .is_some()
+        );
+        assert!(
+            registry
+                .provider_for_tenant("tenant-runtime", Some("tenant-b"))
+                .is_none()
+        );
         assert_eq!(
             registry.provider_names(),
             vec!["global-runtime".to_string()]
@@ -1881,10 +1884,12 @@ mod tests {
         // The fixture's provider reads TEST_KEY; other suites export it, so
         // clear it here to keep the missing-key error deterministic.
         let saved_key = std::env::var("TEST_KEY").ok();
-        std::env::remove_var("TEST_KEY");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("TEST_KEY") };
         let result = registry.create_default_client().await;
         if let Some(key) = saved_key {
-            std::env::set_var("TEST_KEY", key);
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("TEST_KEY", key) };
         }
         match result {
             Err(AppError::Configuration(msg)) => {

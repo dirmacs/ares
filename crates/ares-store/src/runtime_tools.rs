@@ -710,9 +710,10 @@ mod tests {
         for tenant_id in [None, Some(""), Some("   ")] {
             let err = validate_runtime_tool_scope(true, false, tenant_id).unwrap_err();
             assert!(matches!(err, AppError::InvalidInput(_)));
-            assert!(err
-                .to_string()
-                .contains("enabled private runtime tools require tenant_id"));
+            assert!(
+                err.to_string()
+                    .contains("enabled private runtime tools require tenant_id")
+            );
         }
     }
 
@@ -837,11 +838,13 @@ mod tests {
         // Delete
         let deleted = store.delete(&tool.id).await.expect("delete");
         assert_eq!(deleted, 1);
-        assert!(store
-            .get_by_id(&tool.id)
-            .await
-            .expect("get_by_id after delete")
-            .is_none());
+        assert!(
+            store
+                .get_by_id(&tool.id)
+                .await
+                .expect("get_by_id after delete")
+                .is_none()
+        );
     }
 
     #[tokio::test]

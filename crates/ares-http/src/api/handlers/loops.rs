@@ -11,15 +11,15 @@ use crate::Result;
 use ares_agent::loop_mode::{LoopFinishReason, LoopModeConfig, LoopModeState, LoopRunner};
 use ares_types::types::AppError;
 use axum::{
+    Json,
     extract::{Path, State},
     http::StatusCode,
-    Json,
 };
 use cordis::Context;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 

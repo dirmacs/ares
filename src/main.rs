@@ -35,9 +35,9 @@ mod mcp_agent_runner;
 mod plugins;
 
 #[cfg(feature = "postgres")]
-use crate::cli::{init, output::Output, rag, AgentCommands, Cli, Commands};
+use crate::cli::{AgentCommands, Cli, Commands, init, output::Output, rag};
 #[cfg(feature = "postgres")]
-use ares_http::{api, overlay::AresConfig, AresConfigManager, DynamicConfigManager};
+use ares_http::{AresConfigManager, DynamicConfigManager, api, overlay::AresConfig};
 #[cfg(feature = "postgres")]
 use ares_store::PostgresClient;
 #[cfg(feature = "postgres")]
@@ -421,17 +421,17 @@ fn boot_loader_program(
     }
 
     // Legacy --config injection: empty Overlay config + non-default path.
-    if config_path != "ares.toml" {
-        if let Some(entry) = desired.0.iter_mut().find(|e| e.plugin == "Overlay") {
-            let empty = match &entry.config {
-                serde_json::Value::Null => true,
-                serde_json::Value::Object(map) => map.is_empty(),
-                serde_json::Value::Array(arr) => arr.is_empty(),
-                _ => false,
-            };
-            if empty {
-                entry.config = serde_json::json!({ "toml_path": config_path });
-            }
+    if config_path != "ares.toml"
+        && let Some(entry) = desired.0.iter_mut().find(|e| e.plugin == "Overlay")
+    {
+        let empty = match &entry.config {
+            serde_json::Value::Null => true,
+            serde_json::Value::Object(map) => map.is_empty(),
+            serde_json::Value::Array(arr) => arr.is_empty(),
+            _ => false,
+        };
+        if empty {
+            entry.config = serde_json::json!({ "toml_path": config_path });
         }
     }
 
@@ -449,12 +449,15 @@ fn boot_loader_program(
                 ok += 1;
                 if entry.plugin == "Overlay" {
                     overlay_done = true;
-                    if let Some(overlay) = ctx.get::<AresConfigManager>() {
-                        overlay.fill_empty_entry_configs(&mut desired);
-                    } else {
-                        return Err(
-                            "Overlay instantiated but AresConfigManager missing".to_string()
-                        );
+                    match ctx.get::<AresConfigManager>() {
+                        Some(overlay) => {
+                            overlay.fill_empty_entry_configs(&mut desired);
+                        }
+                        _ => {
+                            return Err(
+                                "Overlay instantiated but AresConfigManager missing".to_string()
+                            );
+                        }
                     }
                 }
             }
@@ -721,15 +724,17 @@ async fn run_server(
                         .unwrap_or_else(|_| serde_json::json!({"name": a.name})),
                 })
                 .collect();
-            if let Err(e) =
-                ares_store::agent_versions::record_agent_versions(&pool, &inputs, "startup").await
+            match ares_store::agent_versions::record_agent_versions(&pool, &inputs, "startup").await
             {
-                tracing::warn!("Failed to snapshot agent versions on startup: {}", e);
-            } else {
-                tracing::info!(
-                    count = startup_agents.len(),
-                    "Agent configs snapshotted to agent_config_versions"
-                );
+                Err(e) => {
+                    tracing::warn!("Failed to snapshot agent versions on startup: {}", e);
+                }
+                _ => {
+                    tracing::info!(
+                        count = startup_agents.len(),
+                        "Agent configs snapshotted to agent_config_versions"
+                    );
+                }
             }
         }
 
@@ -920,16 +925,14 @@ async fn run_server(
     let app = if config.server.rate_limit_per_second > 0 {
         use std::sync::Arc;
         use std::time::Duration;
-        use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
+        use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
 
         // Configure per-IP rate limiting.
         // NOT `.per_second(rate)`: tower_governor's `per_second(n)` sets the
         // replenishment interval in SECONDS, not a rate. See `rate_to_interval_ms`.
         let governor_conf = Arc::new(
             GovernorConfigBuilder::default()
-                .per_millisecond(rate_to_interval_ms(
-                    config.server.rate_limit_per_second,
-                ))
+                .per_millisecond(rate_to_interval_ms(config.server.rate_limit_per_second))
                 .burst_size(config.server.rate_limit_burst)
                 .use_headers() // Include x-ratelimit-* headers in responses
                 .finish()
@@ -1028,8 +1031,8 @@ async fn run_server(
 /// EOF is force-killed once `WORKER_SHUTDOWN_GRACE` elapses.
 #[cfg(feature = "postgres")]
 async fn supervise_forever(_cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
     // Write end of the live child's stdin; dropping it is the stop request
     // (EOF) that starts the shutdown-grace countdown inside `wait_with_grace`.
@@ -1208,7 +1211,7 @@ async fn init_postgres_db(
 /// Build CORS layer from configuration
 #[cfg(feature = "postgres")]
 fn build_cors_layer(origins: &[String]) -> CorsLayer {
-    use axum::http::{header, Method};
+    use axum::http::{Method, header};
     use tower_http::cors::AllowOrigin;
 
     let (allow_origin, allow_credentials) = if origins.len() == 1 && origins[0] == "*" {
@@ -1344,11 +1347,11 @@ async fn config_info(
 #[cfg(all(feature = "postgres", feature = "ui"))]
 mod ui {
     use axum::{
+        Router,
         body::Body,
-        http::{header, StatusCode, Uri},
+        http::{StatusCode, Uri, header},
         response::Response,
         routing::get,
-        Router,
     };
     use rust_embed::Embed;
 
@@ -1598,8 +1601,10 @@ mod boot_tests {
         // Overlay validates these at instantiation; without them set the
         // loader reports no active Overlay entry and exits the whole test
         // process.
-        std::env::set_var("JWT_SECRET_TEST_BOOT", "boot-test-secret-not-used");
-        std::env::set_var("API_KEY_TEST_BOOT", "boot-test-api-key-not-used");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("JWT_SECRET_TEST_BOOT", "boot-test-secret-not-used") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("API_KEY_TEST_BOOT", "boot-test-api-key-not-used") };
 
         std::fs::write(
             dir.join("ares.toml"),

@@ -248,10 +248,10 @@ impl ModuleGraph {
             let mut plugins: Vec<String> = Vec::new();
             let mut seen_plugins: HashSet<String> = HashSet::new();
             while let Some(current) = queue.pop_front() {
-                if let Some(entry) = modules.get(&current) {
-                    if seen_plugins.insert(entry.plugin_name.clone()) {
-                        plugins.push(entry.plugin_name.clone());
-                    }
+                if let Some(entry) = modules.get(&current)
+                    && seen_plugins.insert(entry.plugin_name.clone())
+                {
+                    plugins.push(entry.plugin_name.clone());
                 }
                 for dependent in reverse_edges(&modules, &current) {
                     if visited.insert(dependent.clone()) {

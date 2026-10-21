@@ -11,8 +11,9 @@ use crate::rag::{
     reranker::{Reranker, RerankerConfig, RerankerModelType},
 };
 use crate::{
+    HttpError, Result,
     auth::middleware::AuthUser,
-    db::{tenant_allowlist as allowlist, AresVectorStore, VectorStore},
+    db::{AresVectorStore, VectorStore, tenant_allowlist as allowlist},
     rag::{
         chunker::{ChunkingStrategy, TextChunker},
         search::{HybridWeights, SearchEngine, SearchStrategy},
@@ -22,9 +23,8 @@ use crate::{
         RagDeleteCollectionResponse, RagIngestRequest, RagIngestResponse, RagSearchRequest,
         RagSearchResponse, RagSearchResult, SearchResult,
     },
-    HttpError, Result,
 };
-use axum::{extract::State, Json};
+use axum::{Json, extract::State};
 use chrono::Utc;
 use cordis::Context;
 use std::sync::Arc;

@@ -192,8 +192,13 @@ impl AgentRegistry {
             .map(|model| model.provider.clone())
             .unwrap_or_else(|| config.model.clone());
 
-        let mut agent =
-            ConfigurableAgent::new_with_provider(name, config, llm, None, provider_name);
+        let mut agent = ConfigurableAgent::new_with_provider_and_tool_service(
+            name,
+            config,
+            llm,
+            None,
+            provider_name,
+        );
         agent.set_tools(Arc::clone(&self.tools));
         Ok(agent)
     }
@@ -280,8 +285,13 @@ impl AgentRegistry {
             fallback_llms.push((fallback_provider_name, client));
         }
 
-        let mut agent =
-            ConfigurableAgent::new_with_provider(name, config, llm, None, primary_provider_name);
+        let mut agent = ConfigurableAgent::new_with_provider_and_tool_service(
+            name,
+            config,
+            llm,
+            None,
+            primary_provider_name,
+        );
         agent.set_tools(Arc::clone(&self.tools));
         agent.set_fallback_llms_with_providers(fallback_llms);
 

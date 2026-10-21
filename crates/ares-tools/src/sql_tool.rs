@@ -232,6 +232,17 @@ fn pg_value_to_json(row: &sqlx::postgres::PgRow, i: usize) -> Result<Value> {
         return Ok(v);
     }
 
+    // NUMERIC columns.
+    //
+    // A numeric decodes to none of the types below: sqlx hands it over
+    // as a `rust_decimal::Decimal`, and a column of that type used to
+    // fall through every branch and land on the null at the end, so
+    // every computed figure a SQL tool returned was null until the
+    // query cast the column to `float8`.
+    if let Ok(opt) = row.try_get::<Option<sqlx::types::Decimal>, _>(i) {
+        return Ok(opt.map_or(Value::Null, decimal_to_json));
+    }
+
     // Nullable string (covers TEXT, VARCHAR, CHAR, UUID, enums, … and NULL)
     if let Ok(opt) = row.try_get::<Option<String>, _>(i) {
         return Ok(opt.map_or(Value::Null, Value::String));
@@ -267,6 +278,29 @@ fn pg_value_to_json(row: &sqlx::postgres::PgRow, i: usize) -> Result<Value> {
     }
 
     Ok(Value::Null)
+}
+
+/// A decimal becomes a JSON number.
+///
+/// A JSON number is an IEEE double in `serde_json`, so a decimal with
+/// more than about seventeen significant digits is rounded to the
+/// nearest one. An integral value that fits in an `i64` is exact. A
+/// query that needs the digits exactly should cast the column to text.
+fn decimal_to_json(value: sqlx::types::Decimal) -> Value {
+    let text = value.to_string();
+    // An integral decimal is exact in a JSON number.
+    if !text.contains('.') {
+        if let Ok(i) = text.parse::<i64>() {
+            return Value::Number(i.into());
+        }
+    }
+    // Otherwise the nearest double to the value, which is what a JSON
+    // number holds.
+    match text.parse::<f64>() {
+        Ok(f) => serde_json::Number::from_f64(f)
+            .map_or_else(|| Value::String(text.clone()), Value::Number),
+        Err(_) => Value::String(text),
+    }
 }
 
 // =============================================================================
@@ -421,6 +455,30 @@ mod tests {
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["a"], 42);
         assert_eq!(arr[0]["b"], "hello");
+    }
+
+    #[tokio::test]
+    async fn test_numeric_columns_become_json_numbers() {
+        let pool = ares_test_support::pool().await;
+        let config = SqlToolConfig {
+            query_template: "SELECT 1234.5678::numeric AS amount, \
+                            42::numeric AS count, \
+                            (-0.5)::numeric AS negative, \
+                            NULL::numeric AS missing"
+                .to_string(),
+            ..Default::default()
+        };
+        let tool = make_test_tool(config, Some(pool));
+        let result = tool.execute(json!({})).await.unwrap();
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["amount"], json!(1234.5678));
+        assert_eq!(arr[0]["count"], json!(42));
+        assert_eq!(arr[0]["negative"], json!(-0.5));
+        assert_eq!(arr[0]["missing"], json!(null));
+        // A number, not a string and not null.
+        assert!(arr[0]["amount"].is_number());
+        assert!(arr[0]["count"].is_number());
     }
 
     #[tokio::test]

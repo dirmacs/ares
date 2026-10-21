@@ -201,6 +201,8 @@ impl<'a> RuntimeToolStore<'a> {
             ));
         }
         validate_runtime_tool_scope(req.enabled, req.is_public, req.tenant_id.as_deref())?;
+        check_tenant_reference(&self.pool, "created_by", req.created_by.as_deref()).await?;
+        check_tenant_reference(&self.pool, "tenant_id", req.tenant_id.as_deref()).await?;
 
         let id = uuid::Uuid::new_v4().to_string();
 
@@ -271,6 +273,8 @@ impl<'a> RuntimeToolStore<'a> {
             .clone()
             .unwrap_or_else(|| existing.tenant_id.clone());
         validate_runtime_tool_scope(enabled, is_public, tenant_id.as_deref())?;
+        check_tenant_reference(&self.pool, "created_by", created_by.as_deref()).await?;
+        check_tenant_reference(&self.pool, "tenant_id", tenant_id.as_deref()).await?;
         let new_version = existing.version + 1;
 
         let mut tx = self.pool.begin().await.map_err(sqlx_err)?;
@@ -577,6 +581,44 @@ pub fn validate_runtime_tool_scope(
     Ok(())
 }
 
+/// Check that a tenant reference names a tenant that exists.
+///
+/// `runtime_tools.created_by` and `runtime_tools.tenant_id` are foreign
+/// keys to `tenants(id)`. A caller that sends a human-readable name
+/// where the column wants a tenant id gets a foreign key violation
+/// from PostgreSQL, and a constraint violation is a client error rather
+/// than a server fault: the request is answered with a 500, and the
+/// caller learns nothing about which field was wrong. This check
+/// answers it with a 400 that names the field.
+///
+/// An absent reference is left alone: the column allows `NULL`, and
+/// `NULL` is not a reference to anything.
+async fn check_tenant_reference(
+    pool: &PgPool,
+    field: &str,
+    value: Option<&str>,
+) -> Result<()> {
+    let Some(id) = value.map(str::trim) else {
+        return Ok(());
+    };
+    if id.is_empty() {
+        return Err(AppError::InvalidInput(format!(
+            "{field} must not be empty"
+        )));
+    }
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tenants WHERE id = $1)")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+    if !exists {
+        return Err(AppError::InvalidInput(format!(
+            "{field} must reference an existing tenant id"
+        )));
+    }
+    Ok(())
+}
+
 pub fn validate_runtime_tool_update_scope_preflight(req: &UpdateRuntimeToolRequest) -> Result<()> {
     if req.enabled == Some(true) && req.is_public == Some(false) {
         validate_runtime_tool_scope(
@@ -845,6 +887,76 @@ mod tests {
                 .expect("get_by_id after delete")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn integration_create_rejects_a_name_where_a_tenant_id_belongs() {
+        let (_lock, pool) = crate::test_db::pool().await;
+        let store = RuntimeToolStore::new(&pool);
+
+        // created_by/tenant_id reference tenants(id); seed the parent row.
+        let _ = sqlx::query(
+            "INSERT INTO tenants (id, name, tier, created_at, updated_at) VALUES ('integration-tenant', 'Integration Tenant', 'free', 1, 1) ON CONFLICT (id) DO NOTHING",
+        )
+        .execute(&pool)
+        .await;
+
+        let req = CreateRuntimeToolRequest {
+            name: "integration-test-fk".into(),
+            display_name: Some("FK".into()),
+            description: "A name where a tenant id belongs".into(),
+            tool_type: "http".into(),
+            parameters_schema: serde_json::json!({"type": "object", "properties": {}}),
+            execution_config: serde_json::json!({"method": "GET", "url": "https://example.com"}),
+            enabled: true,
+            is_public: false,
+            // A human-readable name, not a tenant id.
+            created_by: Some("Integration Tenant".into()),
+            tenant_id: Some("integration-tenant".into()),
+        };
+        let err = store.create(&req).await.unwrap_err();
+        assert!(
+            matches!(&err, AppError::InvalidInput(msg)
+                if msg.contains("created_by must reference an existing tenant id")),
+            "expected a 400 about created_by, got {err:?}"
+        );
+
+        // The tenant_id column is a foreign key in the same way.
+        let req = CreateRuntimeToolRequest {
+            name: "integration-test-fk-2".into(),
+            display_name: Some("FK".into()),
+            description: "A name where a tenant id belongs".into(),
+            tool_type: "http".into(),
+            parameters_schema: serde_json::json!({"type": "object", "properties": {}}),
+            execution_config: serde_json::json!({"method": "GET", "url": "https://example.com"}),
+            enabled: true,
+            is_public: false,
+            created_by: Some("integration-tenant".into()),
+            tenant_id: Some("Integration Tenant".into()),
+        };
+        let err = store.create(&req).await.unwrap_err();
+        assert!(
+            matches!(&err, AppError::InvalidInput(msg)
+                if msg.contains("tenant_id must reference an existing tenant id")),
+            "expected a 400 about tenant_id, got {err:?}"
+        );
+
+        // A tenant id that exists is accepted.
+        let req = CreateRuntimeToolRequest {
+            name: "integration-test-fk-3".into(),
+            display_name: Some("FK".into()),
+            description: "A tenant id where a tenant id belongs".into(),
+            tool_type: "http".into(),
+            parameters_schema: serde_json::json!({"type": "object", "properties": {}}),
+            execution_config: serde_json::json!({"method": "GET", "url": "https://example.com"}),
+            enabled: true,
+            is_public: false,
+            created_by: Some("integration-tenant".into()),
+            tenant_id: Some("integration-tenant".into()),
+        };
+        let tool = store.create(&req).await.expect("a real tenant id is accepted");
+        assert_eq!(tool.created_by.as_deref(), Some("integration-tenant"));
+        let _ = store.delete(&tool.id).await;
     }
 
     #[tokio::test]

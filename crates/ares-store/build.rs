@@ -1,6 +1,11 @@
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
+
+/// The record of what each migration's bytes are: `migration-checksums.txt`
+/// beside this script.
+const CHECKSUM_FILE: &str = "migration-checksums.txt";
 
 /// Mirrors `sqlx_core::migrate::MigrationType::from_filename`.
 ///
@@ -158,6 +163,94 @@ fn sha384(bytes: &[u8]) -> [u8; 48] {
     out
 }
 
+/// The approved checksum for each migration, from `migration-checksums.txt`.
+///
+/// The file holds one `<version> <sha384>` pair per line; `#` starts a
+/// comment.
+fn approved_checksums(path: &Path) -> Result<BTreeMap<i64, String>, String> {
+    let text = fs::read_to_string(path)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let mut approved = BTreeMap::new();
+    for (n, line) in text.lines().enumerate() {
+        // `#` starts a comment, at the start of a line or after the
+        // fields: a checksum is hexadecimal, so it cannot be one.
+        let line = match line.split_once('#') {
+            Some((before, _)) => before.trim(),
+            None => line.trim(),
+        };
+        if line.is_empty() {
+            continue;
+        }
+        let mut fields = line.split_whitespace();
+        let version = fields
+            .next()
+            .ok_or_else(|| format!("{}:{}: the version is missing", path.display(), n + 1))?
+            .parse::<i64>()
+            .map_err(|e| format!("{}:{}: {e}", path.display(), n + 1))?;
+        let checksum = fields
+            .next()
+            .ok_or_else(|| format!("{}:{}: the checksum is missing", path.display(), n + 1))?
+            .to_ascii_lowercase();
+        if fields.next().is_some() {
+            return Err(format!("{}:{}: too many fields", path.display(), n + 1));
+        }
+        if approved.insert(version, checksum).is_some() {
+            return Err(format!(
+                "{}:{}: version {version} appears twice",
+                path.display(),
+                n + 1
+            ));
+        }
+    }
+    Ok(approved)
+}
+
+/// Compare the migrations with the approved record.
+///
+/// A database records the sha384 of a migration's bytes when it applies
+/// it, and a database that applied the old bytes refuses to start when
+/// the file's bytes change. So the bytes of an applied migration are
+/// immutable, and this is where that rule is enforced: the build fails
+/// when a migration's bytes are not the bytes the record holds.
+fn check_approved(migrations: &[Resolved], approved: &BTreeMap<i64, String>) -> Result<(), String> {
+    for m in migrations {
+        match approved.get(&m.version) {
+            None => {
+                return Err(format!(
+                    "migration {version} ({description}) has no checksum in {file}.\n\
+                     Its bytes are {actual}.\n\
+                     Add that line to the file: from now on these are the bytes every database records.",
+                    version = m.version,
+                    description = m.description,
+                    file = CHECKSUM_FILE,
+                    actual = m.checksum_hex,
+                ))
+            }
+            Some(expected) if expected != &m.checksum_hex => {
+                return Err(format!(
+                    "migration {version} ({description}) no longer matches its approved checksum.\n  \
+                     the databases that applied it hold {expected}\n  \
+                     the file's bytes are                        {actual}\n\
+                     A migration's bytes are immutable once a database has applied them: sqlx records the checksum of the file's bytes, and such a database refuses to start when they change. If the change is meant, it belongs in a new migration.",
+                    version = m.version,
+                    description = m.description,
+                    expected = expected,
+                    actual = m.checksum_hex,
+                ))
+            }
+            Some(_) => {}
+        }
+    }
+    for version in approved.keys() {
+        if !migrations.iter().any(|m| m.version == *version) {
+            return Err(format!(
+                "the approved checksum for migration {version} has no migration file. A migration that a database applied cannot be removed."
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn main() {
     let manifest_dir =
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo");
@@ -172,6 +265,13 @@ fn main() {
     let out = Path::new(&out_dir).join("migrations.rs");
 
     let migrations = resolve(&migrations_dir).unwrap_or_else(|e| panic!("{e}"));
+
+    // The bytes of an applied migration are immutable, and this is where
+    // that rule is enforced.
+    let approved_path = Path::new(&manifest_dir).join(CHECKSUM_FILE);
+    println!("cargo::rerun-if-changed={CHECKSUM_FILE}");
+    let approved = approved_checksums(&approved_path).unwrap_or_else(|e| panic!("{e}"));
+    check_approved(&migrations, &approved).unwrap_or_else(|e| panic!("{e}"));
 
     // `Cow<'static, [Migration]>` as a `const`-promotable value: `Migration` has
     // no `Drop` and all fields are `'static`, so a `&[..]` literal promotes.

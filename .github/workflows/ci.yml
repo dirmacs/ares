@@ -100,6 +100,17 @@ jobs:
             echo "::error::headless build pulled a web/CLI/script dependency into the tree"
             exit 1
           fi
+  fmt:
+    name: Formatting Gate
+    runs-on: [self-hosted, Linux, ARM64, dirmacs-ci]
+    steps:
+      - uses: actions/checkout@v4
+      # The same probe, and the same fix: see the CRAP gate's step above.
+      - name: Put the toolchain's shims on PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check the formatting
+        run: cargo fmt --all -- --check
   test:
     name: PostgreSQL Workspace Tests
     runs-on: ubuntu-latest

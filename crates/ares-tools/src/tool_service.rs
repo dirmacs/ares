@@ -217,11 +217,11 @@ impl Tools {
         // The control tool is not a host tool: intercept it before resolution
         // so a quote of an offer reaches the remedy path rather than a
         // not-found.
-        if let Some(gate) = &self.appa {
-            if appa_runtime_api::is_reserved_tool_name(name) {
-                let actor = gate.actor_for(tenant_id_from_tool_ctx(ctx).as_deref());
-                return Self::control_call(gate, &actor, args).await;
-            }
+        if let Some(gate) = &self.appa
+            && appa_runtime_api::is_reserved_tool_name(name)
+        {
+            let actor = gate.actor_for(tenant_id_from_tool_ctx(ctx).as_deref());
+            return Self::control_call(gate, &actor, args).await;
         }
 
         let tool = self
@@ -233,7 +233,7 @@ impl Tools {
             .map(|gate| gate.actor_for(tenant_id_from_tool_ctx(ctx).as_deref()));
 
         if let (Some(gate), Some(actor)) = (&self.appa, &actor) {
-            match gate.check_call(&actor, name, &args).await {
+            match gate.check_call(actor, name, &args).await {
                 Ok(PreCall::Allow) => {}
                 // The engine's feedback reaches the model as the call's
                 // result; the tool's execute path is never entered.
@@ -248,7 +248,7 @@ impl Tools {
                 Ok(PreCall::Refuse { detail }) => {
                     return Err(ares_types::AppError::Unavailable(format!("appa: {detail}")));
                 }
-                Ok(PreCall::Control) => return Self::control_call(gate, &actor, args).await,
+                Ok(PreCall::Control) => return Self::control_call(gate, actor, args).await,
                 Err(detail) => {
                     return Err(ares_types::AppError::Unavailable(format!("appa: {detail}")));
                 }

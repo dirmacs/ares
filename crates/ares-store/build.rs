@@ -64,15 +64,22 @@ struct Resolved {
 }
 
 fn resolve(path: &Path) -> Result<Vec<Resolved>, String> {
-    let entries = fs::read_dir(path).map_err(|e| format!("error reading migration directory {}: {e}", path.display()))?;
+    let entries = fs::read_dir(path)
+        .map_err(|e| format!("error reading migration directory {}: {e}", path.display()))?;
 
     let mut migrations = Vec::new();
 
     for entry in entries {
-        let entry = entry.map_err(|e| format!("error reading contents of migration directory: {e}"))?;
+        let entry =
+            entry.map_err(|e| format!("error reading contents of migration directory: {e}"))?;
         let entry_path = entry.path();
 
-        let metadata = fs::metadata(&entry_path).map_err(|e| format!("error getting metadata of migration path {}: {e}", entry_path.display()))?;
+        let metadata = fs::metadata(&entry_path).map_err(|e| {
+            format!(
+                "error getting metadata of migration path {}: {e}",
+                entry_path.display()
+            )
+        })?;
 
         if !metadata.is_file() {
             // not a file; ignore
@@ -93,13 +100,21 @@ fn resolve(path: &Path) -> Result<Vec<Resolved>, String> {
             .parse()
             .map_err(|_e| format!("error parsing migration filename {file_name:?}; expected integer version prefix (e.g. `01_foo.sql`)"))?;
 
-        let migration_type = MigrationType::from_filename(parts[1])
-            .ok_or_else(|| format!("error parsing migration filename {file_name:?}; unknown migration type"))?;
+        let migration_type = MigrationType::from_filename(parts[1]).ok_or_else(|| {
+            format!("error parsing migration filename {file_name:?}; unknown migration type")
+        })?;
 
         // remove the `.sql` and replace `_` with ` `
-        let description = parts[1].trim_end_matches(migration_type.suffix()).replace('_', " ");
+        let description = parts[1]
+            .trim_end_matches(migration_type.suffix())
+            .replace('_', " ");
 
-        let sql = fs::read_to_string(&entry_path).map_err(|e| format!("error reading contents of migration {}: {e}", entry_path.display()))?;
+        let sql = fs::read_to_string(&entry_path).map_err(|e| {
+            format!(
+                "error reading contents of migration {}: {e}",
+                entry_path.display()
+            )
+        })?;
 
         // opt-out of migration transaction
         let no_tx = sql.starts_with("-- no-transaction");
@@ -108,7 +123,12 @@ fn resolve(path: &Path) -> Result<Vec<Resolved>, String> {
 
         let path = entry_path
             .to_str()
-            .ok_or_else(|| format!("migration path cannot be represented as a string: {}", entry_path.display()))?
+            .ok_or_else(|| {
+                format!(
+                    "migration path cannot be represented as a string: {}",
+                    entry_path.display()
+                )
+            })?
             .to_owned();
 
         migrations.push(Resolved {
@@ -139,7 +159,8 @@ fn sha384(bytes: &[u8]) -> [u8; 48] {
 }
 
 fn main() {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo");
+    let manifest_dir =
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo");
     let migrations_dir = Path::new(&manifest_dir).join("migrations");
 
     println!("cargo::rerun-if-changed=migrations");
@@ -199,7 +220,8 @@ fn main() {
 fn checksum_bytes(hex: &str) -> String {
     let mut out = String::from("&[");
     for chunk in hex.as_bytes().chunks(2) {
-        let byte = u8::from_str_radix(std::str::from_utf8(chunk).expect("hex bytes are ASCII"), 16).expect("two hex digits");
+        let byte = u8::from_str_radix(std::str::from_utf8(chunk).expect("hex bytes are ASCII"), 16)
+            .expect("two hex digits");
         out.push_str(&byte.to_string());
         out.push(',');
     }

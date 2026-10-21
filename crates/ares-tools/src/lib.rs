@@ -37,9 +37,9 @@ pub mod mcp_bridge;
 #[cfg(any(feature = "postgres", test))]
 pub mod connectors;
 
-pub use calculator::{Calculator, CalculatorConfig, CalculatorService};
 pub use appa::AppaGate;
-pub use plugins::{register_plugins, ExtraStaticTools};
+pub use calculator::{Calculator, CalculatorConfig, CalculatorService};
+pub use plugins::{ExtraStaticTools, register_plugins};
 pub use registry::Tool;
 #[cfg(feature = "script-tools")]
 pub use rhai_tool::{RhaiTool, RhaiToolConfig};

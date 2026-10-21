@@ -58,8 +58,8 @@ use appa_runtime::api::{ExecuteRemedyPlanArgs, OpenError, RemedyOutcome, Runtime
 use appa_runtime::config::{Config, ConfigError, HostDefaults, HostedBattery};
 use appa_runtime::hooks;
 use appa_runtime_api::{
-    Actor, Adapter, AdapterName, CanonicalTool, CanonicalToolError, HookDecision, HookEvent,
-    IdentifiedTool, ParseRefusal, ProposedCall, TrajectoryId, ADVERTISED_CONTROL_TOOL,
+    ADVERTISED_CONTROL_TOOL, Actor, Adapter, AdapterName, CanonicalTool, CanonicalToolError,
+    HookDecision, HookEvent, IdentifiedTool, ParseRefusal, ProposedCall, TrajectoryId,
 };
 
 use crate::fence::{Fence, FencePolicy, WriteGuard};
@@ -518,7 +518,7 @@ impl AppaGate {
             HookDecision::DeliverValue { value } => Some(Value::String(value)),
             // The runtime's words replace the value; the value never crosses.
             HookDecision::ReplaceOutput { output } => {
-                return Err(Withheld::Blocked { reason: output })
+                return Err(Withheld::Blocked { reason: output });
             }
             HookDecision::Block { reason } => return Err(Withheld::Blocked { reason }),
             HookDecision::Refuse { detail } => return Err(Withheld::Refused { detail }),
@@ -527,7 +527,7 @@ impl AppaGate {
             other => {
                 return Err(Withheld::Refused {
                     detail: format!("appa answered a tool result with {other:?}"),
-                })
+                });
             }
         };
 
@@ -616,9 +616,7 @@ impl AppaGate {
     /// model must not see out-of-fence bytes. Either violation lands in the
     /// fence's audit ring.
     fn write_contract(&self, actor: &Actor, tool: &str, args: &Value) -> Option<String> {
-        let Some(write) = self.fence_classes.class_of(tool) else {
-            return None;
-        };
+        let write = self.fence_classes.class_of(tool)?;
         let path = match path_argument(args) {
             Some(path) => path,
             // A fence-relevant call that names no path cannot satisfy a
@@ -1193,10 +1191,10 @@ builtin = "redact-secrets"
         let route_text = &feedback[route_at..];
         let mut best: Option<(usize, &str)> = None;
         for offer in offers.iter().filter_map(Value::as_str) {
-            if let Some(at) = route_text.find(offer) {
-                if best.is_none_or(|(best_at, _)| at < best_at) {
-                    best = Some((at, offer));
-                }
+            if let Some(at) = route_text.find(offer)
+                && best.is_none_or(|(best_at, _)| at < best_at)
+            {
+                best = Some((at, offer));
             }
         }
         let offer = best

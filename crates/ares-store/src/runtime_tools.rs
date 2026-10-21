@@ -593,18 +593,12 @@ pub fn validate_runtime_tool_scope(
 ///
 /// An absent reference is left alone: the column allows `NULL`, and
 /// `NULL` is not a reference to anything.
-async fn check_tenant_reference(
-    pool: &PgPool,
-    field: &str,
-    value: Option<&str>,
-) -> Result<()> {
+async fn check_tenant_reference(pool: &PgPool, field: &str, value: Option<&str>) -> Result<()> {
     let Some(id) = value.map(str::trim) else {
         return Ok(());
     };
     if id.is_empty() {
-        return Err(AppError::InvalidInput(format!(
-            "{field} must not be empty"
-        )));
+        return Err(AppError::InvalidInput(format!("{field} must not be empty")));
     }
     let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tenants WHERE id = $1)")
         .bind(id)
@@ -954,7 +948,10 @@ mod tests {
             created_by: Some("integration-tenant".into()),
             tenant_id: Some("integration-tenant".into()),
         };
-        let tool = store.create(&req).await.expect("a real tenant id is accepted");
+        let tool = store
+            .create(&req)
+            .await
+            .expect("a real tenant id is accepted");
         assert_eq!(tool.created_by.as_deref(), Some("integration-tenant"));
         let _ = store.delete(&tool.id).await;
     }

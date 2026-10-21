@@ -168,8 +168,8 @@ fn sha384(bytes: &[u8]) -> [u8; 48] {
 /// The file holds one `<version> <sha384>` pair per line; `#` starts a
 /// comment.
 fn approved_checksums(path: &Path) -> Result<BTreeMap<i64, String>, String> {
-    let text = fs::read_to_string(path)
-        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let text =
+        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     let mut approved = BTreeMap::new();
     for (n, line) in text.lines().enumerate() {
         // `#` starts a comment, at the start of a line or after the
@@ -224,7 +224,7 @@ fn check_approved(migrations: &[Resolved], approved: &BTreeMap<i64, String>) -> 
                     description = m.description,
                     file = CHECKSUM_FILE,
                     actual = m.checksum_hex,
-                ))
+                ));
             }
             Some(expected) if expected != &m.checksum_hex => {
                 return Err(format!(
@@ -236,7 +236,7 @@ fn check_approved(migrations: &[Resolved], approved: &BTreeMap<i64, String>) -> 
                     description = m.description,
                     expected = expected,
                     actual = m.checksum_hex,
-                ))
+                ));
             }
             Some(_) => {}
         }

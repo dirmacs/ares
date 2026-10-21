@@ -3,7 +3,8 @@
 //! This module contains all HTTP request handlers organized by functionality.
 
 /// Admin tenant management handlers.
-// cordis Phase6: explicit path allows both admin.rs and admin/mod.rs to coexist (E0761 bypass)
+// The admin module is the file admin.rs; the admin/ directory holds its
+// submodules, each named by an explicit #[path] inside admin.rs.
 #[path = "admin.rs"]
 pub mod admin;
 /// Agent listing and info handlers.
@@ -35,7 +36,8 @@ pub mod skills;
 /// User-created agent management handlers.
 pub mod user_agents;
 /// V1 API key-authenticated tenant-scoped handlers.
-// cordis Phase6: explicit path allows both v1.rs and v1/mod.rs to coexist
+// The v1 module is the file v1.rs; the v1/ directory holds its
+// submodules, each named by an explicit #[path] inside v1.rs.
 #[path = "v1.rs"]
 pub mod v1;
 /// Workflow execution handlers.

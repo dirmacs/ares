@@ -879,10 +879,8 @@ mod route_path_tests {
     //     builder in a file outside the paths of (a): only the CALLS of
     //     `routes()` are caught there, by (b);
     //   - a call through a `use ..::routes as other` alias: the import itself
-    //     is not a call and is not flagged. (`handlers/admin/mod.rs` and
-    //     `handlers/v1/mod.rs` are not compiled, and still carry such
-    //     imports.) With (a) holding, no `routes()` exists in compiled code
-    //     to be imported;
+    //     is not a call and is not flagged. With (a) holding, no `routes()`
+    //     exists in compiled code to be imported;
     //   - other repositories. The wrapper (`ares-dirmacs`) is checked by the
     //     orchestrator's verify with a grep, not here.
     // -----------------------------------------------------------------------

@@ -8,8 +8,7 @@
 //! The unified hot-reload path is now `ReflectService::notify(TypeId)` which
 //! BFS-walks `dependents: RwLock<HashMap<TypeId, Vec<FiberId>>>` and triggers
 //! `Fiber::refresh` via `watch` channels (`notifiers: RwLock<HashMap<TypeId, watch::Sender<()>>>`)
-//! — polling via `RuntimeToolRegistry::start_background_reload` 60s `interval` is deprecated:
-//! `// REMOVED: polling fallback retained for one release then delete` (see `ReflectService` in `cordis`).
+//! — the old 60s `interval` polling path is gone (see `ReflectService` in `cordis`).
 //!
 //! Persistence is to `config/entries.json` (JSON) or, when the `toon` feature
 //! is enabled, `config/cordis-entries.toon` via `toon-format 0.4.1`.  It never

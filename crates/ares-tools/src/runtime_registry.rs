@@ -662,25 +662,9 @@ impl RuntimeToolRegistry {
     // Background reload — Phase 3 unified via ReflectService::notify + Fiber::refresh
     // -------------------------------------------------------------------------
 
-    // REMOVED: polling fallback retained for one release then delete. Unified hot-reload now via ReflectService::notify(TypeId::of::<RuntimeToolRegistry>()) BFS walks dependents and calls Fiber::refresh via watch channel.
-
-    /// Deprecated shim — background polling replaced by `Fiber::refresh` via `ReflectService::notify`.
-    ///
-    /// Retained for one release to avoid breaking callers; now returns `false` without spawning.
-    /// Use `ReflectService::notify(TypeId::of::<RuntimeToolRegistry>())` triggered by `watch` channel on DB change instead.
-    #[deprecated(
-        note = "polling replaced by ReflectService::notify + Fiber::refresh; no background task spawned"
-    )]
-    #[allow(dead_code)] // crate-internal API used by tests/connectors
-    pub fn start_background_reload(self: Arc<Self>) -> bool {
-        // REMOVED: polling fallback retained for one release then delete.
-        #[cfg(feature = "mcp")]
-        tracing::warn!(
-            "RuntimeToolRegistry::start_background_reload is deprecated: use ReflectService::notify(TypeId::of::<RuntimeToolRegistry>()) with Fiber::refresh via watch channel; no background task spawned"
-        );
-        let _ = self.reload_interval_secs;
-        false
-    }
+    // The polling fallback (`start_background_reload`) is gone. Unified hot-reload
+    // is via ReflectService::notify(TypeId::of::<RuntimeToolRegistry>()) BFS walking
+    // dependents and calling Fiber::refresh via the watch channel.
 
     /// Atomically replace the reload interval.
     #[allow(dead_code)] // crate-internal API used by tests/connectors
@@ -1084,30 +1068,6 @@ mod tests {
     // -------------------------------------------------------------------------
     // Hot-swap test
     // -------------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn start_background_reload_reports_disabled_interval() {
-        let pool =
-            sqlx::PgPool::connect_lazy("postgres://localhost/test").expect("lazy pool never fails");
-        let reg = Arc::new(RuntimeToolRegistry::with_interval(pool, 0));
-
-        #[allow(deprecated)]
-        let result = reg.start_background_reload();
-        // REMOVED: polling fallback retained for one release then delete — shim returns false without spawning
-        assert!(!result);
-    }
-
-    #[tokio::test]
-    async fn start_background_reload_reports_spawned_task() {
-        let pool =
-            sqlx::PgPool::connect_lazy("postgres://localhost/test").expect("lazy pool never fails");
-        let reg = Arc::new(RuntimeToolRegistry::with_interval(pool, 60));
-
-        #[allow(deprecated)]
-        let result = reg.start_background_reload();
-        // REMOVED: polling fallback retained for one release then delete — deprecated shim now returns false without spawning instead of true
-        assert!(!result);
-    }
 
     #[tokio::test]
     async fn reload_swaps_atomically() {

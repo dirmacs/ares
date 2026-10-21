@@ -1,13 +1,13 @@
 use crate::query_builders::{
-    message_role_from_db, message_role_to_db, DELETE_SESSION_BY_ID_SQL,
-    DELETE_SESSION_BY_TOKEN_SQL, INSERT_MESSAGE_SQL, SELECT_MESSAGES_SQL, VALIDATE_SESSION_SQL,
+    DELETE_SESSION_BY_ID_SQL, DELETE_SESSION_BY_TOKEN_SQL, INSERT_MESSAGE_SQL, SELECT_MESSAGES_SQL,
+    VALIDATE_SESSION_SQL, message_role_from_db, message_role_to_db,
 };
 use ares_types::types::{
     AppError, ContentPart, MemoryFact, Message, MessageRole, Preference, Result,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{postgres::PgPoolOptions, PgPool};
+use sqlx::{PgPool, postgres::PgPoolOptions};
 use uuid::Uuid;
 
 /// Default PostgreSQL connection URL used when no override or env var is set.
@@ -786,7 +786,8 @@ mod tests {
 
     #[test]
     fn resolve_database_url_prefers_explicit_override() {
-        std::env::remove_var("DATABASE_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
         assert_eq!(
             resolve_database_url(Some("postgres://override/db")),
             "postgres://override/db"
@@ -795,7 +796,8 @@ mod tests {
 
     #[test]
     fn resolve_database_url_trims_override() {
-        std::env::remove_var("DATABASE_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
         assert_eq!(
             resolve_database_url(Some("  postgres://trimmed/db  ")),
             "postgres://trimmed/db"
@@ -804,13 +806,15 @@ mod tests {
 
     #[test]
     fn resolve_database_url_falls_back_to_default_when_env_missing() {
-        std::env::remove_var("DATABASE_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
         assert_eq!(resolve_database_url(None), default_postgres_url());
     }
 
     #[test]
     fn resolve_database_url_ignores_blank_override() {
-        std::env::remove_var("DATABASE_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
         assert_eq!(resolve_database_url(Some("   ")), default_postgres_url());
     }
 
@@ -828,31 +832,38 @@ mod tests {
 
     #[test]
     fn resolve_max_connections_precedence_and_validation() {
-        std::env::remove_var("DATABASE_MAX_CONNECTIONS");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_MAX_CONNECTIONS") };
         // Default when neither the config value nor the env var is set.
         assert_eq!(resolve_max_connections(None), DEFAULT_MAX_CONNECTIONS);
 
         // Env applies when the config value is absent.
-        std::env::set_var("DATABASE_MAX_CONNECTIONS", "12");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("DATABASE_MAX_CONNECTIONS", "12") };
         assert_eq!(resolve_max_connections(None), 12);
 
         // Invalid env values fall back to the default.
-        std::env::set_var("DATABASE_MAX_CONNECTIONS", "lots");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("DATABASE_MAX_CONNECTIONS", "lots") };
         assert_eq!(resolve_max_connections(None), DEFAULT_MAX_CONNECTIONS);
 
         // Explicit config wins over the env var; zero clamps to one.
-        std::env::set_var("DATABASE_MAX_CONNECTIONS", "12");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("DATABASE_MAX_CONNECTIONS", "12") };
         assert_eq!(resolve_max_connections(Some(3)), 3);
         assert_eq!(resolve_max_connections(Some(0)), 1);
 
-        std::env::remove_var("DATABASE_MAX_CONNECTIONS");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_MAX_CONNECTIONS") };
     }
 
     #[test]
     fn resolve_database_url_uses_database_url_env() {
-        std::env::set_var("DATABASE_URL", "postgres://env-host/ares");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("DATABASE_URL", "postgres://env-host/ares") };
         assert_eq!(resolve_database_url(None), "postgres://env-host/ares");
-        std::env::remove_var("DATABASE_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
     }
 
     #[test]
@@ -1065,7 +1076,8 @@ mod tests {
 
     #[test]
     fn resolve_database_url_env_override_precedence() {
-        std::env::remove_var("DATABASE_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
         // explicit override wins
         assert_eq!(
             resolve_database_url(Some("postgres://override/db")),
@@ -1074,7 +1086,8 @@ mod tests {
         // no override, no env -> default
         assert_eq!(resolve_database_url(None), default_postgres_url());
 
-        std::env::set_var("DATABASE_URL", "postgres://env/db");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("DATABASE_URL", "postgres://env/db") };
         // env wins when no override
         assert_eq!(resolve_database_url(None), "postgres://env/db");
         // blank override falls through to env
@@ -1082,7 +1095,8 @@ mod tests {
         // whitespace override falls through to env
         assert_eq!(resolve_database_url(Some("   ")), "postgres://env/db");
 
-        std::env::remove_var("DATABASE_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
     }
 
     #[test]
@@ -1226,16 +1240,20 @@ mod tests {
                 .expect("user");
             assert_eq!(by_id.email, email);
 
-            assert!(client
-                .get_user_by_email("nonexistent@test.com")
-                .await
-                .expect("query")
-                .is_none());
-            assert!(client
-                .get_user_by_id("nonexistent-id")
-                .await
-                .expect("query")
-                .is_none());
+            assert!(
+                client
+                    .get_user_by_email("nonexistent@test.com")
+                    .await
+                    .expect("query")
+                    .is_none()
+            );
+            assert!(
+                client
+                    .get_user_by_id("nonexistent-id")
+                    .await
+                    .expect("query")
+                    .is_none()
+            );
         }
 
         #[tokio::test]
@@ -1267,11 +1285,13 @@ mod tests {
                 .delete_session(&session_id)
                 .await
                 .expect("delete session");
-            assert!(client
-                .validate_session(&token_hash)
-                .await
-                .expect("validate after delete")
-                .is_none());
+            assert!(
+                client
+                    .validate_session(&token_hash)
+                    .await
+                    .expect("validate after delete")
+                    .is_none()
+            );
 
             // Delete by token hash
             let session_id2 = unique("session2");
@@ -1292,11 +1312,13 @@ mod tests {
                 .delete_session_by_token_hash(&token_hash2)
                 .await
                 .expect("delete by token");
-            assert!(client
-                .validate_session(&token_hash2)
-                .await
-                .expect("validate after token delete")
-                .is_none());
+            assert!(
+                client
+                    .validate_session(&token_hash2)
+                    .await
+                    .expect("validate after token delete")
+                    .is_none()
+            );
         }
 
         #[tokio::test]
@@ -1316,10 +1338,12 @@ mod tests {
                 .await
                 .expect("create conversation");
             assert!(client.conversation_exists(&conv_id).await.expect("exists"));
-            assert!(!client
-                .conversation_exists(&unique("no-such"))
-                .await
-                .expect("not exists"));
+            assert!(
+                !client
+                    .conversation_exists(&unique("no-such"))
+                    .await
+                    .expect("not exists")
+            );
 
             let msg_id1 = unique("msg");
             let msg_id2 = unique("msg");
@@ -1475,11 +1499,13 @@ mod tests {
             let session_id = unique("snap-session");
 
             // Missing snapshot reads as None.
-            assert!(client
-                .get_conversation_snapshot(&session_id)
-                .await
-                .expect("get missing snapshot")
-                .is_none());
+            assert!(
+                client
+                    .get_conversation_snapshot(&session_id)
+                    .await
+                    .expect("get missing snapshot")
+                    .is_none()
+            );
 
             let entries = serde_json::json!([
                 {"seq": 1, "user": "theme?", "assistant": "dark mode", "score": 5},

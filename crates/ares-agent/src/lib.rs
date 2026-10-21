@@ -90,8 +90,8 @@ pub mod trigger;
 pub mod workflows;
 pub use admit::admit;
 pub use execution::{
-    request_tenant_ctx, request_user_scope, tenant_scope, user_id_from_ctx, AgentRequest,
-    AgentSource, Execute, ExecutionResult, RunTracker,
+    AgentRequest, AgentSource, Execute, ExecutionResult, RunTracker, request_tenant_ctx,
+    request_user_scope, tenant_scope, user_id_from_ctx,
 };
 pub use external_context::ExternalContext;
 pub use plugins::register_plugins;
@@ -167,10 +167,10 @@ pub(crate) fn typed_error_slot() -> Arc<TypedErrorSlot> {
 /// falls back to the wrapped [`AppError::Internal`], which keeps the
 /// pre-existing behavior for every no-match case.
 pub(crate) fn preserved_or_wrapped(err: CordisError, slot: &TypedErrorSlot) -> AppError {
-    if let Some((msg, app)) = slot.lock().take() {
-        if matches!(&err, CordisError::Fiber(m) if m == &msg) {
-            return app;
-        }
+    if let Some((msg, app)) = slot.lock().take()
+        && matches!(&err, CordisError::Fiber(m) if m == &msg)
+    {
+        return app;
     }
     AppError::Internal(err.to_string())
 }

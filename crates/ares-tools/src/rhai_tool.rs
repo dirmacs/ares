@@ -7,7 +7,7 @@
 use crate::registry::Tool;
 use ares_types::types::{AppError, Result};
 use async_trait::async_trait;
-use rhai::{Dynamic, Engine, Scope, AST};
+use rhai::{AST, Dynamic, Engine, Scope};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -258,14 +258,19 @@ fn build_scope(args: &Value) -> std::result::Result<(Dynamic, Scope<'static>), S
         rhai::serde::to_dynamic(args).map_err(|e| format!("args conversion failed: {e}"))?;
     let mut scope = Scope::new();
     scope.push_dynamic("args", dynamic.clone());
-    if let Some(map) = dynamic.clone().try_cast::<rhai::Map>() {
-        for (k, v) in map {
-            let _ = scope.push_dynamic(k.to_string(), v);
+    match dynamic.clone().try_cast::<rhai::Map>() {
+        Some(map) => {
+            for (k, v) in map {
+                let _ = scope.push_dynamic(k.to_string(), v);
+            }
         }
-    } else if let Some(obj) = args.as_object() {
-        for (k, v) in obj {
-            if let Ok(d) = rhai::serde::to_dynamic(v.clone()) {
-                let _ = scope.push_dynamic(k.clone(), d);
+        _ => {
+            if let Some(obj) = args.as_object() {
+                for (k, v) in obj {
+                    if let Ok(d) = rhai::serde::to_dynamic(v.clone()) {
+                        let _ = scope.push_dynamic(k.clone(), d);
+                    }
+                }
             }
         }
     }

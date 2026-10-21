@@ -45,7 +45,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use toon_format::{decode_default, encode_default, ToonError};
+use toon_format::{ToonError, decode_default, encode_default};
 use tracing::{debug, error, info, warn};
 
 // ============= Agent Configuration =============
@@ -533,13 +533,13 @@ impl DynamicConfig {
                 )));
             }
 
-            if let Some(ref fallback) = workflow.fallback_agent {
-                if !self.agents.contains_key(fallback) {
-                    return Err(ToonConfigError::Validation(format!(
-                        "Workflow '{}' references unknown fallback agent '{}'",
-                        workflow_name, fallback
-                    )));
-                }
+            if let Some(ref fallback) = workflow.fallback_agent
+                && !self.agents.contains_key(fallback)
+            {
+                return Err(ToonConfigError::Validation(format!(
+                    "Workflow '{}' references unknown fallback agent '{}'",
+                    workflow_name, fallback
+                )));
             }
         }
 
@@ -823,10 +823,10 @@ impl DynamicConfigManager {
                     warn!("Config warning: {}", warning);
                 }
                 let agents: Vec<ToonAgentConfig> = new_config.agents.values().cloned().collect();
-                if let Ok(guard) = self.version_tx.lock() {
-                    if let Some(tx) = guard.as_ref() {
-                        let _ = tx.send(agents);
-                    }
+                if let Ok(guard) = self.version_tx.lock()
+                    && let Some(tx) = guard.as_ref()
+                {
+                    let _ = tx.send(agents);
                 }
                 self.config.store(Arc::new(new_config));
                 info!("Config reloaded successfully");
@@ -945,10 +945,10 @@ impl DynamicConfigManager {
                                         // Emit version change event before swapping
                                         let agents: Vec<ToonAgentConfig> =
                                             new_config.agents.values().cloned().collect();
-                                        if let Ok(guard) = version_tx.lock() {
-                                            if let Some(tx) = guard.as_ref() {
-                                                let _ = tx.send(agents);
-                                            }
+                                        if let Ok(guard) = version_tx.lock()
+                                            && let Some(tx) = guard.as_ref()
+                                        {
+                                            let _ = tx.send(agents);
                                         }
                                         config.store(Arc::new(new_config));
                                         info!("Config reloaded successfully");

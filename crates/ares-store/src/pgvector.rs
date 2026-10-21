@@ -475,8 +475,10 @@ mod tests {
 
     #[test]
     fn resolve_pgvector_url_prefers_explicit_override() {
-        std::env::remove_var("PGVECTOR_URL");
-        std::env::remove_var("DATABASE_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("PGVECTOR_URL") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
         assert_eq!(
             resolve_pgvector_url(Some("postgres://override/vectors")),
             "postgres://override/vectors"
@@ -485,8 +487,10 @@ mod tests {
 
     #[test]
     fn resolve_pgvector_url_trims_override() {
-        std::env::remove_var("PGVECTOR_URL");
-        std::env::remove_var("DATABASE_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("PGVECTOR_URL") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
         assert_eq!(
             resolve_pgvector_url(Some("  postgres://trimmed/db  ")),
             "postgres://trimmed/db"
@@ -495,15 +499,19 @@ mod tests {
 
     #[test]
     fn resolve_pgvector_url_falls_back_to_default_when_env_missing() {
-        std::env::remove_var("PGVECTOR_URL");
-        std::env::remove_var("DATABASE_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("PGVECTOR_URL") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
         assert_eq!(resolve_pgvector_url(None), default_pgvector_url());
     }
 
     #[test]
     fn resolve_pgvector_url_ignores_blank_override() {
-        std::env::remove_var("PGVECTOR_URL");
-        std::env::remove_var("DATABASE_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("PGVECTOR_URL") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
         assert_eq!(resolve_pgvector_url(Some("   ")), default_pgvector_url());
     }
 

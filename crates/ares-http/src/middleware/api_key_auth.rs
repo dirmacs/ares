@@ -1,12 +1,12 @@
-use ares_agent::admit::{admit_with_details, quota_exceeded, AdmissionError, UsagePeriod};
+use ares_agent::admit::{AdmissionError, UsagePeriod, admit_with_details, quota_exceeded};
 use ares_store::tenants::TenantDb;
 use ares_types::models::{QuotaExceeded, TenantContext};
 use axum::{
+    Json,
     extract::Request,
     http::{HeaderValue, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
-    Json,
 };
 use cordis::{Context, EventsService};
 use serde::{Deserialize, Serialize};
@@ -212,12 +212,12 @@ mod tests {
     use super::*;
     use ares_types::models::{TenantContext, TenantTier};
     use axum::{
+        Router,
         body::Body,
         extract::Extension,
         http::{HeaderValue, Request, StatusCode},
         middleware::Next,
         routing::get,
-        Router,
     };
     use std::sync::Arc;
     use tower::ServiceExt;

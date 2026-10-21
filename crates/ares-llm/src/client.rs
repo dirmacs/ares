@@ -568,113 +568,112 @@ impl Provider {
     /// Ollama localhost.
     #[cfg(feature = "genai")]
     pub fn from_env() -> Result<Self> {
-        if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
-            if !api_key.is_empty() {
-                let api_base = std::env::var("OPENAI_API_BASE")
-                    .unwrap_or_else(|_| "https://api.openai.com/v1".into());
-                let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4".into());
-                return Ok(Provider::Genai(GenaiProvider::openai(
-                    api_key,
-                    api_base,
-                    model,
-                    ModelParams::default(),
-                    HashMap::new(),
-                )));
-            }
+        if let Ok(api_key) = std::env::var("OPENAI_API_KEY")
+            && !api_key.is_empty()
+        {
+            let api_base = std::env::var("OPENAI_API_BASE")
+                .unwrap_or_else(|_| "https://api.openai.com/v1".into());
+            let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4".into());
+            return Ok(Provider::Genai(GenaiProvider::openai(
+                api_key,
+                api_base,
+                model,
+                ModelParams::default(),
+                HashMap::new(),
+            )));
         }
 
-        if let Ok(api_key) = std::env::var("NVIDIA_API_KEY") {
-            if !api_key.is_empty() {
-                return Ok(Provider::Genai(GenaiProvider::openai(
-                    api_key,
-                    "https://integrate.api.nvidia.com/v1".into(),
-                    "nvidia/nemotron-3-ultra-550b-a55b".into(),
-                    ModelParams::default(),
-                    HashMap::new(),
-                )));
-            }
+        if let Ok(api_key) = std::env::var("NVIDIA_API_KEY")
+            && !api_key.is_empty()
+        {
+            return Ok(Provider::Genai(GenaiProvider::openai(
+                api_key,
+                "https://integrate.api.nvidia.com/v1".into(),
+                "nvidia/nemotron-3-ultra-550b-a55b".into(),
+                ModelParams::default(),
+                HashMap::new(),
+            )));
         }
 
-        if let Ok(api_key) = std::env::var(AZURE_API_KEY_ENV) {
-            if !api_key.is_empty() {
-                let api_base = std::env::var(AZURE_BASE_URL_ENV).map_err(|_| {
-                    AppError::Configuration(format!(
-                        "{} must be set when {} is configured",
-                        AZURE_BASE_URL_ENV, AZURE_API_KEY_ENV
-                    ))
-                })?;
-                let model = std::env::var(AZURE_MODEL_ENV)
-                    .unwrap_or_else(|_| AZURE_DEFAULT_MODEL.to_string());
-                return Ok(Provider::Genai(GenaiProvider::openai(
-                    api_key.clone(),
-                    azure_normalize_base_url(&api_base),
-                    azure_strip_model_prefix(&model).to_string(),
-                    ModelParams::default(),
-                    azure_foundry_headers(&api_key),
-                )));
-            }
+        if let Ok(api_key) = std::env::var(AZURE_API_KEY_ENV)
+            && !api_key.is_empty()
+        {
+            let api_base = std::env::var(AZURE_BASE_URL_ENV).map_err(|_| {
+                AppError::Configuration(format!(
+                    "{} must be set when {} is configured",
+                    AZURE_BASE_URL_ENV, AZURE_API_KEY_ENV
+                ))
+            })?;
+            let model =
+                std::env::var(AZURE_MODEL_ENV).unwrap_or_else(|_| AZURE_DEFAULT_MODEL.to_string());
+            return Ok(Provider::Genai(GenaiProvider::openai(
+                api_key.clone(),
+                azure_normalize_base_url(&api_base),
+                azure_strip_model_prefix(&model).to_string(),
+                ModelParams::default(),
+                azure_foundry_headers(&api_key),
+            )));
         }
 
-        if let Ok(api_key) = std::env::var("AWS_BEARER_TOKEN_BEDROCK") {
-            if !api_key.is_empty() {
-                let region = std::env::var("AWS_REGION").map_err(|_| {
-                    AppError::Configuration(
-                        "AWS_REGION must be set when AWS_BEARER_TOKEN_BEDROCK is configured".into(),
-                    )
-                })?;
-                let model = std::env::var("BEDROCK_MODEL")
-                    .unwrap_or_else(|_| "us.anthropic.claude-haiku-4-5-20251001-v1:0".into());
-                return Ok(Provider::Genai(GenaiProvider {
-                    kind: AdapterKind::BedrockApi,
-                    api_key: Some(api_key),
-                    endpoint: None,
-                    model,
-                    params: ModelParams::default(),
-                    headers: HashMap::new(),
-                    region: Some(region),
-                    vertex_project: None,
-                    vertex_location: None,
-                    custom_index: None,
-                }));
-            }
+        if let Ok(api_key) = std::env::var("AWS_BEARER_TOKEN_BEDROCK")
+            && !api_key.is_empty()
+        {
+            let region = std::env::var("AWS_REGION").map_err(|_| {
+                AppError::Configuration(
+                    "AWS_REGION must be set when AWS_BEARER_TOKEN_BEDROCK is configured".into(),
+                )
+            })?;
+            let model = std::env::var("BEDROCK_MODEL")
+                .unwrap_or_else(|_| "us.anthropic.claude-haiku-4-5-20251001-v1:0".into());
+            return Ok(Provider::Genai(GenaiProvider {
+                kind: AdapterKind::BedrockApi,
+                api_key: Some(api_key),
+                endpoint: None,
+                model,
+                params: ModelParams::default(),
+                headers: HashMap::new(),
+                region: Some(region),
+                vertex_project: None,
+                vertex_location: None,
+                custom_index: None,
+            }));
         }
 
-        if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
-            if !api_key.is_empty() {
-                let model = std::env::var("ANTHROPIC_MODEL")
-                    .unwrap_or_else(|_| "claude-3-5-sonnet-20241022".into());
-                return Ok(Provider::Genai(GenaiProvider {
-                    kind: AdapterKind::Anthropic,
-                    api_key: Some(api_key),
-                    endpoint: None,
-                    model,
-                    params: ModelParams::default(),
-                    headers: HashMap::new(),
-                    region: None,
-                    vertex_project: None,
-                    vertex_location: None,
-                    custom_index: None,
-                }));
-            }
+        if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY")
+            && !api_key.is_empty()
+        {
+            let model = std::env::var("ANTHROPIC_MODEL")
+                .unwrap_or_else(|_| "claude-3-5-sonnet-20241022".into());
+            return Ok(Provider::Genai(GenaiProvider {
+                kind: AdapterKind::Anthropic,
+                api_key: Some(api_key),
+                endpoint: None,
+                model,
+                params: ModelParams::default(),
+                headers: HashMap::new(),
+                region: None,
+                vertex_project: None,
+                vertex_location: None,
+                custom_index: None,
+            }));
         }
 
-        if let Ok(api_key) = std::env::var("GEMINI_API_KEY") {
-            if !api_key.is_empty() {
-                let model =
-                    std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.0-flash".into());
-                return Ok(Provider::Genai(GenaiProvider {
-                    kind: AdapterKind::Gemini,
-                    api_key: Some(api_key),
-                    endpoint: None,
-                    model,
-                    params: ModelParams::default(),
-                    headers: HashMap::new(),
-                    region: None,
-                    vertex_project: None,
-                    vertex_location: None,
-                    custom_index: None,
-                }));
-            }
+        if let Ok(api_key) = std::env::var("GEMINI_API_KEY")
+            && !api_key.is_empty()
+        {
+            let model = std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.0-flash".into());
+            return Ok(Provider::Genai(GenaiProvider {
+                kind: AdapterKind::Gemini,
+                api_key: Some(api_key),
+                endpoint: None,
+                model,
+                params: ModelParams::default(),
+                headers: HashMap::new(),
+                region: None,
+                vertex_project: None,
+                vertex_location: None,
+                custom_index: None,
+            }));
         }
 
         let base_url = std::env::var("OLLAMA_BASE_URL")
@@ -1851,7 +1850,8 @@ mod tests {
     #[cfg(feature = "genai")]
     #[test]
     fn test_openai_from_config_missing_env_var() {
-        std::env::remove_var("TEST_OPENAI_MISSING_KEY");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("TEST_OPENAI_MISSING_KEY") };
         let config = ProviderConfig::OpenAI {
             api_key_env: "TEST_OPENAI_MISSING_KEY".to_string(),
             api_base: "https://api.openai.com/v1".to_string(),

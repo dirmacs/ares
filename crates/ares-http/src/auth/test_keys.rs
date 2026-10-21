@@ -4,11 +4,11 @@
 //! deterministic. The JWKS document and the signed token use the same
 //! issuer wire format that Eruka uses.
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use ed25519_dalek::pkcs8::EncodePrivateKey;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ed25519_dalek::SigningKey;
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use ed25519_dalek::pkcs8::EncodePrivateKey;
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use std::sync::Arc;
 
 /// PKCS#8 PEM for the Ed25519 key derived from `seed`.

@@ -3,12 +3,12 @@
 use super::jwks::JwksCache;
 use ares_types::types::{AppError, Claims, Result, TokenResponse};
 use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
 use chrono::Utc;
 use jsonwebtoken::{
-    decode, decode_header, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
+    Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, decode_header, encode,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -834,9 +834,11 @@ mod tests {
     fn test_password_verification_failure() {
         let service = create_test_service();
         let hash = service.hash_password("correct_password").expect("hash");
-        assert!(!service
-            .verify_password("wrong_password", &hash)
-            .expect("verify"));
+        assert!(
+            !service
+                .verify_password("wrong_password", &hash)
+                .expect("verify")
+        );
     }
 
     #[test]
@@ -971,10 +973,12 @@ mod tests {
             &EncodingKey::from_secret(secret.as_bytes()),
         )
         .expect("encode");
-        assert!(service
-            .verify_token_with_leeway(&expired_token, 0)
-            .await
-            .is_err());
+        assert!(
+            service
+                .verify_token_with_leeway(&expired_token, 0)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

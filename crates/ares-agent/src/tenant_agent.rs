@@ -1,6 +1,6 @@
+use crate::AgentConfig;
 use crate::configurable::ConfigurableAgent;
 use crate::registry::AgentRegistry;
-use crate::AgentConfig;
 use ares_types::types::{AppError, Result};
 use sqlx::{PgPool, Row};
 use std::collections::HashMap;
@@ -343,11 +343,7 @@ pub async fn load_tenant_agent_config(
 /// Tenant id from Cordis isolate (`Execute`) then TenantContext intercept.
 pub fn tenant_id_from_agent_ctx(ctx: &std::sync::Arc<cordis::Context>) -> Option<String> {
     let id = crate::resolver::user_id_from_ctx(ctx, "");
-    if id.is_empty() {
-        None
-    } else {
-        Some(id)
-    }
+    if id.is_empty() { None } else { Some(id) }
 }
 
 /// Construct a tenant-configured agent for legacy callers.
@@ -384,9 +380,9 @@ pub async fn create_tenant_agent(
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_config_from_json, legacy_create_should_use_tenant_config,
+        AgentConfigSource, agent_config_from_json, legacy_create_should_use_tenant_config,
         tenant_agent_disabled_error, tenant_agent_not_found_error, tenant_config_version,
-        tenant_id_from_agent_ctx, AgentConfigSource,
+        tenant_id_from_agent_ctx,
     };
     use crate::AgentConfig;
     use ares_types::types::{AppError, Result as AresResult};
@@ -398,9 +394,10 @@ mod tests {
         }))
         .expect_err("missing model should fail");
 
-        assert!(err
-            .to_string()
-            .contains("missing a valid non-empty 'model'"));
+        assert!(
+            err.to_string()
+                .contains("missing a valid non-empty 'model'")
+        );
     }
 
     #[test]
@@ -411,9 +408,10 @@ mod tests {
         }))
         .expect_err("non-string tool should fail");
 
-        assert!(err
-            .to_string()
-            .contains("'tools' must be an array of strings"));
+        assert!(
+            err.to_string()
+                .contains("'tools' must be an array of strings")
+        );
     }
 
     #[test]
@@ -424,9 +422,10 @@ mod tests {
         }))
         .expect_err("parallel_tools must be boolean");
 
-        assert!(err
-            .to_string()
-            .contains("'parallel_tools' must be a boolean"));
+        assert!(
+            err.to_string()
+                .contains("'parallel_tools' must be a boolean")
+        );
     }
 
     #[test]
@@ -488,9 +487,10 @@ mod tests {
             "model": "   "
         }))
         .expect_err("empty model");
-        assert!(err
-            .to_string()
-            .contains("missing a valid non-empty 'model'"));
+        assert!(
+            err.to_string()
+                .contains("missing a valid non-empty 'model'")
+        );
     }
 
     #[test]
@@ -537,18 +537,20 @@ mod tests {
             "max_tool_iterations": -1
         }))
         .expect_err("negative max_tool_iterations");
-        assert!(err
-            .to_string()
-            .contains("'max_tool_iterations' must be a non-negative integer"));
+        assert!(
+            err.to_string()
+                .contains("'max_tool_iterations' must be a non-negative integer")
+        );
 
         let err = agent_config_from_json(&serde_json::json!({
             "model": "default",
             "max_tool_iterations": "five"
         }))
         .expect_err("string max_tool_iterations");
-        assert!(err
-            .to_string()
-            .contains("'max_tool_iterations' must be a number"));
+        assert!(
+            err.to_string()
+                .contains("'max_tool_iterations' must be a number")
+        );
     }
 
     #[test]
@@ -825,9 +827,10 @@ mod tests {
             "max_tool_iterations": 1.5
         }))
         .expect_err("float max_tool_iterations");
-        assert!(err
-            .to_string()
-            .contains("'max_tool_iterations' must be a non-negative integer"));
+        assert!(
+            err.to_string()
+                .contains("'max_tool_iterations' must be a non-negative integer")
+        );
     }
 
     #[test]
@@ -858,21 +861,21 @@ mod tests {
     #[cfg(feature = "postgres")]
     mod postgres_integration {
         use super::super::{agent_config_from_json, create_tenant_agent, load_tenant_agent_config};
-        use crate::registry::AgentRegistry;
         use crate::Agent;
         use crate::AgentConfig;
+        use crate::registry::AgentRegistry;
         use ares_llm::ProviderRegistry;
         use ares_llm::{ModelConfig, ProviderConfig};
         use ares_store::tenant_agents::{
+            CreateTenantAgentRequest, PublishOutcome, UpdateTenantAgentRequest,
             create_tenant_agent as db_create_tenant_agent, create_tenant_agent_as,
             get_tenant_agent_publish_state, publish_tenant_agent, update_tenant_agent,
-            CreateTenantAgentRequest, PublishOutcome, UpdateTenantAgentRequest,
         };
         use ares_store::tenant_allowlist::TenantAllowlistStore;
         use ares_tools::{Tool, Tools};
         use ares_types::types::{AgentContext, AppError};
-        use axum::{routing::post, Json, Router};
-        use serde_json::{json, Value};
+        use axum::{Json, Router, routing::post};
+        use serde_json::{Value, json};
         use sqlx::PgPool;
         use std::collections::HashMap;
         use std::sync::Arc;
@@ -1306,9 +1309,11 @@ mod tests {
                 .await
                 .expect("execute tenant agent");
 
-            assert!(response
-                .content
-                .contains("SYSTEM_PROMPT=tenant-execute-prompt"));
+            assert!(
+                response
+                    .content
+                    .contains("SYSTEM_PROMPT=tenant-execute-prompt")
+            );
         }
 
         // Renamed from `resolve_agent_for_tenant_errors_when_agent_disabled` (2.20): the

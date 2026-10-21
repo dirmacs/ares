@@ -2416,18 +2416,18 @@ mod tests {
 
     #[test]
     fn validate_tenant_config_rejects_negative_max_tool_iterations() {
-        assert!(validate_tenant_config(
-            &serde_json::json!({"model": "m", "max_tool_iterations": -1})
-        )
-        .is_err());
+        assert!(
+            validate_tenant_config(&serde_json::json!({"model": "m", "max_tool_iterations": -1}))
+                .is_err()
+        );
     }
 
     #[test]
     fn validate_tenant_config_rejects_non_boolean_parallel_tools() {
-        assert!(validate_tenant_config(
-            &serde_json::json!({"model": "m", "parallel_tools": "yes"})
-        )
-        .is_err());
+        assert!(
+            validate_tenant_config(&serde_json::json!({"model": "m", "parallel_tools": "yes"}))
+                .is_err()
+        );
     }
 
     #[test]
@@ -3027,9 +3027,11 @@ mod tests {
             delete_tenant_agent(&pool, &tenant_id, "product")
                 .await
                 .expect("delete");
-            assert!(get_tenant_agent(&pool, &tenant_id, "product")
-                .await
-                .is_err());
+            assert!(
+                get_tenant_agent(&pool, &tenant_id, "product")
+                    .await
+                    .is_err()
+            );
         }
 
         #[tokio::test]

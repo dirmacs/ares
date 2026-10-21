@@ -13,9 +13,9 @@ use ares_store::audit_log;
 use ares_store::tenant_allowlist as allowlist;
 use ares_types::types::AppError;
 use axum::{
+    Json,
     extract::{Path, Query, State},
     http::StatusCode,
-    Json,
 };
 use sha2::Digest;
 use std::sync::Arc;

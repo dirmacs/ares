@@ -1254,12 +1254,14 @@ mod tests {
         };
         let cloned_result = result.clone();
         assert!((cloned_result.score - 0.0).abs() < f32::EPSILON);
-        assert!(cloned_result
-            .document
-            .embedding
-            .as_ref()
-            .unwrap()
-            .is_empty());
+        assert!(
+            cloned_result
+                .document
+                .embedding
+                .as_ref()
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

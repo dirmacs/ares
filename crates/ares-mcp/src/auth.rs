@@ -184,12 +184,15 @@ mod tests {
     fn extract_api_key_from_env_empty_value_returns_empty_string() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let old = std::env::var("ARES_API_KEY").ok();
-        std::env::set_var("ARES_API_KEY", "");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("ARES_API_KEY", "") };
         let result = extract_api_key_from_env().expect("should return Ok for empty value");
         assert_eq!(result, "");
         match old {
-            Some(v) => std::env::set_var("ARES_API_KEY", v),
-            None => std::env::remove_var("ARES_API_KEY"),
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            Some(v) => unsafe { std::env::set_var("ARES_API_KEY", v) },
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            None => unsafe { std::env::remove_var("ARES_API_KEY") },
         }
     }
 
@@ -197,12 +200,15 @@ mod tests {
     fn extract_api_key_from_env_missing_under_guard_returns_error() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let old = std::env::var("ARES_API_KEY").ok();
-        std::env::remove_var("ARES_API_KEY");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ARES_API_KEY") };
         let result = extract_api_key_from_env();
         assert!(matches!(result, Err(McpAuthError::NoApiKey)));
         match old {
-            Some(v) => std::env::set_var("ARES_API_KEY", v),
-            None => std::env::remove_var("ARES_API_KEY"),
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            Some(v) => unsafe { std::env::set_var("ARES_API_KEY", v) },
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            None => unsafe { std::env::remove_var("ARES_API_KEY") },
         }
     }
 
@@ -430,7 +436,8 @@ mod tests {
     #[test]
     fn extract_api_key_from_env_missing_returns_error() {
         let _guard = ENV_LOCK.lock().expect("env lock");
-        std::env::remove_var("ARES_API_KEY");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ARES_API_KEY") };
         let result = extract_api_key_from_env();
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), McpAuthError::NoApiKey));

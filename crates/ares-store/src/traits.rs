@@ -110,7 +110,7 @@ pub trait DatabaseClient: Send + Sync {
     async fn delete_session(&self, id: &str) -> Result<()>;
     async fn delete_session_by_token_hash(&self, token_hash: &str) -> Result<()>;
     async fn create_conversation(&self, id: &str, user_id: &str, title: Option<&str>)
-        -> Result<()>;
+    -> Result<()>;
     async fn conversation_exists(&self, conversation_id: &str) -> Result<bool>;
     async fn get_user_conversations(&self, user_id: &str) -> Result<Vec<ConversationSummary>>;
     async fn get_conversation(
@@ -334,8 +334,8 @@ mod tests {
     use super::*;
     use crate::postgres::{PostgresClient, UserAgent};
     use ares_types::types::{MemoryFact, MessageRole, Preference};
-    use sqlx::postgres::PgPoolOptions;
     use sqlx::PgPool;
+    use sqlx::postgres::PgPoolOptions;
 
     fn unreachable_postgres_pool() -> PgPool {
         PgPoolOptions::new()
@@ -439,58 +439,78 @@ mod tests {
     }
     #[test]
     fn test_from_env_returns_memory_when_no_env_vars_set() {
-        std::env::remove_var("DATABASE_URL");
-        std::env::remove_var("DATABASE_PATH");
-        std::env::remove_var("TURSO_URL");
-        std::env::remove_var("TURSO_AUTH_TOKEN");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_PATH") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("TURSO_URL") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("TURSO_AUTH_TOKEN") };
         let provider = DatabaseProvider::from_env();
         matches::assert_matches!(provider, DatabaseProvider::Memory);
     }
 
     #[test]
     fn test_from_env_returns_postgres_when_database_url_set() {
-        std::env::remove_var("TURSO_URL");
-        std::env::remove_var("DATABASE_PATH");
-        std::env::set_var("DATABASE_URL", "postgres://example.com/ares");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("TURSO_URL") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_PATH") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("DATABASE_URL", "postgres://example.com/ares") };
         let provider = DatabaseProvider::from_env();
         matches::assert_matches!(
             provider,
             DatabaseProvider::Postgres { url } if url == "postgres://example.com/ares"
         );
-        std::env::remove_var("DATABASE_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
     }
 
     #[test]
     fn test_from_env_ignores_empty_database_url() {
-        std::env::remove_var("TURSO_URL");
-        std::env::remove_var("DATABASE_PATH");
-        std::env::set_var("DATABASE_URL", "   ");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("TURSO_URL") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_PATH") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("DATABASE_URL", "   ") };
         let provider = DatabaseProvider::from_env();
         matches::assert_matches!(provider, DatabaseProvider::Memory);
-        std::env::remove_var("DATABASE_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
     }
 
     #[test]
     fn test_from_env_returns_sqlite_when_database_path_set() {
-        std::env::remove_var("TURSO_URL");
-        std::env::remove_var("DATABASE_URL");
-        std::env::set_var("DATABASE_PATH", "/var/lib/ares/data.db");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("TURSO_URL") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("DATABASE_PATH", "/var/lib/ares/data.db") };
         let provider = DatabaseProvider::from_env();
         matches::assert_matches!(
             provider,
             DatabaseProvider::SQLite { path } if path == "/var/lib/ares/data.db"
         );
-        std::env::remove_var("DATABASE_PATH");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_PATH") };
     }
 
     #[test]
     fn test_from_env_ignores_memory_database_path() {
-        std::env::remove_var("TURSO_URL");
-        std::env::remove_var("DATABASE_URL");
-        std::env::set_var("DATABASE_PATH", ":memory:");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("TURSO_URL") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("DATABASE_PATH", ":memory:") };
         let provider = DatabaseProvider::from_env();
         matches::assert_matches!(provider, DatabaseProvider::Memory);
-        std::env::remove_var("DATABASE_PATH");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_PATH") };
     }
 
     #[tokio::test]
@@ -498,8 +518,10 @@ mod tests {
         // Ensure env vars don't interfere with memory backend selection
         let saved_url = std::env::var("DATABASE_URL").ok();
         let saved_path = std::env::var("DATABASE_PATH").ok();
-        std::env::remove_var("DATABASE_URL");
-        std::env::remove_var("DATABASE_PATH");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_PATH") };
 
         let provider = DatabaseProvider::Memory;
         let client = provider.create_client().await.expect("memory client");
@@ -507,10 +529,12 @@ mod tests {
 
         // Restore env vars
         if let Some(url) = saved_url {
-            std::env::set_var("DATABASE_URL", &url);
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("DATABASE_URL", &url) };
         }
         if let Some(path) = saved_path {
-            std::env::set_var("DATABASE_PATH", &path);
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("DATABASE_PATH", &path) };
         }
     }
 
@@ -543,26 +567,34 @@ mod tests {
 
     #[tokio::test]
     async fn create_client_memory_executes_provider_branch() {
-        std::env::set_var(
-            "DATABASE_URL",
-            "postgres://invalid:invalid@127.0.0.1:1/nope",
-        );
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe {
+            std::env::set_var(
+                "DATABASE_URL",
+                "postgres://invalid:invalid@127.0.0.1:1/nope",
+            )
+        };
         let provider = DatabaseProvider::Memory;
         let _ = provider.create_client().await;
-        std::env::remove_var("DATABASE_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
     }
 
     #[tokio::test]
     async fn create_client_sqlite_executes_provider_branch() {
-        std::env::set_var(
-            "DATABASE_URL",
-            "postgres://invalid:invalid@127.0.0.1:1/nope",
-        );
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe {
+            std::env::set_var(
+                "DATABASE_URL",
+                "postgres://invalid:invalid@127.0.0.1:1/nope",
+            )
+        };
         let provider = DatabaseProvider::SQLite {
             path: "/tmp/test.db".into(),
         };
         let _ = provider.create_client().await;
-        std::env::remove_var("DATABASE_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
     }
 
     #[tokio::test]

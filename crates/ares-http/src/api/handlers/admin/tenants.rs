@@ -13,8 +13,8 @@ use ares_store::tenant_agents::{clone_templates_for_tenant, set_tenant_agent_mod
 use ares_store::tenant_allowlist::TenantAllowlistStore;
 use ares_types::types::AppError;
 use axum::{
-    extract::{Path, State},
     Json,
+    extract::{Path, State},
 };
 use sha2::Digest;
 
@@ -82,12 +82,12 @@ pub async fn create_api_key(
     actor: AdminActor,
     Json(payload): Json<CreateApiKeyRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    if let Some(days) = payload.expires_in_days {
-        if !(1..=3650).contains(&days) {
-            return Err(HttpError::from(AppError::InvalidInput(
-                "expires_in_days must be between 1 and 3650".to_string(),
-            )));
-        }
+    if let Some(days) = payload.expires_in_days
+        && !(1..=3650).contains(&days)
+    {
+        return Err(HttpError::from(AppError::InvalidInput(
+            "expires_in_days must be between 1 and 3650".to_string(),
+        )));
     }
     let (api_key, raw_key) = ctx
         .get::<ares_store::TenantDb>()
@@ -242,12 +242,12 @@ pub async fn provision_client(
 
     // Validate before any side effect: a rejected TTL must not leave a
     // half-provisioned tenant behind.
-    if let Some(days) = req.expires_in_days {
-        if !(1..=3650).contains(&days) {
-            return Err(HttpError::from(AppError::InvalidInput(
-                "expires_in_days must be between 1 and 3650".to_string(),
-            )));
-        }
+    if let Some(days) = req.expires_in_days
+        && !(1..=3650).contains(&days)
+    {
+        return Err(HttpError::from(AppError::InvalidInput(
+            "expires_in_days must be between 1 and 3650".to_string(),
+        )));
     }
 
     // product_type is used only to select which agent templates to clone into tenant_agents.

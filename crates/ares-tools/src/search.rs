@@ -1,7 +1,7 @@
 use crate::registry::Tool;
 use ares_types::Result;
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Web search tool using DuckDuckGo via daedra.
 pub struct WebSearch {
@@ -120,10 +120,12 @@ mod tests {
         let schema = tool.parameters_schema();
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["query"].is_object());
-        assert!(schema["required"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("query")));
+        assert!(
+            schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("query"))
+        );
     }
 
     #[test]
@@ -320,7 +322,8 @@ mod tests {
 
     #[test]
     fn test_live_search_env_not_set_by_default() {
-        std::env::remove_var("ARES_LIVE_SEARCH_TEST");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ARES_LIVE_SEARCH_TEST") };
         assert!(std::env::var("ARES_LIVE_SEARCH_TEST").is_err());
     }
 }

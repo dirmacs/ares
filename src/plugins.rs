@@ -111,11 +111,15 @@ impl Service for HealthJobService {
                             };
                             if is_healthy {
                                 healthy += 1;
-                            } else if let Some(reflect) =
-                                ctx_for_task.get::<cordis::ReflectService>()
-                            {
-                                reflect.notify(std::any::TypeId::of::<Overlay>());
-                                tracing::warn!("Health check failed for service: {}", entry.name);
+                            } else {
+                                if let Some(reflect) = ctx_for_task.get::<cordis::ReflectService>()
+                                {
+                                    reflect.notify(std::any::TypeId::of::<Overlay>());
+                                    tracing::warn!(
+                                        "Health check failed for service: {}",
+                                        entry.name
+                                    );
+                                }
                             }
                         }
                         tracing::info!("Health check: {} services, {} healthy", total, healthy);
@@ -237,29 +241,28 @@ fn provide_overlay_extras(ctx: &Arc<Context>) {
     if ctx.get::<ares_http::active_runs::ActiveRuns>().is_none() {
         let _ = block_on_plugin(ctx, ares_http::active_runs::ActiveRuns::new());
     }
-    if let Some(runs) = ctx.get::<ares_http::active_runs::ActiveRuns>() {
-        if ctx.get::<ares_agent::plugins::RunTrackerHandle>().is_none() {
-            ctx.provide(ares_agent::plugins::RunTrackerHandle::new(
-                runs as Arc<dyn ares_agent::RunTracker>,
-            ));
-        }
+    if let Some(runs) = ctx.get::<ares_http::active_runs::ActiveRuns>()
+        && ctx.get::<ares_agent::plugins::RunTrackerHandle>().is_none()
+    {
+        ctx.provide(ares_agent::plugins::RunTrackerHandle::new(
+            runs as Arc<dyn ares_agent::RunTracker>,
+        ));
     }
-    if let Some(dynamic) = ctx.get::<DynamicConfigManager>() {
-        if ctx.get::<ares_agent::plugins::ToonAgentsHandle>().is_none() {
-            ctx.provide(ares_agent::plugins::ToonAgentsHandle::new(
-                dynamic as Arc<dyn ares_agent::ToonAgents>,
-            ));
-        }
+    if let Some(dynamic) = ctx.get::<DynamicConfigManager>()
+        && ctx.get::<ares_agent::plugins::ToonAgentsHandle>().is_none()
+    {
+        ctx.provide(ares_agent::plugins::ToonAgentsHandle::new(
+            dynamic as Arc<dyn ares_agent::ToonAgents>,
+        ));
     }
-    if let Some(overlay) = ctx.get::<AresConfigManager>() {
-        if ctx
+    if let Some(overlay) = ctx.get::<AresConfigManager>()
+        && ctx
             .get::<ares_agent::plugins::OverlayAgentConfigs>()
             .is_none()
-        {
-            ctx.provide(ares_agent::plugins::OverlayAgentConfigs(
-                overlay.config().agents.clone(),
-            ));
-        }
+    {
+        ctx.provide(ares_agent::plugins::OverlayAgentConfigs(
+            overlay.config().agents.clone(),
+        ));
     }
     if ctx.get::<ares_agent::ContextProviderHandle>().is_none() {
         let context_provider: Arc<dyn ares_agent::ContextProvider> =
@@ -327,43 +330,33 @@ fn provide_postgres_stack(ctx: &Arc<Context>, config: &Value) -> Result<(), Cord
             serde_json::from_value(config.clone())
                 .unwrap_or_else(|_| overlay.config().agents.clone())
         };
-        let providers = if let Some(llm) = ctx.get::<ares_llm::Llm>() {
-            llm.registry()
-        } else {
-            let cfg = overlay.config();
-            Arc::new(ares_llm::ProviderRegistry::from_config(
-                cfg.providers.clone(),
-                cfg.models.clone(),
-                cfg.nvidia.as_ref(),
-            ))
+        let providers = match ctx.get::<ares_llm::Llm>() {
+            Some(llm) => llm.registry(),
+            _ => {
+                let cfg = overlay.config();
+                Arc::new(ares_llm::ProviderRegistry::from_config(
+                    cfg.providers.clone(),
+                    cfg.models.clone(),
+                    cfg.nvidia.as_ref(),
+                ))
+            }
         };
-        let agent_registry = if let Some(dynamic) = ctx.get::<DynamicConfigManager>() {
-            Arc::new(AgentRegistry::with_dynamic_config(
+        let agent_registry = match ctx.get::<DynamicConfigManager>() {
+            Some(dynamic) => Arc::new(AgentRegistry::with_dynamic_config(
                 agents,
                 providers,
                 tools.clone(),
                 dynamic,
-            ))
-        } else {
-            Arc::new(AgentRegistry::from_config(agents, providers, tools.clone()))
+            )),
+            _ => Arc::new(AgentRegistry::from_config(agents, providers, tools.clone())),
         };
         tracing::info!(
             "Agent registry initialized with {} agents (TOML + TOON)",
             agent_registry.agent_names().len()
         );
         ctx.provide_arc(agent_registry);
-        if ctx.get::<ares_agent::skills::SkillEngine>().is_none() {
-            if let Some(llm) = ctx.get::<ares_llm::Llm>() {
-                ctx.provide_arc(Arc::new(ares_agent::skills::SkillEngine::new(
-                    pg.pool.clone(),
-                    tools,
-                    llm,
-                )));
-            }
-        }
-    } else if ctx.get::<ares_agent::skills::SkillEngine>().is_none() {
-        if let (Some(tools), Some(llm)) =
-            (ctx.get::<ares_tools::Tools>(), ctx.get::<ares_llm::Llm>())
+        if ctx.get::<ares_agent::skills::SkillEngine>().is_none()
+            && let Some(llm) = ctx.get::<ares_llm::Llm>()
         {
             ctx.provide_arc(Arc::new(ares_agent::skills::SkillEngine::new(
                 pg.pool.clone(),
@@ -371,6 +364,15 @@ fn provide_postgres_stack(ctx: &Arc<Context>, config: &Value) -> Result<(), Cord
                 llm,
             )));
         }
+    } else if ctx.get::<ares_agent::skills::SkillEngine>().is_none()
+        && let (Some(tools), Some(llm)) =
+            (ctx.get::<ares_tools::Tools>(), ctx.get::<ares_llm::Llm>())
+    {
+        ctx.provide_arc(Arc::new(ares_agent::skills::SkillEngine::new(
+            pg.pool.clone(),
+            tools,
+            llm,
+        )));
     }
     Ok(())
 }

@@ -32,21 +32,21 @@ use ares_agent::AgentRegistry;
 use ares_http::active_runs::ActiveRuns;
 use ares_http::auth::jwt::AuthService;
 use ares_llm::{ModelConfig, ProviderConfig, ProviderRegistry};
+use ares_store::TenantDb;
 use ares_store::run_history::{LogLlmCallRequest, RunHistoryStore, SetTenantBudgetRequest};
 use ares_store::tenant_agents::{
-    create_tenant_agent_as, get_tenant_agent_publish_state, publish_tenant_agent,
-    CreateTenantAgentRequest, PublishOutcome,
+    CreateTenantAgentRequest, PublishOutcome, create_tenant_agent_as,
+    get_tenant_agent_publish_state, publish_tenant_agent,
 };
 use ares_store::token_budgets::TokenBudgetStore;
-use ares_store::TenantDb;
 use ares_tools::Tools;
 use ares_types::models::TenantTier;
+use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::IntoResponse;
-use axum::Router;
 use cordis::Context;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
 

@@ -1,9 +1,9 @@
 use crate::PostgresClient;
 use ares_types::models::tenant::{
-    effective_api_key_scope, validate_api_key_scope, API_KEY_MAX_TTL_DAYS,
+    API_KEY_MAX_TTL_DAYS, effective_api_key_scope, validate_api_key_scope,
 };
 use ares_types::types::{AppError, Result};
-use ares_types::{normalize_api_key_scope, ApiKey, Tenant, TenantContext, TenantTier};
+use ares_types::{ApiKey, Tenant, TenantContext, TenantTier, normalize_api_key_scope};
 use chrono::{Datelike, Utc};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
@@ -262,10 +262,10 @@ impl TenantDb {
                 return Ok(None);
             }
 
-            if let Some(exp) = expires_at {
-                if Utc::now().timestamp() > exp {
-                    return Ok(None);
-                }
+            if let Some(exp) = expires_at
+                && Utc::now().timestamp() > exp
+            {
+                return Ok(None);
             }
 
             let input_hash = hash_api_key(raw_key);
@@ -322,10 +322,10 @@ impl TenantDb {
 
         {
             let cache = self.monthly_cache.read().await;
-            if let Some((cached_month, count)) = cache.get(&cache_key) {
-                if *cached_month == month_start {
-                    return Ok(*count);
-                }
+            if let Some((cached_month, count)) = cache.get(&cache_key)
+                && *cached_month == month_start
+            {
+                return Ok(*count);
             }
         }
 
@@ -360,10 +360,10 @@ impl TenantDb {
 
         {
             let cache = self.daily_cache.read().await;
-            if let Some((cached_day, count)) = cache.get(&cache_key) {
-                if *cached_day == today {
-                    return Ok(*count);
-                }
+            if let Some((cached_day, count)) = cache.get(&cache_key)
+                && *cached_day == today
+            {
+                return Ok(*count);
             }
         }
 
@@ -459,19 +459,19 @@ impl TenantDb {
 
         {
             let mut cache = self.monthly_cache.write().await;
-            if let Some((month, count)) = cache.get_mut(tenant_id) {
-                if *month == month_start {
-                    *count += requests;
-                }
+            if let Some((month, count)) = cache.get_mut(tenant_id)
+                && *month == month_start
+            {
+                *count += requests;
             }
         }
 
         {
             let mut cache = self.daily_cache.write().await;
-            if let Some((day, count)) = cache.get_mut(tenant_id) {
-                if *day == today {
-                    *count += requests;
-                }
+            if let Some((day, count)) = cache.get_mut(tenant_id)
+                && *day == today
+            {
+                *count += requests;
             }
         }
 
@@ -949,11 +949,12 @@ mod tests {
     async fn test_verify_api_key_invalid_prefix_returns_none() {
         let db = test_tenant_db();
         assert!(db.verify_api_key("").await.unwrap().is_none());
-        assert!(db
-            .verify_api_key("not_ares_abcdef1234567890")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            db.verify_api_key("not_ares_abcdef1234567890")
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert!(db.verify_api_key("ares_short").await.unwrap().is_none());
     }
 

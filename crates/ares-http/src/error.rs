@@ -3,9 +3,9 @@
 //! `IntoResponse` cannot be implemented on the foreign `AppError` type here
 //! (orphan rule). Handlers return [`HttpError`], which converts from `AppError`.
 
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 
 /// HTTP adapter around [`ares_types::AppError`].
 #[derive(Debug)]

@@ -7,7 +7,7 @@ use serde_json::json;
 use thiserror::Error;
 
 use super::client::{McpClient, McpServerConfig};
-use super::extension::{dispatch_extensions, McpToolExtension};
+use super::extension::{McpToolExtension, dispatch_extensions};
 
 pub struct McpRegistry {
     clients: HashMap<String, Arc<McpClient>>,

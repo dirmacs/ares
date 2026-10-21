@@ -234,14 +234,13 @@ fn pick_by_strategy<'a>(
                 .session_affinity
                 .as_deref()
                 .or(config.affinity_key.as_deref());
-            if let Some(affinity) = key {
-                if let Some(match_provider) = eligible
+            if let Some(affinity) = key
+                && let Some(match_provider) = eligible
                     .iter()
                     .copied()
                     .find(|p| p.affinity_group.as_deref() == Some(affinity))
-                {
-                    return match_provider;
-                }
+            {
+                return match_provider;
             }
             eligible[0]
         }
@@ -1680,9 +1679,11 @@ mod tests {
                 reason: "first fallback".into(),
             }],
         };
-        assert!(select_fallback(&config, &plan, "ollama", &[])
-            .unwrap()
-            .is_none());
+        assert!(
+            select_fallback(&config, &plan, "ollama", &[])
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -1969,9 +1970,11 @@ mod tests {
             },
             fallbacks: vec![],
         };
-        assert!(select_fallback(&config, &plan, "openai", &[])
-            .unwrap()
-            .is_none());
+        assert!(
+            select_fallback(&config, &plan, "openai", &[])
+                .unwrap()
+                .is_none()
+        );
     }
     #[test]
     fn test_message_to_role_content() {

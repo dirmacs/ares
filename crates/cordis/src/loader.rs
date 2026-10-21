@@ -20,8 +20,8 @@
 use std::any::TypeId;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Loader-owned operating state for the fibers it started.
 ///
@@ -219,11 +219,10 @@ fn next_save_nonce() -> u64 {
 /// failure so no `.tmp-*` residue accumulates. The pid+nonce suffix keeps
 /// concurrent saves (threads, double-dispatch) from sharing one temp name.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CordisError> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| CordisError::Configuration(e.to_string()))?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|e| CordisError::Configuration(e.to_string()))?;
     }
     let name = path
         .file_name()
@@ -608,12 +607,11 @@ impl EntryTree {
             if let Some(n) = map.get(e.id.as_str()) {
                 e.id = (*n).to_string();
             }
-            if let Some(pos) = e.position.as_mut() {
-                if let Some(p) = pos.parent.as_deref() {
-                    if let Some(n) = map.get(p) {
-                        pos.parent = Some((*n).to_string());
-                    }
-                }
+            if let Some(pos) = e.position.as_mut()
+                && let Some(p) = pos.parent.as_deref()
+                && let Some(n) = map.get(p)
+            {
+                pos.parent = Some((*n).to_string());
             }
         }
 
@@ -787,10 +785,10 @@ impl Loader {
             Self::apply(ctx, current, &desired, journal).await;
         }
 
-        if let Some(shared) = ctx.get::<crate::CurrentEntries>() {
-            if let Ok(mut tree) = shared.tree.lock() {
-                *tree = current.clone();
-            }
+        if let Some(shared) = ctx.get::<crate::CurrentEntries>()
+            && let Ok(mut tree) = shared.tree.lock()
+        {
+            *tree = current.clone();
         }
         Ok(MoveOutcome { renamed, noop })
     }
@@ -1113,17 +1111,14 @@ impl Loader {
         id: &str,
     ) -> Result<(), String> {
         // Dispose the live fiber (undo effects) before clearing.
-        if let Some(record) = journal.get(id) {
-            if let Some(fid) = record.fiber_id {
-                if let Some(fiber) = ctx
-                    .get::<crate::RegistryService>()
-                    .and_then(|rs| rs.get_fiber(fid))
-                {
-                    if let Err(error) = fiber.dispose().await {
-                        tracing::error!(id = %id, %error, "Loader: fiber stuck in transition during retire");
-                    }
-                }
-            }
+        if let Some(record) = journal.get(id)
+            && let Some(fid) = record.fiber_id
+            && let Some(fiber) = ctx
+                .get::<crate::RegistryService>()
+                .and_then(|rs| rs.get_fiber(fid))
+            && let Err(error) = fiber.dispose().await
+        {
+            tracing::error!(id = %id, %error, "Loader: fiber stuck in transition during retire");
         }
         journal.retire(id);
         tracing::info!(id = %id, "Loader: retired entry");
@@ -1142,13 +1137,12 @@ impl Loader {
     ) -> Result<(), String> {
         journal.update_config(id, new_config.clone(), None);
         // Drive Fiber::update when a live fiber is known.
-        if let Some(fiber) = fid.and_then(|f| {
+        match fid.and_then(|f| {
             ctx.get::<crate::RegistryService>()
                 .and_then(|rs| rs.get_fiber(f))
         }) {
-            Self::drive_fiber_update(ctx, &fiber)
-        } else {
-            Ok(())
+            Some(fiber) => Self::drive_fiber_update(ctx, &fiber),
+            _ => Ok(()),
         }
     }
 
@@ -1323,27 +1317,23 @@ impl Loader {
                     // The rebuild already swapped registrations under this
                     // id: dispose whatever fiber the swap left behind so the
                     // failed batch leaves no half-applied provider serving.
-                    if let Some(record) = journal.get(id) {
-                        if let Some(fid) = record.fiber_id {
-                            if let Some(fiber) = ctx
-                                .get::<crate::RegistryService>()
-                                .and_then(|rs| rs.get_fiber(fid))
-                            {
-                                let _ = fiber.dispose().await;
-                            }
-                        }
+                    if let Some(record) = journal.get(id)
+                        && let Some(fid) = record.fiber_id
+                        && let Some(fiber) = ctx
+                            .get::<crate::RegistryService>()
+                            .and_then(|rs| rs.get_fiber(fid))
+                    {
+                        let _ = fiber.dispose().await;
                     }
                 }
                 apply_staged::Staged::Begin { entry, .. } => {
-                    if let Some(record) = journal.get(&entry.id) {
-                        if let Some(fid) = record.fiber_id {
-                            if let Some(fiber) = ctx
-                                .get::<crate::RegistryService>()
-                                .and_then(|rs| rs.get_fiber(fid))
-                            {
-                                let _ = fiber.dispose().await;
-                            }
-                        }
+                    if let Some(record) = journal.get(&entry.id)
+                        && let Some(fid) = record.fiber_id
+                        && let Some(fiber) = ctx
+                            .get::<crate::RegistryService>()
+                            .and_then(|rs| rs.get_fiber(fid))
+                    {
+                        let _ = fiber.dispose().await;
                     }
                     journal.retire(&entry.id);
                 }
@@ -2643,9 +2633,11 @@ disabled = false
     #[test]
     fn update_config_missing_id_is_noop() {
         let journal = LoaderJournal::new();
-        assert!(journal
-            .update_config("svc:ghost", json!({"v": 1}), None)
-            .is_none());
+        assert!(
+            journal
+                .update_config("svc:ghost", json!({"v": 1}), None)
+                .is_none()
+        );
         assert!(journal.is_empty());
     }
 
@@ -2866,9 +2858,11 @@ disabled = false
 
         let actions = Loader::apply(&ctx, &mut current, &desired, &journal).await;
         assert_eq!(actions.len(), 2);
-        assert!(actions
-            .iter()
-            .all(|a| a.action == "begin" && a.status.is_ok()));
+        assert!(
+            actions
+                .iter()
+                .all(|a| a.action == "begin" && a.status.is_ok())
+        );
         assert_eq!(current.0.len(), 2);
         assert!(ctx.get::<SvcA>().is_some());
         assert!(ctx.get::<SvcB>().is_some());
@@ -3298,11 +3292,13 @@ disabled = false
         let actions = Loader::apply(&ctx, &mut current, &desired_bad, &journal).await;
         assert_eq!(actions[0].action, "rebuild-fiber");
         assert!(actions[0].status.is_err(), "failed trial reported");
-        assert!(actions[0]
-            .status
-            .as_ref()
-            .unwrap_err()
-            .contains("intentional swap failure"));
+        assert!(
+            actions[0]
+                .status
+                .as_ref()
+                .unwrap_err()
+                .contains("intentional swap failure")
+        );
         assert!(
             ctx.get::<Keeper>().is_some(),
             "old fiber still Active after failed rebuild"
@@ -5040,9 +5036,11 @@ plugin = "Bar"
         ]);
         let actions = Loader::apply(&ctx, &mut current, &restored, &journal).await;
         assert_eq!(actions.len(), 2, "{actions:?}");
-        assert!(actions
-            .iter()
-            .all(|a| a.action == "begin" && a.status.is_ok()));
+        assert!(
+            actions
+                .iter()
+                .all(|a| a.action == "begin" && a.status.is_ok())
+        );
         assert!(journal.get("other:g").unwrap().fiber_id.is_some());
         assert!(journal.get("other:g:kid").unwrap().fiber_id.is_some());
         assert!(ctx.get::<MoveProbe>().is_some());

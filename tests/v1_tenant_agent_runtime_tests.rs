@@ -1,32 +1,32 @@
 #![cfg(feature = "http")]
 
 use axum::{
-    routing::{get, post},
     Json, Router,
+    routing::{get, post},
 };
 use axum_test::TestServer;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
 use ares_agent::AgentRegistry;
 use ares_http::{
+    AresConfigManager, DynamicConfigManager,
     auth::jwt::AuthService,
     config::{AuthConfig as TomlAuthConfig, ServerConfig as TomlServerConfig},
     overlay::{
         AgentConfig, AresConfig, BillingConfig, DatabaseConfig as TomlDatabaseConfig,
         DynamicConfigPaths, ModelConfig, ProviderConfig, RagConfig,
     },
-    AresConfigManager, DynamicConfigManager,
 };
 use ares_llm::{ConfigBasedLLMFactory, ProviderRegistry};
 use ares_store::{
-    tenant_agents::{
-        create_tenant_agent, update_tenant_agent, CreateTenantAgentRequest,
-        UpdateTenantAgentRequest,
-    },
     TenantDb,
+    tenant_agents::{
+        CreateTenantAgentRequest, UpdateTenantAgentRequest, create_tenant_agent,
+        update_tenant_agent,
+    },
 };
 use ares_tools::Tools;
 use ares_types::models::TenantTier;
@@ -643,7 +643,8 @@ async fn admin_versions_get_writes_nothing() {
     .await
     .expect("insert legacy agent");
 
-    std::env::set_var("ADMIN_API_KEY", "test-admin-secret-versions");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("ADMIN_API_KEY", "test-admin-secret-versions") };
     let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_config_versions")
         .fetch_one(tenant_db.pool())
         .await

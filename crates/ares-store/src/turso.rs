@@ -5,7 +5,7 @@ use ares_types::types::{
 };
 use async_trait::async_trait;
 use chrono::Utc;
-use libsql::{params, Builder, Connection, Database};
+use libsql::{Builder, Connection, Database, params};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 

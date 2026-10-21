@@ -99,12 +99,12 @@ pub mod timer;
 pub use context::{Accessor, Context, EffectHandle};
 pub use effect::Disposable;
 pub use error::{ValidationError, ValidationIssue};
-pub use events::{summarize_listener_errors, AggregateError, Dispatch, EventsService};
+pub use events::{AggregateError, Dispatch, EventsService, summarize_listener_errors};
 pub use fiber::{Fiber, FiberState, UndoMeta};
 pub use service::{CordisError, Service, ServiceInitFuture};
 
 pub mod events_catalog;
-pub use events_catalog::{contract_for, validate_dispatch, validate_listener, EventContract};
+pub use events_catalog::{EventContract, contract_for, validate_dispatch, validate_listener};
 pub mod events_payload;
 pub use events_payload::{
     AgentAdmitEvent, AgentAdmitPayload, AgentCompletedEvent, AgentCompletedPayload,
@@ -128,7 +128,7 @@ pub use loader::{
 };
 
 pub mod cycles;
-pub use cycles::{find_dependency_cycle, DependencyGraph};
+pub use cycles::{DependencyGraph, find_dependency_cycle};
 
 pub mod reload;
 pub mod stamp;
@@ -146,8 +146,8 @@ pub use module_graph::{ChangeOutcome, ModuleEntry, ModuleGraph, ModuleReload, No
 pub use registry::{Plugin, RegistryService};
 
 pub use logger::{
-    derived_name, hyphenate, Exporter, ExporterConfig, LogArg, LogKind, LogLevel, LoggerIntercept,
-    LoggerService, Message,
+    Exporter, ExporterConfig, LogArg, LogKind, LogLevel, LoggerIntercept, LoggerService, Message,
+    derived_name, hyphenate,
 };
 
 pub mod compose;
@@ -157,11 +157,11 @@ pub mod worker;
 
 #[cfg(feature = "rhai")]
 pub use compose::{
-    compose_all, compose_entries, interpolate_config, resolve_includes, GROUP_PLUGIN,
-    INCLUDE_PLUGIN,
+    GROUP_PLUGIN, INCLUDE_PLUGIN, compose_all, compose_entries, interpolate_config,
+    resolve_includes,
 };
 #[cfg(not(feature = "rhai"))]
-pub use compose::{compose_all, resolve_includes, GROUP_PLUGIN, INCLUDE_PLUGIN};
+pub use compose::{GROUP_PLUGIN, INCLUDE_PLUGIN, compose_all, resolve_includes};
 #[cfg(feature = "rhai")]
 pub use rhai_service::{RhaiListenerConfig, RhaiPlugin, RhaiService, RhaiServiceConfig};
 
@@ -357,18 +357,18 @@ impl ReflectService {
         let ctx_opt = self.ctx.read().as_ref().and_then(|w| w.upgrade());
 
         // Emit service.changed event via EventsService (fire-and-forget)
-        if let Some(ctx) = &ctx_opt {
-            if let Some(events) = ctx.get::<EventsService>() {
-                let payload = crate::ServiceChangedPayload {
-                    type_id: format!("{tid:?}"),
-                    event: crate::events_catalog::ev::SERVICE_CHANGED.to_string(),
-                };
-                tokio::spawn(async move {
-                    let _ = events
-                        .dispatch_typed::<crate::ServiceChangedEvent>(&payload)
-                        .await;
-                });
-            }
+        if let Some(ctx) = &ctx_opt
+            && let Some(events) = ctx.get::<EventsService>()
+        {
+            let payload = crate::ServiceChangedPayload {
+                type_id: format!("{tid:?}"),
+                event: crate::events_catalog::ev::SERVICE_CHANGED.to_string(),
+            };
+            tokio::spawn(async move {
+                let _ = events
+                    .dispatch_typed::<crate::ServiceChangedEvent>(&payload)
+                    .await;
+            });
         }
 
         let mut queue = VecDeque::new();
@@ -401,10 +401,10 @@ impl ReflectService {
                         });
                     }
                     // Transitive: if this fiber provides a TypeId, enqueue its dependents
-                    if let Some(provided) = self.fiber_provides.read().get(&fid).copied() {
-                        if visited_type.insert(provided) {
-                            queue.push_back(provided);
-                        }
+                    if let Some(provided) = self.fiber_provides.read().get(&fid).copied()
+                        && visited_type.insert(provided)
+                    {
+                        queue.push_back(provided);
                     }
                 }
             }
@@ -437,10 +437,10 @@ impl ReflectService {
                 let fiber = { self.fibers.read().get(&fid).cloned() };
                 if let Some(fiber) = fiber {
                     fiber.refresh(ctx).await;
-                    if let Some(provided) = self.fiber_provides.read().get(&fid).copied() {
-                        if visited_type.insert(provided) {
-                            queue.push_back(provided);
-                        }
+                    if let Some(provided) = self.fiber_provides.read().get(&fid).copied()
+                        && visited_type.insert(provided)
+                    {
+                        queue.push_back(provided);
                     }
                 }
             }
@@ -701,13 +701,14 @@ fn rename_conflict_in<O: AsRef<str>, N: AsRef<str>>(
         }
         // A pair whose `old` has no record, or repeats an `old` an earlier
         // pair already took, moves nothing.
-        if records.contains_key(old) && taken.insert(old) {
-            if let Some(first) = landing.insert(new, old) {
-                return Some(format!(
-                    "cannot re-key '{old}' to '{new}': the record of '{first}' \
+        if records.contains_key(old)
+            && taken.insert(old)
+            && let Some(first) = landing.insert(new, old)
+        {
+            return Some(format!(
+                "cannot re-key '{old}' to '{new}': the record of '{first}' \
                      is already being re-keyed to '{new}' in this move"
-                ));
-            }
+            ));
         }
     }
     None

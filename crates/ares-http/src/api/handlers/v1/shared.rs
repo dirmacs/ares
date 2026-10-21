@@ -1,16 +1,16 @@
 use crate::HttpError;
 use crate::Result;
-pub use ares_agent::memory::estimate_tokens;
 pub use ares_agent::Agent;
+pub use ares_agent::memory::estimate_tokens;
 pub use ares_store::agent_runs;
 pub use ares_store::tenant_agents::TenantAgent;
 pub use ares_types::models::{TenantContext, TenantTier};
 pub use ares_types::types::AppError;
 pub use axum::{
+    Json,
     extract::Extension,
     http::{HeaderName, HeaderValue},
     response::{IntoResponse, Response},
-    Json,
 };
 pub use chrono::{DateTime, Datelike, TimeZone, Utc};
 pub use serde::{Deserialize, Serialize};
@@ -102,11 +102,7 @@ pub fn list_runs_offset(page: u32, per_page: u32) -> i64 {
 }
 
 pub fn quota_display_limit(limit: u64) -> Option<u64> {
-    if limit == u64::MAX {
-        None
-    } else {
-        Some(limit)
-    }
+    if limit == u64::MAX { None } else { Some(limit) }
 }
 
 pub fn check_tenant_request_quota(
@@ -294,7 +290,7 @@ pub(crate) fn metering_snapshot(
 mod tests {
     use super::*;
     use crate::api::handlers::v1::chat::research_model_allowlist_decision;
-    use crate::api::handlers::v1::stream::{sandbox_tool_call_requests, SandboxToolTraceSpec};
+    use crate::api::handlers::v1::stream::{SandboxToolTraceSpec, sandbox_tool_call_requests};
     use axum::body::to_bytes;
     use chrono::TimeZone;
 

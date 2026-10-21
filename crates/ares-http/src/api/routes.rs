@@ -2,10 +2,10 @@ use crate::auth::jwt::AuthService;
 use ares_store::tenants::TenantDb;
 
 use axum::{
+    Router,
     extract::Request,
     middleware::{self, Next},
     routing::{delete, get, post, put},
-    Router,
 };
 use std::sync::Arc;
 
@@ -1275,17 +1275,18 @@ mod route_path_tests {
     fn router_names(t: &[Token]) -> Vec<String> {
         let mut names = vec!["Router".to_string()];
         for (i, x) in t.iter().enumerate() {
-            if x.is_name("Router") && t.get(i + 1).is_some_and(|y| y.is_kw("as")) {
-                if let Some(alias) = t.get(i + 2).and_then(|y| y.name()) {
-                    names.push(alias.to_string());
-                }
+            if x.is_name("Router")
+                && t.get(i + 1).is_some_and(|y| y.is_kw("as"))
+                && let Some(alias) = t.get(i + 2).and_then(|y| y.name())
+            {
+                names.push(alias.to_string());
             }
-            if x.is_kw("type") {
-                if let Some(alias) = t.get(i + 1).and_then(|y| y.name()) {
-                    let end = item_end(t, i);
-                    if t[i..end].iter().any(|y| y.is_name("Router")) {
-                        names.push(alias.to_string());
-                    }
+            if x.is_kw("type")
+                && let Some(alias) = t.get(i + 1).and_then(|y| y.name())
+            {
+                let end = item_end(t, i);
+                if t[i..end].iter().any(|y| y.is_name("Router")) {
+                    names.push(alias.to_string());
                 }
             }
         }
@@ -1732,8 +1733,8 @@ mod route_path_tests {
 #[cfg(all(test, feature = "postgres"))]
 // ADMIN_ENV_LOCK serializes tests that mutate the process-global ADMIN_API_KEY
 // env var; the guard must span the awaited requests because handlers read the
-// env var mid-await, so scoping it earlier would reintroduce the race.
-#[allow(clippy::await_holding_lock)]
+// env var mid-await, so scoping it earlier would reintroduce the race. The
+// lock is a tokio mutex precisely so the guard can be held across an await.
 mod tests {
     use super::*;
     use crate::api::handlers::admin::shared::lock_admin_env;
@@ -1743,14 +1744,14 @@ mod tests {
         ProviderConfig, RagConfig,
     };
     use crate::{AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager};
-    use ares_agent::context_provider::NoOpContextProvider;
     use ares_agent::AgentRegistry;
+    use ares_agent::context_provider::NoOpContextProvider;
     use ares_llm::ProviderRegistry;
     use axum::http::StatusCode;
     use axum_test::TestServer;
     use std::collections::HashMap;
-    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     fn minimal_config() -> AresConfig {
         let mut providers = HashMap::new();
@@ -1891,11 +1892,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn route_contract_does_not_depend_on_env() {
-        let _env_guard = lock_admin_env();
-        std::env::remove_var("DATABASE_URL");
-        std::env::remove_var("JWT_SECRET");
+    #[tokio::test]
+    async fn route_contract_does_not_depend_on_env() {
+        let _env_guard = lock_admin_env().await;
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("JWT_SECRET") };
         assert_eq!(public_api_paths().len(), 7);
     }
 
@@ -1943,8 +1946,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_admin_deploys_rejects_missing_secret() {
-        let _env_guard = lock_admin_env();
-        std::env::remove_var("ADMIN_API_KEY");
+        let _env_guard = lock_admin_env().await;
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ADMIN_API_KEY") };
         let server = test_server(test_app_state());
         server
             .get("/admin/deploys")
@@ -1961,8 +1965,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_deploy_post_route() {
-        let _env_guard = lock_admin_env();
-        std::env::remove_var("ADMIN_API_KEY");
+        let _env_guard = lock_admin_env().await;
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ADMIN_API_KEY") };
         let server = test_server(test_app_state());
         let response = server
             .post("/admin/deploy")
@@ -1974,8 +1979,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_run_history_llm_calls_route() {
-        let _env_guard = lock_admin_env();
-        std::env::remove_var("ADMIN_API_KEY");
+        let _env_guard = lock_admin_env().await;
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ADMIN_API_KEY") };
         let server = test_server(test_app_state());
         let response = server.get("/admin/run-history/llm-calls").await;
         assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
@@ -1984,8 +1990,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_run_history_budget_route() {
-        let _env_guard = lock_admin_env();
-        std::env::remove_var("ADMIN_API_KEY");
+        let _env_guard = lock_admin_env().await;
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ADMIN_API_KEY") };
         let server = test_server(test_app_state());
         let response = server.get("/admin/run-history/budgets/tenant-1").await;
         assert_ne!(response.status_code(), axum::http::StatusCode::NOT_FOUND);
@@ -1994,8 +2001,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_schedule_update_route() {
-        let _env_guard = lock_admin_env();
-        std::env::remove_var("ADMIN_API_KEY");
+        let _env_guard = lock_admin_env().await;
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ADMIN_API_KEY") };
         let server = test_server(test_app_state());
         let response = server
             .put("/admin/schedules/schedule-1")
@@ -2014,8 +2022,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_tenant_pipeline_update_route() {
-        let _env_guard = lock_admin_env();
-        std::env::remove_var("ADMIN_API_KEY");
+        let _env_guard = lock_admin_env().await;
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ADMIN_API_KEY") };
         let server = test_server(test_app_state());
         let response = server
             .put("/admin/tenants/tenant-1/pipelines/pipeline-1")
@@ -2035,8 +2044,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_tenant_trigger_update_route() {
-        let _env_guard = lock_admin_env();
-        std::env::remove_var("ADMIN_API_KEY");
+        let _env_guard = lock_admin_env().await;
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ADMIN_API_KEY") };
         let server = test_server(test_app_state());
         let response = server
             .put("/admin/tenants/tenant-1/triggers/trigger-1")
@@ -2057,8 +2067,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_tenant_schedule_routes() {
-        let _env_guard = lock_admin_env();
-        std::env::remove_var("ADMIN_API_KEY");
+        let _env_guard = lock_admin_env().await;
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ADMIN_API_KEY") };
         let server = test_server(test_app_state());
         let update_response = server
             .put("/admin/tenants/tenant-1/schedules/schedule-1")
@@ -2087,8 +2098,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_emergency_stop_status_route() {
-        let _env_guard = lock_admin_env();
-        std::env::remove_var("ADMIN_API_KEY");
+        let _env_guard = lock_admin_env().await;
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ADMIN_API_KEY") };
         let server = test_server(test_app_state());
         let response = server.get("/admin/agents/emergency-stop").await;
         assert_ne!(response.status_code(), StatusCode::NOT_FOUND);
@@ -2096,8 +2108,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_runtime_tool_capabilities_route() {
-        let _env_guard = lock_admin_env();
-        std::env::remove_var("ADMIN_API_KEY");
+        let _env_guard = lock_admin_env().await;
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ADMIN_API_KEY") };
         let server = test_server(test_app_state());
         let response = server.get("/admin/runtime-tools/capabilities").await;
         assert_ne!(response.status_code(), StatusCode::NOT_FOUND);
@@ -2105,7 +2118,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_cordis_service_retire_route() {
-        let _env_guard = lock_admin_env();
+        let _env_guard = lock_admin_env().await;
         // No env manipulation: other admin tests set/unset ADMIN_API_KEY
         // concurrently. Whether the middleware rejects (401) or the handler
         // runs (200), a non-404 proves the route segment reached the layer.
@@ -2137,8 +2150,9 @@ mod tests {
     /// handlers write no audit row (this test has no database).
     #[tokio::test]
     async fn cordis_service_lifecycle_end_to_end_over_http() {
-        let _env_guard = lock_admin_env();
-        std::env::set_var("ADMIN_API_KEY", "test-admin-secret");
+        let _env_guard = lock_admin_env().await;
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("ADMIN_API_KEY", "test-admin-secret") };
 
         let ctx = Context::new_root();
         ctx.provide(cordis::ReflectService::new());
@@ -2199,8 +2213,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_schedule_missed_runs_route() {
-        let _env_guard = lock_admin_env();
-        std::env::remove_var("ADMIN_API_KEY");
+        let _env_guard = lock_admin_env().await;
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ADMIN_API_KEY") };
         let server = test_server(test_app_state());
         let response = server
             .get("/admin/tenants/tenant-1/schedules/schedule-1/missed-runs")
@@ -2210,8 +2225,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_connector_update_route() {
-        let _env_guard = lock_admin_env();
-        std::env::remove_var("ADMIN_API_KEY");
+        let _env_guard = lock_admin_env().await;
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ADMIN_API_KEY") };
         let server = test_server(test_app_state());
         let response = server
             .put("/admin/connectors/connector-1")
@@ -2230,8 +2246,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_does_not_register_unscoped_pipeline_delete_route() {
-        let _env = lock_admin_env();
-        std::env::set_var("ADMIN_API_KEY", "test-admin-secret");
+        let _env = lock_admin_env().await;
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("ADMIN_API_KEY", "test-admin-secret") };
         let server = test_server(test_app_state());
         let response = server
             .delete("/admin/pipelines/pipeline-1")
@@ -2242,8 +2259,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_tenant_connector_delete_route() {
-        let _env_guard = lock_admin_env();
-        std::env::remove_var("ADMIN_API_KEY");
+        let _env_guard = lock_admin_env().await;
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ADMIN_API_KEY") };
         let server = test_server(test_app_state());
         let response = server
             .delete("/admin/tenants/tenant-1/connectors/connector-1")
@@ -2254,8 +2272,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_billing_routes() {
-        let _env_guard = lock_admin_env();
-        std::env::remove_var("ADMIN_API_KEY");
+        let _env_guard = lock_admin_env().await;
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ADMIN_API_KEY") };
         let server = test_server(test_app_state());
         for path in [
             "/admin/tenants/tenant-1/billing/summary?month=2026-06",
@@ -2271,8 +2290,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_registers_token_budget_routes() {
-        let _env_guard = lock_admin_env();
-        std::env::remove_var("ADMIN_API_KEY");
+        let _env_guard = lock_admin_env().await;
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ADMIN_API_KEY") };
         let server = test_server(test_app_state());
         for path in [
             "/admin/token-budgets/tenant-1",
@@ -2295,8 +2315,9 @@ mod tests {
     /// query) instead of the 404 fallback.
     #[tokio::test]
     async fn create_router_registers_tenant_agent_publish_route() {
-        let _env_guard = lock_admin_env();
-        std::env::set_var("ADMIN_API_KEY", "test-admin-secret");
+        let _env_guard = lock_admin_env().await;
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("ADMIN_API_KEY", "test-admin-secret") };
         let server = test_server(test_app_state());
         let path = "/admin/tenants/tenant-1/agents/agent-a/publish";
         let body = serde_json::json!({"draft_digest": "00"});
@@ -2321,8 +2342,9 @@ mod tests {
     /// behind the admin middleware (checked as for the publish route).
     #[tokio::test]
     async fn create_router_registers_tenant_agent_draft_route() {
-        let _env_guard = lock_admin_env();
-        std::env::set_var("ADMIN_API_KEY", "test-admin-secret");
+        let _env_guard = lock_admin_env().await;
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("ADMIN_API_KEY", "test-admin-secret") };
         let server = test_server(test_app_state());
         let path = "/admin/tenants/tenant-1/agents/agent-a/draft";
         server.get(path).await.assert_status_unauthorized();

@@ -260,10 +260,10 @@ fn tenant_key_for_compaction(ctx: &Context, fallback_user: &str) -> String {
             }
         }
     }
-    if let Some(tc) = ctx.get::<ares_types::models::TenantContext>() {
-        if !tc.tenant_id.is_empty() {
-            return tc.tenant_id.clone();
-        }
+    if let Some(tc) = ctx.get::<ares_types::models::TenantContext>()
+        && !tc.tenant_id.is_empty()
+    {
+        return tc.tenant_id.clone();
     }
     fallback_user.to_string()
 }
@@ -478,25 +478,10 @@ where
 }
 
 impl ConfigurableAgent {
-    /// Create a new configurable agent from TOML config
-    ///
-    /// Deprecated shim kept for one commit. New code should use
-    /// `new_with_tool_service` with a service obtained via
-    /// `ctx.get::<dyn ToolService>()`.
-    #[deprecated(note = "use new_with_tool_service with ctx.get::<dyn ToolService>()")]
-    pub fn new(
-        name: &str,
-        config: &AgentConfig,
-        llm: Box<dyn LLMClient>,
-        tools: Option<Arc<Tools>>,
-    ) -> Self {
-        Self::new_with_provider(name, config, llm, tools, config.model.clone())
-    }
-
     /// Shared helper that resolves the common `agent_type`, `system_prompt`,
     /// and `allowed_tools` derived from `AgentConfig`. Extracted to eliminate
-    /// the 93% near-duplicate bodies between `new_with_provider` and
-    /// `new_with_provider_and_tool_service` reported by rust-doctor.
+    /// the near-duplicate bodies between the agent constructors reported by
+    /// rust-doctor.
     fn resolve_common_fields(
         name: &str,
         config: &AgentConfig,
@@ -515,76 +500,6 @@ impl ConfigurableAgent {
             }
         });
         (agent_type, system_prompt, allowed_tools)
-    }
-
-    /// Create a new configurable agent with explicit provider metadata
-    ///
-    /// Deprecated shim. Prefer `new_with_provider_and_tool_service`.
-    #[deprecated(note = "use new_with_provider_and_tool_service with ctx.get::<dyn ToolService>()")]
-    pub fn new_with_provider(
-        name: &str,
-        config: &AgentConfig,
-        llm: Box<dyn LLMClient>,
-        tools: Option<Arc<Tools>>,
-        provider_name: String,
-    ) -> Self {
-        let (agent_type, system_prompt, allowed_tools) = Self::resolve_common_fields(name, config);
-
-        Self {
-            name: name.to_string(),
-            agent_type,
-            llm,
-            provider_name,
-            system_prompt,
-            tools,
-            cordis_ctx: None,
-            allowed_tools,
-            max_tool_iterations: config.max_tool_iterations,
-            parallel_tools: config.parallel_tools,
-            observability: None,
-            fallback_llms: Vec::new(),
-            run_id: None,
-            compaction: config.compaction_enabled.unwrap_or(false),
-            user_parts: Vec::new(),
-            previous_response_id: None,
-            web_search: false,
-        }
-    }
-
-    /// Create a new configurable agent with explicit parameters
-    ///
-    /// Deprecated shim. Prefer `with_tool_service_params`.
-    #[deprecated(note = "use with_tool_service_params with ctx.get::<dyn ToolService>()")]
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_params(
-        name: &str,
-        agent_type: AgentType,
-        llm: Box<dyn LLMClient>,
-        system_prompt: String,
-        tools: Option<Arc<Tools>>,
-        allowed_tools: Option<Vec<String>>,
-        max_tool_iterations: usize,
-        parallel_tools: bool,
-    ) -> Self {
-        Self {
-            name: name.to_string(),
-            agent_type,
-            llm,
-            provider_name: "unknown".to_string(),
-            system_prompt,
-            tools,
-            cordis_ctx: None,
-            allowed_tools,
-            max_tool_iterations,
-            parallel_tools,
-            observability: None,
-            fallback_llms: Vec::new(),
-            run_id: None,
-            compaction: false,
-            user_parts: Vec::new(),
-            previous_response_id: None,
-            web_search: false,
-        }
     }
 
     // Preferred constructors that accept unified Tools from ctx.get::<Tools>().
@@ -1305,12 +1220,12 @@ Handle employee info, policies, and benefits."#
                 "connector tool arguments must be an object".to_string(),
             ));
         };
-        if let Some(provided) = map.get("tenant_id").and_then(|value| value.as_str()) {
-            if provided != tenant_id {
-                return Err(AppError::Auth(
-                    "connector tenant_id does not match executing tenant".to_string(),
-                ));
-            }
+        if let Some(provided) = map.get("tenant_id").and_then(|value| value.as_str())
+            && provided != tenant_id
+        {
+            return Err(AppError::Auth(
+                "connector tenant_id does not match executing tenant".to_string(),
+            ));
         }
         map.insert(
             "tenant_id".to_string(),
@@ -1322,11 +1237,7 @@ Handle employee info, policies, and benefits."#
     fn connector_tenant_id(&self) -> Option<String> {
         let ctx = self.cordis_ctx.as_ref()?;
         let id = crate::user_id_from_ctx(ctx, "");
-        if id.is_empty() {
-            None
-        } else {
-            Some(id)
-        }
+        if id.is_empty() { None } else { Some(id) }
     }
 
     /// Execute a single tool call via `Tools::resolve(ctx, name)`.
@@ -1352,24 +1263,23 @@ Handle employee info, policies, and benefits."#
     }
 
     fn effective_system_prompt(&self) -> String {
-        if let Some(ctx) = &self.cordis_ctx {
-            if let Some(ext) = ctx.get::<crate::external_context::ExternalContext>() {
-                if !ext.0.is_empty() {
-                    tracing::debug!(
-                        agent = %self.name,
-                        ctx_len = ext.0.len(),
-                        "External context injected into system prompt"
-                    );
-                    return format!(
-                        "{}
+        if let Some(ctx) = &self.cordis_ctx
+            && let Some(ext) = ctx.get::<crate::external_context::ExternalContext>()
+            && !ext.0.is_empty()
+        {
+            tracing::debug!(
+                agent = %self.name,
+                ctx_len = ext.0.len(),
+                "External context injected into system prompt"
+            );
+            return format!(
+                "{}
 
 {}
 
 When referencing facts above, cite [E1], [E2] etc.",
-                        ext.0, self.system_prompt
-                    );
-                }
-            }
+                ext.0, self.system_prompt
+            );
         }
         self.system_prompt.clone()
     }
@@ -1515,10 +1425,10 @@ When referencing facts above, cite [E1], [E2] etc.",
 
         // Fire-and-forget compaction of the completed turn when the final
         // synthesis succeeded. Failures are logged at debug only.
-        if let Ok(attempt) = &final_response {
-            if !attempt.response.content.is_empty() {
-                self.spawn_turn_compaction(&turn, input, &attempt.response.content);
-            }
+        if let Ok(attempt) = &final_response
+            && !attempt.response.content.is_empty()
+        {
+            self.spawn_turn_compaction(&turn, input, &attempt.response.content);
         }
 
         let content = match final_response {
@@ -1597,11 +1507,7 @@ When referencing facts above, cite [E1], [E2] etc.",
         #[cfg(feature = "postgres")]
         let tenant_key: Option<String> = self.cordis_ctx.as_ref().and_then(|ctx| {
             let key = tenant_key_for_compaction(ctx, &context.user_id);
-            if key.is_empty() {
-                None
-            } else {
-                Some(key)
-            }
+            if key.is_empty() { None } else { Some(key) }
         });
         #[cfg(not(feature = "postgres"))]
         let _ = &context;
@@ -2033,11 +1939,7 @@ impl Agent for ConfigurableAgent {
         #[cfg(feature = "postgres")]
         let tenant_key: Option<String> = self.cordis_ctx.as_ref().and_then(|ctx| {
             let key = tenant_key_for_compaction(ctx, &context.user_id);
-            if key.is_empty() {
-                None
-            } else {
-                Some(key)
-            }
+            if key.is_empty() { None } else { Some(key) }
         });
         #[cfg(not(feature = "postgres"))]
         let _ = &context;
@@ -2176,8 +2078,8 @@ pub fn agent_config_from_user_agent(user_agent: &ares_store::postgres::UserAgent
 mod tests {
     use super::*;
     use crate::AgentConfig;
-    use ares_llm::client::TokenUsage;
     use ares_llm::LLMResponse;
+    use ares_llm::client::TokenUsage;
     use ares_tools::Tool;
     use ares_types::types::{Message, MessageRole, Preference, ToolCall, UserMemory};
     use chrono::Utc;
@@ -2603,7 +2505,12 @@ mod tests {
     #[test]
     fn test_name_accessor() {
         let config = make_config(vec![], None);
-        let agent = ConfigurableAgent::new("product", &config, Box::new(MockLLM::new()), None);
+        let agent = ConfigurableAgent::new_with_tool_service(
+            "product",
+            &config,
+            Box::new(MockLLM::new()),
+            None,
+        );
         assert_eq!(agent.name(), "product");
     }
 
@@ -2611,7 +2518,12 @@ mod tests {
     fn test_max_tool_iterations_accessor() {
         let mut config = make_config(vec![], None);
         config.max_tool_iterations = 42;
-        let agent = ConfigurableAgent::new("router", &config, Box::new(MockLLM::new()), None);
+        let agent = ConfigurableAgent::new_with_tool_service(
+            "router",
+            &config,
+            Box::new(MockLLM::new()),
+            None,
+        );
         assert_eq!(agent.max_tool_iterations(), 42);
     }
 
@@ -2619,7 +2531,12 @@ mod tests {
     fn test_parallel_tools_accessor() {
         let mut config = make_config(vec![], None);
         config.parallel_tools = true;
-        let agent = ConfigurableAgent::new("router", &config, Box::new(MockLLM::new()), None);
+        let agent = ConfigurableAgent::new_with_tool_service(
+            "router",
+            &config,
+            Box::new(MockLLM::new()),
+            None,
+        );
         assert!(agent.parallel_tools());
     }
 
@@ -2627,7 +2544,7 @@ mod tests {
     fn test_tools_returns_some_when_provided() {
         let config = make_config(vec![], None);
         let tools = Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new()));
-        let agent = ConfigurableAgent::new(
+        let agent = ConfigurableAgent::new_with_tool_service(
             "router",
             &config,
             Box::new(MockLLM::new()),
@@ -2640,14 +2557,24 @@ mod tests {
     #[test]
     fn test_tools_returns_none_when_absent() {
         let config = make_config(vec![], None);
-        let agent = ConfigurableAgent::new("router", &config, Box::new(MockLLM::new()), None);
+        let agent = ConfigurableAgent::new_with_tool_service(
+            "router",
+            &config,
+            Box::new(MockLLM::new()),
+            None,
+        );
         assert!(agent.tools().is_none());
     }
 
     #[test]
     fn test_allowed_tools_from_config() {
         let config = make_config(vec!["calculator", "web_search"], None);
-        let agent = ConfigurableAgent::new("orchestrator", &config, Box::new(MockLLM::new()), None);
+        let agent = ConfigurableAgent::new_with_tool_service(
+            "orchestrator",
+            &config,
+            Box::new(MockLLM::new()),
+            None,
+        );
         let allowed = agent.allowed_tools().expect("should have allowed tools");
         assert_eq!(allowed.len(), 2);
         assert!(allowed.contains(&"calculator".to_string()));
@@ -2661,7 +2588,12 @@ mod tests {
     #[test]
     fn test_can_use_tool_in_allowed_but_no_registry() {
         let config = make_config(vec!["calculator"], None);
-        let agent = ConfigurableAgent::new("router", &config, Box::new(MockLLM::new()), None);
+        let agent = ConfigurableAgent::new_with_tool_service(
+            "router",
+            &config,
+            Box::new(MockLLM::new()),
+            None,
+        );
         assert!(!agent.can_use_tool("calculator"), "no registry → false");
     }
 
@@ -2669,14 +2601,24 @@ mod tests {
     fn test_can_use_tool_not_in_allowed_list() {
         let config = make_config(vec!["calculator"], None);
         let reg = Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new()));
-        let agent = ConfigurableAgent::new("router", &config, Box::new(MockLLM::new()), Some(reg));
+        let agent = ConfigurableAgent::new_with_tool_service(
+            "router",
+            &config,
+            Box::new(MockLLM::new()),
+            Some(reg),
+        );
         assert!(!agent.can_use_tool("web_search"), "not in allowed → false");
     }
 
     #[test]
     fn test_can_use_tool_both_empty() {
         let config = make_config(vec![], None);
-        let agent = ConfigurableAgent::new("router", &config, Box::new(MockLLM::new()), None);
+        let agent = ConfigurableAgent::new_with_tool_service(
+            "router",
+            &config,
+            Box::new(MockLLM::new()),
+            None,
+        );
         assert!(!agent.can_use_tool("anything"));
     }
 
@@ -2687,7 +2629,12 @@ mod tests {
     #[test]
     fn test_get_filtered_tool_definitions_no_registry() {
         let config = make_config(vec!["calculator"], None);
-        let agent = ConfigurableAgent::new("router", &config, Box::new(MockLLM::new()), None);
+        let agent = ConfigurableAgent::new_with_tool_service(
+            "router",
+            &config,
+            Box::new(MockLLM::new()),
+            None,
+        );
         assert!(agent.get_filtered_tool_definitions().is_empty());
     }
 
@@ -2695,7 +2642,12 @@ mod tests {
     fn test_get_filtered_tool_definitions_with_registry() {
         let reg = make_tools_with_tool("calculator");
         let config = make_config(vec!["calculator"], None);
-        let agent = ConfigurableAgent::new("router", &config, Box::new(MockLLM::new()), Some(reg));
+        let agent = ConfigurableAgent::new_with_tool_service(
+            "router",
+            &config,
+            Box::new(MockLLM::new()),
+            Some(reg),
+        );
         let defs = agent.get_filtered_tool_definitions();
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].name, "calculator");
@@ -2707,7 +2659,7 @@ mod tests {
 
     #[test]
     fn test_with_params_sets_all_fields() {
-        let agent = ConfigurableAgent::with_params(
+        let agent = ConfigurableAgent::with_tool_service_params(
             "my-agent",
             AgentType::Finance,
             Box::new(MockLLM::new()),
@@ -2729,7 +2681,7 @@ mod tests {
 
     #[test]
     fn test_with_params_provider_name_is_unknown() {
-        let agent = ConfigurableAgent::with_params(
+        let agent = ConfigurableAgent::with_tool_service_params(
             "x",
             AgentType::Router,
             Box::new(MockLLM::new()),
@@ -2749,7 +2701,7 @@ mod tests {
     #[test]
     fn test_new_with_provider_uses_explicit_name() {
         let config = make_config(vec![], None);
-        let agent = ConfigurableAgent::new_with_provider(
+        let agent = ConfigurableAgent::new_with_provider_and_tool_service(
             "sales",
             &config,
             Box::new(MockLLM::new()),
@@ -2764,7 +2716,7 @@ mod tests {
     #[test]
     fn test_new_with_provider_falls_back_to_default_prompt() {
         let config = make_config(vec![], None); // system_prompt: None
-        let agent = ConfigurableAgent::new_with_provider(
+        let agent = ConfigurableAgent::new_with_provider_and_tool_service(
             "invoice",
             &config,
             Box::new(MockLLM::new()),
@@ -2780,7 +2732,7 @@ mod tests {
     #[test]
     fn test_new_with_provider_uses_config_prompt_when_some() {
         let config = make_config(vec![], Some("Custom system prompt"));
-        let agent = ConfigurableAgent::new_with_provider(
+        let agent = ConfigurableAgent::new_with_provider_and_tool_service(
             "invoice",
             &config,
             Box::new(MockLLM::new()),
@@ -2797,14 +2749,24 @@ mod tests {
     #[test]
     fn test_agent_trait_system_prompt() {
         let config = make_config(vec![], Some("Hello from config"));
-        let agent = ConfigurableAgent::new("router", &config, Box::new(MockLLM::new()), None);
+        let agent = ConfigurableAgent::new_with_tool_service(
+            "router",
+            &config,
+            Box::new(MockLLM::new()),
+            None,
+        );
         assert_eq!(Agent::system_prompt(&agent), "Hello from config");
     }
 
     #[test]
     fn test_agent_trait_agent_type() {
         let config = make_config(vec![], None);
-        let agent = ConfigurableAgent::new("finance", &config, Box::new(MockLLM::new()), None);
+        let agent = ConfigurableAgent::new_with_tool_service(
+            "finance",
+            &config,
+            Box::new(MockLLM::new()),
+            None,
+        );
         assert!(matches!(Agent::agent_type(&agent), AgentType::Finance));
     }
 
@@ -2815,7 +2777,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_simple_calls_generate_with_history() {
         let config = make_config(vec![], Some("You are helpful"));
-        let agent = ConfigurableAgent::new(
+        let agent = ConfigurableAgent::new_with_tool_service(
             "router",
             &config,
             Box::new(MockLLM::with_content("hello world")),
@@ -2829,7 +2791,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_simple_returns_metadata() {
         let config = make_config(vec![], None);
-        let agent = ConfigurableAgent::new(
+        let agent = ConfigurableAgent::new_with_tool_service(
             "router",
             &config,
             Box::new(MockLLM::with_content("ok")),
@@ -2845,7 +2807,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_simple_empty_conversation_history() {
         let config = make_config(vec![], Some("system"));
-        let agent = ConfigurableAgent::new(
+        let agent = ConfigurableAgent::new_with_tool_service(
             "router",
             &config,
             Box::new(MockLLM::with_content("reply")),
@@ -2864,7 +2826,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_simple_with_conversation_history() {
         let config = make_config(vec![], Some("system"));
-        let agent = ConfigurableAgent::new(
+        let agent = ConfigurableAgent::new_with_tool_service(
             "router",
             &config,
             Box::new(MockLLM::with_content("contextual reply")),
@@ -2882,7 +2844,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_simple_with_user_memory() {
         let config = make_config(vec![], Some("system"));
-        let agent = ConfigurableAgent::new(
+        let agent = ConfigurableAgent::new_with_tool_service(
             "router",
             &config,
             Box::new(MockLLM::with_content("memory reply")),
@@ -2917,7 +2879,7 @@ mod tests {
         let mut config = make_config(vec!["calculator"], Some("system"));
         config.max_tool_iterations = 3;
         // MockLLM returns empty tool_calls → immediate return
-        let agent = ConfigurableAgent::new(
+        let agent = ConfigurableAgent::new_with_tool_service(
             "orchestrator",
             &config,
             Box::new(MockLLM::with_content("final answer")),
@@ -2947,7 +2909,7 @@ mod tests {
             make_tool_response("The answer is 4", vec![]),
         ];
 
-        let agent = ConfigurableAgent::new(
+        let agent = ConfigurableAgent::new_with_tool_service(
             "orchestrator",
             &config,
             Box::new(MockLLM::with_tool_responses(responses)),
@@ -2975,7 +2937,7 @@ mod tests {
             make_tool_response("", vec![tc]),
         ];
 
-        let agent = ConfigurableAgent::new(
+        let agent = ConfigurableAgent::new_with_tool_service(
             "orchestrator",
             &config,
             Box::new(MockLLM::with_tool_responses(responses)),
@@ -3023,7 +2985,7 @@ mod tests {
             make_tool_response("Error handled", vec![]),
         ];
 
-        let agent = ConfigurableAgent::new(
+        let agent = ConfigurableAgent::new_with_tool_service(
             "orchestrator",
             &config,
             Box::new(MockLLM::with_tool_responses(responses)),
@@ -3043,7 +3005,7 @@ mod tests {
     #[test]
     fn test_can_use_tool_empty_list_denies_all() {
         let reg = Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new()));
-        let agent = ConfigurableAgent::with_params(
+        let agent = ConfigurableAgent::with_tool_service_params(
             "router",
             AgentType::Router,
             Box::new(MockLLM::new()),
@@ -3070,7 +3032,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_prebuilt_connector_injects_runtime_tenant() {
         let reg = make_tools_with_echo_tool("slack_send_message");
-        let mut agent = ConfigurableAgent::with_params(
+        let mut agent = ConfigurableAgent::with_tool_service_params(
             "orchestrator",
             AgentType::Orchestrator,
             Box::new(MockLLM::new()),
@@ -3095,7 +3057,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_prebuilt_connector_rejects_cross_tenant_arg() {
         let reg = make_tools_with_echo_tool("slack_send_message");
-        let mut agent = ConfigurableAgent::with_params(
+        let mut agent = ConfigurableAgent::with_tool_service_params(
             "orchestrator",
             AgentType::Orchestrator,
             Box::new(MockLLM::new()),
@@ -3135,7 +3097,7 @@ mod tests {
             make_tool_response("HTTP result", vec![]),
         ];
 
-        let agent = ConfigurableAgent::new(
+        let agent = ConfigurableAgent::new_with_tool_service(
             "orchestrator",
             &config,
             Box::new(MockLLM::with_tool_responses(responses)),
@@ -3153,7 +3115,7 @@ mod tests {
             Arc::new(MockTool::new("sql")) as Arc<dyn Tool>,
         ]));
 
-        let agent = ConfigurableAgent::with_params(
+        let agent = ConfigurableAgent::with_tool_service_params(
             "orchestrator",
             AgentType::Orchestrator,
             Box::new(MockLLM::with_tool_responses(vec![make_tool_response(
@@ -3190,7 +3152,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_tool_empty_allowed_tools_denies_all() {
         let reg = make_tools_with_tool("http");
-        let agent = ConfigurableAgent::with_params(
+        let agent = ConfigurableAgent::with_tool_service_params(
             "orchestrator",
             AgentType::Orchestrator,
             Box::new(MockLLM::with_tool_responses(vec![make_tool_response(
@@ -3226,7 +3188,7 @@ mod tests {
             Arc::new(MockTool::new("sql")) as Arc<dyn Tool>,
         ]));
 
-        let agent = ConfigurableAgent::with_params(
+        let agent = ConfigurableAgent::with_tool_service_params(
             "orchestrator",
             AgentType::Orchestrator,
             Box::new(MockLLM::with_tool_responses(vec![
@@ -3259,7 +3221,7 @@ mod tests {
 
     #[test]
     fn test_observed_tool_type_marks_builtins() {
-        let agent = ConfigurableAgent::with_params(
+        let agent = ConfigurableAgent::with_tool_service_params(
             "router",
             AgentType::Router,
             Box::new(MockLLM::new()),
@@ -3275,7 +3237,7 @@ mod tests {
 
     #[test]
     fn test_observed_tool_type_falls_back_for_runtime_tools() {
-        let agent = ConfigurableAgent::with_params(
+        let agent = ConfigurableAgent::with_tool_service_params(
             "router",
             AgentType::Router,
             Box::new(MockLLM::new()),
@@ -3295,7 +3257,7 @@ mod tests {
     #[cfg(feature = "postgres")]
     #[test]
     fn observed_tool_types_are_accepted_by_the_store() {
-        let agent = ConfigurableAgent::with_params(
+        let agent = ConfigurableAgent::with_tool_service_params(
             "router",
             AgentType::Router,
             Box::new(MockLLM::new()),
@@ -3319,7 +3281,7 @@ mod tests {
     #[test]
     fn test_set_allowed_tools_intersection() {
         let reg = Arc::new(Tools::from_static(Vec::<Arc<dyn Tool>>::new()));
-        let mut agent = ConfigurableAgent::with_params(
+        let mut agent = ConfigurableAgent::with_tool_service_params(
             "router",
             AgentType::Router,
             Box::new(MockLLM::new()),
@@ -3409,7 +3371,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fallback_used_when_primary_fails() {
-        let mut agent = ConfigurableAgent::with_params(
+        let mut agent = ConfigurableAgent::with_tool_service_params(
             "test",
             AgentType::Product,
             Box::new(FailingMockLLM::llm("primary failed")),
@@ -3436,7 +3398,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_primary_succeeds_without_fallback() {
-        let mut agent = ConfigurableAgent::with_params(
+        let mut agent = ConfigurableAgent::with_tool_service_params(
             "test",
             AgentType::Product,
             Box::new(MockLLM::with_content("primary-success")),
@@ -3457,7 +3419,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_all_fallbacks_fail_reports_every_error() {
-        let mut agent = ConfigurableAgent::with_params(
+        let mut agent = ConfigurableAgent::with_tool_service_params(
             "test",
             AgentType::Product,
             Box::new(FailingMockLLM::llm("primary failed")),
@@ -3514,16 +3476,16 @@ mod tests {
         events.on_waterfall(
             cordis::events_catalog::ev::LLM_GENERATE.to_string(),
             |mut payload, next| async move {
-                if let Some(arr) = payload.get_mut("messages").and_then(|v| v.as_array_mut()) {
-                    if let Some(last) = arr.last_mut() {
-                        last["content"] = serde_json::json!("rewritten-hello");
-                    }
+                if let Some(arr) = payload.get_mut("messages").and_then(|v| v.as_array_mut())
+                    && let Some(last) = arr.last_mut()
+                {
+                    last["content"] = serde_json::json!("rewritten-hello");
                 }
                 next(payload).await
             },
         );
 
-        let mut agent = ConfigurableAgent::new(
+        let mut agent = ConfigurableAgent::new_with_tool_service(
             "router",
             &make_config(vec![], Some("system")),
             Box::new(MockLLM::echo_last()),
@@ -3547,7 +3509,7 @@ mod tests {
         );
 
         let (llm, generated) = MockLLM::with_generated_flag();
-        let mut agent = ConfigurableAgent::new(
+        let mut agent = ConfigurableAgent::new_with_tool_service(
             "router",
             &make_config(vec![], Some("system")),
             Box::new(llm),
@@ -3589,7 +3551,7 @@ mod tests {
         ctx.provide(ares_tools::Tools::from_static(Vec::<
             Arc<dyn ares_tools::Tool>,
         >::new()));
-        let mut agent = ConfigurableAgent::new(
+        let mut agent = ConfigurableAgent::new_with_tool_service(
             "router",
             &make_config(vec![], Some("system")),
             Box::new(llm),
@@ -3613,7 +3575,7 @@ mod tests {
         // classification (reason_code) stays truthful.
         let ctx = Context::new_root();
         let _events = ctx.provide(EventsService::new());
-        let mut agent = ConfigurableAgent::new(
+        let mut agent = ConfigurableAgent::new_with_tool_service(
             "router",
             &make_config(vec![], Some("system")),
             Box::new(FailingMockLLM::llm("transport boom")),
@@ -3637,7 +3599,7 @@ mod tests {
         ctx.provide(ares_tools::Tools::from_static(Vec::<
             Arc<dyn ares_tools::Tool>,
         >::new()));
-        let mut agent = ConfigurableAgent::new(
+        let mut agent = ConfigurableAgent::new_with_tool_service(
             "router",
             &make_config(vec![], Some("system")),
             Box::new(FailingMockLLM::rate_limited("429 upstream")),

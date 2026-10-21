@@ -48,11 +48,7 @@ pub(crate) fn trigger_counts_source(usage: Option<&ares_llm::client::TokenUsage>
 }
 
 pub(crate) fn trigger_skill_counts_source(is_ok: bool) -> &'static str {
-    if is_ok {
-        "reported"
-    } else {
-        "estimated"
-    }
+    if is_ok { "reported" } else { "estimated" }
 }
 
 fn ctx_tracker(
@@ -263,10 +259,10 @@ impl TriggerService {
                 continue;
             }
             // optional prefix filter
-            if let Some(prefix) = trigger.event_config.get("prefix").and_then(|v| v.as_str()) {
-                if !key.starts_with(prefix) {
-                    continue;
-                }
+            if let Some(prefix) = trigger.event_config.get("prefix").and_then(|v| v.as_str())
+                && !key.starts_with(prefix)
+            {
+                continue;
             }
             match self.execute_trigger(&trigger, &message, ctx).await {
                 Ok(()) => triggered.push(trigger.target_agent.clone()),
@@ -367,71 +363,72 @@ impl TriggerService {
                 .and_then(|v| v.as_str())
                 .map(|s| s.trim().to_owned())
                 .filter(|s| !s.is_empty());
-            if let Some(skill_id) = skill_id_opt {
-                if let Some(skill_engine) = ctx.get::<crate::skills::SkillEngine>() {
-                    // Use dedicated skill path (agent_runs + ActiveRuns + run_tool_calls)
-                    let run_id = uuid::Uuid::new_v4().to_string();
-                    let start = std::time::Instant::now();
-                    let metadata =
-                        triggered_agent_run_metadata(trigger, &run_id, "tenant_db", None, false);
-                    let _ = agent_runs::insert_agent_run_with_id_and_metadata(
-                        &pool,
-                        &run_id,
+            if let Some(skill_id) = skill_id_opt
+                && let Some(skill_engine) = ctx.get::<crate::skills::SkillEngine>()
+            {
+                // Use dedicated skill path (agent_runs + ActiveRuns + run_tool_calls)
+                let run_id = uuid::Uuid::new_v4().to_string();
+                let start = std::time::Instant::now();
+                let metadata =
+                    triggered_agent_run_metadata(trigger, &run_id, "tenant_db", None, false);
+                let _ = agent_runs::insert_agent_run_with_id_and_metadata(
+                    &pool,
+                    &run_id,
+                    &trigger.tenant_id,
+                    &trigger.target_agent,
+                    None,
+                    "running",
+                    0,
+                    0,
+                    0,
+                    None,
+                    "skill",
+                    "skill",
+                    false,
+                    Some(&metadata),
+                )
+                .await;
+                track_start(
+                    ctx,
+                    &run_id,
+                    &trigger.tenant_id,
+                    &trigger.target_agent,
+                    Some("trigger"),
+                );
+                let skill_result = skill_engine
+                    .execute_skill(
+                        &skill_id,
                         &trigger.tenant_id,
-                        &trigger.target_agent,
-                        None,
-                        "running",
-                        0,
-                        0,
-                        0,
-                        None,
-                        "skill",
-                        "skill",
-                        false,
-                        Some(&metadata),
+                        serde_json::json!({"message": event_message}),
+                        &run_id,
+                        ctx,
                     )
                     .await;
-                    track_start(
-                        ctx,
-                        &run_id,
-                        &trigger.tenant_id,
-                        &trigger.target_agent,
-                        Some("trigger"),
-                    );
-                    let skill_result = skill_engine
-                        .execute_skill(
-                            &skill_id,
-                            &trigger.tenant_id,
-                            serde_json::json!({"message": event_message}),
-                            &run_id,
-                            ctx,
-                        )
-                        .await;
-                    let duration_ms = start.elapsed().as_millis() as i64;
-                    let status = if skill_result.is_ok() {
-                        "completed"
-                    } else {
-                        "failed"
-                    };
-                    let active_status = if skill_result.is_ok() {
-                        "completed"
-                    } else {
-                        "error"
-                    };
-                    if let Some(_active_tracker) = ctx_tracker(ctx) {
-                        let active = _active_tracker;
-                        active.finish_run(&run_id, active_status);
-                    }
-                    let (itok, otok) = skill_result
-                        .as_ref()
-                        .map(crate::skills::skill_result_token_counts)
-                        .unwrap_or((0, 0));
-                    let no_retain = tenant_no_retain(&pool, &trigger.tenant_id).await;
-                    let err_msg = redact_agent_run_error(
-                        no_retain,
-                        skill_result.as_ref().err().map(String::as_str),
-                    );
-                    let _ = sqlx::query(
+                let duration_ms = start.elapsed().as_millis() as i64;
+                let status = if skill_result.is_ok() {
+                    "completed"
+                } else {
+                    "failed"
+                };
+                let active_status = if skill_result.is_ok() {
+                    "completed"
+                } else {
+                    "error"
+                };
+                if let Some(_active_tracker) = ctx_tracker(ctx) {
+                    let active = _active_tracker;
+                    active.finish_run(&run_id, active_status);
+                }
+                let (itok, otok) = skill_result
+                    .as_ref()
+                    .map(crate::skills::skill_result_token_counts)
+                    .unwrap_or((0, 0));
+                let no_retain = tenant_no_retain(&pool, &trigger.tenant_id).await;
+                let err_msg = redact_agent_run_error(
+                    no_retain,
+                    skill_result.as_ref().err().map(String::as_str),
+                );
+                let _ = sqlx::query(
                         "UPDATE agent_runs SET status=$2, input_tokens=$3, output_tokens=$4, duration_ms=$5, error=$6 WHERE id=$1",
                     )
                     .bind(&run_id)
@@ -442,28 +439,27 @@ impl TriggerService {
                     .bind(err_msg.as_deref())
                     .execute(&pool)
                     .await;
-                    if let Ok(val) = &skill_result {
-                        let out = serde_json::to_string(val).unwrap_or_default();
-                        let _ = fanout_pipelines(
-                            &trigger.target_agent,
-                            &out,
-                            &trigger.tenant_id,
-                            trigger.id.clone(),
-                            ctx,
-                        )
-                        .await;
-                    }
-                    if skill_result.is_ok() {
-                        emit_trigger_fired(
-                            ctx,
-                            &trigger.id,
-                            &trigger.event_type,
-                            &trigger.target_agent,
-                            &trigger.tenant_id,
-                        );
-                    }
-                    return skill_result.map(|_| ()).map_err(|e| e.to_string());
+                if let Ok(val) = &skill_result {
+                    let out = serde_json::to_string(val).unwrap_or_default();
+                    let _ = fanout_pipelines(
+                        &trigger.target_agent,
+                        &out,
+                        &trigger.tenant_id,
+                        trigger.id.clone(),
+                        ctx,
+                    )
+                    .await;
                 }
+                if skill_result.is_ok() {
+                    emit_trigger_fired(
+                        ctx,
+                        &trigger.id,
+                        &trigger.event_type,
+                        &trigger.target_agent,
+                        &trigger.tenant_id,
+                    );
+                }
+                return skill_result.map(|_| ()).map_err(|e| e.to_string());
             }
         }
 

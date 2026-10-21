@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::fmt;
 
-use ares_llm::{client::TokenUsage, LLMClient};
+use ares_llm::{LLMClient, client::TokenUsage};
 use ares_types::types::{Result, Source};
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
@@ -605,11 +605,11 @@ Example:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ares_llm::{client::TokenUsage, LLMClient, LLMResponse};
+    use ares_llm::{LLMClient, LLMResponse, client::TokenUsage};
     use ares_types::types::{AppError, ToolDefinition};
     use async_trait::async_trait;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct ResearchMockLlm {
         calls: Arc<AtomicUsize>,
@@ -802,10 +802,11 @@ mod tests {
     fn plan_research_phases_parallel_has_no_dependencies() {
         let plan = plan_research_phases("root", &sample_sub_queries(), true);
         assert!(plan.phases.iter().all(|phase| phase.depends_on.is_empty()));
-        assert!(plan
-            .phases
-            .iter()
-            .all(|phase| phase.mode == PhaseExecutionMode::Parallel));
+        assert!(
+            plan.phases
+                .iter()
+                .all(|phase| phase.mode == PhaseExecutionMode::Parallel)
+        );
     }
 
     #[test]
@@ -814,10 +815,11 @@ mod tests {
         assert_eq!(plan.phases[0].depends_on, Vec::<String>::new());
         assert_eq!(plan.phases[1].depends_on, vec!["phase-1".to_string()]);
         assert_eq!(plan.phases[2].depends_on, vec!["phase-2".to_string()]);
-        assert!(plan
-            .phases
-            .iter()
-            .all(|phase| phase.mode == PhaseExecutionMode::Sequential));
+        assert!(
+            plan.phases
+                .iter()
+                .all(|phase| phase.mode == PhaseExecutionMode::Sequential)
+        );
     }
 
     #[test]

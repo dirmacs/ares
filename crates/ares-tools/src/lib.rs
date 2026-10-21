@@ -37,7 +37,7 @@ pub mod mcp_bridge;
 pub mod connectors;
 
 pub use calculator::{Calculator, CalculatorConfig, CalculatorService};
-pub use plugins::{register_plugins, ExtraStaticTools};
+pub use plugins::{ExtraStaticTools, register_plugins};
 pub use registry::Tool;
 #[cfg(feature = "script-tools")]
 pub use rhai_tool::{RhaiTool, RhaiToolConfig};
@@ -46,7 +46,7 @@ pub use tools::provider_web_search::ProviderWebSearch;
 
 #[cfg(test)]
 mod tests {
-    use super::{calculator::Calculator, ProviderWebSearch, Tool, Tools};
+    use super::{ProviderWebSearch, Tool, Tools, calculator::Calculator};
     use std::sync::Arc;
 
     #[test]
@@ -54,10 +54,12 @@ mod tests {
         let tools = Tools::from_static([Arc::new(Calculator) as Arc<dyn Tool>]);
         let ctx = cordis::Context::new_root();
         assert!(tools.resolve(&ctx, "calculator").is_some());
-        assert!(tools
-            .list(&ctx)
-            .iter()
-            .any(|definition| definition.name == "calculator"));
+        assert!(
+            tools
+                .list(&ctx)
+                .iter()
+                .any(|definition| definition.name == "calculator")
+        );
     }
 
     #[test]

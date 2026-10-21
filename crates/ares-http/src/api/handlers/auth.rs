@@ -1,7 +1,7 @@
-use crate::types::{AppError, LoginRequest, RegisterRequest, TokenResponse};
 use crate::HttpError;
 use crate::Result;
-use axum::{extract::State, Json};
+use crate::types::{AppError, LoginRequest, RegisterRequest, TokenResponse};
+use axum::{Json, extract::State};
 use cordis::Context;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -317,9 +317,10 @@ mod tests {
     fn validate_register_input_rejects_empty_email() {
         let err = validate_register_input("", "longpassword").unwrap_err();
         assert!(matches!(err.0, AppError::InvalidInput(_)));
-        assert!(err
-            .to_string()
-            .contains("Email required and password must be at least 8 characters"));
+        assert!(
+            err.to_string()
+                .contains("Email required and password must be at least 8 characters")
+        );
     }
 
     #[test]
@@ -345,11 +346,13 @@ mod tests {
         assert!(validate_token_user_match("same-user", "same-user").is_ok());
     }
 
-    #[test]
-    fn validate_register_input_does_not_depend_on_env() {
-        let _env_guard = crate::api::handlers::admin::shared::lock_admin_env();
-        std::env::remove_var("DATABASE_URL");
-        std::env::remove_var("JWT_SECRET");
+    #[tokio::test]
+    async fn validate_register_input_does_not_depend_on_env() {
+        let _env_guard = crate::api::handlers::admin::shared::lock_admin_env().await;
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("JWT_SECRET") };
         assert!(validate_register_input("user@example.com", "password123").is_ok());
     }
 

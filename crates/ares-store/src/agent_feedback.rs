@@ -187,12 +187,12 @@ fn validate_feedback_type(feedback_type: &str) -> Result<()> {
 }
 
 fn validate_score(score: Option<f64>) -> Result<()> {
-    if let Some(score) = score {
-        if !(0.0..=1.0).contains(&score) || !score.is_finite() {
-            return Err(AppError::InvalidInput(
-                "score must be a finite value between 0.0 and 1.0".to_string(),
-            ));
-        }
+    if let Some(score) = score
+        && (!(0.0..=1.0).contains(&score) || !score.is_finite())
+    {
+        return Err(AppError::InvalidInput(
+            "score must be a finite value between 0.0 and 1.0".to_string(),
+        ));
     }
     Ok(())
 }

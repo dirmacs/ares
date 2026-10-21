@@ -3,15 +3,15 @@
 //! These tools bridge A.R.E.S. to external MCP servers, allowing tools to query
 //! context, gaps, and completeness from MCP-compatible servers.
 
-use crate::registry::{Tool, ToolRegistry};
 #[cfg(test)]
 use crate::ToolConfig;
+use crate::registry::{Tool, ToolRegistry};
 use ares_mcp::client::{McpClient, McpServerConfig};
 use ares_types::types::ToolDefinition;
 use ares_types::{AppError, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
@@ -873,10 +873,12 @@ mod tests {
         assert_eq!(tool.name(), "mcp_search_context");
         assert!(tool.description().contains("scope"));
         let schema = tool.parameters_schema();
-        assert!(schema["required"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("query")));
+        assert!(
+            schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("query"))
+        );
     }
 
     #[test]
@@ -912,15 +914,21 @@ mod tests {
 
     #[test]
     fn mcp_bridge_error_variants_display() {
-        assert!(McpBridgeError::mcp_server_error("down")
-            .to_string()
-            .contains("MCP server error"));
-        assert!(McpBridgeError::tool_not_found("x")
-            .to_string()
-            .contains("tool not found"));
-        assert!(McpBridgeError::invalid_params("bad")
-            .to_string()
-            .contains("invalid params"));
+        assert!(
+            McpBridgeError::mcp_server_error("down")
+                .to_string()
+                .contains("MCP server error")
+        );
+        assert!(
+            McpBridgeError::tool_not_found("x")
+                .to_string()
+                .contains("tool not found")
+        );
+        assert!(
+            McpBridgeError::invalid_params("bad")
+                .to_string()
+                .contains("invalid params")
+        );
     }
 
     #[test]

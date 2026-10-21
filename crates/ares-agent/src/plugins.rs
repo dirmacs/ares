@@ -111,35 +111,35 @@ fn factory_execute(
         ));
     }
 
-    let registry = if let Some(existing) = ctx.get::<AgentRegistry>() {
-        existing
-    } else {
-        let mut agents = parse_agents(config)?;
-        if agents.is_empty() {
-            if let Some(overlay_agents) = ctx.get::<OverlayAgentConfigs>() {
+    let registry = match ctx.get::<AgentRegistry>() {
+        Some(existing) => existing,
+        _ => {
+            let mut agents = parse_agents(config)?;
+            if agents.is_empty()
+                && let Some(overlay_agents) = ctx.get::<OverlayAgentConfigs>()
+            {
                 agents = overlay_agents.0.clone();
             }
+            let providers = match ctx.get::<ares_llm::Llm>() {
+                Some(llm) => llm.registry(),
+                None => Arc::new(ares_llm::ProviderRegistry::new()),
+            };
+            let registry = match ctx.get::<ToonAgentsHandle>() {
+                Some(toon) => Arc::new(AgentRegistry::with_dynamic_config(
+                    agents,
+                    providers,
+                    Arc::clone(&tools),
+                    Arc::clone(&toon.0),
+                )),
+                _ => Arc::new(AgentRegistry::from_config(
+                    agents,
+                    providers,
+                    Arc::clone(&tools),
+                )),
+            };
+            ctx.provide_arc(Arc::clone(&registry));
+            registry
         }
-        let providers = match ctx.get::<ares_llm::Llm>() {
-            Some(llm) => llm.registry(),
-            None => Arc::new(ares_llm::ProviderRegistry::new()),
-        };
-        let registry = if let Some(toon) = ctx.get::<ToonAgentsHandle>() {
-            Arc::new(AgentRegistry::with_dynamic_config(
-                agents,
-                providers,
-                Arc::clone(&tools),
-                Arc::clone(&toon.0),
-            ))
-        } else {
-            Arc::new(AgentRegistry::from_config(
-                agents,
-                providers,
-                Arc::clone(&tools),
-            ))
-        };
-        ctx.provide_arc(Arc::clone(&registry));
-        registry
     };
 
     if ctx.get::<crate::EmergencyStop>().is_none() {
@@ -147,17 +147,17 @@ fn factory_execute(
     }
 
     #[cfg(feature = "postgres")]
-    if ctx.get::<crate::skills::SkillEngine>().is_none() {
-        if let (Some(pg), Some(llm)) = (
+    if ctx.get::<crate::skills::SkillEngine>().is_none()
+        && let (Some(pg), Some(llm)) = (
             ctx.get::<ares_store::PostgresClient>(),
             ctx.get::<ares_llm::Llm>(),
-        ) {
-            ctx.provide_arc(Arc::new(crate::skills::SkillEngine::new(
-                pg.pool.clone(),
-                Arc::clone(&tools),
-                llm,
-            )));
-        }
+        )
+    {
+        ctx.provide_arc(Arc::new(crate::skills::SkillEngine::new(
+            pg.pool.clone(),
+            Arc::clone(&tools),
+            llm,
+        )));
     }
     let _ = tools;
 

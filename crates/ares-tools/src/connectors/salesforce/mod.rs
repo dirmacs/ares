@@ -1,13 +1,13 @@
 //! Salesforce connector tools.
 
 use crate::connectors::{
-    execute_with_retry, get_valid_access_token, require_tenant_id, ConnectorConfig, ConnectorError,
+    ConnectorConfig, ConnectorError, execute_with_retry, get_valid_access_token, require_tenant_id,
 };
 use crate::registry::Tool;
 use ares_store::MasterKey;
 use ares_types::types::{AppError, Result};
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgPool;
 
 // Salesforce token URL is instance-specific; we use the standard login URL.

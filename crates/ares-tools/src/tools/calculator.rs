@@ -3,7 +3,7 @@ use ares_types::Result;
 use async_trait::async_trait;
 use cordis::Service;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Calculator tool for basic arithmetic operations.
 pub struct Calculator;
@@ -237,8 +237,8 @@ mod tests {
 
     #[test]
     fn test_calculator_service_via_context() {
-        use crate::registry::ToolRegistry;
         use crate::Tools;
+        use crate::registry::ToolRegistry;
         use cordis::Context;
         use std::sync::Arc;
 
@@ -260,16 +260,18 @@ mod tests {
 
         let isolated = ctx.isolate::<Tools>("tenant:acme");
         assert!(resolved.resolve(&isolated, "calculator").is_some());
-        assert!(resolved
-            .list(&isolated)
-            .iter()
-            .any(|d| d.name == "calculator"));
+        assert!(
+            resolved
+                .list(&isolated)
+                .iter()
+                .any(|d| d.name == "calculator")
+        );
     }
 
     #[test]
     fn test_calculator_via_tools_list_resolve() {
-        use crate::registry::ToolRegistry;
         use crate::Tools;
+        use crate::registry::ToolRegistry;
         use cordis::Context;
         use std::sync::Arc;
 

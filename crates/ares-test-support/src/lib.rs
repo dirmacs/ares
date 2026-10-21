@@ -50,13 +50,13 @@ pub fn test_db_url() -> String {
     if let Ok(url) = std::env::var("TEST_DATABASE_URL") {
         return url;
     }
-    if let Ok(url) = std::env::var("DATABASE_URL") {
-        if url.starts_with("postgres") {
-            if url.contains("/ares") && !url.contains("ares_test") {
-                return url.replace("/ares", "/ares_test");
-            }
-            return url;
+    if let Ok(url) = std::env::var("DATABASE_URL")
+        && url.starts_with("postgres")
+    {
+        if url.contains("/ares") && !url.contains("ares_test") {
+            return url.replace("/ares", "/ares_test");
         }
+        return url;
     }
     let user = std::env::var("USER").unwrap_or_else(|_| "postgres".into());
     format!("postgres://{user}@%2Fvar%2Frun%2Fpostgresql/ares_test")
@@ -84,7 +84,7 @@ async fn truncate_all(pool: &sqlx::PgPool) {
     }
 }
 
-fn connect_or_panic(url: &str) -> impl Future<Output = sqlx::PgPool> {
+fn connect_or_panic(url: &str) -> impl Future<Output = sqlx::PgPool> + use<> {
     let url = url.to_string();
     async move {
         sqlx::postgres::PgPoolOptions::new()
@@ -174,14 +174,18 @@ mod tests {
         let _g = env_lock();
         let saved_test = std::env::var("TEST_DATABASE_URL").ok();
         let saved_db = std::env::var("DATABASE_URL").ok();
-        std::env::remove_var("TEST_DATABASE_URL");
-        std::env::remove_var("DATABASE_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("TEST_DATABASE_URL") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
         let url = test_db_url();
         if let Some(v) = saved_test {
-            std::env::set_var("TEST_DATABASE_URL", v);
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("TEST_DATABASE_URL", v) };
         }
         if let Some(v) = saved_db {
-            std::env::set_var("DATABASE_URL", v);
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("DATABASE_URL", v) };
         }
         assert!(
             url.contains("%2Fvar%2Frun%2Fpostgresql"),
@@ -199,14 +203,18 @@ mod tests {
         let _g = env_lock();
         let saved_test = std::env::var("TEST_DATABASE_URL").ok();
         let saved_db = std::env::var("DATABASE_URL").ok();
-        std::env::remove_var("TEST_DATABASE_URL");
-        std::env::set_var("DATABASE_URL", "./data/ares.db");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("TEST_DATABASE_URL") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("DATABASE_URL", "./data/ares.db") };
         let url = test_db_url();
         if let Some(v) = saved_test {
-            std::env::set_var("TEST_DATABASE_URL", v);
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("TEST_DATABASE_URL", v) };
         }
         if let Some(v) = saved_db {
-            std::env::set_var("DATABASE_URL", v);
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("DATABASE_URL", v) };
         }
         assert!(
             url.contains("%2Fvar%2Frun%2Fpostgresql"),
@@ -218,8 +226,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a live ares_test database"]
     async fn connects_via_socket_without_credentials() {
-        std::env::remove_var("TEST_DATABASE_URL");
-        std::env::remove_var("DATABASE_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("TEST_DATABASE_URL") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DATABASE_URL") };
         let pool = pool().await;
         let row: (i32,) = sqlx::query_as("SELECT 1").fetch_one(&pool).await.unwrap();
         assert_eq!(row.0, 1);

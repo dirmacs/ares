@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use ares_types::types::{Result, ToolDefinition};
 use cordis::{CordisError, EventsService, Service};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::registry::{Tool, ToolRegistry};
 
@@ -230,10 +230,10 @@ impl Tools {
     fn resolve_named(&self, name: &str, tenant: Option<&str>) -> Option<Arc<dyn Tool>> {
         #[cfg(any(feature = "postgres", test))]
         if let Some(rt) = &self.runtime {
-            if let Some(tid) = tenant {
-                if let Some(tool) = rt.get_for_tenant(name, Some(tid)) {
-                    return Some(tool);
-                }
+            if let Some(tid) = tenant
+                && let Some(tool) = rt.get_for_tenant(name, Some(tid))
+            {
+                return Some(tool);
             }
             if let Some(tool) = rt.get(name) {
                 return Some(tool);

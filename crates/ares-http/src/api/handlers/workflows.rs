@@ -14,8 +14,8 @@ use crate::{
 };
 use ares_agent::workflows::{WorkflowEngine, WorkflowOutput};
 use axum::{
-    extract::{Path, State},
     Json,
+    extract::{Path, State},
 };
 use uuid::Uuid;
 

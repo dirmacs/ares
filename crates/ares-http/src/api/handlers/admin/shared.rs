@@ -1,7 +1,7 @@
 use super::AdminActor;
-pub use crate::overlay::BillingConfig;
 use crate::HttpError;
 use crate::Result;
+pub use crate::overlay::BillingConfig;
 use ::cordis::Context;
 pub use ares_llm::ProviderConfig;
 pub use ares_store::agent_runs;
@@ -12,11 +12,11 @@ pub use ares_store::tenants::UsageSummary;
 pub use ares_types::models::{Tenant, TenantTier};
 pub use ares_types::types::AppError;
 pub use axum::{
+    Json,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     middleware::Next,
     response::Response,
-    Json,
 };
 pub use rust_decimal::prelude::ToPrimitive;
 pub use serde::{Deserialize, Serialize};
@@ -27,18 +27,23 @@ use std::sync::Arc;
 /// Serializes tests that mutate the process-global `ADMIN_API_KEY` and
 /// `JWT_SECRET` env vars. The guard must span every awaited request,
 /// because the admin middleware reads those variables mid-await.
+///
+/// A `tokio::sync::Mutex`, not a `std::sync::Mutex`: the guard is held
+/// across await points, and a std guard is neither `Send` nor allowed to
+/// cross an await. The tokio guard is `Send` and is meant to be held
+/// across awaits.
 #[cfg(test)]
-pub(crate) static ADMIN_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static ADMIN_ENV_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-/// Acquires [`ADMIN_ENV_LOCK`] and recovers from poisoning.
+/// Acquires [`ADMIN_ENV_LOCK`].
 ///
 /// One failing env test must not fail every later env test; each test
-/// sets or removes the variables it needs at the start.
+/// sets or removes the variables it needs at the start. A tokio mutex
+/// has no poisoning to recover from.
 #[cfg(test)]
-pub(crate) fn lock_admin_env() -> std::sync::MutexGuard<'static, ()> {
-    ADMIN_ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+pub(crate) async fn lock_admin_env() -> tokio::sync::MutexGuard<'static, ()> {
+    ADMIN_ENV_LOCK.lock().await
 }
 
 /// The pool an admin audit row is written through, or `None` when the context
@@ -563,10 +568,13 @@ mod tests {
 
     fn ensure_oauth_state_signing_key() {
         if std::env::var("FLEET_SECRETS_KEY").is_err() {
-            std::env::set_var(
-                "FLEET_SECRETS_KEY",
-                "test-master-key-for-oauth-state-signing-12345",
-            );
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            unsafe {
+                std::env::set_var(
+                    "FLEET_SECRETS_KEY",
+                    "test-master-key-for-oauth-state-signing-12345",
+                )
+            };
         }
     }
 
@@ -1648,7 +1656,8 @@ mod tests {
     #[test]
     fn runtime_provider_entry_headers_resolve_api_key_env() {
         let env_name = "ARES_TEST_RUNTIME_PROVIDER_API_KEY";
-        std::env::set_var(env_name, "resolved-test-key");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var(env_name, "resolved-test-key") };
         let headers = serde_json::json!({
             "api_key_env": env_name,
             "api-version": "2024-02-01"
@@ -1656,7 +1665,8 @@ mod tests {
 
         let (headers, api_key) = runtime_provider_entry_headers_and_key(Some(&headers));
 
-        std::env::remove_var(env_name);
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var(env_name) };
         assert_eq!(api_key.as_deref(), Some("resolved-test-key"));
         assert_eq!(
             headers.get("api-version").map(String::as_str),
@@ -1816,7 +1826,7 @@ pub fn emergency_stop_status(active: bool) -> EmergencyStopStatus {
 // =============================================================================
 
 pub use ares_store::fleet_provider_secrets as fps;
-pub use ares_store::{decrypt_api_key, last_n_visible, MasterKey};
+pub use ares_store::{MasterKey, decrypt_api_key, last_n_visible};
 
 /// ]
 /// ```
@@ -1922,8 +1932,8 @@ pub fn resolve_env_key(pc: &ProviderConfig) -> Option<String> {
 // =============================================================================
 
 pub use ares_store::runtime_tools::{
-    validate_runtime_tool_update_scope_preflight, CreateRuntimeToolRequest, RuntimeToolStore,
-    UpdateRuntimeToolRequest,
+    CreateRuntimeToolRequest, RuntimeToolStore, UpdateRuntimeToolRequest,
+    validate_runtime_tool_update_scope_preflight,
 };
 
 pub fn validate_runtime_tool_execution_config(
@@ -2009,13 +2019,13 @@ pub fn redact_runtime_provider_headers(
     headers: Option<serde_json::Value>,
 ) -> Option<serde_json::Value> {
     let mut headers = headers?;
-    if let Some(object) = headers.as_object_mut() {
-        if object.contains_key("api_key") {
-            object.insert(
-                "api_key".to_string(),
-                serde_json::Value::String(RUNTIME_PROVIDER_SECRET_REDACTION.to_string()),
-            );
-        }
+    if let Some(object) = headers.as_object_mut()
+        && object.contains_key("api_key")
+    {
+        object.insert(
+            "api_key".to_string(),
+            serde_json::Value::String(RUNTIME_PROVIDER_SECRET_REDACTION.to_string()),
+        );
     }
     Some(headers)
 }
@@ -2724,7 +2734,7 @@ pub fn decode_oauth_state_payload(value: &str) -> Result<OAuthState> {
             _ => {
                 return Err(HttpError::from(AppError::InvalidInput(
                     "malformed OAuth state".to_string(),
-                )))
+                )));
             }
         }
     }
@@ -2889,7 +2899,7 @@ pub async fn receive_webhook(
     Json(payload): Json<serde_json::Value>,
 ) -> std::result::Result<Json<serde_json::Value>, crate::api::handlers::document_upload::WebhookError>
 {
-    use crate::api::handlers::document_upload::{authenticate_webhook, Forbidden, WebhookError};
+    use crate::api::handlers::document_upload::{Forbidden, WebhookError, authenticate_webhook};
 
     let tenant_id = authenticate_webhook(&ctx, &headers).await?;
     let __pool_5 = ctx

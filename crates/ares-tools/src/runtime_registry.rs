@@ -119,7 +119,7 @@ impl RuntimeMcpTool {
                 return Err(AppError::Configuration(format!(
                     "Invalid MCP method: {}",
                     cfg.method
-                )))
+                )));
             }
         };
 
@@ -520,10 +520,11 @@ impl RuntimeToolRegistry {
             return None;
         }
 
-        if let Some(tid) = tenant_id {
-            if !row.is_public && row.tenant_id.as_deref() != Some(tid) {
-                return None;
-            }
+        if let Some(tid) = tenant_id
+            && !row.is_public
+            && row.tenant_id.as_deref() != Some(tid)
+        {
+            return None;
         }
 
         Some(Arc::clone(tool))
@@ -554,10 +555,11 @@ impl RuntimeToolRegistry {
         if !row.enabled {
             return None;
         }
-        if let Some(tid) = tenant_id {
-            if !row.is_public && row.tenant_id.as_deref() != Some(tid) {
-                return None;
-            }
+        if let Some(tid) = tenant_id
+            && !row.is_public
+            && row.tenant_id.as_deref() != Some(tid)
+        {
+            return None;
         }
         Some(row.tool_type)
     }
@@ -598,10 +600,11 @@ impl RuntimeToolRegistry {
                 if !row.enabled {
                     return None;
                 }
-                if let Some(tid) = tenant_id {
-                    if !row.is_public && row.tenant_id.as_deref() != Some(tid) {
-                        return None;
-                    }
+                if let Some(tid) = tenant_id
+                    && !row.is_public
+                    && row.tenant_id.as_deref() != Some(tid)
+                {
+                    return None;
                 }
                 Some(ToolDefinition {
                     name: tool.name().to_string(),

@@ -32,8 +32,8 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::RwLock;
 
@@ -502,12 +502,11 @@ impl LoggerService {
         if let Some(pinned) = self.levels.read().get(name) {
             level = *pinned;
         }
-        if let Some(intercept) = ctx.get_relaxed::<LoggerIntercept>() {
-            if intercept.matches(name) {
-                if let Some(forced) = intercept.level {
-                    level = forced;
-                }
-            }
+        if let Some(intercept) = ctx.get_relaxed::<LoggerIntercept>()
+            && intercept.matches(name)
+            && let Some(forced) = intercept.level
+        {
+            level = forced;
         }
         level
     }
@@ -719,8 +718,8 @@ impl Context {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicBool;
     use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
 
     struct CountingExporter {
         seen: Mutex<Vec<String>>,

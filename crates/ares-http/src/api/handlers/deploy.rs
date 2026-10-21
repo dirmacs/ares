@@ -1,11 +1,11 @@
-use crate::api::handlers::admin::{audit_pool, AdminActor};
 use crate::HttpError;
 use crate::Result;
+use crate::api::handlers::admin::{AdminActor, audit_pool};
 use ares_store::audit_log;
 use ares_types::types::AppError;
 use axum::{
-    extract::{Path, State},
     Json,
+    extract::{Path, State},
 };
 use cordis::Context;
 use serde::{Deserialize, Serialize};
@@ -350,13 +350,15 @@ mod tests {
 
     #[test]
     fn deploy_script_defaults_without_env() {
-        std::env::remove_var("DEPLOY_SCRIPT");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DEPLOY_SCRIPT") };
         assert_eq!(deploy_script(), "./scripts/deploy.sh");
     }
 
     #[test]
     fn health_script_defaults_without_env() {
-        std::env::remove_var("HEALTH_SCRIPT");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("HEALTH_SCRIPT") };
         assert_eq!(health_script(), "./scripts/health.sh");
     }
 
@@ -370,14 +372,14 @@ mod tests {
             ModelConfig, ProviderConfig, RagConfig,
         };
         use crate::{AresConfigManager, DynamicConfigManager};
-        use ares_agent::context_provider::NoOpContextProvider;
         use ares_agent::AgentRegistry;
+        use ares_agent::context_provider::NoOpContextProvider;
         use ares_llm::ProviderRegistry;
         use ares_store::{PostgresClient, TenantDb};
         use cordis::Context;
         use std::collections::HashMap;
-        use std::sync::atomic::AtomicBool;
         use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
 
         fn minimal_config() -> AresConfig {
             let mut providers = HashMap::new();
@@ -518,7 +520,8 @@ mod tests {
                 "#!/bin/sh\necho deployed\nexit 0\n",
             );
             let previous_deploy_script = std::env::var("DEPLOY_SCRIPT").ok();
-            std::env::set_var("DEPLOY_SCRIPT", &script);
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("DEPLOY_SCRIPT", &script) };
 
             let registry = new_deploy_registry();
             let state = test_app_state(registry.clone());
@@ -542,8 +545,10 @@ mod tests {
             assert!(deploy.finished_at.is_some());
 
             match previous_deploy_script {
-                Some(prev) => std::env::set_var("DEPLOY_SCRIPT", prev),
-                None => std::env::remove_var("DEPLOY_SCRIPT"),
+                // FIXME: Audit that the environment access only happens in single-threaded code.
+                Some(prev) => unsafe { std::env::set_var("DEPLOY_SCRIPT", prev) },
+                // FIXME: Audit that the environment access only happens in single-threaded code.
+                None => unsafe { std::env::remove_var("DEPLOY_SCRIPT") },
             }
         }
 
@@ -610,11 +615,14 @@ mod tests {
                 "#!/bin/sh\necho '{\"ares\":{\"status\":\"active\",\"pid\":\"123\",\"port\":3000}}'\n",
             );
             let previous_health_script = std::env::var("HEALTH_SCRIPT").ok();
-            std::env::set_var("HEALTH_SCRIPT", &script);
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("HEALTH_SCRIPT", &script) };
             let result = get_services_health().await;
             match previous_health_script {
-                Some(prev) => std::env::set_var("HEALTH_SCRIPT", prev),
-                None => std::env::remove_var("HEALTH_SCRIPT"),
+                // FIXME: Audit that the environment access only happens in single-threaded code.
+                Some(prev) => unsafe { std::env::set_var("HEALTH_SCRIPT", prev) },
+                // FIXME: Audit that the environment access only happens in single-threaded code.
+                None => unsafe { std::env::remove_var("HEALTH_SCRIPT") },
             }
             let result = result.expect("health");
             let ares = result.0.get("ares").expect("ares service");

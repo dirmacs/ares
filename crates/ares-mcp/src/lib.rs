@@ -35,15 +35,15 @@ pub mod client;
 pub mod registry;
 
 #[cfg(all(feature = "mcp", feature = "postgres"))]
-pub use server::{start_mcp_server, AgentRunner};
+pub use server::{AgentRunner, start_mcp_server};
 
 #[cfg(feature = "mcp")]
 pub use extension::{McpToolExtension, NoOpMcpExtension};
 
 #[cfg(feature = "mcp")]
 pub use registry::{
-    builtin_ares_tools, extension_dispatch, get_tool, list_tools, register_tool, McpRegistry,
-    RegistryError, ToolRegistered, ToolRegistry, ToolUnregistered,
+    McpRegistry, RegistryError, ToolRegistered, ToolRegistry, ToolUnregistered, builtin_ares_tools,
+    extension_dispatch, get_tool, list_tools, register_tool,
 };
 
 /// Cordis Service for MCP availability — runtime check replaces `#[cfg(feature = "mcp")]` in handlers.

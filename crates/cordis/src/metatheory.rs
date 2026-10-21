@@ -70,8 +70,8 @@
 //!    well-defined.
 
 use std::any::TypeId;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
 
@@ -665,7 +665,7 @@ async fn run_order_b() -> Result<(String, Arc<MtPair>), String> {
         other => {
             return Err(format!(
                 "B: consumer should be Inactive pre-providers: {other:?}"
-            ))
+            ));
         }
     }
     rb.register(&cb, MtP1Plugin, ())
@@ -677,7 +677,7 @@ async fn run_order_b() -> Result<(String, Arc<MtPair>), String> {
         other => {
             return Err(format!(
                 "B: consumer should stay Inactive with one provider: {other:?}"
-            ))
+            ));
         }
     }
     rb.register(&cb, MtP2Plugin, ())
@@ -689,7 +689,7 @@ async fn run_order_b() -> Result<(String, Arc<MtPair>), String> {
         other => {
             return Err(format!(
                 "B: consumer not Active after both providers: {other:?}"
-            ))
+            ));
         }
     }
     let epoch_b = fib_b.epoch();
@@ -765,7 +765,7 @@ async fn raw_fiber_tracks_missing_dependency(ctx: &Arc<Context>) -> Result<Arc<F
         other => {
             return Err(format!(
                 "fresh raw fiber should be Inactive{{error:None}}: {other:?}"
-            ))
+            ));
         }
     }
     raw.refresh(ctx).await;
@@ -774,7 +774,7 @@ async fn raw_fiber_tracks_missing_dependency(ctx: &Arc<Context>) -> Result<Arc<F
         other => {
             return Err(format!(
                 "refreshed raw fiber should report the missing dep: {other:?}"
-            ))
+            ));
         }
     }
     Ok(raw)
@@ -814,7 +814,7 @@ async fn provider_lifecycle_drives_dependent(
         other => {
             return Err(format!(
                 "dependent should survive provider swap Active: {other:?}"
-            ))
+            ));
         }
     }
     let d2 = ctx
@@ -834,7 +834,9 @@ async fn provider_lifecycle_drives_dependent(
     let err = match ctx.remove::<MtProv>() {
         Err(e) => e,
         Ok(_) => {
-            return Err("guarded withdrawal must refuse removal of a consumed provider".to_string())
+            return Err(
+                "guarded withdrawal must refuse removal of a consumed provider".to_string(),
+            );
         }
     };
     if !err.to_string().contains("guarded withdrawal") {
@@ -860,7 +862,7 @@ async fn provider_lifecycle_drives_dependent(
         other => {
             return Err(format!(
                 "raw fiber must deactivate after provider removal: {other:?}"
-            ))
+            ));
         }
     }
     Ok(())
@@ -903,7 +905,7 @@ fn failed_factory_stays_inspectable(
         other => {
             return Err(format!(
                 "dependent must rest Inactive while its key has no live provider: {other:?}"
-            ))
+            ));
         }
     }
     Ok(fail_fid)
@@ -962,7 +964,7 @@ fn late_dependent_folds_satisfied_declaration(
             return Err(format!(
                 "healthy dependent over a present provider must register Active \
                  with an inject-less epoch: {other:?}"
-            ))
+            ));
         }
     }
     late.declare_inject::<MtProv>();
@@ -971,7 +973,7 @@ fn late_dependent_folds_satisfied_declaration(
         other => {
             return Err(format!(
                 "satisfied declaration must keep the fiber Active eagerly: {other:?}"
-            ))
+            ));
         }
     }
     if !late.epoch().contains("MtProv") {
@@ -1021,7 +1023,7 @@ fn declaration_reconciliation_legs(ctx: &Arc<Context>, revived: &Arc<Fiber>) -> 
         other => {
             return Err(format!(
                 "unsatisfied declaration must deactivate the fiber eagerly: {other:?}"
-            ))
+            ));
         }
     }
     // The provider withdrawal succeeded because the consumer had already

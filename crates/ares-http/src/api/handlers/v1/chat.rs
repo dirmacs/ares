@@ -16,9 +16,9 @@ use ares_types::types::{
     AgentContext, AgentType, AppError, ChatRequest, ChatResponse, ResearchRequest, ResearchResponse,
 };
 use axum::{
+    Json,
     extract::{Extension, State},
     response::Response,
-    Json,
 };
 
 /// POST /v1/chat — tenant-scoped chat (API key auth, no conversation history)

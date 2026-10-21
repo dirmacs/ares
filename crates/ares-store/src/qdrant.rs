@@ -217,12 +217,12 @@ use ares_types::types::SearchResult;
 use async_trait::async_trait;
 #[cfg(feature = "qdrant")]
 use qdrant_client::{
-    qdrant::{
-        condition::ConditionOneOf, r#match::MatchValue, Condition, CreateCollectionBuilder,
-        DeletePointsBuilder, Distance, FieldCondition, Filter, Match, PointId, PointStruct,
-        SearchPointsBuilder, UpsertPointsBuilder, VectorParamsBuilder,
-    },
     Qdrant,
+    qdrant::{
+        Condition, CreateCollectionBuilder, DeletePointsBuilder, Distance, FieldCondition, Filter,
+        Match, PointId, PointStruct, SearchPointsBuilder, UpsertPointsBuilder, VectorParamsBuilder,
+        condition::ConditionOneOf, r#match::MatchValue,
+    },
 };
 
 /// Qdrant vector store implementation.
@@ -620,7 +620,7 @@ impl VectorStore for QdrantVectorStore {
     }
 
     async fn get(&self, collection: &str, id: &str) -> Result<Option<Document>> {
-        use qdrant_client::qdrant::{point_id::PointIdOptions, GetPointsBuilder, PointId};
+        use qdrant_client::qdrant::{GetPointsBuilder, PointId, point_id::PointIdOptions};
 
         // Try to parse the ID as a numeric ID first, otherwise use UUID
         let point_id = if let Ok(num) = id.parse::<u64>() {
@@ -786,7 +786,8 @@ mod tests {
 
     #[test]
     fn resolve_qdrant_url_prefers_explicit_override() {
-        std::env::remove_var("QDRANT_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("QDRANT_URL") };
         assert_eq!(
             resolve_qdrant_url(Some("http://override:6334")),
             "http://override:6334"
@@ -795,7 +796,8 @@ mod tests {
 
     #[test]
     fn resolve_qdrant_url_trims_override() {
-        std::env::remove_var("QDRANT_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("QDRANT_URL") };
         assert_eq!(
             resolve_qdrant_url(Some("  http://trimmed:6334  ")),
             "http://trimmed:6334"
@@ -804,19 +806,22 @@ mod tests {
 
     #[test]
     fn resolve_qdrant_url_falls_back_to_default_when_env_missing() {
-        std::env::remove_var("QDRANT_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("QDRANT_URL") };
         assert_eq!(resolve_qdrant_url(None), default_qdrant_url());
     }
 
     #[test]
     fn resolve_qdrant_url_ignores_blank_override() {
-        std::env::remove_var("QDRANT_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("QDRANT_URL") };
         assert_eq!(resolve_qdrant_url(Some("   ")), default_qdrant_url());
     }
 
     #[test]
     fn resolve_qdrant_api_key_prefers_override() {
-        std::env::remove_var("QDRANT_API_KEY");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("QDRANT_API_KEY") };
         assert_eq!(
             resolve_qdrant_api_key(Some("override-key")),
             Some("override-key".to_string())
@@ -825,7 +830,8 @@ mod tests {
 
     #[test]
     fn resolve_qdrant_api_key_ignores_blank_override() {
-        std::env::remove_var("QDRANT_API_KEY");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("QDRANT_API_KEY") };
         assert_eq!(resolve_qdrant_api_key(Some("   ")), None);
     }
 

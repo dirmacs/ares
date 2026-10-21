@@ -10,29 +10,29 @@
 //! rotate old-401/new-200, admin revoke 404 plus audit.
 
 use axum::{
-    routing::{get, post},
     Json, Router,
+    routing::{get, post},
 };
 use axum_test::TestServer;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
 use ares_agent::AgentRegistry;
 use ares_http::{
+    AresConfigManager, DynamicConfigManager,
     auth::jwt::AuthService,
     config::{AuthConfig as TomlAuthConfig, ServerConfig as TomlServerConfig},
     overlay::{
         AgentConfig, AresConfig, BillingConfig, DatabaseConfig as TomlDatabaseConfig,
         DynamicConfigPaths, ModelConfig, ProviderConfig, RagConfig,
     },
-    AresConfigManager, DynamicConfigManager,
 };
 use ares_llm::{ConfigBasedLLMFactory, ProviderRegistry};
 use ares_store::{
-    tenant_agents::{create_tenant_agent, CreateTenantAgentRequest},
     TenantDb,
+    tenant_agents::{CreateTenantAgentRequest, create_tenant_agent},
 };
 use ares_tools::Tools;
 use ares_types::models::TenantTier;
@@ -554,7 +554,8 @@ async fn admin_revoke_404_plus_audit() {
         .await
         .expect("create key");
 
-    std::env::set_var("ADMIN_API_KEY", "test-admin-secret-scopes");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("ADMIN_API_KEY", "test-admin-secret-scopes") };
     let admin_header = ("x-admin-secret", "test-admin-secret-scopes");
 
     // Unknown id is 404.

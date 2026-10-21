@@ -2,12 +2,12 @@ use parking_lot::{Mutex, RwLock};
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::EventId;
 use crate::effect::Disposable;
 use crate::service::{CordisError, Service};
-use crate::EventId;
 
 /// Collected failures from one parallel event dispatch.
 ///

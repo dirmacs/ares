@@ -10,8 +10,8 @@ use crate::Result;
 use ares_store::audit_log;
 use ares_types::types::AppError;
 use axum::{
-    extract::{Path, State},
     Json,
+    extract::{Path, State},
 };
 use sha2::Digest;
 
@@ -220,10 +220,10 @@ pub async fn test_runtime_tool(
     let start = std::time::Instant::now();
 
     let tools = ctx.get::<ares_tools::Tools>().expect("Tools not provided");
-    if tools.resolve(&ctx, &tool.name).is_none() {
-        if let Err(e) = tools.reload().await {
-            tracing::warn!("Failed to reload runtime tools before test: {}", e);
-        }
+    if tools.resolve(&ctx, &tool.name).is_none()
+        && let Err(e) = tools.reload().await
+    {
+        tracing::warn!("Failed to reload runtime tools before test: {}", e);
     }
 
     let result = match tools.resolve(&ctx, &tool.name) {

@@ -7,15 +7,15 @@ use std::sync::Arc;
 
 use crate::HttpError;
 use crate::Result;
-use ares_agent::tenant_agent;
 use ares_agent::Agent;
+use ares_agent::tenant_agent;
 use ares_store::agent_runs;
 use ares_store::run_history::{LogToolCallRequest, RunHistoryStore};
 use ares_types::models::TenantContext;
 use ares_types::types::ToolDefinition;
 use axum::{
-    extract::{Extension, Path, Query, State},
     Json,
+    extract::{Extension, Path, Query, State},
 };
 use chrono::{TimeZone, Utc};
 

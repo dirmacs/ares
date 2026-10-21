@@ -9,8 +9,8 @@
 
 use std::sync::Arc;
 
-use axum::routing::get;
 use axum::Router;
+use axum::routing::get;
 use cordis::{Context, CordisError, Plugin, PluginRegistry, Service};
 
 pub mod config;
@@ -32,6 +32,7 @@ pub mod active_runs;
 #[cfg(feature = "postgres")]
 pub mod observability;
 
+pub use ares_agent::EmergencyStop;
 #[cfg(feature = "postgres")]
 pub use ares_agent::skills as skill_engine;
 #[cfg(any(feature = "postgres", feature = "skills"))]
@@ -40,13 +41,12 @@ pub use ares_agent::skills;
 pub use ares_agent::trigger as trigger_engine;
 #[cfg(feature = "postgres")]
 pub use ares_agent::workflows;
-pub use ares_agent::EmergencyStop;
 
 pub use ares_llm::ConfigBasedLLMFactory;
 pub use ares_rag as rag;
 pub use ares_types::{models, types};
 pub use config::{AuthConfig, ServerConfig};
-pub use error::{app_error_into_response, HttpError};
+pub use error::{HttpError, app_error_into_response};
 pub use overlay::{
     AresConfig, AresConfigManager, ConfigError, Overlay, OverlayConfig, OverlayPlugin,
 };
@@ -183,8 +183,9 @@ fn factory_auth(
     // `None` means the HMAC secret is absent or empty: HS256 is then disabled
     // and only asymmetric JWKS tokens verify. A present-but-short secret stays
     // a configuration error.
-    let (jwt_secret, env_name, access_expiry, refresh_expiry) =
-        if let Some(mgr) = ctx.get::<AresConfigManager>() {
+    let (jwt_secret, env_name, access_expiry, refresh_expiry) = match ctx.get::<AresConfigManager>()
+    {
+        Some(mgr) => {
             let cfg = mgr.config();
             let secret = cfg.jwt_secret().map_err(|e| {
                 CordisError::Configuration(format!("invalid JWT secret configuration: {e}"))
@@ -195,7 +196,8 @@ fn factory_auth(
                 cfg.auth.jwt_access_expiry,
                 cfg.auth.jwt_refresh_expiry,
             )
-        } else {
+        }
+        _ => {
             let auth_cfg: AuthConfig =
                 if config.is_null() || config.as_object().is_some_and(|o| o.is_empty()) {
                     AuthConfig::default()
@@ -224,7 +226,8 @@ fn factory_auth(
                 auth_cfg.jwt_access_expiry,
                 auth_cfg.jwt_refresh_expiry,
             )
-        };
+        }
+    };
     let auth = match jwt_secret {
         Some(secret) => AuthService::new(secret, access_expiry, refresh_expiry),
         None => {
@@ -247,10 +250,9 @@ fn factory_http(
 ) -> std::result::Result<cordis::FiberId, CordisError> {
     let server_cfg: ServerConfig =
         if config.is_null() || config.as_object().is_some_and(|o| o.is_empty()) {
-            if let Some(mgr) = ctx.get::<AresConfigManager>() {
-                mgr.config().server.clone()
-            } else {
-                ServerConfig::default()
+            match ctx.get::<AresConfigManager>() {
+                Some(mgr) => mgr.config().server.clone(),
+                _ => ServerConfig::default(),
             }
         } else {
             serde_json::from_value(config.clone())

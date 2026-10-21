@@ -364,7 +364,7 @@ mod tests {
     #[cfg(feature = "mcp")]
     mod serde_tests {
         use super::*;
-        use serde_json::{json, Value};
+        use serde_json::{Value, json};
 
         #[derive(Debug, PartialEq, Serialize, Deserialize)]
         struct UsageRecord {

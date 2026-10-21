@@ -4,10 +4,10 @@
 //! is in the past, runs them, and updates `last_run_at` / `next_run_at`.
 
 use crate::execution::Execute;
+use ares_store::PostgresClient;
 use ares_store::agent_runs::{self, AgentRunMetadata};
 use ares_store::run_history::{redact_agent_run_error, tenant_no_retain};
-use ares_store::schedules::{compute_next_run, AgentSchedule, MissedRunAudit, ScheduleStore};
-use ares_store::PostgresClient;
+use ares_store::schedules::{AgentSchedule, MissedRunAudit, ScheduleStore, compute_next_run};
 use chrono::{DateTime, Utc};
 use cordis::{Context, Disposable, ReflectService, Service};
 use cron::Schedule;
@@ -15,8 +15,8 @@ use sqlx::PgPool;
 use std::any::TypeId;
 use std::collections::HashSet;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -532,10 +532,10 @@ impl Service for SchedulerService {
                         // connection lost — wait and retry
                         tokio::time::sleep(Duration::from_secs(5)).await;
                         // try reconnect
-                        if let Ok(mut nl) = PgListener::connect_with(&pool).await {
-                            if nl.listen("scheduler_refresh").await.is_ok() {
-                                listener = nl;
-                            }
+                        if let Ok(mut nl) = PgListener::connect_with(&pool).await
+                            && nl.listen("scheduler_refresh").await.is_ok()
+                        {
+                            listener = nl;
                         }
                     }
                 }
@@ -654,10 +654,10 @@ pub fn next_run_at(cron: &str) -> DateTime<Utc> {
         }
     }
     // Fallback via compute_next_run (which already does normalization + timezone)
-    if let Ok(ts) = compute_next_run(trimmed, "UTC") {
-        if let Some(dt) = DateTime::from_timestamp(ts, 0) {
-            return dt;
-        }
+    if let Ok(ts) = compute_next_run(trimmed, "UTC")
+        && let Some(dt) = DateTime::from_timestamp(ts, 0)
+    {
+        return dt;
     }
     Utc::now() + chrono::Duration::seconds(60)
 }
@@ -781,10 +781,10 @@ async fn run_catchup_schedules(
 
     for sched in overdue {
         // Already caught up since last_run_at >= next_run_at? Skip.
-        if let (Some(last), Some(next)) = (sched.last_run_at, sched.next_run_at) {
-            if last >= next {
-                continue;
-            }
+        if let (Some(last), Some(next)) = (sched.last_run_at, sched.next_run_at)
+            && last >= next
+        {
+            continue;
         }
 
         let expected_at = sched.next_run_at.unwrap_or(now);
@@ -888,11 +888,7 @@ fn catchup_audit_action_failed() -> &'static str {
 }
 
 fn scheduled_usage_source(is_catchup: bool) -> &'static str {
-    if is_catchup {
-        "catchup"
-    } else {
-        "scheduled"
-    }
+    if is_catchup { "catchup" } else { "scheduled" }
 }
 
 /// Scope a request context to one tenant so Execute

@@ -412,13 +412,13 @@ impl AresConfig {
                 ));
             }
 
-            if let Some(fallback) = &workflow_config.fallback_agent {
-                if !self.agents.contains_key(fallback) {
-                    return Err(ConfigError::MissingAgent(
-                        fallback.clone(),
-                        workflow_name.clone(),
-                    ));
-                }
+            if let Some(fallback) = &workflow_config.fallback_agent
+                && !self.agents.contains_key(fallback)
+            {
+                return Err(ConfigError::MissingAgent(
+                    fallback.clone(),
+                    workflow_name.clone(),
+                ));
             }
         }
         Ok(())
@@ -464,13 +464,13 @@ impl AresConfig {
                 current = None;
 
                 // For now, we just check that fallback_agent doesn't equal entry_agent
-                if let Some(ref fallback) = workflow_config.fallback_agent {
-                    if fallback == &workflow_config.entry_agent {
-                        return Err(ConfigError::CircularReference(format!(
-                            "Workflow '{}' has entry_agent '{}' that equals fallback_agent",
-                            workflow_name, workflow_config.entry_agent
-                        )));
-                    }
+                if let Some(ref fallback) = workflow_config.fallback_agent
+                    && fallback == &workflow_config.entry_agent
+                {
+                    return Err(ConfigError::CircularReference(format!(
+                        "Workflow '{}' has entry_agent '{}' that equals fallback_agent",
+                        workflow_name, workflow_config.entry_agent
+                    )));
                 }
             }
         }
@@ -1082,10 +1082,12 @@ max_iterations = 5
         assert!(config.providers.contains_key("ollama-local"));
         assert!(config.models.contains_key("default"));
         assert!(config.agents.contains_key("router"));
-        assert!(config
-            .billing
-            .pricing_for(" OLLAMA-LOCAL ", "ministral-3:3b")
-            .is_some());
+        assert!(
+            config
+                .billing
+                .pricing_for(" OLLAMA-LOCAL ", "ministral-3:3b")
+                .is_some()
+        );
     }
 
     #[test]
@@ -1367,11 +1369,13 @@ api_key_env = "TEST_API_KEY"
             "empty Tools config should receive ares.toml tools map"
         );
         assert_eq!(tree.0[4].config["calculator"]["enabled"], false);
-        assert!(tree.0[5]
-            .config
-            .get("providers")
-            .and_then(|v| v.get("ollama-local"))
-            .is_some());
+        assert!(
+            tree.0[5]
+                .config
+                .get("providers")
+                .and_then(|v| v.get("ollama-local"))
+                .is_some()
+        );
         assert!(tree.0[6].config.get("router").is_some());
         assert_eq!(tree.0[7].config["jwt_secret_env"], "TEST_JWT_SECRET");
     }
@@ -1457,9 +1461,11 @@ model = "default"
         let config: AresConfig = toml::from_str(content).unwrap();
         let warnings = config.validate_with_warnings().unwrap();
 
-        assert!(warnings
-            .iter()
-            .any(|w| w.kind == ConfigWarningKind::UnusedProvider && w.message.contains("unused")));
+        assert!(
+            warnings.iter().any(
+                |w| w.kind == ConfigWarningKind::UnusedProvider && w.message.contains("unused")
+            )
+        );
     }
 
     #[test]
@@ -1494,9 +1500,11 @@ model = "used"
         let config: AresConfig = toml::from_str(content).unwrap();
         let warnings = config.validate_with_warnings().unwrap();
 
-        assert!(warnings
-            .iter()
-            .any(|w| w.kind == ConfigWarningKind::UnusedModel && w.message.contains("unused")));
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.kind == ConfigWarningKind::UnusedModel && w.message.contains("unused"))
+        );
     }
 
     #[test]
@@ -1533,9 +1541,12 @@ tools = ["used_tool"]
         let config: AresConfig = toml::from_str(content).unwrap();
         let warnings = config.validate_with_warnings().unwrap();
 
-        assert!(warnings
-            .iter()
-            .any(|w| w.kind == ConfigWarningKind::UnusedTool && w.message.contains("unused_tool")));
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.kind == ConfigWarningKind::UnusedTool
+                    && w.message.contains("unused_tool"))
+        );
     }
 
     #[test]
@@ -2964,9 +2975,11 @@ entry_agent = "a1"
         assert!(config.validate().is_ok());
         // m2 model is unused (only a1 referenced in workflow), should warn
         let warnings = config.validate_with_warnings().unwrap();
-        assert!(warnings
-            .iter()
-            .any(|w| w.kind == ConfigWarningKind::UnusedModel && w.message.contains("m2")));
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.kind == ConfigWarningKind::UnusedModel && w.message.contains("m2"))
+        );
     }
 
     // ---- ToolConfig with extra (flatten) fields from TOML ----

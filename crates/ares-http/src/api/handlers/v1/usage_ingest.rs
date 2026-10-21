@@ -25,10 +25,10 @@ use std::sync::Arc;
 use ares_store::tenant_agents;
 use ares_types::models::TenantContext;
 use axum::{
-    extract::{Extension, State},
-    http::{header::CONTENT_LENGTH, HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
     Json,
+    extract::{Extension, State},
+    http::{HeaderMap, StatusCode, header::CONTENT_LENGTH},
+    response::{IntoResponse, Response},
 };
 use cordis::Context;
 use serde::{Deserialize, Serialize};
@@ -129,10 +129,10 @@ fn validate_event(ev: &UsageIngestEvent, now: i64) -> Result<(), String> {
         return Err(format!("latency_ms must be 0..={MAX_LATENCY_MS}"));
     }
     check_len(&ev.request_id, "request_id", MAX_ID_CHARS, false)?;
-    if let Some(ts) = ev.occurred_at {
-        if ts < now - OCCURRED_MAX_AGE_SECS || ts > now + OCCURRED_FUTURE_SKEW_SECS {
-            return Err("occurred_at is outside the accepted window".to_string());
-        }
+    if let Some(ts) = ev.occurred_at
+        && (ts < now - OCCURRED_MAX_AGE_SECS || ts > now + OCCURRED_FUTURE_SKEW_SECS)
+    {
+        return Err("occurred_at is outside the accepted window".to_string());
     }
     Ok(())
 }
@@ -149,17 +149,16 @@ pub async fn ingest_usage_events(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok())
         .map(|len| len > MAX_BODY_BYTES)
+        && too_big
     {
-        if too_big {
-            return (
-                StatusCode::PAYLOAD_TOO_LARGE,
-                Json(json!({
-                    "error": format!("body exceeds {MAX_BODY_BYTES} bytes"),
-                    "code": "PAYLOAD_TOO_LARGE",
-                })),
-            )
-                .into_response();
-        }
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(json!({
+                "error": format!("body exceeds {MAX_BODY_BYTES} bytes"),
+                "code": "PAYLOAD_TOO_LARGE",
+            })),
+        )
+            .into_response();
     }
 
     let tc = match super::shared::extract_tenant(ctx) {

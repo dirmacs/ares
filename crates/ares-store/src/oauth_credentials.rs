@@ -6,7 +6,7 @@
 //! The store handles encryption/decryption internally; callers work with
 //! plaintext strings in requests and `EncryptedPayload` structs in responses.
 
-use crate::fleet_secrets::{encrypt_api_key, EncryptedPayload, MasterKey};
+use crate::fleet_secrets::{EncryptedPayload, MasterKey, encrypt_api_key};
 use ares_types::types::{AppError, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
@@ -389,10 +389,13 @@ mod tests {
 
     fn ensure_master_key() {
         if std::env::var("FLEET_SECRETS_KEY").is_err() {
-            std::env::set_var(
-                "FLEET_SECRETS_KEY",
-                "test-master-key-for-oauth-credentials-12345",
-            );
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            unsafe {
+                std::env::set_var(
+                    "FLEET_SECRETS_KEY",
+                    "test-master-key-for-oauth-credentials-12345",
+                )
+            };
         }
     }
 
@@ -547,7 +550,8 @@ mod tests {
 
         // Temporarily remove the key
         let prev = std::env::var("FLEET_SECRETS_KEY").ok();
-        std::env::remove_var("FLEET_SECRETS_KEY");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("FLEET_SECRETS_KEY") };
 
         let req = CreateOAuthCredentialRequest {
             tenant_id: "any".to_string(),
@@ -569,7 +573,8 @@ mod tests {
 
         // Restore
         if let Some(p) = prev {
-            std::env::set_var("FLEET_SECRETS_KEY", p);
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("FLEET_SECRETS_KEY", p) };
         }
     }
 }

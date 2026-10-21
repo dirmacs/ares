@@ -265,9 +265,11 @@ mod tests {
     #[test]
     fn unknown_names_are_undeclared() {
         assert!(contract_for("agent.runn").is_none());
-        assert!(validate_dispatch("not-an-event", Dispatch::Emit)
-            .unwrap_err()
-            .contains("undeclared"));
+        assert!(
+            validate_dispatch("not-an-event", Dispatch::Emit)
+                .unwrap_err()
+                .contains("undeclared")
+        );
         assert!(validate_listener("also-not-an-event", true).is_err());
     }
 }

@@ -155,7 +155,7 @@ use lancedb::connection::Connection;
 #[cfg(feature = "lancedb")]
 use lancedb::query::{ExecutableQuery, QueryBase};
 #[cfg(feature = "lancedb")]
-use lancedb::{arrow::arrow_array, DistanceType};
+use lancedb::{DistanceType, arrow::arrow_array};
 #[cfg(feature = "lancedb")]
 use parking_lot::RwLock;
 #[cfg(feature = "lancedb")]
@@ -227,9 +227,9 @@ impl LanceDBStore {
         documents: &[Document],
         dimensions: usize,
     ) -> Result<arrow_array::RecordBatch> {
+        use arrow_array::Array;
         use arrow_array::builder::{FixedSizeListBuilder, Float32Builder, StringBuilder};
         use arrow_array::types::Float32Type;
-        use arrow_array::Array;
         use lancedb::arrow::arrow_schema::{DataType, Field, Schema};
         use std::sync::Arc as StdArc;
 
@@ -400,8 +400,8 @@ impl VectorStore for LanceDBStore {
 
     #[instrument(skip(self), fields(collection = %name, dimensions = %dimensions))]
     async fn create_collection(&self, name: &str, dimensions: usize) -> Result<()> {
-        use arrow_array::builder::{FixedSizeListBuilder, Float32Builder, StringBuilder};
         use arrow_array::Array;
+        use arrow_array::builder::{FixedSizeListBuilder, Float32Builder, StringBuilder};
         use lancedb::arrow::arrow_schema::{DataType, Field, Schema};
         use std::sync::Arc as StdArc;
 
@@ -917,13 +917,15 @@ mod tests {
 
     #[test]
     fn resolve_lancedb_path_prefers_explicit_override() {
-        std::env::remove_var("LANCEDB_PATH");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("LANCEDB_PATH") };
         assert_eq!(resolve_lancedb_path(Some("/tmp/lancedb")), "/tmp/lancedb");
     }
 
     #[test]
     fn resolve_lancedb_path_trims_override() {
-        std::env::remove_var("LANCEDB_PATH");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("LANCEDB_PATH") };
         assert_eq!(
             resolve_lancedb_path(Some("  /tmp/trimmed  ")),
             "/tmp/trimmed"
@@ -932,13 +934,15 @@ mod tests {
 
     #[test]
     fn resolve_lancedb_path_falls_back_to_default_when_env_missing() {
-        std::env::remove_var("LANCEDB_PATH");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("LANCEDB_PATH") };
         assert_eq!(resolve_lancedb_path(None), default_lancedb_path());
     }
 
     #[test]
     fn resolve_lancedb_path_ignores_blank_override() {
-        std::env::remove_var("LANCEDB_PATH");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("LANCEDB_PATH") };
         assert_eq!(resolve_lancedb_path(Some("   ")), default_lancedb_path());
     }
 

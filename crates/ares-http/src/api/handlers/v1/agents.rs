@@ -3,9 +3,9 @@
 
 use super::*;
 
-use crate::observability::RunObservability;
 use crate::HttpError;
 use crate::Result;
+use crate::observability::RunObservability;
 use ares_agent::context_provider::AgentRuntimeContext;
 use ares_store::agent_runs;
 use ares_store::run_history::{redact_agent_run_error, tenant_no_retain};
@@ -13,10 +13,10 @@ use ares_store::tenant_agents::{self};
 use ares_types::models::TenantContext;
 use ares_types::types::AgentContext;
 use axum::{
+    Json,
     extract::{Extension, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::Response,
-    Json,
 };
 use chrono::{TimeZone, Utc};
 use cordis::Context;
@@ -190,7 +190,7 @@ pub async fn run_agent(
         Err(ares_types::types::AppError::NotFound(_)) => {
             return Err(HttpError::from(ares_types::types::AppError::NotFound(
                 format!("Agent '{}' not found for tenant '{}'", name, tc.tenant_id),
-            )))
+            )));
         }
         Err(e) => return Err(HttpError::from(e)),
     };
@@ -1070,12 +1070,12 @@ pub async fn create_api_key(
     Json(payload): Json<CreateApiKeyRequest>,
 ) -> Result<Json<CreateApiKeyResponse>> {
     let tc = extract_tenant(ctx)?;
-    if let Some(days) = payload.expires_in_days {
-        if !(1..=3650).contains(&days) {
-            return Err(HttpError::from(ares_types::types::AppError::InvalidInput(
-                "expires_in_days must be between 1 and 3650".to_string(),
-            )));
-        }
+    if let Some(days) = payload.expires_in_days
+        && !(1..=3650).contains(&days)
+    {
+        return Err(HttpError::from(ares_types::types::AppError::InvalidInput(
+            "expires_in_days must be between 1 and 3650".to_string(),
+        )));
     }
     // Open the tenant realm when TenantRealms is on ctx, then intercept TenantContext.
     let state_ctx = ares_agent::request_tenant_ctx(&state_ctx, tc.clone());
@@ -1148,12 +1148,12 @@ pub async fn rotate_api_key(
     Json(payload): Json<RotateApiKeyRequest>,
 ) -> Result<Json<CreateApiKeyResponse>> {
     let tc = extract_tenant(ctx)?;
-    if let Some(days) = payload.expires_in_days {
-        if !(1..=3650).contains(&days) {
-            return Err(HttpError::from(ares_types::types::AppError::InvalidInput(
-                "expires_in_days must be between 1 and 3650".to_string(),
-            )));
-        }
+    if let Some(days) = payload.expires_in_days
+        && !(1..=3650).contains(&days)
+    {
+        return Err(HttpError::from(ares_types::types::AppError::InvalidInput(
+            "expires_in_days must be between 1 and 3650".to_string(),
+        )));
     }
     // Open the tenant realm when TenantRealms is on ctx, then intercept TenantContext.
     let state_ctx = ares_agent::request_tenant_ctx(&state_ctx, tc.clone());

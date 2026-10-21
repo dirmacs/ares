@@ -27,10 +27,10 @@ fn chat_model() -> String {
 fn redact(msg: &str) -> String {
     let mut out = msg.to_string();
     for env in [KEY_ENV, WS_ENV] {
-        if let Ok(secret) = std::env::var(env) {
-            if !secret.is_empty() {
-                out = out.replace(&secret, "[REDACTED]");
-            }
+        if let Ok(secret) = std::env::var(env)
+            && !secret.is_empty()
+        {
+            out = out.replace(&secret, "[REDACTED]");
         }
     }
     out

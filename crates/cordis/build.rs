@@ -17,20 +17,19 @@ fn main() {
     // dylib is produced with; a toolchain mismatch must refuse the load.
     let mut rustc_release = "unknown".to_string();
     let mut rustc_commit = "unknown".to_string();
-    if let Some(rustc) = rustc_path() {
-        if let Ok(output) = Command::new(rustc)
+    if let Some(rustc) = rustc_path()
+        && let Ok(output) = Command::new(rustc)
             .arg("--version")
             .arg("--verbose")
             .output()
-        {
-            for line in String::from_utf8_lossy(&output.stdout).lines() {
-                if let Some(rest) = line.strip_prefix("release: ") {
-                    rustc_release = rest.trim().to_string();
-                } else if let Some(rest) = line.strip_prefix("commit-hash: ") {
-                    rustc_commit = rest.trim().to_string();
-                    if rustc_commit.is_empty() {
-                        rustc_commit = "unknown".to_string();
-                    }
+    {
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if let Some(rest) = line.strip_prefix("release: ") {
+                rustc_release = rest.trim().to_string();
+            } else if let Some(rest) = line.strip_prefix("commit-hash: ") {
+                rustc_commit = rest.trim().to_string();
+                if rustc_commit.is_empty() {
+                    rustc_commit = "unknown".to_string();
                 }
             }
         }

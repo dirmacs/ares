@@ -392,16 +392,19 @@ mod tests {
         // SAFETY: tests in this module are not run in parallel, so mutating
         // the env var is safe.
         let prev = std::env::var("FLEET_SECRETS_KEY").ok();
-        std::env::remove_var("FLEET_SECRETS_KEY");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("FLEET_SECRETS_KEY") };
         assert!(MasterKey::from_env().is_none());
         if let Some(p) = prev {
-            std::env::set_var("FLEET_SECRETS_KEY", p);
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("FLEET_SECRETS_KEY", p) };
         }
     }
 
     #[test]
     fn from_env_resolves_when_set() {
-        std::env::set_var("FLEET_SECRETS_KEY", "test-only-secret-not-real");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("FLEET_SECRETS_KEY", "test-only-secret-not-real") };
         let m = MasterKey::from_env().expect("key resolves");
         // Verify the master key produces consistent SHA-256.
         let expected = MasterKey::from_secret("test-only-secret-not-real");

@@ -11,8 +11,8 @@ use ares_tools::Tools;
 use ares_types::AppError;
 use sqlx::PgPool;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::EmergencyStop;
 use std::sync::Arc;
@@ -166,10 +166,10 @@ fn fold_ambient_into_response_payload(
     mut payload: serde_json::Value,
     ambient_metadata: serde_json::Value,
 ) -> serde_json::Value {
-    if !ambient_metadata.is_null() {
-        if let Some(object) = payload.as_object_mut() {
-            object.insert("ambient_enrichment".to_string(), ambient_metadata);
-        }
+    if !ambient_metadata.is_null()
+        && let Some(object) = payload.as_object_mut()
+    {
+        object.insert("ambient_enrichment".to_string(), ambient_metadata);
     }
     payload
 }
@@ -1138,12 +1138,12 @@ fn ensure_execution_active(
     ctx: &Arc<cordis::Context>,
     subtask_key: &str,
 ) -> Result<(), String> {
-    if let Some(stop) = ctx.get::<EmergencyStop>() {
-        if stop.is_active() {
-            return Err(format!(
-                "{SUBTASK_CANCELLED_MARKER}: emergency stop is active"
-            ));
-        }
+    if let Some(stop) = ctx.get::<EmergencyStop>()
+        && stop.is_active()
+    {
+        return Err(format!(
+            "{SUBTASK_CANCELLED_MARKER}: emergency stop is active"
+        ));
     }
     // Fresh registry read on every boundary: an external trigger racing the
     // run is honored at the very next LLM round or tool iteration.
@@ -1285,8 +1285,8 @@ mod tests {
     use ares_tools::Tool;
     use cordis::{Context, EventsService};
     use serde_json::json;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     struct EventProbeTool(Arc<AtomicBool>);
 

@@ -411,13 +411,12 @@ impl Llm {
             .get("model")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
+            && ctx.get::<ModelOverride>().is_none()
         {
-            if ctx.get::<ModelOverride>().is_none() {
-                let intercepted = ctx.with_intercept(ModelOverride {
-                    model: model.to_string(),
-                });
-                return self.get_client_inner(&intercepted, capability).await;
-            }
+            let intercepted = ctx.with_intercept(ModelOverride {
+                model: model.to_string(),
+            });
+            return self.get_client_inner(&intercepted, capability).await;
         }
         self.get_client_inner(ctx, capability).await
     }
@@ -453,23 +452,21 @@ impl Llm {
         // 2. Catalog-aware capability selection (catalog is Option for no-default-features builds)
         if let Some(catalog) = &self.catalog {
             let _snap = catalog.snapshot(); // touch catalog to prove composition
-            if let Some(best) = self.provider_registry.find_best_model(&capability) {
-                if let Ok(client) = self
+            if let Some(best) = self.provider_registry.find_best_model(&capability)
+                && let Ok(client) = self
                     .provider_registry
                     .create_client_for_model_ctx(ctx, &best.name)
                     .await
-                {
-                    return Ok(Arc::from(client));
-                }
-            }
-        } else if let Some(best) = self.provider_registry.find_best_model(&capability) {
-            if let Ok(client) = self
-                .provider_registry
-                .create_client_for_model_ctx(ctx, &best.name)
-                .await
             {
                 return Ok(Arc::from(client));
             }
+        } else if let Some(best) = self.provider_registry.find_best_model(&capability)
+            && let Ok(client) = self
+                .provider_registry
+                .create_client_for_model_ctx(ctx, &best.name)
+                .await
+        {
+            return Ok(Arc::from(client));
         }
 
         // 3. Fallback chain (Coordinator / ProviderRegistry) — uses

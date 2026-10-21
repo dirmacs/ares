@@ -62,10 +62,10 @@ pub mod billing_config;
 pub mod config;
 pub mod fleet_secrets;
 pub use billing_config::{BillingConfig, ModelPricingConfig};
-pub use config::{default_qdrant_url, DatabaseConfig, QdrantConfig};
+pub use config::{DatabaseConfig, QdrantConfig, default_qdrant_url};
 pub use fleet_secrets::{
-    decrypt_api_key, encrypt_api_key, last_n_visible, EncryptedPayload, FleetSecrets,
-    FleetSecretsError, MasterKey, ProviderOverride,
+    EncryptedPayload, FleetSecrets, FleetSecretsError, MasterKey, ProviderOverride,
+    decrypt_api_key, encrypt_api_key, last_n_visible,
 };
 
 // Vector store abstraction layer

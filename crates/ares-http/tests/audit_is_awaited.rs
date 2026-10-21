@@ -403,10 +403,10 @@ fn spawn_extents(c: &[char]) -> Vec<(usize, usize, String)> {
         let mut j = skip_ws(c, i);
         if c.get(j) == Some(&':') && c.get(j + 1) == Some(&':') {
             let lt = skip_ws(c, j + 2);
-            if c.get(lt) == Some(&'<') {
-                if let Some(gt) = matching(c, lt, '<', '>') {
-                    j = skip_ws(c, gt + 1);
-                }
+            if c.get(lt) == Some(&'<')
+                && let Some(gt) = matching(c, lt, '<', '>')
+            {
+                j = skip_ws(c, gt + 1);
             }
         }
         if c.get(j) == Some(&'(') {
@@ -576,10 +576,10 @@ fn takes_self(params: &str) -> bool {
     if let Some(rest) = t.strip_prefix('\'') {
         t = rest.trim_start_matches(is_ident).trim_start();
     }
-    if let Some(rest) = t.strip_prefix("mut") {
-        if rest.starts_with(char::is_whitespace) {
-            t = rest.trim_start();
-        }
+    if let Some(rest) = t.strip_prefix("mut")
+        && rest.starts_with(char::is_whitespace)
+    {
+        t = rest.trim_start();
     }
     t.strip_prefix("self")
         .is_some_and(|rest| !rest.starts_with(is_ident))
@@ -1252,10 +1252,10 @@ fn scan_files(files: &[(String, String)]) -> CrateScan {
                 let mut after = skip_ws(c, pos + name.chars().count());
                 if c.get(after) == Some(&':') && c.get(after + 1) == Some(&':') {
                     let lt = skip_ws(c, after + 2);
-                    if c.get(lt) == Some(&'<') {
-                        if let Some(gt) = matching(c, lt, '<', '>') {
-                            after = skip_ws(c, gt + 1);
-                        }
+                    if c.get(lt) == Some(&'<')
+                        && let Some(gt) = matching(c, lt, '<', '>')
+                    {
+                        after = skip_ws(c, gt + 1);
                     }
                 }
                 if c.get(after) == Some(&'(') {
@@ -1396,18 +1396,66 @@ enum Exempt {
 fn exemptions() -> Vec<((&'static str, &'static str), Exempt)> {
     use Exempt::*;
     vec![
-        (("admin", "test_tenant_agent_handler"), Reason("runs a draft agent config once for the admin: an execution whose writes are agent_runs telemetry, not configuration")),
-        (("admin", "run_skill"), Reason("runs a skill once: an execution whose writes are agent_runs telemetry, not configuration")),
-        (("admin", "verify_fleet_provider"), Reason("read-only probe of a provider's model list; writes nothing")),
-        (("admin", "insert_llm_call"), Reason("run-history telemetry ingest, one machine-written row per LLM call; the row is itself the record")),
-        (("admin", "insert_tool_call"), Reason("run-history telemetry ingest, one machine-written row per tool call; the row is itself the record")),
-        (("admin", "insert_health_metrics"), Reason("run-history telemetry ingest of agent health metrics; the row is itself the record")),
-        (("admin", "update_tenant_schedule"), Delegates("update_schedule")),
-        (("v1", "v1_chat"), Reason("metered agent execution on a tenant key; not an admin or key-lifecycle write")),
-        (("v1", "v1_research"), Reason("metered agent execution on a tenant key; not an admin or key-lifecycle write")),
-        (("v1", "run_agent"), Reason("metered agent execution on a tenant key; not an admin or key-lifecycle write")),
-        (("v1", "semantic_search"), Reason("read-only similarity search; writes nothing")),
-        (("v1", "ingest_usage_events"), Reason("tenant usage-metering ingest (usage_events); not an admin or key-lifecycle write")),
+        (
+            ("admin", "test_tenant_agent_handler"),
+            Reason(
+                "runs a draft agent config once for the admin: an execution whose writes are agent_runs telemetry, not configuration",
+            ),
+        ),
+        (
+            ("admin", "run_skill"),
+            Reason(
+                "runs a skill once: an execution whose writes are agent_runs telemetry, not configuration",
+            ),
+        ),
+        (
+            ("admin", "verify_fleet_provider"),
+            Reason("read-only probe of a provider's model list; writes nothing"),
+        ),
+        (
+            ("admin", "insert_llm_call"),
+            Reason(
+                "run-history telemetry ingest, one machine-written row per LLM call; the row is itself the record",
+            ),
+        ),
+        (
+            ("admin", "insert_tool_call"),
+            Reason(
+                "run-history telemetry ingest, one machine-written row per tool call; the row is itself the record",
+            ),
+        ),
+        (
+            ("admin", "insert_health_metrics"),
+            Reason(
+                "run-history telemetry ingest of agent health metrics; the row is itself the record",
+            ),
+        ),
+        (
+            ("admin", "update_tenant_schedule"),
+            Delegates("update_schedule"),
+        ),
+        (
+            ("v1", "v1_chat"),
+            Reason("metered agent execution on a tenant key; not an admin or key-lifecycle write"),
+        ),
+        (
+            ("v1", "v1_research"),
+            Reason("metered agent execution on a tenant key; not an admin or key-lifecycle write"),
+        ),
+        (
+            ("v1", "run_agent"),
+            Reason("metered agent execution on a tenant key; not an admin or key-lifecycle write"),
+        ),
+        (
+            ("v1", "semantic_search"),
+            Reason("read-only similarity search; writes nothing"),
+        ),
+        (
+            ("v1", "ingest_usage_events"),
+            Reason(
+                "tenant usage-metering ingest (usage_events); not an admin or key-lifecycle write",
+            ),
+        ),
     ]
 }
 
@@ -1472,10 +1520,10 @@ fn chained_calls(c: &[char], from: usize, to: usize) -> Vec<(usize, String, usiz
         let mut open = skip_ws(c, at + name.chars().count());
         if c.get(open) == Some(&':') && c.get(open + 1) == Some(&':') {
             let lt = skip_ws(c, open + 2);
-            if c.get(lt) == Some(&'<') {
-                if let Some(gt) = matching(c, lt, '<', '>') {
-                    open = skip_ws(c, gt + 1);
-                }
+            if c.get(lt) == Some(&'<')
+                && let Some(gt) = matching(c, lt, '<', '>')
+            {
+                open = skip_ws(c, gt + 1);
             }
         }
         if c.get(open) != Some(&'(') {
@@ -2114,10 +2162,11 @@ fn scanner_flags_a_function_value_reference() {
         "use ares_store::audit_log::record;\nfn f() { let g = audit_log::record; }\n",
     );
     assert_eq!(s.defects.len(), 2, "{:?}", s.defects);
-    assert!(s
-        .defects
-        .iter()
-        .all(|d| d.reason.contains("without being called")));
+    assert!(
+        s.defects
+            .iter()
+            .all(|d| d.reason.contains("without being called"))
+    );
 }
 
 #[test]
@@ -2257,7 +2306,9 @@ fn scanner_flags_a_call_in_an_async_closure() {
         ),
         (
             "async move |p| with an expression body",
-            format!("    let job = async move |p: PgPool| {CALL}.await;\n    job(pool.clone()).await;"),
+            format!(
+                "    let job = async move |p: PgPool| {CALL}.await;\n    job(pool.clone()).await;"
+            ),
         ),
         (
             "async move || with a return type",
@@ -2268,7 +2319,9 @@ fn scanner_flags_a_call_in_an_async_closure() {
     ] {
         let s = fixture(&body);
         assert!(
-            s.defects.iter().any(|d| d.reason.contains("async` closure")),
+            s.defects
+                .iter()
+                .any(|d| d.reason.contains("async` closure")),
             "{label}: {:?}",
             s.defects
         );
@@ -2294,7 +2347,10 @@ fn scanner_flags_a_call_in_a_macro_invocation() {
                  audit!();"
             ),
         ),
-        ("tokio::join!", format!("    tokio::join!({CALL}, other());")),
+        (
+            "tokio::join!",
+            format!("    tokio::join!({CALL}, other());"),
+        ),
         ("square brackets", format!("    run![{CALL}.await];")),
         ("braces", format!("    run! {{ {CALL}.await }}")),
     ] {
@@ -2319,35 +2375,51 @@ fn scanner_follows_a_function_that_audits_to_its_callers() {
     for (label, src) in [
         (
             "spawned",
-            format!("{helper}pub async fn handler(pool: PgPool) {{\n    tokio::spawn(audit_later(pool.clone()));\n}}\n"),
+            format!(
+                "{helper}pub async fn handler(pool: PgPool) {{\n    tokio::spawn(audit_later(pool.clone()));\n}}\n"
+            ),
         ),
         (
             "not awaited",
-            format!("{helper}pub async fn handler(pool: PgPool) {{\n    let fut = audit_later(pool);\n    detach(fut);\n}}\n"),
+            format!(
+                "{helper}pub async fn handler(pool: PgPool) {{\n    let fut = audit_later(pool);\n    detach(fut);\n}}\n"
+            ),
         ),
         (
             "in an async block",
-            format!("{helper}pub async fn handler(pool: PgPool) {{\n    let job = async move {{ audit_later(pool).await }};\n    tokio::spawn(job);\n}}\n"),
+            format!(
+                "{helper}pub async fn handler(pool: PgPool) {{\n    let job = async move {{ audit_later(pool).await }};\n    tokio::spawn(job);\n}}\n"
+            ),
         ),
         (
             "in a macro",
-            format!("{helper}pub async fn handler(pool: PgPool) {{\n    in_background!(audit_later(pool).await);\n}}\n"),
+            format!(
+                "{helper}pub async fn handler(pool: PgPool) {{\n    in_background!(audit_later(pool).await);\n}}\n"
+            ),
         ),
         (
             "taken as a value",
-            format!("{helper}pub async fn handler(pool: PgPool) {{\n    let f = audit_later;\n    tokio::spawn(f(pool));\n}}\n"),
+            format!(
+                "{helper}pub async fn handler(pool: PgPool) {{\n    let f = audit_later;\n    tokio::spawn(f(pool));\n}}\n"
+            ),
         ),
         (
             "imported under another name",
-            format!("use self::audit_later as later;\n{helper}pub async fn handler(pool: PgPool) {{\n    tokio::spawn(later(pool));\n}}\n"),
+            format!(
+                "use self::audit_later as later;\n{helper}pub async fn handler(pool: PgPool) {{\n    tokio::spawn(later(pool));\n}}\n"
+            ),
         ),
         (
             "through a second helper",
-            format!("{helper}async fn relay(pool: PgPool) {{\n    audit_later(pool).await;\n}}\npub async fn handler(pool: PgPool) {{\n    tokio::spawn(relay(pool));\n}}\n"),
+            format!(
+                "{helper}async fn relay(pool: PgPool) {{\n    audit_later(pool).await;\n}}\npub async fn handler(pool: PgPool) {{\n    tokio::spawn(relay(pool));\n}}\n"
+            ),
         ),
         (
             "a method, spawned",
-            format!("{method}pub async fn handler(a: Auditor) {{\n    tokio::spawn(async move {{ a.write().await }});\n}}\n"),
+            format!(
+                "{method}pub async fn handler(a: Auditor) {{\n    tokio::spawn(async move {{ a.write().await }});\n}}\n"
+            ),
         ),
     ] {
         let s = scan("fixture.rs", &src);
@@ -2388,7 +2460,9 @@ fn scanner_allows_a_caller_in_assert_only_and_no_site_in_any_macro() {
     ] {
         let s = scan(
             "fixture.rs",
-            &format!("{shadow}{helper}async fn t(pool: PgPool) {{\n    assert!(audit_now(&pool).await);\n}}\n"),
+            &format!(
+                "{shadow}{helper}async fn t(pool: PgPool) {{\n    assert!(audit_now(&pool).await);\n}}\n"
+            ),
         );
         assert!(
             s.defects

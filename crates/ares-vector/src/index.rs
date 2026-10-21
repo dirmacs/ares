@@ -57,7 +57,9 @@ pub enum IndexConfigError {
     #[error("invalid M: {0} (must be {MIN_HNSW_M}-{MAX_HNSW_M})")]
     InvalidM(u16),
     /// HNSW `ef_construction` is outside allowed bounds.
-    #[error("invalid ef_construction: {0} (must be {MIN_HNSW_EF_CONSTRUCTION}-{MAX_HNSW_EF_CONSTRUCTION})")]
+    #[error(
+        "invalid ef_construction: {0} (must be {MIN_HNSW_EF_CONSTRUCTION}-{MAX_HNSW_EF_CONSTRUCTION})"
+    )]
     InvalidEfConstruction(u32),
     /// Index type cannot be used for the requested operation.
     #[error("unsupported index type: {0:?}")]

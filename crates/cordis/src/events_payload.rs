@@ -661,7 +661,7 @@ impl TypedEvent for ServiceChangedEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events_catalog::{contract_for, CONTRACTS};
+    use crate::events_catalog::{CONTRACTS, contract_for};
 
     /// Every typed binding must exist in the catalog and agree on mode and
     /// middleware shape, and every catalog event must have a typed binding.

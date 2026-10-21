@@ -37,10 +37,10 @@ pub(crate) async fn resolve_jwt_tenant(
     let Some(tenant_id) = claims.tenant_id.as_deref() else {
         return Ok(None);
     };
-    if let Some(existing) = ctx.get::<TenantContext>() {
-        if existing.tenant_id == tenant_id {
-            return Ok(Some((*existing).clone()));
-        }
+    if let Some(existing) = ctx.get::<TenantContext>()
+        && existing.tenant_id == tenant_id
+    {
+        return Ok(Some((*existing).clone()));
     }
     let Some(db) = ctx.get::<ares_store::TenantDb>() else {
         return Err(StatusCode::UNAUTHORIZED);
@@ -188,10 +188,10 @@ mod tests {
     use super::*;
     use ares_types::models::TenantTier;
     use axum::{
+        Router,
         body::Body,
         http::{Request, StatusCode},
         routing::get,
-        Router,
     };
     use tower::ServiceExt;
 

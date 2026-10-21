@@ -73,8 +73,8 @@ pub mod types;
 pub use collection::Collection;
 pub use config::Config;
 pub use distance::{
-    cosine_similarity, dot_product, l2_distance, normalize_vector, validate_dimensions,
-    DistanceMetric,
+    DistanceMetric, cosine_similarity, dot_product, l2_distance, normalize_vector,
+    validate_dimensions,
 };
 pub use error::{Error, Result};
 pub use types::{SearchResult, VectorId, VectorMetadata};

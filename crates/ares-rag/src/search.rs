@@ -281,13 +281,13 @@ pub fn validate_embedding(
             "embedding contains non-finite values".into(),
         ));
     }
-    if let Some(dims) = expected_dims {
-        if embedding.len() != dims {
-            return Err(SearchError::InvalidVector(format!(
-                "expected {dims} dimensions, got {}",
-                embedding.len()
-            )));
-        }
+    if let Some(dims) = expected_dims
+        && embedding.len() != dims
+    {
+        return Err(SearchError::InvalidVector(format!(
+            "expected {dims} dimensions, got {}",
+            embedding.len()
+        )));
     }
     Ok(())
 }

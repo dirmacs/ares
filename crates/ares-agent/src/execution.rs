@@ -776,7 +776,7 @@ impl Execute {
                     return Some(Err(crate::tenant_agent::tenant_agent_not_found_error(
                         &req.agent_name,
                         &user_id,
-                    )))
+                    )));
                 }
                 Err(e) => return Some(Err(e)),
             }
@@ -804,10 +804,9 @@ impl Execute {
         if let (Some(policy), Some(ovr)) = (
             ctx.get::<ares_llm::TenantModelPolicy>(),
             ctx.get::<ModelOverride>(),
-        ) {
-            if let Err(e) = policy.authorize(&ovr.model) {
-                return Some(Err(e));
-            }
+        ) && let Err(e) = policy.authorize(&ovr.model)
+        {
+            return Some(Err(e));
         }
         if let Some(ovr) = ctx.get::<ModelOverride>() {
             tracing::info!(model=%ovr.model, agent=%req.agent_name, "model overridden via Cordis intercept");
@@ -1656,10 +1655,10 @@ pub fn user_id_from_ctx(ctx: &Arc<Context>, fallback: &str) -> String {
             }
         }
     }
-    if let Some(tc) = ctx.get::<ares_types::models::TenantContext>() {
-        if !tc.tenant_id.is_empty() {
-            return tc.tenant_id.clone();
-        }
+    if let Some(tc) = ctx.get::<ares_types::models::TenantContext>()
+        && !tc.tenant_id.is_empty()
+    {
+        return tc.tenant_id.clone();
     }
     fallback.to_string()
 }
@@ -1686,11 +1685,7 @@ fn tenant_db(_ctx: &Arc<Context>) -> Option<Arc<NoTenantDb>> {
 
 fn tenant_from_request_ctx(ctx: &Arc<Context>, fallback: Option<&str>) -> Option<String> {
     let id = user_id_from_ctx(ctx, fallback.unwrap_or(""));
-    if id.is_empty() {
-        None
-    } else {
-        Some(id)
-    }
+    if id.is_empty() { None } else { Some(id) }
 }
 
 impl Service for Execute {

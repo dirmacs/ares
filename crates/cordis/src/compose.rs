@@ -328,14 +328,14 @@ fn interp_walk(
 ) -> Result<(), String> {
     match value {
         serde_json::Value::String(_) => {
-            if let serde_json::Value::String(s) = value {
-                if s.contains(INTERP_OPEN) {
-                    let rendered = eval_placeholder_string(s, path, engine, base_scope)?;
-                    // A placeholder spanning the WHOLE string yields the typed
-                    // expression value (numbers stay numbers); embedded
-                    // placeholders splice into the surrounding text.
-                    *value = rendered;
-                }
+            if let serde_json::Value::String(s) = value
+                && s.contains(INTERP_OPEN)
+            {
+                let rendered = eval_placeholder_string(s, path, engine, base_scope)?;
+                // A placeholder spanning the WHOLE string yields the typed
+                // expression value (numbers stay numbers); embedded
+                // placeholders splice into the surrounding text.
+                *value = rendered;
             }
             Ok(())
         }
@@ -365,7 +365,7 @@ fn interp_walk(
                         other => {
                             return Err(format!(
                                 "{path}: interpolated object keys must yield a string, got {other}"
-                            ))
+                            ));
                         }
                     }
                 } else {

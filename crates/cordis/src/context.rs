@@ -328,24 +328,24 @@ impl Context {
         // by returning the PREVIOUS value for `tid` (the old binding stays
         // fully intact — no store/owners/version mutation happens). With no
         // listener registered the consult is two map reads.
-        if let Some(events) = self.get_unintercepted::<crate::EventsService>() {
-            if crate::events::blocking_intercept_set(&events, std::any::type_name::<T>()).is_err() {
-                tracing::info!(
-                    service = std::any::type_name::<T>(),
-                    "internal/set vetoed provider write; previous value stays"
-                );
-                let prev_any = self.store.read().get(&tid).cloned();
-                return prev_any
-                    .and_then(|any| any.downcast::<T>().ok())
-                    .unwrap_or(svc);
-            }
+        if let Some(events) = self.get_unintercepted::<crate::EventsService>()
+            && crate::events::blocking_intercept_set(&events, std::any::type_name::<T>()).is_err()
+        {
+            tracing::info!(
+                service = std::any::type_name::<T>(),
+                "internal/set vetoed provider write; previous value stays"
+            );
+            let prev_any = self.store.read().get(&tid).cloned();
+            return prev_any
+                .and_then(|any| any.downcast::<T>().ok())
+                .unwrap_or(svc);
         }
         let any: Arc<dyn Any + Send + Sync> = svc.clone();
         let prev = self.store.write().insert(tid, any.clone());
-        if tid == TypeId::of::<ReflectService>() {
-            if let Ok(reflect) = any.downcast::<ReflectService>() {
-                reflect.set_context(self);
-            }
+        if tid == TypeId::of::<ReflectService>()
+            && let Ok(reflect) = any.downcast::<ReflectService>()
+        {
+            reflect.set_context(self);
         }
         let prev_owner = if let Some(owner) = owner {
             self.owners.write().insert(tid, Arc::downgrade(owner))
@@ -424,16 +424,16 @@ impl Context {
     /// reversal once the guard permits the removal.
     pub fn remove<T: Service>(self: &Arc<Self>) -> Result<Option<Arc<T>>, CordisError> {
         let tid = TypeId::of::<T>();
-        if self.store.read().contains_key(&tid) {
-            if let Some(registry) = self.get::<RegistryService>() {
-                let key = (tid, self.isolate_label(tid));
-                let consumers = registry.reliance_count(&key);
-                if consumers > 0 {
-                    return Err(CordisError::Configuration(format!(
-                        "guarded withdrawal: {consumers} active consumer(s) still rely on {}",
-                        std::any::type_name::<T>()
-                    )));
-                }
+        if self.store.read().contains_key(&tid)
+            && let Some(registry) = self.get::<RegistryService>()
+        {
+            let key = (tid, self.isolate_label(tid));
+            let consumers = registry.reliance_count(&key);
+            if consumers > 0 {
+                return Err(CordisError::Configuration(format!(
+                    "guarded withdrawal: {consumers} active consumer(s) still rely on {}",
+                    std::any::type_name::<T>()
+                )));
             }
         }
         Self::remove_forced::<T>(self)
@@ -506,10 +506,10 @@ impl Context {
         if store.contains_key(&tid) {
             return Err(tid);
         }
-        if tid == TypeId::of::<ReflectService>() {
-            if let Ok(reflect) = any.clone().downcast::<ReflectService>() {
-                reflect.set_context(self);
-            }
+        if tid == TypeId::of::<ReflectService>()
+            && let Ok(reflect) = any.clone().downcast::<ReflectService>()
+        {
+            reflect.set_context(self);
         }
         store.insert(tid, any);
         Ok(())
@@ -568,12 +568,11 @@ impl Context {
     /// refused exactly as in [`Self::get`].
     pub fn get_relaxed<T: Service>(&self) -> Option<Arc<T>> {
         let tid = TypeId::of::<T>();
-        if self.isolate_label(tid).is_none() {
-            if let Some(any) = self.intercept.read().get(&tid).and_then(|l| l.last()) {
-                if let Ok(arc) = any.clone().downcast::<T>() {
-                    return Some(arc);
-                }
-            }
+        if self.isolate_label(tid).is_none()
+            && let Some(any) = self.intercept.read().get(&tid).and_then(|l| l.last())
+            && let Ok(arc) = any.clone().downcast::<T>()
+        {
+            return Some(arc);
         }
         if let Some(any) = self.store.read().get(&tid) {
             let transitioning = self
@@ -594,10 +593,11 @@ impl Context {
                 .unwrap_or(true);
             // Disposed fibers stay refused even in relaxed mode: disposal
             // already ran its undos, so the value is logically gone.
-            if transitioning && !self.disposed_owner(tid) {
-                if let Ok(arc) = any.clone().downcast::<T>() {
-                    return Some(arc);
-                }
+            if transitioning
+                && !self.disposed_owner(tid)
+                && let Ok(arc) = any.clone().downcast::<T>()
+            {
+                return Some(arc);
             }
             return None;
         }
@@ -670,12 +670,11 @@ impl Context {
         let tid = TypeId::of::<T>();
         // Isolate-labeled TypeIds resolve from store / isolate parent walk.
         // Unlabeled TypeIds still let the EFFECTIVE (innermost) intercept win.
-        if self.isolate_label(tid).is_none() {
-            if let Some(any) = self.intercept.read().get(&tid).and_then(|l| l.last()) {
-                if let Ok(arc) = any.clone().downcast::<T>() {
-                    return Some(arc);
-                }
-            }
+        if self.isolate_label(tid).is_none()
+            && let Some(any) = self.intercept.read().get(&tid).and_then(|l| l.last())
+            && let Ok(arc) = any.clone().downcast::<T>()
+        {
+            return Some(arc);
         }
         let mut local_provider = false;
         if let Some(any) = self.store.read().get(&tid) {
@@ -687,12 +686,11 @@ impl Context {
                 .and_then(Weak::upgrade)
                 .map(|fiber| matches!(fiber.state(), FiberState::Active { .. }))
                 .unwrap_or(true);
-            if active {
-                if let Ok(arc) = any.clone().downcast::<T>() {
-                    if arc.check() {
-                        return Some(arc);
-                    }
-                }
+            if active
+                && let Ok(arc) = any.clone().downcast::<T>()
+                && arc.check()
+            {
+                return Some(arc);
             }
         }
         if local_provider {
@@ -962,12 +960,11 @@ impl Context {
                         .and_then(Weak::upgrade)
                         .map(|fiber| matches!(fiber.state(), FiberState::Active { .. }))
                         .unwrap_or(true);
-                    if active {
-                        if let Ok(arc) = any.clone().downcast::<T>() {
-                            if arc.check() {
-                                return Some(arc);
-                            }
-                        }
+                    if active
+                        && let Ok(arc) = any.clone().downcast::<T>()
+                        && arc.check()
+                    {
+                        return Some(arc);
                     }
                 }
                 // Continue up the chain
@@ -1185,9 +1182,9 @@ mod accessor_tests {
     fn read_cell_getter(
         cell: Arc<StdMutex<u64>>,
     ) -> impl Fn(&Context) -> Result<Option<Arc<dyn Any + Send + Sync>>, CordisError>
-           + Send
-           + Sync
-           + 'static {
+    + Send
+    + Sync
+    + 'static {
         move |_| {
             Ok(Some(
                 Arc::new(PropValue(*cell.lock())) as Arc<dyn Any + Send + Sync>

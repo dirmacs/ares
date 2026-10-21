@@ -5,6 +5,63 @@ use cordis::Service;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+/// JSON schema shared by `Calculator` and `CalculatorService`.
+fn calculator_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "operation": {
+                "type": "string",
+                "enum": ["add", "subtract", "multiply", "divide"]
+            },
+            "a": { "type": "number" },
+            "b": { "type": "number" }
+        },
+        "required": ["operation", "a", "b"]
+    })
+}
+
+/// Perform the arithmetic described by `args`, or fail with
+/// [`AppError::InvalidInput`](ares_types::AppError::InvalidInput) when the input
+/// is missing, non-numeric, names an unsupported operation, or divides by zero.
+///
+/// Every fallback that used to fabricate a plausible-looking result (a missing
+/// operand becoming `0.0`, an unknown operation becoming `0.0`, division by
+/// zero serializing as `null`) now surfaces as an error the caller can react to.
+fn calculate(args: &Value) -> Result<Value> {
+    let op = args["operation"]
+        .as_str()
+        .ok_or_else(|| ares_types::AppError::InvalidInput("operation is required".to_string()))?;
+
+    let a = args["a"]
+        .as_f64()
+        .ok_or_else(|| ares_types::AppError::InvalidInput("a must be a number".to_string()))?;
+    let b = args["b"]
+        .as_f64()
+        .ok_or_else(|| ares_types::AppError::InvalidInput("b must be a number".to_string()))?;
+
+    let result = match op {
+        "add" => a + b,
+        "subtract" => a - b,
+        "multiply" => a * b,
+        "divide" => {
+            if b == 0.0 {
+                return Err(ares_types::AppError::InvalidInput(
+                    "division by zero".to_string(),
+                ));
+            }
+            a / b
+        }
+        _ => {
+            return Err(ares_types::AppError::InvalidInput(format!(
+                "unsupported operation: {op}"
+            )));
+        }
+    };
+
+    Ok(json!({ "result": result }))
+}
+
 /// Calculator tool for basic arithmetic operations.
 pub struct Calculator;
 
@@ -19,34 +76,11 @@ impl Tool for Calculator {
     }
 
     fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "operation": {
-                    "type": "string",
-                    "enum": ["add", "subtract", "multiply", "divide"]
-                },
-                "a": { "type": "number" },
-                "b": { "type": "number" }
-            },
-            "required": ["operation", "a", "b"]
-        })
+        calculator_schema()
     }
 
     async fn execute(&self, args: Value) -> Result<Value> {
-        let op = args["operation"].as_str().unwrap_or("add");
-        let a = args["a"].as_f64().unwrap_or(0.0);
-        let b = args["b"].as_f64().unwrap_or(0.0);
-
-        let result = match op {
-            "add" => a + b,
-            "subtract" => a - b,
-            "multiply" => a * b,
-            "divide" => a / b,
-            _ => 0.0,
-        };
-
-        Ok(json!({ "result": result }))
+        calculate(&args)
     }
 }
 
@@ -103,34 +137,11 @@ impl Tool for CalculatorService {
     }
 
     fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "operation": {
-                    "type": "string",
-                    "enum": ["add", "subtract", "multiply", "divide"]
-                },
-                "a": { "type": "number" },
-                "b": { "type": "number" }
-            },
-            "required": ["operation", "a", "b"]
-        })
+        calculator_schema()
     }
 
     async fn execute(&self, args: Value) -> Result<Value> {
-        let op = args["operation"].as_str().unwrap_or("add");
-        let a = args["a"].as_f64().unwrap_or(0.0);
-        let b = args["b"].as_f64().unwrap_or(0.0);
-
-        let result = match op {
-            "add" => a + b,
-            "subtract" => a - b,
-            "multiply" => a * b,
-            "divide" => a / b,
-            _ => 0.0,
-        };
-
-        Ok(json!({ "result": result }))
+        calculate(&args)
     }
 }
 
@@ -199,38 +210,75 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_unknown_operation_returns_zero() {
+    async fn test_unknown_operation_errors() {
         let tool = Calculator;
-        let out = tool
+        let err = tool
             .execute(json!({"operation": "modulo", "a": 10.0, "b": 3.0}))
             .await
-            .unwrap();
-        assert_eq!(out["result"], json!(0.0));
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ares_types::AppError::InvalidInput(msg) if msg.contains("unsupported operation: modulo")
+        ));
     }
 
     #[tokio::test]
-    async fn test_missing_operation_defaults_to_add() {
+    async fn test_missing_operation_errors() {
         let tool = Calculator;
-        let out = tool.execute(json!({"a": 2.0, "b": 3.0})).await.unwrap();
-        assert_eq!(out["result"], json!(5.0));
+        let err = tool.execute(json!({"a": 2.0, "b": 3.0})).await.unwrap_err();
+        assert!(matches!(
+            err,
+            ares_types::AppError::InvalidInput(msg) if msg.contains("operation is required")
+        ));
     }
 
     #[tokio::test]
-    async fn test_missing_operands_default_to_zero() {
+    async fn test_missing_operands_error() {
         let tool = Calculator;
-        let out = tool.execute(json!({"operation": "add"})).await.unwrap();
-        assert_eq!(out["result"], json!(0.0));
+        let err = tool.execute(json!({"operation": "add"})).await.unwrap_err();
+        assert!(matches!(
+            err,
+            ares_types::AppError::InvalidInput(msg) if msg.contains("a must be a number")
+        ));
     }
 
     #[tokio::test]
-    async fn test_divide_by_zero_serializes_as_null() {
+    async fn test_divide_by_zero_errors() {
         let tool = Calculator;
-        let out = tool
+        let err = tool
             .execute(json!({"operation": "divide", "a": 1.0, "b": 0.0}))
             .await
-            .unwrap();
-        // serde_json cannot represent infinity; division by zero yields null.
-        assert!(out["result"].is_null());
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ares_types::AppError::InvalidInput(msg) if msg.contains("division by zero")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_non_numeric_operand_errors() {
+        let tool = Calculator;
+        let err = tool
+            .execute(json!({"operation": "add", "a": "not-a-number", "b": 3.0}))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ares_types::AppError::InvalidInput(msg) if msg.contains("a must be a number")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_calculator_service_reports_bad_input() {
+        let tool = CalculatorService;
+        let err = tool
+            .execute(json!({"operation": "modulo", "a": 10.0, "b": 3.0}))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ares_types::AppError::InvalidInput(msg) if msg.contains("unsupported operation: modulo")
+        ));
     }
 
     // Verify Calculator is resolved through Tools on Context.

@@ -56,7 +56,36 @@ sha2 = "0.10.9"
 parking_lot = "0.12.5"
 inventory = "0.3"
 rhai = { version = "1.25", features = ["serde", "sync"] }
-sqlx = { version = "0.8.6", features = ["runtime-tokio", "postgres", "tls-rustls", "uuid", "chrono", "json", "migrate", "rust_decimal"] }
+# PostgreSQL only. The `uuid`, `chrono`, `json` and `migrate` features are
+# deliberately absent: in sqlx 0.8 each of them maps to a `sqlx-sqlite?/<name>`
+# term, which activates the optional `sqlx-sqlite` dependency — and with it
+# `libsqlite3-sys`, which declares `links = "sqlite3"`. The OpenAPPA embed
+# (crates/ares-tools) brings `rusqlite 0.40`, whose `libsqlite3-sys 0.38` declares
+# the same `links` value, so the two cannot coexist in one graph. ARES talks only
+# to PostgreSQL, so `sqlx-sqlite` was dead weight that the four features pulled in
+# for nothing; dropping them leaves `libsqlite3-sys 0.38.2` and `rusqlite 0.40`
+# resolvable together. sqlx's `migrate` feature must stay off for the same reason
+# (it activates the optional `sqlx-sqlite` driver for its compile-time
+# `sqlx::migrate!` macro); the migrator types come from `sqlx-core` instead.
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "postgres", "tls-rustls", "rust_decimal", "macros", "derive"] }
+# The migrator types (see crates/ares-store/src/lib.rs and build.rs): the
+# compile-time `sqlx::migrate!` macro lives behind sqlx's `migrate` feature,
+# which activates the optional `sqlx-sqlite` driver for that macro — and with it
+# `libsqlite3-sys 0.30.1`, which conflicts with OpenAPPA's `rusqlite 0.40`
+# (`libsqlite3-sys 0.38`). sqlx's `migrate` feature must therefore stay OFF.
+# `sqlx-core/migrate` carries the migrator types without the sqlite driver, and
+# `build.rs` builds the migration set exactly the way `resolve_blocking` does.
+# The Postgres side of the same feature (`Migrate for PgConnection`, which
+# `Migrator::run(&PgPool)` needs) lives in sqlx-postgres behind its own `migrate`
+# feature, which is a pure forward to `sqlx-core/migrate` — hence the
+# `sqlx-postgres` dependency below.
+sqlx-core = { version = "0.8.6", default-features = false, features = ["migrate", "json", "uuid", "chrono"] }
+# Postgres `Migrate` impl (see above). Without it `Migrator::run` cannot accept a
+# `PgPool`. `json`, `uuid` and `chrono` are enabled here (not on `sqlx`) because
+# the Postgres-side `Type`/`Decode` impls for those types live in this crate, each
+# gated by its own feature which forwards to `sqlx-core/<same>`; sqlx's own
+# versions of the features would drag in sqlx-sqlite.
+sqlx-postgres = { version = "0.8.6", default-features = false, features = ["migrate", "json", "uuid", "chrono"] }
 libsql = { version = "0.6" }
 qdrant-client = { version = "1.16.0" }
 # lance is not imported directly; the lancedb crate pulls its own lance stack.
@@ -292,7 +321,7 @@ ares-vector = { workspace = true, features = ["serde"], optional = true }
 # External vector DBs
 qdrant-client = { version = "1.16.0", optional = true }
 lancedb = { version = "0.37.1", optional = true }
-sqlx = { version = "0.8.6", features = ["runtime-tokio", "postgres", "tls-rustls", "uuid", "chrono", "json", "migrate"], optional = true }
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "postgres", "tls-rustls", "macros", "derive"], optional = true }
 libsql = { version = "0.6", optional = true }
 chromadb = { version = "2.3.0", optional = true }
 pinecone-sdk = { version = "0.1.2", optional = true }

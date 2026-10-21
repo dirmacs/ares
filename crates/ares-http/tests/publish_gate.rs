@@ -954,7 +954,7 @@ async fn cutover_publishes_every_existing_row_with_the_sql_digest() {
         1,
         "exactly one publish-gate migration: {gate:?}"
     );
-    let before_gate = sqlx::migrate::Migrator {
+    let before_gate = ares_store::migrate::Migrator {
         migrations: Cow::Owned(
             ares_store::MIGRATOR
                 .iter()

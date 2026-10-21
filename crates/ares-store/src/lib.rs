@@ -51,12 +51,34 @@
 #![allow(clippy::map_flatten)]
 #![allow(clippy::for_kv_map)]
 
+// `build.rs` output: the resolved migration list. The generated file pulls each
+// `.sql` in with `include_str!`, so the schema ships inside the binary.
+#[cfg(feature = "postgres")]
+include!(concat!(env!("OUT_DIR"), "/migrations.rs"));
+
 /// Canonical embedded migrator shared by every crate that needs the schema.
 ///
-/// Built once from the crate-local `./migrations` directory, which ships in
-/// the published `ares-store` package so `cargo install` works from anywhere.
+/// `build.rs` reads the crate-local `./migrations` directory — which ships in
+/// the published `ares-store` package — and emits the migration list above. The
+/// `.sql` text is embedded in the binary, so the Docker image needs no
+/// migrations directory.
+///
+/// The generated list reproduces `sqlx::migrate!` exactly (version, description,
+/// sha384 checksum, `no_tx`, ascending order); see `build.rs` for the field by
+/// field correspondence with `sqlx_core::migrate::resolve_blocking`.
 #[cfg(feature = "postgres")]
-pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+pub static MIGRATOR: sqlx_core::migrate::Migrator = sqlx_core::migrate::Migrator {
+    migrations: std::borrow::Cow::Borrowed(MIGRATIONS),
+    ignore_missing: false,
+    locking: true,
+    no_tx: false,
+};
+
+/// The migrator types, re-exported for consumers that build their own migrator
+/// (the publish-gate cutover test slices `MIGRATOR`'s set). They come from
+/// `sqlx-core`, whose `migrate` feature does not pull in the sqlite driver.
+#[cfg(feature = "postgres")]
+pub use sqlx_core::migrate;
 
 pub mod billing_config;
 pub mod config;

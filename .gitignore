@@ -72,3 +72,9 @@ ares-server-with-embeddings
 
 # deagle code intelligence graph (local cache)
 .deagle/
+
+# Scratch artefacts from board and topology queries. These name private
+# repositories and are not part of the source tree; they were once swept
+# into a commit by `git add -A` and the public-repo guard blocked it.
+.scratch/
+p2.json

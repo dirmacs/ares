@@ -536,7 +536,25 @@ mod tests {
             .expect("trigger");
             assert_eq!(resp.0.status, DeployState::Running);
 
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let completed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    if registry
+                        .read()
+                        .await
+                        .get(&resp.0.id)
+                        .is_some_and(|deploy| deploy.status != DeployState::Running)
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .is_ok();
+            assert!(
+                completed,
+                "background deployment did not finish within 5 seconds"
+            );
 
             let deploys = registry.read().await;
             let deploy = deploys.get(&resp.0.id).expect("deploy row");

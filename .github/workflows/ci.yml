@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main, develop, holy]
 
+# Every job builds with the Rust version rust-toolchain.toml pins, 1.99.0,
+# and the action is told that version rather than `stable`: asking for
+# `stable` meant a Rust release could turn every open pull request red at
+# once, with nothing in the tree to show for it.
+
 env:
   CARGO_TERM_COLOR: always
   # The pin the ARES tree integrates against (crates/ares-tools Cargo.toml).
@@ -34,7 +39,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: "1.99.0"
       - name: Build the APPA CLI from the pinned source
         run: cargo install --git https://github.com/archestra-ai/OpenAPPA --rev "$APPA_REV" --locked appa
       - name: The complete test configuration loads and the replay suite proves it can fail
@@ -46,7 +53,21 @@ jobs:
       CRAP_THRESHOLD: "715"
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # The rustup shims live in $CARGO_HOME/bin. The dtolnay action probes
+      # `rustc` to compute its cache key, and it does that BEFORE it exports
+      # that directory - so the probe finds no rustc on a runner whose
+      # ambient PATH does not carry it, and the job dies with
+      # "rustc: command not found" and exit 127. That is what made this
+      # gate fail one run in five: every other step was skipped, so nothing
+      # about the tree was ever measured.
+      #
+      # $GITHUB_PATH reaches the steps AFTER this one, which is exactly the
+      # step the action needs.
+      - name: Put the toolchain's shims on PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: "1.99.0"
       - uses: Swatinem/rust-cache@v2
       - name: Install pinned cargo-crap
         run: |
@@ -72,7 +93,12 @@ jobs:
     runs-on: [self-hosted, Linux, ARM64, dirmacs-ci]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # The same probe, and the same fix: see the CRAP gate's step above.
+      - name: Put the toolchain's shims on PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: "1.99.0"
       - uses: Swatinem/rust-cache@v2
       - name: Check headless library build
         run: cargo check -p ares-server --lib --no-default-features
@@ -85,6 +111,19 @@ jobs:
             echo "::error::headless build pulled a web/CLI/script dependency into the tree"
             exit 1
           fi
+  fmt:
+    name: Formatting Gate
+    runs-on: [self-hosted, Linux, ARM64, dirmacs-ci]
+    steps:
+      - uses: actions/checkout@v4
+      # The same probe, and the same fix: see the CRAP gate's step above.
+      - name: Put the toolchain's shims on PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: "1.99.0"
+      - name: Check the formatting
+        run: cargo fmt --all -- --check
   test:
     name: PostgreSQL Workspace Tests
     runs-on: ubuntu-latest
@@ -106,7 +145,9 @@ jobs:
       TEST_DATABASE_URL: postgres://ares_test:ares_test@localhost:5432/ares_test
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: "1.99.0"
       - uses: Swatinem/rust-cache@v2
       - name: Run workspace tests against the isolated PostgreSQL service
         shell: bash

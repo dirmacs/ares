@@ -12,7 +12,11 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        FEATURES: openai,postgres,mcp
+        # `http` and `cli` are not optional: the `ares-server` binary target
+        # declares `required-features = ["http", "cli"]`, and cargo refuses to
+        # build a target whose required features are not enabled.
+        # There is no `openai` feature; it was removed with the NVIDIA rework.
+        FEATURES: postgres,mcp,http,cli
         EXTRA_CARGO_ARGS: --no-default-features
     image: dirmacs/ares:${ARES_IMAGE_TAG:-local}
     container_name: ares

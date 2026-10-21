@@ -16,7 +16,17 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
 
-ARG FEATURES="openai,postgres,mcp"
+# The features the image's binary is built with.
+#
+# `http` and `cli` are not optional: the `ares-server` binary target
+# declares `required-features = ["http", "cli"]`, and cargo refuses to
+# build a target whose required features are not enabled. `postgres` is
+# the database the server talks to.
+#
+# There is no `openai` feature. It was removed with the NVIDIA rework
+# and asking for it fails with "the package 'ares-server' does not
+# contain this feature: openai".
+ARG FEATURES="postgres,mcp,http,cli"
 ARG EXTRA_CARGO_ARGS="--no-default-features"
 
 COPY --from=planner /app/recipe.json recipe.json

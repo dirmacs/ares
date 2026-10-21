@@ -24,7 +24,8 @@ use ares_llm::{ConfigBasedLLMFactory, ProviderRegistry};
 use ares_store::{
     TenantDb,
     tenant_agents::{
-        CreateTenantAgentRequest, UpdateTenantAgentRequest, create_tenant_agent,
+        CreateTenantAgentRequest, PublishOutcome, UpdateTenantAgentRequest, create_tenant_agent,
+        create_tenant_agent_as, get_tenant_agent_publish_state, publish_tenant_agent,
         update_tenant_agent,
     },
 };
@@ -297,7 +298,7 @@ async fn insert_tenant_agent(
     agent_name: &str,
     system_prompt: &str,
 ) {
-    create_tenant_agent(
+    create_tenant_agent_as(
         tenant_db.pool(),
         tenant_id,
         CreateTenantAgentRequest {
@@ -312,9 +313,34 @@ async fn insert_tenant_agent(
                 "parallel_tools": false
             }),
         },
+        Some("test-author"),
     )
     .await
     .expect("insert tenant agent");
+
+    // A tenant agent row is a draft until it is published, and the run
+    // path refuses an unpublished one (item 2.6a): the row is found, it
+    // is simply not the agent that runs. So the fixture publishes it.
+    let draft_digest = get_tenant_agent_publish_state(tenant_db.pool(), tenant_id, agent_name)
+        .await
+        .expect("publish state")
+        .draft_digest
+        .expect("the new row is a draft");
+    match publish_tenant_agent(
+        tenant_db.pool(),
+        tenant_id,
+        agent_name,
+        &draft_digest,
+        "test-approver",
+    )
+    .await
+    .expect("publish the tenant agent row")
+    {
+        PublishOutcome::Published(_) => {}
+        PublishOutcome::Refused(refusal) => {
+            panic!("the fixture publish was refused: {refusal:?}")
+        }
+    }
 }
 
 #[tokio::test]

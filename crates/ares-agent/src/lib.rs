@@ -10,7 +10,6 @@
 //!
 #![allow(dead_code)]
 #![allow(unused_variables)]
-#![allow(deprecated)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::explicit_counter_loop)]
 

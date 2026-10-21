@@ -157,6 +157,16 @@ pub async fn run_agent(
         )));
     }
 
+    // Per-tenant pause switch: stop one tenant's runs without touching anyone
+    // else's. Deliberately in the preamble, before the message is extracted and
+    // before an agent is resolved, so a paused run never reaches a model
+    // provider. Checking after dispatch would make this a pause in name only —
+    // the run would still cost a model call.
+    //
+    // This is the shared check, the one the admission gate and the research
+    // handler use, so there is one mechanism and one read of `tenants.paused`.
+    ares_agent::admit::ensure_tenant_not_paused(&state_ctx, &tc.tenant_id).await?;
+
     // Extract message from input JSON
     let message = extract_agent_run_message(&input);
     let runtime_workspace_id = extract_workspace_id(&input);

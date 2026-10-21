@@ -26,32 +26,33 @@
 mod common;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use axum::{
-    routing::{get, post},
     Json, Router,
+    response::IntoResponse,
+    routing::{get, post},
 };
 use axum_test::TestServer;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use cordis::Context;
 
 use ares_agent::AgentRegistry;
 use ares_http::{
+    AresConfigManager, DynamicConfigManager,
     auth::jwt::AuthService,
     config::{AuthConfig as TomlAuthConfig, ServerConfig as TomlServerConfig},
     overlay::{
         AgentConfig, AresConfig, BillingConfig, DatabaseConfig as TomlDatabaseConfig,
         DynamicConfigPaths, ModelConfig, ProviderConfig, RagConfig,
     },
-    AresConfigManager, DynamicConfigManager,
 };
 use ares_llm::{ConfigBasedLLMFactory, ProviderRegistry};
-use ares_store::tenant_agents::{create_tenant_agent, CreateTenantAgentRequest};
 use ares_store::TenantDb;
+use ares_store::tenant_agents::{CreateTenantAgentRequest, create_tenant_agent};
 use ares_tools::Tools;
 use ares_types::models::TenantTier;
 
@@ -74,39 +75,38 @@ impl ProviderCalls {
     }
 }
 
-async fn counting_ollama_chat(
-    axum::extract::State(calls): axum::extract::State<ProviderCalls>,
-    Json(payload): Json<Value>,
-) -> Json<Value> {
-    calls.0.fetch_add(1, Ordering::SeqCst);
-    Json(json!({
-        "model": payload["model"].as_str().unwrap_or("test-model"),
-        "created_at": "2026-05-21T00:00:00Z",
-        "message": {
-            "role": "assistant",
-            "content": "SYSTEM_PROMPT=mock"
-        },
-        "done": true,
-        "total_duration": 1,
-        "load_duration": 1,
-        "prompt_eval_count": 1,
-        "prompt_eval_duration": 1,
-        "eval_count": 1,
-        "eval_duration": 1
-    }))
-}
-
 async fn spawn_counting_mock_provider() -> (String, ProviderCalls) {
-    let calls = ProviderCalls::default();
-    let app = Router::new()
-        .route("/api/chat", post(counting_ollama_chat))
-        .with_state(calls.clone());
+    let counter = Arc::clone(&calls);
+    let app = Router::new().fallback(move || {
+        let counter = Arc::clone(&counter);
+        async move {
+            counter.fetch_add(1, Ordering::SeqCst);
+            axum::Json(json!({
+                "model": "mock-model",
+                "created_at": "2026-05-21T00:00:00Z",
+                "message": {
+                    "role": "assistant",
+                    "content": "SYSTEM_PROMPT=mock"
+                },
+                "done": true,
+                "total_duration": 1,
+                "load_duration": 1,
+                "prompt_eval_count": 1,
+                "prompt_eval_duration": 1,
+                "eval_count": 1,
+                "eval_duration": 1
+            }))
+            .into_response()
+        }
+    });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind mock provider");
     let addr = listener.local_addr().expect("mock provider addr");
     tokio::spawn(async move {
-        axum::serve(listener, app).await.expect("serve mock provider");
+        axum::serve(listener, app)
+            .await
+            .expect("serve mock provider");
     });
     (format!("http://{}", addr), calls)
 }

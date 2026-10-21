@@ -12,7 +12,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Per-tenant pause and strict flags, added by migration
-/// `20250615000010_tenant_flags`.
+/// `20261016000014_tenant_flags`. The `paused_by`/`paused_at` attribution
+/// columns come from this branch's renumbered companion migration.
 ///
 /// Read separately from [`Tenant`] so the run preamble can answer "is this
 /// tenant paused?" without loading the whole tenant record on every request.
@@ -174,12 +175,10 @@ impl TenantDb {
         actor: &str,
     ) -> Result<()> {
         let now = Utc::now().timestamp();
-        let mut tx = self
-            .postgres
-            .pool
-            .begin()
-            .await
-            .map_err(|e| AppError::Database(format!("Failed to begin pause transaction: {}", e)))?;
+        let mut tx =
+            self.postgres.pool.begin().await.map_err(|e| {
+                AppError::Database(format!("Failed to begin pause transaction: {}", e))
+            })?;
 
         let updated = sqlx::query(
             "UPDATE tenants

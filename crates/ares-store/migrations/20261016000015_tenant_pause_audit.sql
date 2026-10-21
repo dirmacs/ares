@@ -5,8 +5,11 @@
 -- when?" after the fact — which is exactly the question an incident review asks.
 -- This table can: one row per change, never updated, never deleted.
 --
--- Kept separate from `20250615000010` rather than appended to it, so that
--- migration's checksum stays stable for databases that have already applied it.
+-- Kept separate from `20261016000014_tenant_flags` rather than appended to
+-- it, so that migration's checksum stays stable for databases that have
+-- already applied it. The attribution columns it needs
+-- (`paused_by`, `paused_at`) land in `20261016000016_tenant_pause_attribution`,
+-- which runs after it.
 
 CREATE TABLE IF NOT EXISTS tenant_pause_audit (
     id         BIGSERIAL PRIMARY KEY,

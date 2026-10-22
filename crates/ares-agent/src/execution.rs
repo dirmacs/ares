@@ -241,6 +241,12 @@ pub struct AgentRequest {
 /// context and still cross the same public `Execute::run` boundary as regular
 /// agent requests. Keeping the marker in the context avoids a second public
 /// execution API or changes to the request shape used by downstream crates.
+/// Marker for skill-dispatched requests. Fields are read only by the
+/// `#[cfg(feature = "postgres")]` run_skill; the fallback run_skill ignores it.
+#[cfg_attr(
+    not(feature = "postgres"),
+    allow(dead_code, reason = "fields read only by the postgres run_skill")
+)]
 #[derive(Clone)]
 pub(crate) struct SkillDispatch {
     pub(crate) skill_id: String,
@@ -250,6 +256,10 @@ pub(crate) struct SkillDispatch {
 }
 
 impl SkillDispatch {
+    // Called from the pipeline/scheduler modules (both imply postgres).
+    // Without those features nothing constructs it — including under cfg(test),
+    // where the pipeline tests live behind the pipeline feature too.
+    #[cfg(any(feature = "postgres", feature = "pipeline", feature = "scheduler"))]
     pub(crate) fn new(
         skill_id: impl Into<String>,
         tenant_id: impl Into<String>,

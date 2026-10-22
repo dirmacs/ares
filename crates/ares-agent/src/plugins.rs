@@ -200,6 +200,9 @@ inventory::submit! {
     cordis::CordisPluginFactory { name: "TriggerService", make: factory_trigger }
 }
 
+// Only called from feature-gated factories (scheduler/pipeline/trigger); without
+// any of those features the callers compile out and this would read dead.
+#[cfg(any(feature = "scheduler", feature = "pipeline", feature = "trigger"))]
 fn inject_sync<T: cordis::Service + 'static>(ctx: &Arc<cordis::Context>) -> Arc<T> {
     tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(ctx.inject::<T>()))
 }

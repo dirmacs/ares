@@ -806,6 +806,13 @@ Handle employee info, policies, and benefits."#
             .await
     }
 
+    #[cfg_attr(
+        not(feature = "postgres"),
+        allow(
+            unused_variables,
+            reason = "params feed only the postgres budget-check branch"
+        )
+    )]
     async fn preflight_budget_check(&self, tenant_id: &str) -> Result<()> {
         let Some(ctx) = self.cordis_ctx.as_ref() else {
             return Ok(());
@@ -840,6 +847,13 @@ Handle employee info, policies, and benefits."#
         Ok(())
     }
 
+    #[cfg_attr(
+        not(feature = "postgres"),
+        allow(
+            unused_variables,
+            reason = "params feed only the postgres budget-record branch"
+        )
+    )]
     async fn record_and_check_budget(
         &self,
         tenant_id: &str,

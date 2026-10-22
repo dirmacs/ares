@@ -34,6 +34,8 @@ pub struct AgentRegistry {
     dynamic_config: Option<Arc<dyn ToonAgents>>,
 }
 
+// Only called from the #[cfg(feature = "postgres")] agent-creation path (plus its test).
+#[cfg(any(feature = "postgres", test))]
 fn intersect_agent_tools_with_tenant_allowlist(
     agent_tools: Option<&[String]>,
     tenant_allowed_tools: &[String],

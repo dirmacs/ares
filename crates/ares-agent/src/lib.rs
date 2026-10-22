@@ -8,10 +8,6 @@
 //! - **Router** - Routes requests to appropriate specialized agents
 //! - **Orchestrator** - Coordinates multi-step agent workflows
 //!
-#![allow(dead_code)]
-#![allow(unused_variables)]
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::explicit_counter_loop)]
 
 //! ## Architecture
 //!

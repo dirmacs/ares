@@ -259,12 +259,6 @@ mod tests {
         serde_json::json!({ "agents": agents })
     }
 
-    fn raw_name(item: &serde_json::Value) -> &str {
-        item.get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-    }
-
     fn repeated_char(count: usize, ch: &str) -> String {
         ch.repeat(count)
     }

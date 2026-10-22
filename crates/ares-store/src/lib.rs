@@ -42,15 +42,6 @@
 //! let results = vector_store.search("docs", query_embedding, 10).await?;
 //! ```
 
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::type_complexity)]
-#![allow(clippy::redundant_closure)]
-#![allow(unused_imports)]
-#![allow(clippy::needless_borrows_for_generic_args)]
-#![allow(clippy::option_as_ref_deref)]
-#![allow(clippy::map_flatten)]
-#![allow(clippy::for_kv_map)]
-
 // `build.rs` output: the resolved migration list. The generated file pulls each
 // `.sql` in with `include_str!`, so the schema ships inside the binary.
 #[cfg(feature = "postgres")]

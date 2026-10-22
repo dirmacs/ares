@@ -41,6 +41,13 @@ All notable changes to ARES are documented here. This project follows [Semantic 
   (the classification kernel, the PII oracle/redactor, the identity
   directory).
 
+### Changed
+
+- `ares-vector` moves to `0.1.7`. crates.io already carries `0.1.5` and
+  `0.1.6`, published from trees that differ from this repository's, so
+  neither version can be published again and `0.1.7` is the next free
+  one.
+
 ### Blocked
 
 - The workspace does not resolve with the pin: `appa-eventlog` requires
@@ -384,6 +391,25 @@ absent when the provider reported none.**
 - Delegation hygiene: delegated sub-workflows accept only allowlisted step kinds (`delegated_step_not_allowed:`), nested tool rounds hard-cap at three (`tool_round_cap_exceeded:` aborts after exactly three rounds), and slash-command chatter lines are stripped from delegated result text before it enters the parent context
 
 ---
+
+## 0.9.1, 2026-08-24
+
+**Cordis kernel hardening.**
+
+Nine rounds of work on the Cordis-based kernel and its integration across the server.
+The full narrative is in the published release notes for this version:
+<https://github.com/dirmacs/ares/releases/tag/v0.9.1>.
+
+- **Policy scripting, default-on.** TOML entries attach sandboxed Rhai functions to
+  any of the 22 typed catalog events. `on_error = "deny"` makes gates fail-closed, and
+  isolate realms allow per-tenant policies.
+- **Transactional lifecycle.** Guarded withdrawal, so a provider cannot be removed
+  while active consumers exist; verified hot-swap, where the replacement trial is
+  built out of band before the commit; and drain-and-shift, which swaps a provider
+  under live traffic.
+- **Static registration.** Inventory-collected plugin factories are the primary boot
+  path, with the manual chains kept as a `--no-default-features` fallback, and parity
+  tests pinning the factory set.
 
 ## 0.9.0, 2026-08-22
 

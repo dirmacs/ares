@@ -20,7 +20,7 @@ This page is the onboarding guide: the shape of the language, how to compile a h
 | `crates/ares-suriv/src/ast.rs` | the AST, mirroring the language's `Expr` |
 | `crates/ares-suriv/src/codegen.rs` | the AST to `Entry` records and the `requires` map |
 
-`ares-suriv` is the only crate in the workspace that knows about Suriv, and nothing else in the workspace references it. The server does not read `.suriv` files: the compiler is a library, and a harness reaches the server only after it has been compiled and loaded.
+`ares-suriv` is the only crate in the workspace that knows about Suriv. The root package declares it as an optional dependency behind the `suriv` feature, which is off by default, so a plain `cargo build` does not link it; `cargo build --features suriv` links the crate in, but no server code calls it yet. The server does not read `.suriv` files: the compiler is a library, and a harness reaches the server only after it has been compiled and loaded.
 
 The language's specification, and the choices this implementation makes where that specification is silent, live with the specification rather than in this repository.
 

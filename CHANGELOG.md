@@ -41,6 +41,13 @@ All notable changes to ARES are documented here. This project follows [Semantic 
   (the classification kernel, the PII oracle/redactor, the identity
   directory).
 
+### Changed
+
+- `ares-vector` moves to `0.1.7`. crates.io already carries `0.1.5` and
+  `0.1.6`, published from trees that differ from this repository's, so
+  neither version can be published again and `0.1.7` is the next free
+  one.
+
 ### Blocked
 
 - The workspace does not resolve with the pin: `appa-eventlog` requires

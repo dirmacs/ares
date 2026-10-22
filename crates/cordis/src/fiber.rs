@@ -429,11 +429,6 @@ impl Fiber {
         *self.raw_config.write() = Some(raw);
     }
 
-    /// Snapshot of the raw config, if one was recorded.
-    pub(crate) fn raw_config(&self) -> Option<serde_json::Value> {
-        self.raw_config.read().clone()
-    }
-
     /// Take-and-clear the effective config staged by the last interception
     /// point. The registry's runner closure consults this right before
     /// deserializing `P::Config`; `None` means "no interception happened —
@@ -1083,6 +1078,10 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     #[derive(Debug)]
+    #[allow(
+        dead_code,
+        reason = "test fixture: presence/type-identity is the assertion surface"
+    )]
     struct LateProbe(pub i32);
     impl Service for LateProbe {}
 
@@ -1430,6 +1429,10 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[derive(Debug)]
+    #[allow(
+        dead_code,
+        reason = "test fixture: presence/type-identity is the assertion surface"
+    )]
     struct C2Prov(u32);
     impl Service for C2Prov {}
 

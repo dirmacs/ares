@@ -46,6 +46,8 @@ pub const INCLUDE_PLUGIN: &str = "@include";
 pub const GROUP_PLUGIN: &str = "@group";
 
 /// Marker opening a Rhai interpolation placeholder inside a config string.
+/// Used only by the `#[cfg(feature = "rhai")]` interpolation walker.
+#[cfg(feature = "rhai")]
 const INTERP_OPEN: &str = "${rhai:";
 
 /// TOML wrapper for included files — same `[[entry]]` schema as the loader.

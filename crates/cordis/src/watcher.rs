@@ -513,6 +513,10 @@ mod tests {
         let reflect = ctx.provide(ReflectService::new());
         // c. register notifier + dependent fiber for a test TypeId
         #[derive(Debug)]
+        #[allow(
+            dead_code,
+            reason = "test fixture: presence/type-identity is the assertion surface"
+        )]
         struct E2ESvc(i32);
         impl Service for E2ESvc {}
 
@@ -990,6 +994,10 @@ mod tests {
         let registry = ctx.provide(crate::PluginRegistry::new());
 
         #[derive(Debug)]
+        #[allow(
+            dead_code,
+            reason = "test fixture: presence/type-identity is the assertion surface"
+        )]
         struct Probe(u64);
         impl crate::Service for Probe {}
         registry.register(

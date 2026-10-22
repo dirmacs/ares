@@ -224,7 +224,9 @@ impl CycleLedger {
         ids.into_iter().collect()
     }
 
-    /// Entry id owning `fid`, if recorded.
+    /// Entry id owning `fid`, if recorded. Test-only: the only caller is
+    /// loader's move_entry test asserting the ledger follows re-keys.
+    #[cfg(test)]
     pub(crate) fn entry_id_of(&self, fid: FiberId) -> Option<String> {
         self.fibers.read().get(&fid).cloned()
     }

@@ -2812,9 +2812,17 @@ disabled = false
         let plugin_registry = ctx.provide(crate::PluginRegistry::new());
 
         #[derive(Debug)]
+        #[allow(
+            dead_code,
+            reason = "test fixture: presence/type-identity is the assertion surface"
+        )]
         struct SvcA(u64);
         impl Service for SvcA {}
         #[derive(Debug)]
+        #[allow(
+            dead_code,
+            reason = "test fixture: presence/type-identity is the assertion surface"
+        )]
         struct SvcB(u64);
         impl Service for SvcB {}
 
@@ -2892,6 +2900,10 @@ disabled = false
         let plugin_registry = ctx.provide(crate::PluginRegistry::new());
 
         #[derive(Debug)]
+        #[allow(
+            dead_code,
+            reason = "test fixture: presence/type-identity is the assertion surface"
+        )]
         struct Good(std::sync::atomic::AtomicU64);
         impl Service for Good {}
 
@@ -3246,6 +3258,10 @@ disabled = false
         let plugin_registry = ctx.provide(crate::PluginRegistry::new());
 
         #[derive(Debug)]
+        #[allow(
+            dead_code,
+            reason = "test fixture: presence/type-identity is the assertion surface"
+        )]
         struct Keeper(u64);
         impl Service for Keeper {}
 
@@ -3318,6 +3334,10 @@ disabled = false
         let plugin_registry = ctx.provide(crate::PluginRegistry::new());
 
         #[derive(Debug)]
+        #[allow(
+            dead_code,
+            reason = "test fixture: presence/type-identity is the assertion surface"
+        )]
         struct Fallback(u64);
         impl Service for Fallback {}
 
@@ -3549,9 +3569,17 @@ plugin = "Bar"
         use crate::{Plugin, RegistryService};
 
         #[derive(Debug)]
+        #[allow(
+            dead_code,
+            reason = "test fixture: presence/type-identity is the assertion surface"
+        )]
         struct SvcA(u32);
         impl Service for SvcA {}
         #[derive(Debug)]
+        #[allow(
+            dead_code,
+            reason = "test fixture: presence/type-identity is the assertion surface"
+        )]
         struct SvcB(u32);
         impl Service for SvcB {}
 
@@ -3618,12 +3646,24 @@ plugin = "Bar"
         use crate::{Plugin, RegistryService};
 
         #[derive(Debug)]
+        #[allow(
+            dead_code,
+            reason = "test fixture: presence/type-identity is the assertion surface"
+        )]
         struct SvcA(u32);
         impl Service for SvcA {}
         #[derive(Debug)]
+        #[allow(
+            dead_code,
+            reason = "test fixture: presence/type-identity is the assertion surface"
+        )]
         struct SvcB(u32);
         impl Service for SvcB {}
 
+        #[allow(
+            dead_code,
+            reason = "test fixture: presence/type-identity is the assertion surface"
+        )]
         struct PluginA;
         impl Plugin for PluginA {
             type Config = serde_json::Value;
@@ -3637,6 +3677,10 @@ plugin = "Bar"
             }
         }
 
+        #[allow(
+            dead_code,
+            reason = "test fixture: presence/type-identity is the assertion surface"
+        )]
         struct PluginB;
         impl Plugin for PluginB {
             type Config = serde_json::Value;
@@ -3819,6 +3863,10 @@ plugin = "Bar"
         use crate::RegistryService;
 
         #[derive(Debug)]
+        #[allow(
+            dead_code,
+            reason = "test fixture: presence/type-identity is the assertion surface"
+        )]
         struct Keeper(u64);
         impl Service for Keeper {}
 
@@ -4224,6 +4272,10 @@ plugin = "Bar"
             Arc::new(|ctx: &Arc<crate::Context>, cfg| {
                 let v = cfg.get("v").and_then(|x| x.as_u64()).unwrap_or(0);
                 #[derive(Debug)]
+                #[allow(
+                    dead_code,
+                    reason = "test fixture: presence/type-identity is the assertion surface"
+                )]
                 struct Never(u64);
                 impl crate::Service for Never {}
                 let fut = ctx.plugin(Never(v));
@@ -4314,6 +4366,10 @@ plugin = "Bar"
         let plugin_registry = ctx.provide(crate::PluginRegistry::new());
 
         #[derive(Debug)]
+        #[allow(
+            dead_code,
+            reason = "test fixture: presence/type-identity is the assertion surface"
+        )]
         struct Ordered(AtomicU64);
         impl Service for Ordered {}
 
@@ -4446,6 +4502,10 @@ plugin = "Bar"
         ops.enable_self_kill_persistence(path.clone(), true);
 
         #[derive(Debug)]
+        #[allow(
+            dead_code,
+            reason = "test fixture: presence/type-identity is the assertion surface"
+        )]
         struct Doomed;
         impl Service for Doomed {}
 
@@ -4768,10 +4828,22 @@ plugin = "Bar"
     // --- Entry hierarchy: structural moves ---------------------------------
 
     /// Distinct probe types so sibling entries never collide as providers.
+    #[allow(
+        dead_code,
+        reason = "test fixture: presence/type-identity is the assertion surface"
+    )]
     struct MoveProbe(std::sync::atomic::AtomicU64);
     impl Service for MoveProbe {}
+    #[allow(
+        dead_code,
+        reason = "test fixture: presence/type-identity is the assertion surface"
+    )]
     struct MoveProbeB(std::sync::atomic::AtomicU64);
     impl Service for MoveProbeB {}
+    #[allow(
+        dead_code,
+        reason = "test fixture: presence/type-identity is the assertion surface"
+    )]
     struct MoveProbeC(std::sync::atomic::AtomicU64);
     impl Service for MoveProbeC {}
 

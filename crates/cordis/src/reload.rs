@@ -156,6 +156,10 @@ mod tests {
     }
 
     #[derive(Debug)]
+    #[allow(
+        dead_code,
+        reason = "test fixture: presence/type-identity is the assertion surface"
+    )]
     struct Probe(pub AtomicU64);
     impl crate::Service for Probe {}
 

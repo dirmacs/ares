@@ -2300,12 +2300,6 @@ mod tests {
         allow_gate.dispose();
     }
 
-    fn p_owned(
-        p: serde_json::Value,
-    ) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, CordisError>> + Send>> {
-        Box::pin(async move { Ok(p) })
-    }
-
     /// `internal/dispatch` observes every NON-internal dispatch with
     /// (mode, name, args); meta-event dispatches themselves are exempt
     /// from recursion.

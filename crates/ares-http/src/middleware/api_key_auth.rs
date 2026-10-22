@@ -891,6 +891,192 @@ mod tests {
             "Daily rate limit exceeded"
         );
     }
+    /// A handler that meters exactly like a real run: the production
+    /// `usage_response` emitter, so `track_usage`'s header fallback is the
+    /// one under test (not a hand-rolled header set).
+    async fn metered_handler() -> Response {
+        crate::api::handlers::v1::shared::usage_response(
+            serde_json::json!({"status": "completed"}),
+            3,
+            4,
+            "test-model",
+            "test-provider",
+            "test-agent",
+            true,
+            "reported",
+        )
+    }
+
+    /// Production layer order: db injection (outermost) → API-key auth →
+    /// `track_usage` (innermost, so it observes the `TenantContext` that auth
+    /// inserts and the metered response on the way out).
+    fn build_metered_app(tenant_db: Arc<TenantDb>) -> Router {
+        Router::new()
+            .route("/protected", get(metered_handler))
+            .layer(axum::middleware::from_fn(
+                crate::middleware::usage::track_usage,
+            ))
+            .layer(axum::middleware::from_fn(api_key_auth_middleware))
+            .layer(axum::middleware::from_fn(
+                move |mut req: Request<Body>, next: Next| {
+                    let db = tenant_db.clone();
+                    async move {
+                        req.extensions_mut().insert(db);
+                        next.run(req).await
+                    }
+                },
+            ))
+    }
+
+    /// Authoritative counter read, bypassing the in-memory read cache that
+    /// `get_daily_requests` consults.
+    async fn stored_requests(pool: &sqlx::PgPool, tenant_id: &str, table: &str) -> i64 {
+        // `::bigint` mirrors the production SUM cast in `get_daily_requests`;
+        // a bare SUM over an integer column decodes as NUMERIC.
+        let sql = format!(
+            "SELECT COALESCE(SUM(request_count), 0)::bigint FROM {table} WHERE tenant_id = $1"
+        );
+        sqlx::query_scalar(&sql)
+            .bind(tenant_id)
+            .fetch_one(pool)
+            .await
+            .expect("read counter")
+    }
+
+    async fn usage_event_count(pool: &sqlx::PgPool, tenant_id: &str) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM usage_events WHERE tenant_id = $1")
+            .bind(tenant_id)
+            .fetch_one(pool)
+            .await
+            .expect("count usage events")
+    }
+
+    /// `track_usage` records asynchronously (`tokio::spawn`), so a single
+    /// yield is not enough; poll the table until it settles or the budget
+    /// runs out.
+    async fn wait_for_request_count(pool: &sqlx::PgPool, tenant_id: &str, expected: i64) -> i64 {
+        for _ in 0..200 {
+            let actual = stored_requests(pool, tenant_id, "daily_rate_limits").await;
+            if actual == expected {
+                return actual;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        stored_requests(pool, tenant_id, "daily_rate_limits").await
+    }
+
+    /// Regression (ares#96): real requests must move the quota counters the
+    /// admission gate reads. Pre-fix this is 0 and the assertion fails.
+    #[tokio::test]
+    async fn test_metered_requests_increment_quota_counters() {
+        let _db_guard = DB_TEST_LOCK.lock().await;
+
+        let db = Arc::new(ares_test_support::client().await);
+        let tenant_db = Arc::new(TenantDb::new(db.clone()));
+        let (tenant_id, api_key) = provision_tenant(&tenant_db, "meter-counters").await;
+        let app = build_metered_app(tenant_db);
+
+        const N: i64 = 5;
+        for _ in 0..N {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/protected")
+                        .header("Authorization", format!("Bearer {api_key}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let daily = wait_for_request_count(&db.pool, &tenant_id, N).await;
+        assert_eq!(
+            daily, N,
+            "each metered request must count exactly once toward the daily limit"
+        );
+
+        // Exactly N, not 2N: the counter write must not be duplicated
+        // alongside the `usage_events` insert.
+        let monthly = stored_requests(&db.pool, &tenant_id, "monthly_usage_cache").await;
+        assert_eq!(monthly, N, "monthly counter must match the daily one");
+        assert_eq!(
+            usage_event_count(&db.pool, &tenant_id).await,
+            N,
+            "one usage_events row per request"
+        );
+
+        // Tokens flow too: each response carried 3 + 4.
+        let tokens: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(token_count), 0)::bigint FROM monthly_usage_cache WHERE tenant_id = $1",
+        )
+        .bind(&tenant_id)
+        .fetch_one(&db.pool)
+        .await
+        .expect("read token counter");
+        assert_eq!(tokens, N * 7, "monthly token counter must accumulate");
+    }
+
+    /// End-to-end (ares#96): once the Free daily limit is reached by real
+    /// traffic, the gate denies with 429. Pre-fix the counters never move,
+    /// so the 51st request is still served.
+    #[tokio::test]
+    async fn test_real_traffic_eventually_trips_daily_rate_limit() {
+        let _db_guard = DB_TEST_LOCK.lock().await;
+
+        let db = Arc::new(ares_test_support::client().await);
+        let tenant_db = Arc::new(TenantDb::new(db.clone()));
+        let (tenant_id, api_key) = provision_tenant(&tenant_db, "meter-daily").await;
+        let app = build_metered_app(tenant_db);
+
+        // Free tier allows 50 requests/day.
+        const FREE_DAILY: i64 = 50;
+        let mut statuses = Vec::new();
+        for _ in 0..FREE_DAILY {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/protected")
+                        .header("Authorization", format!("Bearer {api_key}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            statuses.push(response.status().as_u16());
+        }
+        assert!(
+            statuses.iter().all(|s| *s == 200),
+            "the first {FREE_DAILY} requests are within quota: {statuses:?}"
+        );
+
+        wait_for_request_count(&db.pool, &tenant_id, FREE_DAILY).await;
+
+        // The next request must be refused by the gate.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/protected")
+                    .header("Authorization", format!("Bearer {api_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "quota must deny once daily_rate_limits reaches the Free limit"
+        );
+        assert_eq!(
+            response_error_message(response).await,
+            "Daily rate limit exceeded"
+        );
+    }
     #[tokio::test]
     async fn test_middleware_invalid_auth_header_bytes() {
         let _db_guard = DB_TEST_LOCK.lock().await;

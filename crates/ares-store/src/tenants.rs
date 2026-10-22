@@ -491,17 +491,17 @@ impl TenantDb {
         Ok(count)
     }
 
-    /// Revived HTTP metering path: persists one `usage_events` row with an
-    /// explicit `success` bind plus per-key attribution. Failed runs persist
-    /// `success=false` with zeroed counts (caller zeroes); `api_key_id` is
-    /// `None` for non-key writers (scheduler/trigger/pipeline leave it NULL).
-    pub async fn record_usage_event(
+    /// Adds `requests`/`tokens` to the tenant's monthly and daily quota
+    /// counters (`monthly_usage_cache` / `daily_rate_limits`, `+=` on
+    /// conflict), then advances the matching in-memory read caches.
+    /// Both [`Self::record_usage_event`] and the HTTP metering path call it,
+    /// so a request is counted exactly once no matter which persist shape
+    /// wrote its `usage_events` row.
+    pub async fn increment_quota_counters(
         &self,
         tenant_id: &str,
         requests: u64,
         tokens: u64,
-        success: bool,
-        api_key_id: Option<&str>,
     ) -> Result<()> {
         let now = Utc::now();
         let today = now
@@ -520,22 +520,8 @@ impl TenantDb {
             .timestamp();
 
         sqlx::query(
-            "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, success, api_key_id, created_at) VALUES ($1, $2, 'http', $3, $4, $5, $6, $7)"
-        )
-        .bind(uuid::Uuid::new_v4().to_string())
-        .bind(tenant_id)
-        .bind(requests as i64)
-        .bind(tokens as i64)
-        .bind(success)
-        .bind(api_key_id)
-        .bind(now.timestamp())
-        .execute(&self.postgres.pool)
-        .await
-        .map_err(|e| AppError::Database(format!("Failed to record usage event: {}", e)))?;
-
-        sqlx::query(
             "INSERT INTO monthly_usage_cache (tenant_id, usage_month, request_count, token_count) VALUES ($1, $2, $3, $4)
-             ON CONFLICT(tenant_id, usage_month) DO UPDATE SET 
+             ON CONFLICT(tenant_id, usage_month) DO UPDATE SET
              request_count = monthly_usage_cache.request_count + $5, token_count = monthly_usage_cache.token_count + $6"
         )
         .bind(tenant_id)
@@ -550,7 +536,7 @@ impl TenantDb {
 
         sqlx::query(
             "INSERT INTO daily_rate_limits (tenant_id, usage_date, request_count) VALUES ($1, $2, $3)
-             ON CONFLICT(tenant_id, usage_date) DO UPDATE SET 
+             ON CONFLICT(tenant_id, usage_date) DO UPDATE SET
              request_count = daily_rate_limits.request_count + $4"
         )
         .bind(tenant_id)
@@ -578,6 +564,39 @@ impl TenantDb {
                 *count += requests;
             }
         }
+
+        Ok(())
+    }
+
+    /// Revived HTTP metering path: persists one `usage_events` row with an
+    /// explicit `success` bind plus per-key attribution. Failed runs persist
+    /// `success=false` with zeroed counts (caller zeroes); `api_key_id` is
+    /// `None` for non-key writers (scheduler/trigger/pipeline leave it NULL).
+    pub async fn record_usage_event(
+        &self,
+        tenant_id: &str,
+        requests: u64,
+        tokens: u64,
+        success: bool,
+        api_key_id: Option<&str>,
+    ) -> Result<()> {
+        let now = Utc::now();
+
+        sqlx::query(
+            "INSERT INTO usage_events (id, tenant_id, source, request_count, token_count, success, api_key_id, created_at) VALUES ($1, $2, 'http', $3, $4, $5, $6, $7)"
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(tenant_id)
+        .bind(requests as i64)
+        .bind(tokens as i64)
+        .bind(success)
+        .bind(api_key_id)
+        .bind(now.timestamp())
+        .execute(&self.postgres.pool)
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to record usage event: {}", e)))?;
+        self.increment_quota_counters(tenant_id, requests, tokens)
+            .await?;
 
         Ok(())
     }

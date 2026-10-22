@@ -24,7 +24,9 @@
 //!   order and is emitted as a side map keyed by entity id, never inside
 //!   an `Entry` ([`codegen::compile_harness`], [`codegen::required_services`]);
 //! - the reactive **`watch` / `on change of` parser-level desugar** into
-//!   ordinary `when` nodes ([`parser`]).
+//!   ordinary `when` nodes ([`parser`]);
+//! - [`reconcile`]: the `reconcile` diff plus [`reconcile::dry_run`], mirroring
+//!   Eval.lean:521 with the composition order the paper proves.
 //!
 //! Not implemented (out of scope for this crate):
 //!
@@ -52,3 +54,4 @@ pub mod ast;
 pub mod codegen;
 pub mod lexer;
 pub mod parser;
+pub mod reconcile;

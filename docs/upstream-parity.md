@@ -217,6 +217,8 @@ Each row expands below with the claim, the rationale, and the evidence.
 - Detail: observers run inline under the short state-lock critical section and MUST NOT call back into the fiber.
 - Detail: observer panics are caught, so one broken observer cannot corrupt a transition; cancelled subscriptions are pruned on the next event.
 - Rationale: tooling (admin surfaces, tests, supervision) needs transitions as they happen, not just polling after quiescence.
+- Source: `Fiber::subscribe_state` in `crates/cordis/src/fiber.rs`; consumer in `crates/cordis/src/loader.rs`
+- Tests: `observer_sees_unloading_pending_active_sequence`
 
 ### 14. Kernel operations are interceptable through meta-events
 

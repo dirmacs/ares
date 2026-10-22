@@ -27,7 +27,7 @@ This file is the audit ledger for those decisions.
 | 10 | Dependency withdrawal | Genuine loss rests working fibers `Pending` (reversible); apply errors stay terminal `Failed` |
 | 11 | Dispatch participation knobs | `EventOptions{prepend,global}` + `emit_filtered`; filters never exclude global listeners |
 | 12 | Reads during transitions | Strict `get` refuses transitioning owners; `get_relaxed` is the explicit opt-in |
-
+| 13 | Fiber state observers | `Fiber::subscribe_state` fans every lifecycle transition out to synchronous observers; they run inline under the short state-lock and MUST NOT call back into the fiber |
 | 14 | Kernel operations are interceptable | Five meta-events veto or rewrite kernel ops; unregistered path stays zero-cost; sync bridges fall open |
 | 15 | Readiness gates wait quietly | Closed `ready_when` barriers rest fibers `Pending` (never `Failed`); availability predicates remain the loud path |
 | 16 | Config cascades batch | Concurrent provider updates collapse to one dependent convergence wave |

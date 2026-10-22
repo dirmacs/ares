@@ -16,6 +16,7 @@
 - [Command Line Interface](cli.md)
 - [HTTP API](http-api.md)
 - [ARES as a Library](library.md)
+- [Suriv](suriv.md)
 
 # The Cordis Kernel
 

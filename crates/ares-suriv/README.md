@@ -14,6 +14,12 @@ Layout: `lexer.rs` (closed phrase table → tokens, prose fallback) →
 `tests/fixtures/customer-support.suriv`, byte-verbatim; reactive desugar
 tests over `tests/fixtures/billing-flap.suriv`.
 
+## Onboarding
+
+The book's Suriv page, `docs/src/suriv.md`, is the onboarding guide for the
+language: the surface syntax, how to compile a harness, and this crate's
+scope against the loader's.
+
 ## Scope
 
 Implements: the system-prompt definition, the entry compiler $cal(C)$, the

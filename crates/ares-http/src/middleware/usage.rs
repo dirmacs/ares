@@ -33,11 +33,13 @@ pub async fn track_usage(mut req: Request, next: Next) -> Response {
         .and_then(|u| u.snapshot())
         .or_else(|| parse_metering_headers(response.headers()));
     if let (Some(snapshot), Some(tid), Some(db)) = (snapshot, tenant_id, tenant_db) {
-        let pool = db.pool().clone();
         let tenant_id = usage.as_ref().map(|u| u.tenant_id.clone()).unwrap_or(tid);
         let api_key_id = usage.as_ref().and_then(|u| u.api_key_id.clone());
         tokio::spawn(async move {
-            let _ = record_usage_params(&tenant_id, api_key_id.as_deref(), &snapshot, &pool).await;
+            // Quota counters ride the same persist step as the event row:
+            // the gate reads the caches, so a request that writes only the
+            // row is never counted (ares#96).
+            let _ = record_usage_params(&tenant_id, api_key_id.as_deref(), &snapshot, &db).await;
         });
     }
 
@@ -272,7 +274,7 @@ async fn record_usage_params(
     tenant_id: &str,
     api_key_id: Option<&str>,
     snapshot: &MeteringSnapshot,
-    pool: &sqlx::PgPool,
+    db: &TenantDb,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let params = usage_event_params_with_key(tenant_id, api_key_id, snapshot);
 
@@ -298,8 +300,19 @@ async fn record_usage_params(
     .bind(params.api_key_id)
     .bind(params.reason_code)
     .bind(chrono::Utc::now().timestamp())
-    .execute(pool)
+    .execute(db.pool())
     .await?;
+    // The gate reads the caches, not the event row: without this increment
+    // the request is recorded but never counted, and no quota can deny.
+    // Same `+=` writer `record_usage_event` uses — one increment per
+    // request, matching the `request_count` of the row above.
+    db.increment_quota_counters(
+        tenant_id,
+        params.request_count.max(0) as u64,
+        params.token_count.max(0) as u64,
+    )
+    .await
+    .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
     Ok(())
 }
 

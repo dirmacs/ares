@@ -140,7 +140,7 @@ pub fn ChatMessage(message: Message) -> impl IntoView {
     }
 }
 
-fn parts_preview(parts: &[ContentPart], message_content: &str) -> impl IntoView {
+fn parts_preview(parts: &[ContentPart], message_content: &str) -> impl IntoView + use<> {
     let views: Vec<_> = parts
         .iter()
         .filter_map(|part| match part {

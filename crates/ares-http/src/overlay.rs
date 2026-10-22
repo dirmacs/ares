@@ -9,7 +9,7 @@
 //! Use `AresConfigManager` for thread-safe access to the current configuration.
 
 use arc_swap::ArcSwap;
-use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::RecommendedWatcher;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::any::TypeId;
@@ -17,9 +17,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::config::{AuthConfig, ServerConfig};
 pub use ares_agent::{AgentConfig, SkillsTomlConfig, WorkflowConfig};
@@ -28,6 +27,7 @@ pub use ares_rag::{
     HybridWeightsConfig, RAGVectorConfig, RagChunkingConfig, RagConfig, RagRerankingConfig,
     RagSearchConfig,
 };
+#[cfg(test)]
 use ares_store::default_qdrant_url;
 pub use ares_store::{BillingConfig, DatabaseConfig, ModelPricingConfig, QdrantConfig};
 pub use ares_tools::ToolConfig;

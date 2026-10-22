@@ -13,7 +13,6 @@ use axum::{
     Json,
     extract::{Path, Query, State},
 };
-use sha2::Digest;
 
 pub async fn list_llm_calls(
     State(ctx): State<Arc<Context>>,
@@ -548,8 +547,6 @@ pub async fn get_cache_hit_stats(
     let stats = store.cache_hit_stats().await?;
     Ok(Json(stats))
 }
-
-use ::cordis::Service;
 
 #[cfg(test)]
 mod unit_rate_source_tests {

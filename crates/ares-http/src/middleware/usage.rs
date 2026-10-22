@@ -47,8 +47,9 @@ pub async fn track_usage(mut req: Request, next: Next) -> Response {
 }
 
 /// Parsed metering fields from response headers (no database I/O).
+/// Public: named in `UsageContext::record`/`snapshot` signatures, and `UsageContext` is public.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct MeteringSnapshot {
+pub struct MeteringSnapshot {
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub token_count: i64,
@@ -150,10 +151,6 @@ pub(crate) fn has_metering_headers(headers: &axum::http::HeaderMap) -> bool {
 
 /// Maps a completion status to the `success` bind. Only `completed` bills as
 /// success; every other status (`failed`, `error`, `cancelled`) is failure.
-pub(crate) fn metering_success(status: &str) -> bool {
-    status == "completed"
-}
-
 /// Parses the `x-success` header. Missing means success (backwards compat for
 /// emitters that predate the flag); explicit `false`/`0` means failure.
 pub(crate) fn parse_success_header(headers: &axum::http::HeaderMap) -> bool {
@@ -224,6 +221,8 @@ pub(crate) fn parse_metering_headers(headers: &axum::http::HeaderMap) -> Option<
 }
 
 /// Extracts metering data from response headers (alias for [`parse_metering_headers`]).
+// Test-only: exercised solely by the metering tests below.
+#[cfg(test)]
 pub(crate) fn extract_metering_from_response(
     headers: &axum::http::HeaderMap,
 ) -> Option<MeteringSnapshot> {
@@ -231,6 +230,8 @@ pub(crate) fn extract_metering_from_response(
 }
 
 /// Builds INSERT bind parameters from a tenant id and metering snapshot.
+// Test-only: exercised solely by the metering tests below.
+#[cfg(test)]
 pub(crate) fn usage_event_params(tenant_id: &str, snapshot: &MeteringSnapshot) -> UsageEventParams {
     usage_event_params_with_key(tenant_id, None, snapshot)
 }
@@ -260,6 +261,8 @@ pub(crate) fn usage_event_params_with_key(
 
 /// Reads intercepted [`UsageContext`] and maps its snapshot to INSERT params,
 /// threading per-key attribution from the context.
+// Test-only: exercised solely by the metering tests below.
+#[cfg(test)]
 pub(crate) fn usage_event_params_from_ctx(ctx: &Arc<Context>) -> Option<UsageEventParams> {
     let usage = ctx.get::<UsageContext>()?;
     let snapshot = usage.snapshot()?;
@@ -620,6 +623,7 @@ mod tests {
 
     #[test]
     fn metering_success_only_completed_is_success() {
+        use crate::api::handlers::v1::shared::metering_success;
         assert!(metering_success("completed"));
         assert!(!metering_success("failed"));
         assert!(!metering_success("error"));

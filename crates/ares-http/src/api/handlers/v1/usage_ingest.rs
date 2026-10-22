@@ -18,8 +18,6 @@
 //!   itself consume quota. Ingested rows carry `source = 'ingest'` and do
 //!   not touch the monthly quota cache or daily rate limits.
 
-use super::*;
-
 use std::sync::Arc;
 
 use ares_store::tenant_agents;

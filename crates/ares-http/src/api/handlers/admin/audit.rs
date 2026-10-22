@@ -17,7 +17,6 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
 };
-use sha2::Digest;
 use std::sync::Arc;
 
 pub async fn list_alerts(
@@ -526,5 +525,3 @@ pub async fn stream_active_runs(
             .text("keep-alive"),
     )
 }
-
-use ::cordis::Service;

@@ -1,6 +1,10 @@
-use ares_agent::admit::{AdmissionError, UsagePeriod, admit_with_details, quota_exceeded};
+#[cfg(test)]
+use ares_agent::admit::quota_exceeded;
+use ares_agent::admit::{AdmissionError, UsagePeriod, admit_with_details};
 use ares_store::tenants::TenantDb;
-use ares_types::models::{QuotaExceeded, TenantContext};
+use ares_types::models::QuotaExceeded;
+#[cfg(test)]
+use ares_types::models::TenantContext;
 use axum::{
     Json,
     extract::Request,
@@ -9,6 +13,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use cordis::{Context, EventsService};
+#[cfg(test)]
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -37,6 +42,8 @@ impl ApiKeyAuthError {
     }
 }
 
+// Test-only: only constructed in the auth-error round-trip tests below.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ErrorResponseBody {
     pub error: String,
@@ -71,6 +78,8 @@ pub(crate) fn parse_bearer_api_key(auth_str: &str) -> Result<&str, ApiKeyAuthErr
     Ok(api_key)
 }
 
+// Test-only: thin wrapper over ares_agent quota_exceeded; production calls the agent fn directly.
+#[cfg(test)]
 pub(crate) fn check_quota(
     tenant_ctx: &TenantContext,
     monthly_usage: u64,
@@ -187,6 +196,8 @@ pub async fn api_key_auth_middleware(req: Request, next: Next) -> Response {
 /// from its arguments and defers to `TenantContext::allows_endpoint`
 /// rather than keeping a second, independently-maintained table (the
 /// ruling's rejected option (c) — two sources of truth for authorisation).
+// Test-only: scope-table probe; production authorises via TenantContext::allows_endpoint inline.
+#[cfg(test)]
 pub(crate) fn scope_allows(scopes: &str, method: &str, path: &str) -> bool {
     use ares_types::models::{TenantContext, TenantTier};
     TenantContext::with_key(

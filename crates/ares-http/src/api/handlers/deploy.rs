@@ -365,21 +365,18 @@ mod tests {
     #[cfg(test)]
     mod handler_tests {
         use super::*;
-        use crate::auth::jwt::AuthService;
+
+        use crate::AresConfigManager;
         use crate::config::{AuthConfig, ServerConfig};
         use crate::overlay::{
             AgentConfig, AresConfig, BillingConfig, DatabaseConfig, DynamicConfigPaths,
             ModelConfig, ProviderConfig, RagConfig,
         };
-        use crate::{AresConfigManager, DynamicConfigManager};
-        use ares_agent::AgentRegistry;
-        use ares_agent::context_provider::NoOpContextProvider;
-        use ares_llm::ProviderRegistry;
-        use ares_store::{PostgresClient, TenantDb};
+
+        use ares_store::PostgresClient;
         use cordis::Context;
         use std::collections::HashMap;
         use std::sync::Arc;
-        use std::sync::atomic::AtomicBool;
 
         fn minimal_config() -> AresConfig {
             let mut providers = HashMap::new();

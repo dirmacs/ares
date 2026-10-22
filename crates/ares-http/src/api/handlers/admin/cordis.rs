@@ -424,6 +424,7 @@ pub async fn cordis_logs() -> crate::Result<(StatusCode, Json<serde_json::Value>
     Ok((StatusCode::OK, Json(serde_json::json!({ "logs": logs }))))
 }
 
+#[cfg(test)]
 use ::cordis::Service;
 
 /// Shared apply flow behind the reload endpoint and the entries mutations.
@@ -1359,6 +1360,10 @@ mod tests {
     }
 
     #[derive(Debug)]
+    #[allow(
+        dead_code,
+        reason = "test fixture: presence/type-identity is the assertion surface"
+    )]
     struct BarService(u64);
     impl ::cordis::Service for BarService {}
 
@@ -1474,6 +1479,10 @@ mod tests {
         let registry = ctx.provide(cordis::PluginRegistry::new());
 
         #[derive(Debug)]
+        #[allow(
+            dead_code,
+            reason = "test fixture: presence/type-identity is the assertion surface"
+        )]
         struct Probe(u64);
         impl Service for Probe {}
         registry.register(
@@ -1613,8 +1622,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn list_cordis_entries_reports_current_and_pending_diff() {
-        use cordis::loader::EntryTree;
-
         let toml_body = format!(
             "{CALC_TOML_BLOCK}\n[[entry]]\nid = \"calc2\"\nplugin = \"CalculatorService\"\ndisabled = false\n\n[entry.config]\n"
         );
@@ -1644,8 +1651,6 @@ mod tests {
     /// an empty array.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn list_cordis_entries_reports_dependency_cycles_key() {
-        use cordis::loader::EntryTree;
-
         let (ctx, dir) = build_entries_fixture(
             "list-cycles",
             CALC_TOML_BLOCK,
@@ -1667,8 +1672,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn put_cordis_entry_appends_and_applies_and_keeps_header() {
-        use cordis::loader::EntryTree;
-
         let header_toml = format!(
             "# Cordis plugin entries loaded at startup.\n# Order matters.\n\n{CALC_TOML_BLOCK}"
         );
@@ -1705,8 +1708,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn delete_cordis_entry_removes_and_applies() {
-        use cordis::loader::EntryTree;
-
         let (ctx, dir) =
             build_entries_fixture("delete", CALC_TOML_BLOCK, vec![probe_entry("calc", false)]);
 
@@ -1740,8 +1741,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn toggle_cordis_entry_flips_disabled_state() {
-        use cordis::loader::EntryTree;
-
         let (ctx, _dir) =
             build_entries_fixture("toggle", CALC_TOML_BLOCK, vec![probe_entry("calc", false)]);
 
@@ -1799,7 +1798,7 @@ mod tests {
     /// lets the key become unprovided.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn replace_endpoint_replaces_known_plugin() {
-        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::atomic::Ordering;
 
         // Empty CURRENT tree: boot-apply must diff to a Begin that
         // instantiates the provider and journals its live fiber.
@@ -1964,8 +1963,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn put_cordis_entry_rejects_blank_plugin() {
-        use cordis::loader::EntryTree;
-
         let (ctx, dir) = build_entries_fixture("put-blank", "", vec![]);
 
         let mut bad = probe_entry("x", false);
@@ -2207,6 +2204,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn patch_endpoint_moves_entry() {
         /// Second probe type so grp/svc never collide as duplicate providers.
+        #[allow(
+            dead_code,
+            reason = "test fixture: presence/type-identity is the assertion surface"
+        )]
         struct Anchor(std::sync::atomic::AtomicU64);
         impl ::cordis::Service for Anchor {}
 
@@ -2822,6 +2823,10 @@ mod event_metrics_tests {
     #[tokio::test]
     async fn cordis_undo_labels_lists_pending_and_flags_disposed() {
         #[derive(Debug)]
+        #[allow(
+            dead_code,
+            reason = "test fixture: presence/type-identity is the assertion surface"
+        )]
         struct UndoProbe(u64);
         impl ::cordis::Service for UndoProbe {}
         struct UndoProbePlugin;
@@ -2888,6 +2893,10 @@ mod event_metrics_tests {
     #[tokio::test]
     async fn cordis_services_lists_tracked_fibers_with_state() {
         #[derive(Debug)]
+        #[allow(
+            dead_code,
+            reason = "test fixture: presence/type-identity is the assertion surface"
+        )]
         struct NotReadyProbe(u64);
         // Availability predicate `false` → registration rests Failed.
         impl ::cordis::Service for NotReadyProbe {
@@ -2908,6 +2917,10 @@ mod event_metrics_tests {
             }
         }
         #[derive(Debug)]
+        #[allow(
+            dead_code,
+            reason = "test fixture: presence/type-identity is the assertion surface"
+        )]
         struct ReadyProbe(u64);
         impl ::cordis::Service for ReadyProbe {}
         struct ReadyPlugin;

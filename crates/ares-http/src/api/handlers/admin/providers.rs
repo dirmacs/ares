@@ -15,7 +15,6 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
 };
-use sha2::Digest;
 
 pub async fn list_models_handler(State(ctx): State<Arc<Context>>) -> Result<Json<Vec<ModelInfo>>> {
     Ok(Json(
@@ -184,5 +183,3 @@ pub async fn delete_runtime_provider(
 
     Ok(StatusCode::NO_CONTENT)
 }
-
-use ::cordis::Service;

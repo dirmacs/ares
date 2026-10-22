@@ -13,7 +13,7 @@ use ares_store::agent_runs;
 use ares_store::run_history::{redact_agent_run_error, tenant_no_retain};
 use ares_types::models::TenantContext;
 use ares_types::types::{
-    AgentContext, AgentType, AppError, ChatRequest, ChatResponse, ResearchRequest, ResearchResponse,
+    AgentContext, AgentType, AppError, ChatRequest, ResearchRequest, ResearchResponse,
 };
 use axum::{
     Json,
@@ -470,7 +470,6 @@ pub async fn v1_research(
 }
 
 // cordis Phase6: RouteSet Service
-use cordis::Service;
 
 #[cfg(test)]
 mod tests {

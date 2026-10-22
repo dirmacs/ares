@@ -9,8 +9,8 @@ use crate::{
         AgentContext, AgentType, AppError, ChatRequest, ChatResponse, Claims, MessageRole,
         UserMemory,
     },
-    utils::toml_config::AgentConfig,
 };
+#[cfg(test)]
 use ares_store::postgres::UserAgent;
 use axum::{
     Extension, Json,
@@ -106,26 +106,6 @@ async fn intercept_jwt_tenant(
         &ctx,
         ares_types::models::TenantContext::new(tenant_id, tier),
     )
-}
-
-/// Converts a resolved user agent record into runtime agent configuration.
-fn agent_config_from_user_agent(user_agent: &UserAgent) -> AgentConfig {
-    AgentConfig {
-        model: user_agent.model.clone(),
-        system_prompt: user_agent.system_prompt.clone(),
-        tools: user_agent.tools_vec(),
-        max_tool_iterations: user_agent.max_tool_iterations as usize,
-        parallel_tools: user_agent.parallel_tools,
-        allowed_tools: None,
-        extra: std::collections::HashMap::new(),
-        compaction_enabled: None,
-        temperature: None,
-        max_tokens: None,
-        stop: None,
-        top_p: None,
-        frequency_penalty: None,
-        presence_penalty: None,
-    }
 }
 
 /// Returns user memory when facts or preferences are present.
@@ -957,28 +937,6 @@ mod tests {
 
     use chrono::Utc;
 
-    fn sample_user_agent(tools_json: &str) -> UserAgent {
-        UserAgent {
-            id: "ua-1".into(),
-            user_id: "user-1".into(),
-            name: "finance".into(),
-            display_name: None,
-            description: None,
-            model: "fast".into(),
-            system_prompt: Some("You are finance.".into()),
-            tools: tools_json.into(),
-            max_tool_iterations: 5,
-            parallel_tools: true,
-            extra: "{}".into(),
-            is_public: false,
-            usage_count: 0,
-            rating_sum: 0,
-            rating_count: 0,
-            created_at: 1_700_000_000,
-            updated_at: 1_700_000_100,
-        }
-    }
-
     fn sample_preference() -> Preference {
         Preference {
             category: "communication".into(),
@@ -1169,9 +1127,36 @@ mod tests {
         assert!(ensure_emergency_stop_inactive(&active).is_ok());
     }
 
+    fn sample_user_agent(tools_json: &str) -> UserAgent {
+        UserAgent {
+            id: "ua-1".into(),
+            user_id: "user-1".into(),
+            name: "finance".into(),
+            display_name: None,
+            description: None,
+            model: "fast".into(),
+            system_prompt: Some("You are finance.".into()),
+            tools: tools_json.into(),
+            max_tool_iterations: 5,
+            parallel_tools: true,
+            extra: "{}".into(),
+            is_public: false,
+            usage_count: 0,
+            rating_sum: 0,
+            rating_count: 0,
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_100,
+        }
+    }
+
+    // Behavior tests for ares_agent::configurable::agent_config_from_user_agent
+    // (the owning crate has the fn but no tests for these behaviors).
+    #[cfg(feature = "postgres")]
     #[test]
     fn agent_config_from_user_agent_extracts_tools_and_model() {
-        let config = agent_config_from_user_agent(&sample_user_agent(r#"["search","calculator"]"#));
+        let config = ares_agent::configurable::agent_config_from_user_agent(&sample_user_agent(
+            r#"["search","calculator"]"#,
+        ));
         assert_eq!(config.tools, vec!["search", "calculator"]);
         assert_eq!(config.model, "fast");
         assert_eq!(config.max_tool_iterations, 5);
@@ -1180,25 +1165,29 @@ mod tests {
         assert!(config.extra.is_empty());
     }
 
+    #[cfg(feature = "postgres")]
     #[test]
     fn agent_config_from_user_agent_tolerates_invalid_tools_json() {
-        let config = agent_config_from_user_agent(&sample_user_agent("not-json"));
+        let config =
+            ares_agent::configurable::agent_config_from_user_agent(&sample_user_agent("not-json"));
         assert!(config.tools.is_empty());
     }
 
+    #[cfg(feature = "postgres")]
     #[test]
     fn agent_config_from_user_agent_honors_parallel_tools_false() {
         let mut agent = sample_user_agent("[]");
         agent.parallel_tools = false;
-        let config = agent_config_from_user_agent(&agent);
+        let config = ares_agent::configurable::agent_config_from_user_agent(&agent);
         assert!(!config.parallel_tools);
     }
 
+    #[cfg(feature = "postgres")]
     #[test]
     fn agent_config_from_user_agent_handles_missing_system_prompt() {
         let mut agent = sample_user_agent("[]");
         agent.system_prompt = None;
-        let config = agent_config_from_user_agent(&agent);
+        let config = ares_agent::configurable::agent_config_from_user_agent(&agent);
         assert!(config.system_prompt.is_none());
     }
 

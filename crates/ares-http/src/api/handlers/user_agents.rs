@@ -89,6 +89,8 @@ pub(crate) fn parse_tools_field(tools: &str) -> Vec<String> {
 }
 
 /// Parse the JSON-encoded extra column into a map (invalid JSON → empty).
+/// Test-only: exercised solely by the parse tests below.
+#[cfg(test)]
 pub(crate) fn parse_extra_config(extra: &str) -> HashMap<String, serde_json::Value> {
     serde_json::from_str(extra).unwrap_or_default()
 }

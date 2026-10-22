@@ -201,8 +201,8 @@ impl<'a> RuntimeToolStore<'a> {
             ));
         }
         validate_runtime_tool_scope(req.enabled, req.is_public, req.tenant_id.as_deref())?;
-        check_tenant_reference(&self.pool, "created_by", req.created_by.as_deref()).await?;
-        check_tenant_reference(&self.pool, "tenant_id", req.tenant_id.as_deref()).await?;
+        check_tenant_reference(self.pool, "created_by", req.created_by.as_deref()).await?;
+        check_tenant_reference(self.pool, "tenant_id", req.tenant_id.as_deref()).await?;
 
         let id = uuid::Uuid::new_v4().to_string();
 
@@ -273,8 +273,8 @@ impl<'a> RuntimeToolStore<'a> {
             .clone()
             .unwrap_or_else(|| existing.tenant_id.clone());
         validate_runtime_tool_scope(enabled, is_public, tenant_id.as_deref())?;
-        check_tenant_reference(&self.pool, "created_by", created_by.as_deref()).await?;
-        check_tenant_reference(&self.pool, "tenant_id", tenant_id.as_deref()).await?;
+        check_tenant_reference(self.pool, "created_by", created_by.as_deref()).await?;
+        check_tenant_reference(self.pool, "tenant_id", tenant_id.as_deref()).await?;
         let new_version = existing.version + 1;
 
         let mut tx = self.pool.begin().await.map_err(sqlx_err)?;

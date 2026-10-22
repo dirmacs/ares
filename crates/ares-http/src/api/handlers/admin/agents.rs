@@ -27,7 +27,6 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
 };
-use sha2::Digest;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -1054,5 +1053,3 @@ pub async fn emergency_stop_handler(
 
     Ok(Json(emergency_stop_status(payload.active)))
 }
-
-use ::cordis::Service;

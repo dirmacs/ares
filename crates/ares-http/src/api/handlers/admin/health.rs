@@ -15,7 +15,6 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
 };
-use sha2::Digest;
 
 pub async fn list_health_metrics(
     State(ctx): State<Arc<Context>>,
@@ -179,5 +178,3 @@ pub async fn delete_tenant_model_tier(
 
     Ok(StatusCode::NO_CONTENT)
 }
-
-use ::cordis::Service;

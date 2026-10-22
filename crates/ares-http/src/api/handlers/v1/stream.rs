@@ -7,19 +7,17 @@ use std::sync::Arc;
 
 use crate::HttpError;
 use crate::Result;
-use ares_agent::Agent;
-use ares_agent::tenant_agent;
-use ares_store::agent_runs;
-use ares_store::run_history::{LogToolCallRequest, RunHistoryStore};
+#[cfg(test)]
+use ares_store::run_history::LogToolCallRequest;
 use ares_types::models::TenantContext;
-use ares_types::types::ToolDefinition;
 use axum::{
     Json,
     extract::{Extension, Path, Query, State},
 };
-use chrono::{TimeZone, Utc};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+// Test-only: exercised solely by shared.rs persistence tests.
+#[cfg(test)]
 pub(crate) struct SandboxToolTraceSpec {
     pub(crate) name: String,
     pub(crate) tool_type: String,
@@ -32,38 +30,7 @@ fn tenant_id_for_sandbox(ctx: &Arc<Context>) -> String {
         .unwrap_or_default()
 }
 
-fn sandbox_tool_trace_specs(
-    tools: &ares_tools::Tools,
-    ctx: &Arc<Context>,
-    tool_defs: &[ToolDefinition],
-) -> Vec<SandboxToolTraceSpec> {
-    tool_defs
-        .iter()
-        .map(|tool| SandboxToolTraceSpec {
-            name: tool.name.clone(),
-            tool_type: tools
-                .tool_type(ctx, &tool.name)
-                .unwrap_or_else(|| "mcp".to_string()),
-        })
-        .collect()
-}
-
-fn sandbox_tool_trace_specs_from_ctx(
-    ctx: &Arc<Context>,
-    tool_defs: &[ToolDefinition],
-) -> Vec<SandboxToolTraceSpec> {
-    match ctx.get::<ares_tools::Tools>() {
-        Some(tools) => sandbox_tool_trace_specs(tools.as_ref(), ctx, tool_defs),
-        None => tool_defs
-            .iter()
-            .map(|tool| SandboxToolTraceSpec {
-                name: tool.name.clone(),
-                tool_type: "mcp".to_string(),
-            })
-            .collect(),
-    }
-}
-
+#[cfg(test)]
 pub(crate) fn sandbox_tool_call_requests(
     run_id: &str,
     tenant_id: &str,
@@ -144,7 +111,6 @@ pub async fn semantic_search(
 }
 
 // cordis Phase6: RouteSet Service
-use cordis::Service;
 
 #[cfg(test)]
 mod tests {

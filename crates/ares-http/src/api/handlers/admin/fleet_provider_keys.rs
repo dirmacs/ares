@@ -13,7 +13,6 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use sha2::Digest;
 
 pub async fn upsert_fleet_provider(
     State(ctx): State<Arc<Context>>,
@@ -323,5 +322,3 @@ pub async fn fleet_provider_capabilities() -> Json<FleetProviderCapabilities> {
         encryption_enabled: MasterKey::from_env().is_some(),
     })
 }
-
-use ::cordis::Service;

@@ -1,12 +1,5 @@
 //! HTTP adapter plugin: Axum router, JWT auth, middleware, Overlay, TOON.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(hidden_glob_reexports)]
-#![allow(ambiguous_glob_reexports)]
-#![allow(private_interfaces)]
-
 use std::sync::Arc;
 
 use axum::Router;

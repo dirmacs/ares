@@ -13,7 +13,6 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use sha2::Digest;
 
 async fn reload_runtime_tools(ctx: &Arc<Context>, when: &str) {
     let tools = ctx.get::<ares_tools::Tools>().expect("Tools not provided");
@@ -384,5 +383,3 @@ pub async fn rollback_runtime_tool(
         "updated_at": updated.updated_at,
     })))
 }
-
-use ::cordis::Service;

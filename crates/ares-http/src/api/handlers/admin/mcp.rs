@@ -4,12 +4,9 @@
 use super::*;
 
 use axum::Json;
-use sha2::Digest;
 
 pub async fn runtime_tool_capabilities() -> Json<RuntimeToolCapabilitiesResponse> {
     Json(RuntimeToolCapabilitiesResponse {
         tool_types: vec!["http", "mcp", "script", "sql"],
     })
 }
-
-use ::cordis::Service;

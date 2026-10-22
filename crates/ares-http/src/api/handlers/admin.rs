@@ -1,6 +1,5 @@
 use crate::HttpError;
 use crate::Result;
-use ares_types::types::AppError;
 use std::sync::Arc;
 // Admin handlers — decomposed via Cordis (Phase 6)
 // Each domain lives in `admin/*.rs`; shared DTOs/helpers in `admin/shared.rs`.

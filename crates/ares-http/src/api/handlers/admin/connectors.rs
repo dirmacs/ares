@@ -17,7 +17,6 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::Redirect,
 };
-use sha2::Digest;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -673,5 +672,3 @@ pub async fn delete_oauth_credential(
 
     Ok(StatusCode::NO_CONTENT)
 }
-
-use ::cordis::Service;

@@ -16,7 +16,6 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use sha2::Digest;
 
 pub async fn create_tenant(
     State(ctx): State<Arc<Context>>,
@@ -480,5 +479,3 @@ pub async fn delete_tenant(
         "tenant_id": tenant_id
     })))
 }
-
-use ::cordis::Service;

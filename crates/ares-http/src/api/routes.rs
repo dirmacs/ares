@@ -739,6 +739,8 @@ pub fn create_router(
 }
 
 /// Joins a route prefix and suffix into a single path (for nested routers).
+// Test-only: exercised solely by route_path_tests below; production registers routes inline.
+#[cfg(test)]
 pub(crate) fn join_route_paths(prefix: &str, suffix: &str) -> String {
     let prefix = prefix.trim_end_matches('/');
     let suffix = if suffix.starts_with('/') {
@@ -750,6 +752,8 @@ pub(crate) fn join_route_paths(prefix: &str, suffix: &str) -> String {
 }
 
 /// Public routes that do not require JWT authentication.
+// Test-only: exercised solely by route_path_tests below; production registers routes inline.
+#[cfg(test)]
 pub(crate) fn public_route_paths() -> &'static [&'static str] {
     &[
         "/auth/register",
@@ -763,6 +767,8 @@ pub(crate) fn public_route_paths() -> &'static [&'static str] {
 }
 
 /// Protected routes that require JWT authentication (non-v1).
+// Test-only: exercised solely by route_path_tests below; production registers routes inline.
+#[cfg(test)]
 pub(crate) fn protected_route_paths() -> &'static [&'static str] {
     &[
         "/chat",
@@ -1735,21 +1741,18 @@ mod route_path_tests {
 // lock is a tokio mutex precisely so the guard can be held across an await.
 mod tests {
     use super::*;
+    use crate::AresConfigManager;
     use crate::api::handlers::admin::shared::lock_admin_env;
     use crate::config::{AuthConfig, ServerConfig};
     use crate::overlay::{
         AgentConfig, AresConfig, BillingConfig, DatabaseConfig, DynamicConfigPaths, ModelConfig,
         ProviderConfig, RagConfig,
     };
-    use crate::{AresConfigManager, ConfigBasedLLMFactory, DynamicConfigManager};
-    use ares_agent::AgentRegistry;
-    use ares_agent::context_provider::NoOpContextProvider;
-    use ares_llm::ProviderRegistry;
+
     use axum::http::StatusCode;
-    use axum_test::TestServer;
+
     use std::collections::HashMap;
     use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
 
     fn minimal_config() -> AresConfig {
         let mut providers = HashMap::new();

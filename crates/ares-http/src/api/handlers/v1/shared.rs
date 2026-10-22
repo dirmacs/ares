@@ -15,10 +15,12 @@ pub use axum::{
 pub use chrono::{DateTime, Datelike, TimeZone, Utc};
 pub use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
 use super::{
-    CreateApiKeyRequest, CreateApiKeyResponse, DailyUsage, Paginated, PaginationQuery, V1Agent,
-    V1AgentLog, V1AgentRun, V1AgentStatus, V1ApiKey, V1Usage,
+    CreateApiKeyRequest, CreateApiKeyResponse, DailyUsage, PaginationQuery, V1Agent, V1AgentLog,
+    V1AgentStatus, V1ApiKey, V1Usage,
 };
+use super::{Paginated, V1AgentRun};
 
 // =============================================================================
 // Helpers

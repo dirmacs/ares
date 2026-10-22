@@ -13,7 +13,6 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
 };
-use sha2::Digest;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -193,5 +192,3 @@ pub async fn delete_tenant_pipeline(
     .await;
     Ok(StatusCode::NO_CONTENT)
 }
-
-use ::cordis::Service;

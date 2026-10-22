@@ -35,6 +35,12 @@ Before you touch gated code, make sure that the relevant Cargo features are enab
 2. Put the execution logic in `crates/ares-tools/src/`.
 3. Register the tool in the registry in `crates/ares-tools`.
 
+### Writing and compiling Suriv programs
+
+- The language, its surface syntax and how to compile a harness are documented in the book: `docs/src/suriv.md`.
+- The compiler lives in `crates/ares-suriv`: `lexer.rs` (the closed phrase table), `parser.rs` (tokens to the AST, including the `watch` / `on change of` desugars), `ast.rs`, `codegen.rs` (the AST to `Entry` records and the `requires` map). It is a library: nothing else in the workspace reads `.suriv` files.
+- `cargo test -p ares-suriv` runs the golden and reactive suites.
+
 ### Working with the database
 
 - All queries in `crates/ares-store/src/` use raw SQL through `sqlx::query().bind()`. The queries use no ORM and no query macros.

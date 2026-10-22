@@ -1,6 +1,6 @@
 [package]
 name = "ares-vector"
-version = "0.1.4"
+version = "0.1.6"
 edition = "2024"
 rust-version = "1.99"
 description = "Embedded vector database with HNSW indexing for ARES"

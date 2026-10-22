@@ -385,6 +385,25 @@ absent when the provider reported none.**
 
 ---
 
+## 0.9.1, 2026-08-24
+
+**Cordis kernel hardening.**
+
+Nine rounds of work on the Cordis-based kernel and its integration across the server.
+The full narrative is in the published release notes for this version:
+<https://github.com/dirmacs/ares/releases/tag/v0.9.1>.
+
+- **Policy scripting, default-on.** TOML entries attach sandboxed Rhai functions to
+  any of the 22 typed catalog events. `on_error = "deny"` makes gates fail-closed, and
+  isolate realms allow per-tenant policies.
+- **Transactional lifecycle.** Guarded withdrawal, so a provider cannot be removed
+  while active consumers exist; verified hot-swap, where the replacement trial is
+  built out of band before the commit; and drain-and-shift, which swaps a provider
+  under live traffic.
+- **Static registration.** Inventory-collected plugin factories are the primary boot
+  path, with the manual chains kept as a `--no-default-features` fallback, and parity
+  tests pinning the factory set.
+
 ## 0.9.0, 2026-08-22
 
 **Service architecture, unified execution, wrapper removal.**

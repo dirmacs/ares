@@ -19,7 +19,7 @@ authors = ["Dirmacs <build@dirmacs.com>"]
 
 [workspace.dependencies]
 # Shared dependencies across workspace
-ares-vector = { version = "0.1.6", path = "crates/ares-vector" }
+ares-vector = { version = "0.1.7", path = "crates/ares-vector" }
 # OpenAPPA (archestra-ai/OpenAPPA) — the deterministic information-flow engine
 # gating the tool-call funnel. Git-pinned: upstream publishes nothing to
 # crates.io and is explicitly preview with breaking minors. `default-features =

@@ -1,6 +1,3 @@
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use parking_lot::RwLock;
 use std::any::TypeId;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -742,6 +739,10 @@ mod tests {
     impl Service for BarService {}
 
     #[derive(Debug)]
+    #[allow(
+        dead_code,
+        reason = "test fixture: presence/type-identity is the assertion surface"
+    )]
     struct ConsumerService;
     impl Service for ConsumerService {}
 

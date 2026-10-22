@@ -106,6 +106,9 @@ pub fn plugin_fingerprint_cstr() -> *const std::os::raw::c_char {
     CSTR.as_ptr()
 }
 
+// Only called from #[cfg(feature = "hmr")] fns (load paths); without the feature
+// the callers compile out and this would read dead.
+#[cfg(feature = "hmr")]
 fn is_dynamic_library(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|ext| ext.to_str()),

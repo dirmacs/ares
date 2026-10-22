@@ -639,6 +639,10 @@ pub fn interval_stream(delay: Duration) -> Interval {
 /// calling thread, which keeps the primitives usable from plain threads and
 /// from `block_on` style glue alike.
 pub struct Scheduled<T> {
+    // Keep-alive: the submit closures hold their own clones, but `tx` keeps the
+    // channel open for the receiver side — dropping it would disconnect `rx`.
+    // Never read directly; removal would break receive()/receive_timeout().
+    #[allow(dead_code, reason = "channel keep-alive; see comment above")]
     tx: Sender<T>,
     rx: Receiver<T>,
     handle: EffectHandle,

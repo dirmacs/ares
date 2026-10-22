@@ -88,11 +88,19 @@ use crate::{FiberId, ReflectService};
 
 /// Unrelated provider bumped/removed by the randomized schedule (scenario 1).
 #[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "metatheory probe: the payload distinguishes scenarios; only presence/epoch is asserted"
+)]
 struct MtU1(pub u64);
 impl Service for MtU1 {}
 
 /// Second unrelated provider, pure noise for the schedule (scenario 1).
 #[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "metatheory probe: the payload distinguishes scenarios; only presence/epoch is asserted"
+)]
 struct MtU2(pub u64);
 impl Service for MtU2 {}
 
@@ -260,11 +268,19 @@ impl Service for MissingProbe {}
 
 /// Directly provided marker whose removal must be undone on disposal.
 #[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "metatheory probe: the payload distinguishes scenarios; only presence/epoch is asserted"
+)]
 struct MtMark1(pub u64);
 impl Service for MtMark1 {}
 
 /// Second directly provided marker (scenario 4).
 #[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "metatheory probe: the payload distinguishes scenarios; only presence/epoch is asserted"
+)]
 struct MtMark2(pub u64);
 impl Service for MtMark2 {}
 

@@ -42,6 +42,11 @@ pub fn quota_exceeded(tenant: &TenantContext, monthly: u64, daily: u64) -> Optio
 }
 
 /// What a paused tenant is told. It names the pause and nothing else about the tenant.
+/// Only read under `postgres` (ensure_tenant_not_paused's db branch).
+#[cfg_attr(
+    not(feature = "postgres"),
+    allow(dead_code, reason = "read only by the postgres pause-check branch")
+)]
 const TENANT_PAUSED_MESSAGE: &str = "Agent runs are paused for this tenant.";
 
 /// Refuse a run for a paused tenant: the per-tenant kill switch, `tenants.paused`

@@ -44,9 +44,17 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 ### Changed
 
 - `ares-vector` moves to `0.1.7`. crates.io already carries `0.1.5` and
-  `0.1.6`, published from trees that differ from this repository's, so
+  `0.1.6`; both were published from commits this repository contains, so
   neither version can be published again and `0.1.7` is the next free
-  one.
+  one. Measured, not assumed: each crate's `.cargo_vcs_info.json` names the
+  published commit, and that commit's `crates/ares-vector/src/` is
+  byte-identical (sha256 of all 8 files, 0 differing) to the published
+  `src/` in both cases — `0.1.5` against `5f8be30b` and `0.1.6` against
+  `4d642f1b`. Both commits carry version `0.1.4` in-tree and are marked
+  `dirty`, which is why the published manifests read `0.1.5`/`0.1.6`, and
+  both predate the edition-2024 migration, so the published sources are
+  edition 2021 while `main` is 2024. No published work is missing from this
+  repository.
 
 ### Blocked
 

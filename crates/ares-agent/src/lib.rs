@@ -77,6 +77,8 @@ pub use emergency_stop::EmergencyStop;
 pub mod pipeline;
 #[cfg(feature = "postgres")]
 pub(crate) mod run_cost_rollup;
+#[cfg(feature = "postgres")]
+pub(crate) mod run_history_observability;
 #[cfg(feature = "scheduler")]
 pub mod scheduler;
 #[cfg(any(feature = "postgres", feature = "skills"))]

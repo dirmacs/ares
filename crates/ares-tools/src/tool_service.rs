@@ -563,6 +563,7 @@ mod tests {
     use ares_types::models::{TenantContext, TenantTier};
     use async_trait::async_trait;
     use cordis::Context;
+    use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     struct ProbeTool {
@@ -643,6 +644,156 @@ mod tests {
         let svc = Tools::from_static([Arc::new(crate::calculator::Calculator) as Arc<dyn Tool>]);
         let ctx = Context::new_root();
         assert!(svc.resolve(&ctx, "calculator").is_some());
+    }
+
+    /// Tool whose [`Tool::description`] identifies static vs runtime instances in tests.
+    struct SourceProbe {
+        name: String,
+        source: &'static str,
+    }
+
+    #[async_trait]
+    impl Tool for SourceProbe {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn description(&self) -> &str {
+            self.source
+        }
+        fn parameters_schema(&self) -> Value {
+            json!({})
+        }
+        async fn execute(&self, _args: Value) -> Result<Value> {
+            Ok(json!({ "source": self.source }))
+        }
+    }
+
+    fn runtime_tool_row(name: &str, tenant_id: Option<&str>, is_public: bool) -> ares_store::runtime_tools::RuntimeTool {
+        use ares_store::runtime_tools::RuntimeTool;
+        let now = chrono::Utc::now();
+        RuntimeTool {
+            id: format!("test-{name}"),
+            name: name.into(),
+            display_name: None,
+            description: format!("runtime row {name}"),
+            tool_type: "http".into(),
+            parameters_schema: json!({}),
+            execution_config: json!({}),
+            enabled: true,
+            version: 1,
+            is_public,
+            created_by: None,
+            tenant_id: tenant_id.map(str::to_string),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn runtime_registry_with_tools(
+        entries: &[(&str, Arc<dyn Tool>, ares_store::runtime_tools::RuntimeTool)],
+    ) -> Arc<RuntimeToolRegistry> {
+        let mut tools = HashMap::new();
+        let mut metadata = HashMap::new();
+        for (name, tool, row) in entries {
+            tools.insert((*name).into(), Arc::clone(tool));
+            metadata.insert((*name).into(), row.clone());
+        }
+        Arc::new(RuntimeToolRegistry::from_test_cache(tools, metadata))
+    }
+
+    #[tokio::test]
+    async fn resolve_named_runtime_shadows_static() {
+        let name = "overlap";
+        let static_tool = Arc::new(SourceProbe {
+            name: name.into(),
+            source: "static",
+        }) as Arc<dyn Tool>;
+        let runtime_tool = Arc::new(SourceProbe {
+            name: name.into(),
+            source: "runtime",
+        }) as Arc<dyn Tool>;
+        let mut static_reg = ToolRegistry::new();
+        static_reg.register(Arc::clone(&static_tool));
+        let runtime = runtime_registry_with_tools(&[(
+            name,
+            runtime_tool,
+            runtime_tool_row(name, None, true),
+        )]);
+        let svc = Tools::with_runtime(Arc::new(static_reg), Some(runtime));
+        let ctx = Context::new_root();
+        let resolved = svc.resolve(&ctx, name).expect("tool should resolve");
+        assert_eq!(
+            resolved.description(),
+            "runtime",
+            "runtime registry must win over static for the same name"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_named_static_when_runtime_lacks_name() {
+        let static_tool = Arc::new(SourceProbe {
+            name: "only_static".into(),
+            source: "static",
+        }) as Arc<dyn Tool>;
+        let mut static_reg = ToolRegistry::new();
+        static_reg.register(Arc::clone(&static_tool));
+        let runtime_other = Arc::new(SourceProbe {
+            name: "runtime_only".into(),
+            source: "runtime",
+        }) as Arc<dyn Tool>;
+        let runtime = runtime_registry_with_tools(&[(
+            "runtime_only",
+            runtime_other,
+            runtime_tool_row("runtime_only", None, true),
+        )]);
+        let svc = Tools::with_runtime(Arc::new(static_reg), Some(runtime));
+        let ctx = Context::new_root();
+        let resolved = svc
+            .resolve(&ctx, "only_static")
+            .expect("static tool when runtime has no matching name");
+        assert_eq!(resolved.description(), "static");
+    }
+
+    #[test]
+    fn resolve_named_no_runtime_falls_back_to_static() {
+        let static_tool = Arc::new(SourceProbe {
+            name: "builtin".into(),
+            source: "static",
+        }) as Arc<dyn Tool>;
+        let mut static_reg = ToolRegistry::new();
+        static_reg.register(static_tool);
+        let svc = Tools::with_runtime(Arc::new(static_reg), None);
+        let ctx = Context::new_root();
+        let resolved = svc.resolve(&ctx, "builtin").expect("static without runtime");
+        assert_eq!(resolved.description(), "static");
+    }
+
+    #[tokio::test]
+    async fn resolve_named_tenant_scoped_runtime_wins_for_matching_tenant() {
+        let name = "tenant_scoped";
+        let static_tool = Arc::new(SourceProbe {
+            name: name.into(),
+            source: "static",
+        }) as Arc<dyn Tool>;
+        let runtime_tool = Arc::new(SourceProbe {
+            name: name.into(),
+            source: "runtime-tenant-a",
+        }) as Arc<dyn Tool>;
+        let mut static_reg = ToolRegistry::new();
+        static_reg.register(Arc::clone(&static_tool));
+        let runtime = runtime_registry_with_tools(&[(
+            name,
+            runtime_tool,
+            runtime_tool_row(name, Some("tenant-a"), false),
+        )]);
+        let svc = Tools::with_runtime(Arc::new(static_reg), Some(runtime));
+        let ctx = Context::new_root().isolate::<Tools>("tenant:tenant-a");
+        let resolved = svc.resolve(&ctx, name).expect("tenant-a runtime tool");
+        assert_eq!(
+            resolved.description(),
+            "runtime-tenant-a",
+            "get_for_tenant must select tenant-owned runtime before static"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

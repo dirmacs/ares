@@ -396,19 +396,6 @@ impl SkillEngine {
         ctx.isolate::<Tools>(tenant_id.to_string())
     }
 
-    fn resolve_tenant_tool(
-        &self,
-        ctx: &Arc<cordis::Context>,
-        tenant_id: &str,
-        name: &str,
-    ) -> Option<Arc<dyn ares_tools::Tool>> {
-        let scoped = self.scoped_tool_context(ctx, tenant_id);
-        let tools = scoped
-            .get::<Tools>()
-            .unwrap_or_else(|| Arc::clone(&self.tools));
-        tools.resolve(&scoped, name)
-    }
-
     async fn execute_tenant_tool(
         &self,
         ctx: &Arc<cordis::Context>,
@@ -1139,10 +1126,6 @@ impl SkillEngine {
     }
 }
 
-fn runtime_tool_error_allows_static_fallback(error: &AppError) -> bool {
-    matches!(error, AppError::NotFound(_))
-}
-
 /// Call-boundary gate shared by every skill-execution loop: refuse to start
 /// the next unit of work when the global emergency stop has latched or the
 /// governing per-subtask cancel token flipped. Both abort with the stable
@@ -1439,22 +1422,6 @@ mod tests {
                 SkillStep::ToolCall { .. } | SkillStep::LlmCall { .. } => {}
             }
         }
-    }
-
-    #[test]
-    fn runtime_tool_error_falls_back_only_when_tool_missing() {
-        assert!(runtime_tool_error_allows_static_fallback(
-            &AppError::NotFound("Runtime tool not found: calendar".to_string())
-        ));
-        assert!(!runtime_tool_error_allows_static_fallback(
-            &AppError::External("runtime HTTP tool failed".to_string())
-        ));
-        assert!(!runtime_tool_error_allows_static_fallback(
-            &AppError::Configuration("invalid runtime tool config".to_string())
-        ));
-        assert!(!runtime_tool_error_allows_static_fallback(
-            &AppError::Unavailable("runtime tool disabled".to_string())
-        ));
     }
 
     #[tokio::test]

@@ -172,6 +172,7 @@ use std::sync::Arc;
 /// Maximum skill call recursion depth.
 pub const MAX_SKILL_CALL_DEPTH: usize = 8;
 
+#[cfg(test)]
 fn resolve_skill_tool(
     ctx: &Arc<Context>,
     tenant_id: &str,

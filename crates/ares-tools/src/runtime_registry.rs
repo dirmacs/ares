@@ -683,6 +683,21 @@ impl RuntimeToolRegistry {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Pre-populate tool and metadata caches for unit tests (no database I/O).
+    #[cfg(test)]
+    pub(crate) fn from_test_cache(
+        tools: HashMap<String, Arc<dyn Tool>>,
+        metadata: HashMap<String, RuntimeTool>,
+    ) -> Self {
+        Self {
+            pool: sqlx::PgPool::connect_lazy("postgres://localhost/unused")
+                .expect("lazy pool"),
+            tools: Arc::new(ArcSwap::from_pointee(tools)),
+            metadata: Arc::new(ArcSwap::from_pointee(metadata)),
+            reload_interval_secs: 0,
+        }
+    }
 }
 
 /// Phase 3 unified hot-reload demo — watch channel creation on provide.

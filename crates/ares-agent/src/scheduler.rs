@@ -865,7 +865,7 @@ async fn execute_scheduled_agent(
         .pool()
         .clone();
     let scoped = tenant_scoped_ctx(app_state, &sched.tenant_id);
-    let exec = scoped
+    let exec = app_state
         .get::<Execute>()
         .ok_or_else(|| "Execute not provided".to_string())?;
     let start = std::time::Instant::now();
@@ -966,11 +966,22 @@ async fn execute_scheduled_agent(
         .map(str::to_string)
         .unwrap_or_else(|| effective_message.clone());
 
+    let observability: Arc<dyn ares_llm::observability::ObservabilitySink> = Arc::new(
+        crate::run_history_observability::RunHistoryObservability {
+            pool: pool.clone(),
+            run_id: run_id.clone(),
+            tenant_id: sched.tenant_id.clone(),
+            agent_name: sched.agent_name.clone(),
+        },
+    );
+
     let req = crate::execution::AgentRequest {
         agent_name: exec_agent_name,
         message: exec_message,
         history: Vec::new(),
         ctx_provider: None,
+        run_id: Some(run_id.clone()),
+        observability: Some(observability),
         ..Default::default()
     };
 
@@ -1015,6 +1026,54 @@ async fn execute_scheduled_agent(
         )
         .await
         .map_err(|error| error.to_string())?;
+    } else {
+        let metadata = AgentRunMetadata {
+            workspace_id: None,
+            session_id: Some(run_id.clone()),
+            request_source: Some(request_source.to_string()),
+            product: None,
+            agent_config_source: Some("execute".to_string()),
+            agent_config_version: None,
+            eruka_binding_id: None,
+            eruka_context_hit: external_context.is_some(),
+            eruka_read_count: if external_context.is_some() { 1 } else { 0 },
+            eruka_write_count: 0,
+            pipeline_id: None,
+            schedule_id: Some(sched.id.clone()),
+            trigger_id: None,
+            resolved_endpoint: None,
+            region: None,
+            ..Default::default()
+        };
+        // Parent row before the run: `run_llm_calls.run_id` / `run_tool_calls.run_id`
+        // / `run_costs.run_id` are all FKs to `agent_runs(id)`. Not fatal: a failed
+        // bookkeeping insert should cost this run its billing detail, not the run
+        // itself (see the matching note in `execute_target_agent`).
+        if let Err(error) = agent_runs::insert_agent_run_with_id_and_metadata(
+            &pool,
+            &run_id,
+            &sched.tenant_id,
+            &sched.agent_name,
+            None,
+            "running",
+            0,
+            0,
+            0,
+            None,
+            "unknown",
+            "unknown",
+            false,
+            Some(&metadata),
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %error,
+                run_id = run_id.as_str(),
+                tenant_id = sched.tenant_id.as_str(),
+                "scheduler: could not pre-insert agent_runs row; per-call cost rows may be dropped"
+            );
+        }
     }
 
     track_start(
@@ -1024,8 +1083,13 @@ async fn execute_scheduled_agent(
         &sched.agent_name,
         Some(request_source),
     );
+    let run_ctx = if skill_run {
+        &request_ctx
+    } else {
+        &scoped
+    };
     let execution = exec
-        .run(&req, &request_ctx)
+        .run(&req, run_ctx)
         .await
         .map_err(|error| error.to_string());
     let duration_ms = start.elapsed().as_millis() as u64;
@@ -1134,22 +1198,24 @@ async fn execute_scheduled_agent(
         .await
         .map_err(|error| error.to_string())?;
     } else {
-        agent_runs::insert_agent_run_with_id_and_metadata(
-            &pool,
-            &run_id,
-            &sched.tenant_id,
-            &sched.agent_name,
-            None,
-            status,
-            input_tokens,
-            output_tokens,
-            duration_ms as i64,
-            error_msg.as_deref(),
-            &model_name,
-            &provider_name,
-            false,
-            Some(&metadata),
+        sqlx::query(
+            "UPDATE agent_runs
+             SET status = $2, input_tokens = $3, output_tokens = $4,
+                 duration_ms = $5, error = $6, model_name = $7, provider_name = $8,
+                 resolved_endpoint = $9, region = $10
+             WHERE id = $1",
         )
+        .bind(&run_id)
+        .bind(status)
+        .bind(input_tokens)
+        .bind(output_tokens)
+        .bind(duration_ms as i64)
+        .bind(error_msg.as_deref())
+        .bind(&model_name)
+        .bind(&provider_name)
+        .bind(metadata.resolved_endpoint.as_deref())
+        .bind(metadata.region.as_deref())
+        .execute(&pool)
         .await
         .map_err(|error| error.to_string())?;
     }

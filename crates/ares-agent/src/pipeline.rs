@@ -152,11 +152,64 @@ impl PipelineService {
             .get::<Execute>()
             .ok_or_else(|| "Execute not provided".to_string())?;
 
+        let start = std::time::Instant::now();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let pool = self.db.pool.clone();
+        let observability: Arc<dyn ares_llm::observability::ObservabilitySink> = Arc::new(
+            crate::run_history_observability::RunHistoryObservability {
+                pool: pool.clone(),
+                run_id: run_id.clone(),
+                tenant_id: tenant.to_string(),
+                agent_name: pipeline.target_agent.clone(),
+            },
+        );
+
+        let pre_metadata = AgentRunMetadata {
+            session_id: Some(run_id.clone()),
+            request_source: Some(PIPELINE_REQUEST_SOURCE.to_string()),
+            agent_config_source: Some("execute".to_string()),
+            pipeline_id: Some(pipeline.id.clone()),
+            ..Default::default()
+        };
+        // Parent row before the run: `run_llm_calls.run_id` / `run_tool_calls.run_id`
+        // and `run_costs.run_id` are all FKs to `agent_runs(id)`, so the row must
+        // exist before observability writes anything. Not fatal, for the same
+        // reason as in `execute_target_agent`: `agent_runs.tenant_id` is an FK to
+        // `tenants`, and a failure here should cost billing detail for this run,
+        // not the run itself.
+        if let Err(error) = agent_runs::insert_agent_run_with_id_and_metadata(
+            &pool,
+            &run_id,
+            tenant,
+            &pipeline.target_agent,
+            None,
+            "running",
+            0,
+            0,
+            0,
+            None,
+            "unknown",
+            "unknown",
+            false,
+            Some(&pre_metadata),
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %error,
+                run_id = run_id.as_str(),
+                tenant,
+                "pipeline: could not pre-insert agent_runs row; per-call cost rows may be dropped"
+            );
+        }
+
         let req = AgentRequest {
             agent_name: pipeline.target_agent.clone(),
             message: input_str,
             history: Vec::new(),
             ctx_provider: None,
+            run_id: Some(run_id.clone()),
+            observability: Some(observability),
             ..Default::default()
         };
 
@@ -165,6 +218,14 @@ impl PipelineService {
             .await
             .map_err(|e| e.to_string())?
             .response;
+
+        crate::run_cost_rollup::spawn_aggregate_run_cost(
+            pool,
+            run_id,
+            tenant.to_string(),
+            pipeline.target_agent.clone(),
+            start.elapsed().as_millis() as i64,
+        );
 
         // Surface as JSON Value for caller uniformity.
         Ok(serde_json::json!({
@@ -532,7 +593,7 @@ async fn execute_target_agent(
         .pool()
         .clone();
     let scoped = tenant_scoped_ctx(app_state, tenant_id);
-    let exec = scoped
+    let exec = app_state
         .get::<Execute>()
         .ok_or_else(|| "Execute not provided".to_string())?;
     let start = std::time::Instant::now();
@@ -555,6 +616,7 @@ async fn execute_target_agent(
                     .map(str::to_owned)
             });
 
+    let skill_run = skill_id.is_some();
     let request_ctx = if let Some(skill_id) = skill_id {
         scoped.with_intercept(crate::execution::SkillDispatch::new(
             skill_id,
@@ -585,13 +647,75 @@ async fn execute_target_agent(
         .map(|context| format_message_with_context(context, source_output))
         .unwrap_or_else(|| source_output.to_string());
 
+    let observability: Arc<dyn ares_llm::observability::ObservabilitySink> = Arc::new(
+        crate::run_history_observability::RunHistoryObservability {
+            pool: pool.clone(),
+            run_id: run_id.clone(),
+            tenant_id: tenant_id.to_string(),
+            agent_name: pipeline.target_agent.clone(),
+        },
+    );
+
     let req = AgentRequest {
         agent_name: pipeline.target_agent.clone(),
         message: effective_message.clone(),
         history: Vec::new(),
         ctx_provider: None,
+        run_id: Some(run_id.clone()),
+        observability: Some(observability),
         ..Default::default()
     };
+
+    let pre_metadata = pipeline_target_run_effects(
+        pipeline,
+        tenant_id,
+        &run_id,
+        origin,
+        Some("execute"),
+        None,
+        eruka_context_hit,
+        0,
+        0,
+        "unknown",
+        "unknown",
+        "running",
+        None,
+    )
+    .metadata;
+    // Insert the parent row before the run so observability can write
+    // `run_llm_calls`/`run_tool_calls`, whose `run_id` is an FK to
+    // `agent_runs(id)`. A failure here must not abort the run or suppress the
+    // boundary events below: `agent_runs.tenant_id` is itself an FK to
+    // `tenants`, so a tenant with no row (a scenario several callers create
+    // deliberately, and which the pipeline tests exercise) would otherwise
+    // fail before `pipeline.step.started` is ever emitted. Log and continue;
+    // the post-run update path reports the run's real outcome.
+    if let Err(error) = agent_runs::insert_agent_run_with_id_and_metadata(
+        &pool,
+        &run_id,
+        tenant_id,
+        &pipeline.target_agent,
+        None,
+        "running",
+        0,
+        0,
+        0,
+        None,
+        "unknown",
+        "unknown",
+        false,
+        Some(&pre_metadata),
+    )
+    .await
+    {
+        tracing::warn!(
+            error = %error,
+            run_id = run_id.as_str(),
+            tenant_id,
+            "pipeline: could not pre-insert agent_runs row; per-call cost rows may be dropped"
+        );
+    }
+
     track_start(
         app_state,
         &run_id,
@@ -606,8 +730,13 @@ async fn execute_target_agent(
         tenant_id,
         &run_id,
     );
+    let run_ctx = if skill_run {
+        &request_ctx
+    } else {
+        &scoped
+    };
     let execution = exec
-        .run(&req, &request_ctx)
+        .run(&req, run_ctx)
         .await
         .map_err(|error| error.to_string());
     let duration_ms = start.elapsed().as_millis() as u64;
@@ -619,7 +748,10 @@ async fn execute_target_agent(
         output_tokens,
         model_name,
         provider_name,
-        output,
+        // The target's own response text. `agent_runs` has no column for it, and
+        // downstream fan-out is driven by the *caller's* `source_output`, not by
+        // this. Kept in the tuple so the `match` arms stay symmetric.
+        _output,
         counts_source,
         residency,
     ) = match execution {
@@ -711,22 +843,24 @@ async fn execute_target_agent(
     metadata.region = residency.region().map(str::to_string);
     let usage = effects.usage;
 
-    agent_runs::insert_agent_run_with_id_and_metadata(
-        &pool,
-        &run_id,
-        tenant_id,
-        &pipeline.target_agent,
-        None,
-        status,
-        input_tokens,
-        output_tokens,
-        duration_ms as i64,
-        error_msg.as_deref(),
-        &model_name,
-        &provider_name,
-        false,
-        Some(&metadata),
+    sqlx::query(
+        "UPDATE agent_runs
+         SET status = $2, input_tokens = $3, output_tokens = $4,
+             duration_ms = $5, error = $6, model_name = $7, provider_name = $8,
+             resolved_endpoint = $9, region = $10
+         WHERE id = $1",
     )
+    .bind(&run_id)
+    .bind(status)
+    .bind(input_tokens)
+    .bind(output_tokens)
+    .bind(duration_ms as i64)
+    .bind(error_msg.as_deref())
+    .bind(&model_name)
+    .bind(&provider_name)
+    .bind(metadata.resolved_endpoint.as_deref())
+    .bind(metadata.region.as_deref())
+    .execute(&pool)
     .await
     .map_err(|error| error.to_string())?;
 

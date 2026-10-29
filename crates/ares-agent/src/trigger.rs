@@ -804,6 +804,14 @@ async fn execute_triggered_agent_legacy(
         Some("trigger"),
     );
 
+    let observability: Arc<dyn ares_llm::observability::ObservabilitySink> = Arc::new(
+        crate::run_history_observability::RunHistoryObservability {
+            pool: pool.clone(),
+            run_id: run_id.clone(),
+            tenant_id: trigger.tenant_id.clone(),
+            agent_name: trigger.target_agent.clone(),
+        },
+    );
     let result = execute
         .run(
             &AgentRequest {
@@ -811,6 +819,8 @@ async fn execute_triggered_agent_legacy(
                 message: effective_message.clone(),
                 history: Vec::new(),
                 ctx_provider: None,
+                run_id: Some(run_id.clone()),
+                observability: Some(observability),
                 ..Default::default()
             },
             &scoped,

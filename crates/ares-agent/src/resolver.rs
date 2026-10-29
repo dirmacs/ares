@@ -4,8 +4,10 @@
 
 use crate::AgentConfig;
 use ares_store::postgres::UserAgent;
-use ares_store::traits::DatabaseClient;
 use ares_types::types::{AppError, Result};
+
+#[cfg(test)]
+use ares_store::traits::DatabaseClient;
 
 pub use crate::execution::AgentSource;
 
@@ -88,19 +90,6 @@ pub(crate) struct Resolver {
 }
 
 impl Resolver {
-    /// Create a new resolver service.
-    pub fn new(
-        tenant_db: Arc<TenantDb>,
-        agent_registry: Arc<AgentRegistry>,
-        config: Arc<std::collections::HashMap<String, AgentConfig>>,
-    ) -> Self {
-        Self {
-            tenant_db,
-            agent_registry,
-            config: Some(config),
-        }
-    }
-
     /// Build from `TenantDb` + `AgentRegistry` already on ctx (no factory provide).
     pub(crate) fn from_ctx(
         ctx: &Arc<cordis::Context>,
@@ -206,6 +195,7 @@ pub fn user_id_from_ctx(ctx: &Arc<cordis::Context>, fallback: &str) -> String {
 }
 
 /// Resolve an agent for a user using the 3-tier hierarchy.
+#[cfg(test)]
 pub async fn resolve_agent(
     db: &dyn DatabaseClient,
     config: &std::collections::HashMap<String, AgentConfig>,

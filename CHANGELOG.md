@@ -41,6 +41,25 @@ All notable changes to ARES are documented here. This project follows [Semantic 
   (the classification kernel, the PII oracle/redactor, the identity
   directory).
 
+### Fixed
+
+- **Run costs were recorded only for runs driven through an HTTP handler.**
+  `billing_summary_from_run_costs` computes `billable_cost_usd` from `run_costs`
+  alone, so a run with no row there bills as zero. The three agent execution
+  paths (`pipeline`, `trigger`, `scheduler`) wrote their `agent_runs` and
+  `usage_events` rows and then called `spawn_run_cost_aggregation`, which was a
+  stub that built a `RunHistoryStore` and discarded it. Trigger-driven and
+  scheduler-driven runs were therefore unbilled while handler-driven runs were
+  billed, depending on which path started the work. The call sites were
+  present and correctly named, so this survived code review.
+
+  The aggregation moved to `RunHistoryStore::aggregate_run_cost` in
+  `ares-store`, where both `ares-agent` and `ares-http` can reach it without
+  inverting the layering, and all three agent paths now call it. Accumulation
+  semantics are unchanged, the arithmetic is factored out as the pure
+  `build_run_cost_record`, and `ares-http`'s `RunObservability` delegates to it
+  so its five handler call sites behave identically.
+
 ### Changed
 
 - `ares-vector` moves to `0.1.7`. crates.io already carries `0.1.5` and

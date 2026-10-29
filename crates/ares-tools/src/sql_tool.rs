@@ -289,10 +289,10 @@ fn pg_value_to_json(row: &sqlx::postgres::PgRow, i: usize) -> Result<Value> {
 fn decimal_to_json(value: sqlx::types::Decimal) -> Value {
     let text = value.to_string();
     // An integral decimal is exact in a JSON number.
-    if !text.contains('.') {
-        if let Ok(i) = text.parse::<i64>() {
-            return Value::Number(i.into());
-        }
+    if !text.contains('.')
+        && let Ok(i) = text.parse::<i64>()
+    {
+        return Value::Number(i.into());
     }
     // Otherwise the nearest double to the value, which is what a JSON
     // number holds.

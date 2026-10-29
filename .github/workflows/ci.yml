@@ -124,6 +124,30 @@ jobs:
           toolchain: "1.99.0"
       - name: Check the formatting
         run: cargo fmt --all -- --check
+  clippy:
+    name: Clippy Gate
+    runs-on: [self-hosted, Linux, ARM64, dirmacs-ci]
+    steps:
+      - uses: actions/checkout@v4
+      # The same probe, and the same fix: see the CRAP gate's step above.
+      - name: Put the toolchain's shims on PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: "1.99.0"
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # Not `-D warnings`. The tree carries 30 deduplicated clippy warnings,
+      # almost all dead code in an apparently abandoned cost-aggregation
+      # subsystem in ares-agent. `-D warnings` would make this job red on its
+      # first run and stay red until that subsystem is either wired up or
+      # deleted, which is a decision this gate should not force. The gate
+      # ratchets instead: it fails if the count rises, so new code cannot add
+      # debt, and it also fails if the count falls without the baseline being
+      # lowered, because a baseline above the real number is permission to
+      # reintroduce exactly that many. See scripts/clippy-gate.sh.
+      - name: Check the warning budget
+        run: ./scripts/clippy-gate.sh
   test:
     name: PostgreSQL Workspace Tests
     runs-on: ubuntu-latest

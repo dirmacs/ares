@@ -75,51 +75,6 @@ fn track_finish(ctx: &std::sync::Arc<cordis::Context>, run_id: &str, status: &st
     }
 }
 
-fn track_update(ctx: &std::sync::Arc<cordis::Context>, run_id: &str, status: &str, step: i32) {
-    if let Some(t) = ctx_tracker(ctx) {
-        t.update_run(run_id, status, step);
-    }
-}
-
-fn estimated_cost_usd(prompt_tokens: i64, completion_tokens: i64) -> rust_decimal::Decimal {
-    rust_decimal::Decimal::new((prompt_tokens + completion_tokens) * 2, 6)
-}
-
-struct RunCostAgg {
-    run_id: String,
-    tenant_id: String,
-    agent_name: String,
-    duration_ms: i64,
-}
-
-fn run_cost_aggregation_request(
-    run_id: &str,
-    tenant_id: &str,
-    agent_name: &str,
-    duration_ms: i64,
-) -> RunCostAgg {
-    RunCostAgg {
-        run_id: run_id.to_string(),
-        tenant_id: tenant_id.to_string(),
-        agent_name: agent_name.to_string(),
-        duration_ms,
-    }
-}
-
-fn spawn_run_cost_aggregation(pool: sqlx::PgPool, request: RunCostAgg) {
-    tokio::spawn(async move {
-        let store = ares_store::run_history::RunHistoryStore::new(&pool);
-        tracing::debug!(
-            run_id = request.run_id.as_str(),
-            tenant_id = request.tenant_id.as_str(),
-            agent = request.agent_name.as_str(),
-            duration_ms = request.duration_ms,
-            "engine run cost aggregation"
-        );
-        let _ = store;
-    });
-}
-
 async fn fanout_pipelines(
     source_agent: &str,
     source_output: &str,
@@ -732,14 +687,12 @@ async fn execute_triggered_agent_legacy(
         .await
         .map_err(|e| e.to_string())?;
 
-        spawn_run_cost_aggregation(
+        crate::run_cost_rollup::spawn_aggregate_run_cost(
             pool.clone(),
-            run_cost_aggregation_request(
-                &run_id,
-                &trigger.tenant_id,
-                &trigger.target_agent,
-                duration_ms,
-            ),
+            run_id.clone(),
+            trigger.tenant_id.clone(),
+            trigger.target_agent.clone(),
+            duration_ms,
         );
 
         let usage_pool = pool.clone();
@@ -865,16 +818,6 @@ async fn execute_triggered_agent_legacy(
         .await;
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    spawn_run_cost_aggregation(
-        pool.clone(),
-        run_cost_aggregation_request(
-            &run_id,
-            &trigger.tenant_id,
-            &trigger.target_agent,
-            duration_ms as i64,
-        ),
-    );
-
     let (
         status,
         error_msg,
@@ -974,6 +917,14 @@ async fn execute_triggered_agent_legacy(
     .execute(&pool)
     .await
     .map_err(|e| e.to_string())?;
+
+    crate::run_cost_rollup::spawn_aggregate_run_cost(
+        pool.clone(),
+        run_id.clone(),
+        trigger.tenant_id.clone(),
+        trigger.target_agent.clone(),
+        duration_ms as i64,
+    );
 
     // Clone model/provider for usage event recording.
     let model_clone = model_name.clone();

@@ -82,6 +82,64 @@ pub struct RunCost {
     pub created_at: i64,
 }
 
+/// Failure point when aggregating per-call history into `run_costs`.
+#[derive(Debug)]
+pub enum AggregateRunCostError {
+    LlmCalls(AppError),
+    ToolCalls(AppError),
+    Upsert(AppError),
+}
+
+impl AggregateRunCostError {
+    /// Log a failed aggregation (same messages as HTTP `RunObservability`).
+    pub fn log(&self, run_id: &str) {
+        match self {
+            Self::LlmCalls(e) => tracing::warn!(
+                error = %e,
+                run_id,
+                "Failed to fetch LLM calls for cost aggregation"
+            ),
+            Self::ToolCalls(e) => tracing::warn!(
+                error = %e,
+                run_id,
+                "Failed to fetch tool calls for cost aggregation"
+            ),
+            Self::Upsert(e) => tracing::warn!(
+                error = %e,
+                run_id,
+                "Failed to upsert run cost"
+            ),
+        }
+    }
+}
+
+/// Build a `run_costs` row from fetched LLM/tool call rows (no database I/O).
+pub fn build_run_cost_record(
+    run_id: &str,
+    tenant_id: &str,
+    agent_name: &str,
+    duration_ms: i64,
+    llm_calls: &[RunLlmCall],
+    tool_calls: &[RunToolCall],
+) -> RunCost {
+    let total_prompt_tokens: i64 = llm_calls.iter().map(|c| c.prompt_tokens).sum();
+    let total_completion_tokens: i64 = llm_calls.iter().map(|c| c.completion_tokens).sum();
+    let total_estimated_cost: Decimal = llm_calls.iter().map(|c| c.estimated_cost_usd).sum();
+
+    RunCost {
+        run_id: run_id.to_string(),
+        tenant_id: tenant_id.to_string(),
+        agent_name: agent_name.to_string(),
+        total_llm_calls: llm_calls.len() as i32,
+        total_tool_calls: tool_calls.len() as i32,
+        total_prompt_tokens,
+        total_completion_tokens,
+        total_estimated_cost_usd: total_estimated_cost,
+        total_duration_ms: duration_ms,
+        created_at: chrono::Utc::now().timestamp(),
+    }
+}
+
 /// One persisted row in `tenant_budgets`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TenantBudget {
@@ -606,6 +664,38 @@ impl<'a> RunHistoryStore<'a> {
         .map_err(sqlx_err)?;
 
         row_to_run_cost(&row)
+    }
+
+    /// Aggregate all LLM and tool calls for a run into `run_costs`.
+    pub async fn aggregate_run_cost(
+        &self,
+        run_id: &str,
+        tenant_id: &str,
+        agent_name: &str,
+        duration_ms: i64,
+    ) -> std::result::Result<RunCost, AggregateRunCostError> {
+        let llm_calls = self
+            .get_llm_calls_for_run(run_id)
+            .await
+            .map_err(AggregateRunCostError::LlmCalls)?;
+
+        let tool_calls = self
+            .get_tool_calls_for_run(run_id)
+            .await
+            .map_err(AggregateRunCostError::ToolCalls)?;
+
+        let record = build_run_cost_record(
+            run_id,
+            tenant_id,
+            agent_name,
+            duration_ms,
+            &llm_calls,
+            &tool_calls,
+        );
+
+        self.upsert_run_cost(&record)
+            .await
+            .map_err(AggregateRunCostError::Upsert)
     }
 
     /// Fetch a single run cost by run_id.
@@ -1493,6 +1583,83 @@ mod tests {
     }
 
     #[test]
+    fn build_run_cost_record_sums_llm_and_tool_calls() {
+        let llm_calls = vec![
+            RunLlmCall {
+                id: "c1".into(),
+                run_id: "run-1".into(),
+                tenant_id: "tenant-a".into(),
+                agent_name: "agent-x".into(),
+                step_index: 0,
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                prompt_tokens: 100,
+                completion_tokens: 40,
+                total_tokens: 140,
+                estimated_cost_usd: dec!(0.000200),
+                latency_ms: 10,
+                cached_tokens: None,
+                total_time_ms: None,
+                status: "success".into(),
+                error_message: None,
+                request_payload: None,
+                response_payload: None,
+                created_at: 1,
+            },
+            RunLlmCall {
+                id: "c2".into(),
+                run_id: "run-1".into(),
+                tenant_id: "tenant-a".into(),
+                agent_name: "agent-x".into(),
+                step_index: 1,
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                prompt_tokens: 50,
+                completion_tokens: 10,
+                total_tokens: 60,
+                estimated_cost_usd: dec!(0.000050),
+                latency_ms: 5,
+                cached_tokens: None,
+                total_time_ms: None,
+                status: "success".into(),
+                error_message: None,
+                request_payload: None,
+                response_payload: None,
+                created_at: 2,
+            },
+        ];
+        let tool_calls = vec![RunToolCall {
+            id: "t1".into(),
+            run_id: "run-1".into(),
+            tenant_id: "tenant-a".into(),
+            agent_name: "agent-x".into(),
+            step_index: 0,
+            tool_name: "http_get".into(),
+            tool_type: "http".into(),
+            arguments: serde_json::json!({}),
+            result: None,
+            latency_ms: 1,
+            status: "success".into(),
+            error_message: None,
+            created_at: 3,
+        }];
+        let record = build_run_cost_record(
+            "run-1",
+            "tenant-a",
+            "agent-x",
+            900,
+            &llm_calls,
+            &tool_calls,
+        );
+        assert_eq!(record.total_llm_calls, 2);
+        assert_eq!(record.total_tool_calls, 1);
+        assert_eq!(record.total_prompt_tokens, 150);
+        assert_eq!(record.total_completion_tokens, 50);
+        assert_eq!(record.total_estimated_cost_usd, dec!(0.000250));
+        assert_eq!(record.total_duration_ms, 900);
+    }
+
+    #[test]
     fn tenant_budget_serde_roundtrip() {
         let original = TenantBudget {
             tenant_id: "tenant-a".into(),
@@ -1861,6 +2028,69 @@ mod tests {
         .bind(tenant_id)
         .execute(pool)
         .await;
+    }
+
+    #[tokio::test]
+    async fn integration_aggregate_run_cost_writes_run_costs_row() {
+        let (_lock, pool) = crate::test_db::pool().await;
+        let store = RunHistoryStore::new(&pool);
+        let run_id = "run-integration-cost-agg";
+        seed_integration_parents(&pool, "tenant-integration", run_id).await;
+
+        let _ = sqlx::query("DELETE FROM run_costs WHERE run_id = $1")
+            .bind(run_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM run_llm_calls WHERE run_id = $1")
+            .bind(run_id)
+            .execute(&pool)
+            .await;
+
+        let req = LogLlmCallRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            run_id: run_id.into(),
+            tenant_id: "tenant-integration".into(),
+            agent_name: "integration-test-agent".into(),
+            step_index: 0,
+            provider: "openai".into(),
+            model: "gpt-4o".into(),
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            estimated_cost_usd: dec!(0.000250),
+            latency_ms: 420,
+            cached_tokens: None,
+            total_time_ms: None,
+            status: "success".into(),
+            error_message: None,
+            request_payload: None,
+            response_payload: None,
+            created_at: chrono::Utc::now().timestamp(),
+        };
+        store.insert_llm_call(&req).await.expect("insert_llm_call");
+
+        let aggregated = store
+            .aggregate_run_cost(
+                run_id,
+                "tenant-integration",
+                "integration-test-agent",
+                750,
+            )
+            .await
+            .expect("aggregate_run_cost");
+        assert_eq!(aggregated.total_llm_calls, 1);
+        assert_eq!(aggregated.total_prompt_tokens, 100);
+        assert_eq!(aggregated.total_completion_tokens, 50);
+        assert_eq!(aggregated.total_estimated_cost_usd, dec!(0.000250));
+        assert_eq!(aggregated.total_duration_ms, 750);
+
+        let fetched = store
+            .get_run_cost(run_id)
+            .await
+            .expect("get_run_cost")
+            .expect("run_costs row");
+        assert_eq!(fetched.run_id, run_id);
+        assert_eq!(fetched.total_estimated_cost_usd, dec!(0.000250));
     }
 
     #[tokio::test]

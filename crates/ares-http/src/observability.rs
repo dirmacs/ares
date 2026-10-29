@@ -6,7 +6,7 @@
 
 use ares_llm::observability::{LlmCallRecord, ObservabilitySink, ToolCallRecord};
 use ares_store::run_history::{
-    BudgetAlert, LogLlmCallRequest, LogToolCallRequest, RunCost, RunHistoryStore,
+    BudgetAlert, LogLlmCallRequest, LogToolCallRequest, RunHistoryStore,
 };
 use chrono::Datelike;
 use rust_decimal::Decimal;
@@ -212,42 +212,16 @@ impl RunObservability {
     /// Aggregate all LLM and tool calls for this run into `run_costs`.
     pub async fn aggregate_run_cost(&self, duration_ms: i64) {
         let store = RunHistoryStore::new(&self.pool);
-
-        let llm_calls = match store.get_llm_calls_for_run(&self.run_id).await {
-            Ok(calls) => calls,
-            Err(e) => {
-                tracing::warn!(error = %e, run_id = %self.run_id, "Failed to fetch LLM calls for cost aggregation");
-                return;
-            }
-        };
-
-        let tool_calls = match store.get_tool_calls_for_run(&self.run_id).await {
-            Ok(calls) => calls,
-            Err(e) => {
-                tracing::warn!(error = %e, run_id = %self.run_id, "Failed to fetch tool calls for cost aggregation");
-                return;
-            }
-        };
-
-        let total_prompt_tokens: i64 = llm_calls.iter().map(|c| c.prompt_tokens).sum();
-        let total_completion_tokens: i64 = llm_calls.iter().map(|c| c.completion_tokens).sum();
-        let total_estimated_cost: Decimal = llm_calls.iter().map(|c| c.estimated_cost_usd).sum();
-
-        let record = RunCost {
-            run_id: self.run_id.clone(),
-            tenant_id: self.tenant_id.clone(),
-            agent_name: self.agent_name.clone(),
-            total_llm_calls: llm_calls.len() as i32,
-            total_tool_calls: tool_calls.len() as i32,
-            total_prompt_tokens,
-            total_completion_tokens,
-            total_estimated_cost_usd: total_estimated_cost,
-            total_duration_ms: duration_ms,
-            created_at: chrono::Utc::now().timestamp(),
-        };
-
-        if let Err(e) = store.upsert_run_cost(&record).await {
-            tracing::warn!(error = %e, run_id = %self.run_id, "Failed to upsert run cost");
+        if let Err(e) = store
+            .aggregate_run_cost(
+                &self.run_id,
+                &self.tenant_id,
+                &self.agent_name,
+                duration_ms,
+            )
+            .await
+        {
+            e.log(&self.run_id);
         }
     }
 }

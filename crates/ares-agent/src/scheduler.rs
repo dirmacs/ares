@@ -83,51 +83,6 @@ fn track_finish(ctx: &std::sync::Arc<cordis::Context>, run_id: &str, status: &st
     }
 }
 
-fn track_update(ctx: &std::sync::Arc<cordis::Context>, run_id: &str, status: &str, step: i32) {
-    if let Some(t) = ctx_tracker(ctx) {
-        t.update_run(run_id, status, step);
-    }
-}
-
-fn estimated_cost_usd(prompt_tokens: i64, completion_tokens: i64) -> rust_decimal::Decimal {
-    rust_decimal::Decimal::new((prompt_tokens + completion_tokens) * 2, 6)
-}
-
-struct RunCostAgg {
-    run_id: String,
-    tenant_id: String,
-    agent_name: String,
-    duration_ms: i64,
-}
-
-fn run_cost_aggregation_request(
-    run_id: &str,
-    tenant_id: &str,
-    agent_name: &str,
-    duration_ms: i64,
-) -> RunCostAgg {
-    RunCostAgg {
-        run_id: run_id.to_string(),
-        tenant_id: tenant_id.to_string(),
-        agent_name: agent_name.to_string(),
-        duration_ms,
-    }
-}
-
-fn spawn_run_cost_aggregation(pool: sqlx::PgPool, request: RunCostAgg) {
-    tokio::spawn(async move {
-        let store = ares_store::run_history::RunHistoryStore::new(&pool);
-        tracing::debug!(
-            run_id = request.run_id.as_str(),
-            tenant_id = request.tenant_id.as_str(),
-            agent = request.agent_name.as_str(),
-            duration_ms = request.duration_ms,
-            "engine run cost aggregation"
-        );
-        let _ = store;
-    });
-}
-
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -1199,14 +1154,12 @@ async fn execute_scheduled_agent(
         .map_err(|error| error.to_string())?;
     }
 
-    spawn_run_cost_aggregation(
+    crate::run_cost_rollup::spawn_aggregate_run_cost(
         pool.clone(),
-        run_cost_aggregation_request(
-            &run_id,
-            &sched.tenant_id,
-            &sched.agent_name,
-            duration_ms as i64,
-        ),
+        run_id.clone(),
+        sched.tenant_id.clone(),
+        sched.agent_name.clone(),
+        duration_ms as i64,
     );
 
     emit_schedule_dispatched(

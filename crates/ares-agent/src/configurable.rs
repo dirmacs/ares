@@ -1518,11 +1518,6 @@ When referencing facts above, cite [E1], [E2] etc.",
         };
         #[cfg(feature = "postgres")]
         let session_key = context.session_id.clone();
-        #[cfg(feature = "postgres")]
-        let tenant_key: Option<String> = self.cordis_ctx.as_ref().and_then(|ctx| {
-            let key = tenant_key_for_compaction(ctx, &context.user_id);
-            if key.is_empty() { None } else { Some(key) }
-        });
         #[cfg(not(feature = "postgres"))]
         let _ = &context;
         if let Some(compactor) = &session_compactor {
@@ -1950,11 +1945,6 @@ impl Agent for ConfigurableAgent {
         };
         #[cfg(feature = "postgres")]
         let session_key = context.session_id.clone();
-        #[cfg(feature = "postgres")]
-        let tenant_key: Option<String> = self.cordis_ctx.as_ref().and_then(|ctx| {
-            let key = tenant_key_for_compaction(ctx, &context.user_id);
-            if key.is_empty() { None } else { Some(key) }
-        });
         #[cfg(not(feature = "postgres"))]
         let _ = &context;
         if let Some(compactor) = &session_compactor {

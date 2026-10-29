@@ -52,51 +52,6 @@ fn track_finish(ctx: &std::sync::Arc<cordis::Context>, run_id: &str, status: &st
     }
 }
 
-fn track_update(ctx: &std::sync::Arc<cordis::Context>, run_id: &str, status: &str, step: i32) {
-    if let Some(t) = ctx_tracker(ctx) {
-        t.update_run(run_id, status, step);
-    }
-}
-
-fn estimated_cost_usd(prompt_tokens: i64, completion_tokens: i64) -> rust_decimal::Decimal {
-    rust_decimal::Decimal::new((prompt_tokens + completion_tokens) * 2, 6)
-}
-
-struct RunCostAgg {
-    run_id: String,
-    tenant_id: String,
-    agent_name: String,
-    duration_ms: i64,
-}
-
-fn run_cost_aggregation_request(
-    run_id: &str,
-    tenant_id: &str,
-    agent_name: &str,
-    duration_ms: i64,
-) -> RunCostAgg {
-    RunCostAgg {
-        run_id: run_id.to_string(),
-        tenant_id: tenant_id.to_string(),
-        agent_name: agent_name.to_string(),
-        duration_ms,
-    }
-}
-
-fn spawn_run_cost_aggregation(pool: sqlx::PgPool, request: RunCostAgg) {
-    tokio::spawn(async move {
-        let store = ares_store::run_history::RunHistoryStore::new(&pool);
-        tracing::debug!(
-            run_id = request.run_id.as_str(),
-            tenant_id = request.tenant_id.as_str(),
-            agent = request.agent_name.as_str(),
-            duration_ms = request.duration_ms,
-            "engine run cost aggregation"
-        );
-        let _ = store;
-    });
-}
-
 /// Cordis service owning `agent_pipelines` lookup and conditional evaluation,
 /// injecting `Execute` for downstream execution.
 ///
@@ -755,30 +710,33 @@ async fn execute_target_agent(
     metadata.resolved_endpoint = residency.resolved_endpoint().map(str::to_string);
     metadata.region = residency.region().map(str::to_string);
     let usage = effects.usage;
-    let pool_clone = pool.clone();
-    let tenant = tenant_id.to_string();
-    let agent_name = pipeline.target_agent.clone();
-    let error_for_insert = error_msg.clone();
-    let run_id_for_insert = run_id.clone();
-    tokio::spawn(async move {
-        let _ = agent_runs::insert_agent_run_with_id_and_metadata(
-            &pool_clone,
-            &run_id_for_insert,
-            &tenant,
-            &agent_name,
-            None,
-            status,
-            input_tokens,
-            output_tokens,
-            duration_ms as i64,
-            error_for_insert.as_deref(),
-            &model_name,
-            &provider_name,
-            false,
-            Some(&metadata),
-        )
-        .await;
-    });
+
+    agent_runs::insert_agent_run_with_id_and_metadata(
+        &pool,
+        &run_id,
+        tenant_id,
+        &pipeline.target_agent,
+        None,
+        status,
+        input_tokens,
+        output_tokens,
+        duration_ms as i64,
+        error_msg.as_deref(),
+        &model_name,
+        &provider_name,
+        false,
+        Some(&metadata),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+
+    crate::run_cost_rollup::spawn_aggregate_run_cost(
+        pool.clone(),
+        run_id.clone(),
+        tenant_id.to_string(),
+        pipeline.target_agent.clone(),
+        duration_ms as i64,
+    );
 
     let usage_pool = pool.clone();
     tokio::spawn(async move {

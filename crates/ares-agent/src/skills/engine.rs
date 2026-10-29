@@ -890,6 +890,7 @@ impl SkillEngine {
     }
 
     /// Execute a single sub-step (used for conditional branches).
+    #[allow(clippy::too_many_arguments)] // skill step context: tenant, run, cancel, and mutable JSON state stay separate params
     async fn execute_sub_step(
         &self,
         step: &SkillStep,
@@ -1050,6 +1051,7 @@ impl SkillEngine {
             .map_err(|e| e.to_string())
     }
 
+    #[allow(clippy::too_many_arguments)] // mirrors LogToolCallRequest fields; grouping would not shrink call sites
     async fn log_tool_call_result(
         &self,
         run_id: &str,
@@ -1717,9 +1719,6 @@ mod tests {
             }
         }
 
-        fn call_count(&self) -> usize {
-            self.calls.load(Ordering::SeqCst)
-        }
     }
 
     #[async_trait::async_trait]
@@ -1733,7 +1732,8 @@ mod tests {
         async fn generate_with_system(
             &self,
             system: &str,
-            prompt: &str,
+            // LLMClient trait requires prompt; this mock classifies from system text only.
+            _prompt: &str,
         ) -> ares_types::Result<String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             let Ok(guard) = self.behavior.lock() else {

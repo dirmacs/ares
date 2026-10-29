@@ -52,10 +52,7 @@ fn prose_only_inside_when_is_not_bare() {
 fn top_level_prose_is_not_bare() {
     let h = Harness {
         name: "top-prose".into(),
-        body: vec![entity(
-            "worker",
-            vec![Expr::Describe("Configured.".into())],
-        )],
+        body: vec![entity("worker", vec![Expr::Describe("Configured.".into())])],
     };
     assert!(lint_no_bare_kind(&h).is_empty());
 }

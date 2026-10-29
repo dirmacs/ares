@@ -1718,7 +1718,6 @@ mod tests {
                 calls: AtomicUsize::new(0),
             }
         }
-
     }
 
     #[async_trait::async_trait]

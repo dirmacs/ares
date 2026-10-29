@@ -213,12 +213,7 @@ impl RunObservability {
     pub async fn aggregate_run_cost(&self, duration_ms: i64) {
         let store = RunHistoryStore::new(&self.pool);
         if let Err(e) = store
-            .aggregate_run_cost(
-                &self.run_id,
-                &self.tenant_id,
-                &self.agent_name,
-                duration_ms,
-            )
+            .aggregate_run_cost(&self.run_id, &self.tenant_id, &self.agent_name, duration_ms)
             .await
         {
             e.log(&self.run_id);

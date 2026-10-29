@@ -73,10 +73,10 @@ pub mod router;
 #[cfg(feature = "postgres")]
 pub mod tenant_agent;
 pub use emergency_stop::EmergencyStop;
-#[cfg(feature = "postgres")]
-pub(crate) mod run_cost_rollup;
 #[cfg(feature = "pipeline")]
 pub mod pipeline;
+#[cfg(feature = "postgres")]
+pub(crate) mod run_cost_rollup;
 #[cfg(feature = "scheduler")]
 pub mod scheduler;
 #[cfg(any(feature = "postgres", feature = "skills"))]

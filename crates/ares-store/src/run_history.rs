@@ -1643,14 +1643,8 @@ mod tests {
             error_message: None,
             created_at: 3,
         }];
-        let record = build_run_cost_record(
-            "run-1",
-            "tenant-a",
-            "agent-x",
-            900,
-            &llm_calls,
-            &tool_calls,
-        );
+        let record =
+            build_run_cost_record("run-1", "tenant-a", "agent-x", 900, &llm_calls, &tool_calls);
         assert_eq!(record.total_llm_calls, 2);
         assert_eq!(record.total_tool_calls, 1);
         assert_eq!(record.total_prompt_tokens, 150);
@@ -2070,12 +2064,7 @@ mod tests {
         store.insert_llm_call(&req).await.expect("insert_llm_call");
 
         let aggregated = store
-            .aggregate_run_cost(
-                run_id,
-                "tenant-integration",
-                "integration-test-agent",
-                750,
-            )
+            .aggregate_run_cost(run_id, "tenant-integration", "integration-test-agent", 750)
             .await
             .expect("aggregate_run_cost");
         assert_eq!(aggregated.total_llm_calls, 1);

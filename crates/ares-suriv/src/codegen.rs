@@ -1,12 +1,13 @@
-//! Codegen: AST -> `Entry` records (Primitives.lean:339-373) plus the
-//! separate require/coeffect projection (`requiredServices`,
-//! Eval.lean:116-119).
+//! Codegen: AST -> `Entry` records (`compileEntity`, Primitives.lean) plus
+//! the separate require/coeffect projection (`requiredServices`,
+//! Primitives.lean).
 //!
 //! Per the compileEntity ruling, `require` NEVER lands in an `Entry`: the
 //! `Entry` shape is id / plugin / config / disabled / isolate only, and a
 //! require line contributes no describe text and no resource. The
 //! services are emitted as a side map keyed by entity id, mirroring
-//! `compileFiber`'s `CompiledFiber.coeffect` (Eval.lean:105, 121-136).
+//! `compileFiber`'s `CompiledFiber.coeffect` (`Coeffect`, `compileFiber`,
+//! Eval.lean).
 
 use crate::ast::{Entity, Expr, Harness};
 use crate::lexer::Kind;
@@ -38,7 +39,7 @@ pub struct Compiled {
     pub requires: BTreeMap<String, Vec<String>>,
 }
 
-/// `pluginFromKind` (Eval.lean:182).
+/// `pluginFromKind`, Eval.lean.
 fn plugin_from_kind(kind: Kind) -> &'static str {
     match kind {
         Kind::Agent => "AgentResolver",
@@ -66,34 +67,91 @@ pub fn compile_entity(e: &Entity) -> Entry {
     }
 }
 
-/// `systemPrompt` (Eval.lean:256-260): describe join with single spaces.
+/// `systemPrompt`: recursive describe join with single spaces (see
+/// `requiredServices` for the shared collection shape).
 pub fn system_prompt(body: &[Expr]) -> String {
-    let parts: Vec<&str> = body
-        .iter()
-        .filter_map(|x| match x {
-            Expr::Describe(s) => Some(s.as_str()),
-            _ => None,
-        })
-        .collect();
+    let mut parts = Vec::new();
+    collect_prose(body, &mut parts);
     parts.join(" ")
 }
 
-/// `requiredServices` (Eval.lean:116-119): every `require` node in the
-/// body contributes its services, in source order. `require` contributes
-/// no prose and no resource.
-pub fn required_services(body: &[Expr]) -> Vec<String> {
+/// Lean `hasDescription`: true when `describeParts` is non-empty. Uses the
+/// same recursive collector as [`system_prompt`], not a separate walk.
+pub fn has_description(body: &[Expr]) -> bool {
+    let mut parts = Vec::new();
+    collect_prose(body, &mut parts);
+    !parts.is_empty()
+}
+
+/// Lean `lintNoBareKind`: harness-level entities whose body carries no
+/// `.describe` anywhere (including inside `when` / `together`). Non-entity
+/// top-level nodes are skipped; names are returned in source order.
+pub fn lint_no_bare_kind(h: &Harness) -> Vec<String> {
     let mut out = Vec::new();
-    for x in body {
-        if let Expr::Require(services) = x {
-            out.extend(services.iter().cloned());
+    for x in &h.body {
+        if let Expr::Entity(e) = x
+            && !has_description(&e.body)
+        {
+            out.push(e.name.clone());
         }
     }
     out
 }
 
+fn collect_prose<'a>(body: &'a [Expr], parts: &mut Vec<&'a str>) {
+    // Single pass in source order: each sibling is handled before the next,
+    // and `when`/`together` recurse inline (never a separate top-level pass).
+    for x in body {
+        match x {
+            Expr::Describe(s) => parts.push(s.as_str()),
+            Expr::When(_, inner) => collect_prose(inner, parts),
+            Expr::Together(branches) => {
+                for branch in branches {
+                    collect_prose(branch, parts);
+                }
+            }
+            Expr::Entity(_)
+            | Expr::Instruct(_)
+            | Expr::Resource(_)
+            | Expr::Bind(_)
+            | Expr::Recall(_)
+            | Expr::Require(_) => {}
+        }
+    }
+}
+
+/// `requiredServices`: every `require` in the body, including inside
+/// `when` bodies and `together` branches, in source order. `require`
+/// contributes no prose and no resource.
+pub fn required_services(body: &[Expr]) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_services(body, &mut out);
+    out
+}
+
+fn collect_services(body: &[Expr], out: &mut Vec<String>) {
+    for x in body {
+        match x {
+            Expr::Require(services) => out.extend(services.iter().cloned()),
+            Expr::When(_, inner) => collect_services(inner, out),
+            Expr::Together(branches) => {
+                for branch in branches {
+                    collect_services(branch, out);
+                }
+            }
+            Expr::Entity(_)
+            | Expr::Instruct(_)
+            | Expr::Resource(_)
+            | Expr::Bind(_)
+            | Expr::Recall(_)
+            | Expr::Describe(_) => {}
+        }
+    }
+}
+
 /// Compile a harness. Top-level non-entity nodes compile to nothing at
 /// the `Entry` level (§7), and top-level `require` is not an entity
-/// declaration, so it is dropped here too (Primitives.lean:381-385).
+/// declaration, so it is dropped here too (`compileHarness`, Primitives.lean).
 pub fn compile_harness(h: &Harness) -> Compiled {
     let mut entries = Vec::new();
     let mut requires: BTreeMap<String, Vec<String>> = BTreeMap::new();

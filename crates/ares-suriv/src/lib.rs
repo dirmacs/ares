@@ -11,8 +11,11 @@
 //!
 //! Implemented:
 //!
-//! - the **system prompt** definition: the space-join of a body's
-//!   `describe` children ([`codegen::system_prompt`]);
+//! - the **system prompt** definition: the space-join of every `describe`
+//!   in the body, including inside `when` and `together`, in source order
+//!   ([`codegen::system_prompt`]);
+//! - **`lintNoBareKind`**: harness entities with no describe text anywhere
+//!   ([`codegen::lint_no_bare_kind`], [`codegen::has_description`]);
 //! - the **entry compiler** $cal(C)$: an entity declaration (name, kind,
 //!   optional realm, body) to an entry record with id, plugin, config
 //!   (name and system prompt), and the realm landing on `isolate`
@@ -39,8 +42,8 @@
 //!   listeners, `together` blocks into `Dispatch::Parallel` fan-out and
 //!   `instruct` sequences into chained dispatches. Those are Cordis
 //!   registration paths; this crate stops at the AST.
-//! - resource **resolution at load** (the linker), the static lints
-//!   (`lintNoBareKind`, `gatherInstructs`), and the metatheory.
+//! - resource **resolution at load** (the linker), `gatherInstructs`, and
+//!   the metatheory.
 //!
 //! ## Pipeline
 //!

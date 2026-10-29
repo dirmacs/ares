@@ -212,21 +212,25 @@ fn watch_observes_and_never_declares_a_coeffect() {
 }
 
 #[test]
-fn watch_contributes_no_prose_and_no_resource() {
+fn nested_describes_reach_system_prompt_while_reactive_spellings_do_not() {
     let c = compiled();
     let router = c
         .entries
         .iter()
         .find(|e| e.id == "billing-router")
         .expect("entry");
-    // §6: watch rows compile to nothing but `when` nodes — no describe
-    // text, no resource (the require discipline, Eval.lean:281-287).
-    // The prompt is built from the describes in the ENTITY body only;
-    // describes nested inside whens are branch content, not prompt text,
-    // so the two inner when describes do not leak into the prompt.
+    // §6: watch / on change desugar to `when` nodes only — they add no
+    // resource and no new phrase tokens. Describes anywhere in the entity
+    // body (including inside those whens) join into the system prompt in
+    // source order. An older flat collector kept only top-level describes;
+    // that was the bug this assertion previously encoded.
     assert_eq!(
         router.config.system_prompt,
-        "The router dispatches billing work and notices when the ledger comes back."
+        concat!(
+            "The router dispatches billing work and notices when the ledger comes back. ",
+            "No ledger, escalating to a person. ",
+            "The ledger flapped, recording the new epoch."
+        )
     );
     assert!(!router.config.system_prompt.contains("watch"));
     assert!(!router.config.system_prompt.contains("on change"));

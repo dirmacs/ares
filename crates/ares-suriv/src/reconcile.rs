@@ -1,4 +1,4 @@
-//! Reconcile: diff two compiled entry lists into loader actions (Eval.lean:521).
+//! Reconcile: diff two compiled entry lists into loader actions (`reconcile`, Eval.lean).
 //!
 //! A direct port of the Lean `reconcile`: same three branches in the same
 //! order (retires ++ begins ++ updates), same first-match `find?`
@@ -15,7 +15,7 @@
 
 use crate::codegen::{Config, Entry};
 
-/// A loader action, mirroring Lean `LoaderAction` (Eval.lean:515).
+/// A loader action, mirroring Lean `LoaderAction` (`LoaderAction`, Eval.lean).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoaderAction {
     /// Start a new entry through the loader lifecycle.

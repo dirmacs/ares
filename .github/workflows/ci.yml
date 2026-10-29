@@ -137,15 +137,19 @@ jobs:
           toolchain: "1.99.0"
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      # Not `-D warnings`. The tree carries 30 deduplicated clippy warnings,
-      # almost all dead code in an apparently abandoned cost-aggregation
-      # subsystem in ares-agent. `-D warnings` would make this job red on its
-      # first run and stay red until that subsystem is either wired up or
-      # deleted, which is a decision this gate should not force. The gate
-      # ratchets instead: it fails if the count rises, so new code cannot add
-      # debt, and it also fails if the count falls without the baseline being
-      # lowered, because a baseline above the real number is permission to
-      # reintroduce exactly that many. See scripts/clippy-gate.sh.
+      # Not `-D warnings`. The tree carries a small residue of deduplicated
+      # clippy warnings (see scripts/clippy-baseline.txt for the current
+      # number); `-D warnings` would make this job red today and stay red until
+      # the residue is cleared, which is a decision this gate should not force.
+      # The gate ratchets instead: it fails if the count rises, so new code
+      # cannot add debt, and it also fails if the count falls without the
+      # baseline being lowered, because a baseline above the real number is
+      # permission to reintroduce exactly that many. See scripts/clippy-gate.sh.
+      #
+      # That residue used to be dominated by an unfinished cost-aggregation
+      # subsystem in ares-agent. It is no longer abandoned: the aggregation
+      # moved to ares-store and all three agent paths call it. If you are here
+      # because this job failed on a rise, the warning is new, not inherited.
       - name: Check the warning budget
         run: ./scripts/clippy-gate.sh
   test:

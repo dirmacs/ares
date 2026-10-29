@@ -64,10 +64,10 @@ fi
 #   warning: `ares-agent` (lib test) generated 25 warnings (22 duplicates) (...)
 #
 # Summing the first number double-counts: the 25 includes 22 warnings the lib
-# target already reported, so 27 + 25 = 52 overstates the tree by 22. The
-# deduplicated total is sum(generated) - sum(duplicates) = 30. Getting this
-# wrong would have set the baseline 22 too high on the first run, which is
-# exactly the silent permission the ratchet exists to prevent.
+# target already reported, so 27 + 25 = 52 overstates the tree by 22. When this
+# note was written the deduplicated total was sum(generated) - sum(duplicates)
+# = 30. Getting this wrong would have set the baseline 22 too high on the first
+# run, which is exactly the silent permission the ratchet exists to prevent.
 ACTUAL=$(echo "$OUT" | python3 -c '
 import re, sys
 gen = dup = 0

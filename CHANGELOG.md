@@ -41,33 +41,6 @@ All notable changes to ARES are documented here. This project follows [Semantic 
   (the classification kernel, the PII oracle/redactor, the identity
   directory).
 
-### Fixed
-
-- `ares-suriv` collected dependencies and prose from only the top level of an
-  entity body. A `require` written inside a `when` body or an `together` branch
-  contributed no coeffect, and a `describe` there contributed no prompt text, so
-  the compiled fiber carried no dependency its source declared and the model was
-  never told what the author wrote. On the `billing-flap` fixture the router's
-  `system_prompt` was
-
-  `The router dispatches billing work and notices when the ledger comes back.`
-
-  and is now that sentence, `No ledger, escalating to a person.`, and
-  `The ledger flapped, recording the new epoch.`: two of the three sentences had
-  been dropped silently. `system_prompt` and `required_services` are now the same
-  structural recursion, in source order, and deliberately do not descend into a
-  nested `entity` (the surface grammar cannot produce one, since `bring in`
-  closes the enclosing body). This is `0.11.8` behaviour that the published
-  crate still carries; the fix is unreleased.
-
-  The `lintNoBareKind` static lint is also implemented here for the first time.
-  The Lean development had it and the paper presents it as part of the language,
-  but this crate had no lint at all, so the claim had no counterpart in the
-  program. `has_description` and `lint_no_bare_kind` reuse the same prose walker
-  as `system_prompt` rather than walking the tree a second time, because
-  three copies of that logic is what let the two halves of the language drift
-  apart in the first place.
-
 ### Changed
 
 - `ares-vector` moves to `0.1.7`. crates.io already carries `0.1.5` and
@@ -94,6 +67,39 @@ All notable changes to ARES are documented here. This project follows [Semantic 
   `libsqlite3-sys` 0.38, or a storage decision on the appa side). The fence
   extension and the policy gate are independent of the blocker and are
   verified on their own.
+
+---
+
+## 0.11.9 - 2026-10-29
+
+**`ares-suriv`: nested `require` and `describe` now reach compilation and the model prompt.**
+
+### Fixed
+
+- `ares-suriv` collected dependencies and prose from only the top level of an
+  entity body. A `require` written inside a `when` body or an `together` branch
+  contributed no coeffect, and a `describe` there contributed no prompt text, so
+  the compiled fiber carried no dependency its source declared and the model was
+  never told what the author wrote. On the `billing-flap` fixture the router's
+  `system_prompt` was
+
+  `The router dispatches billing work and notices when the ledger comes back.`
+
+  and is now that sentence, `No ledger, escalating to a person.`, and
+  `The ledger flapped, recording the new epoch.`: two of the three sentences had
+  been dropped silently. `system_prompt` and `required_services` are now the same
+  structural recursion, in source order, and deliberately do not descend into a
+  nested `entity` (the surface grammar cannot produce one, since `bring in`
+  closes the enclosing body). The last published version carrying this bug was
+  `0.11.8`; `0.11.9` fixes it.
+
+  The `lintNoBareKind` static lint is also implemented here for the first time.
+  The Lean development had it and the paper presents it as part of the language,
+  but this crate had no lint at all, so the claim had no counterpart in the
+  program. `has_description` and `lint_no_bare_kind` reuse the same prose walker
+  as `system_prompt` rather than walking the tree a second time, because
+  three copies of that logic is what let the two halves of the language drift
+  apart in the first place.
 
 ---
 

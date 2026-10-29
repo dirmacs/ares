@@ -966,14 +966,13 @@ async fn execute_scheduled_agent(
         .map(str::to_string)
         .unwrap_or_else(|| effective_message.clone());
 
-    let observability: Arc<dyn ares_llm::observability::ObservabilitySink> = Arc::new(
-        crate::run_history_observability::RunHistoryObservability {
+    let observability: Arc<dyn ares_llm::observability::ObservabilitySink> =
+        Arc::new(crate::run_history_observability::RunHistoryObservability {
             pool: pool.clone(),
             run_id: run_id.clone(),
             tenant_id: sched.tenant_id.clone(),
             agent_name: sched.agent_name.clone(),
-        },
-    );
+        });
 
     let req = crate::execution::AgentRequest {
         agent_name: exec_agent_name,
@@ -1083,11 +1082,7 @@ async fn execute_scheduled_agent(
         &sched.agent_name,
         Some(request_source),
     );
-    let run_ctx = if skill_run {
-        &request_ctx
-    } else {
-        &scoped
-    };
+    let run_ctx = if skill_run { &request_ctx } else { &scoped };
     let execution = exec
         .run(&req, run_ctx)
         .await

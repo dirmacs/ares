@@ -155,14 +155,13 @@ impl PipelineService {
         let start = std::time::Instant::now();
         let run_id = uuid::Uuid::new_v4().to_string();
         let pool = self.db.pool.clone();
-        let observability: Arc<dyn ares_llm::observability::ObservabilitySink> = Arc::new(
-            crate::run_history_observability::RunHistoryObservability {
+        let observability: Arc<dyn ares_llm::observability::ObservabilitySink> =
+            Arc::new(crate::run_history_observability::RunHistoryObservability {
                 pool: pool.clone(),
                 run_id: run_id.clone(),
                 tenant_id: tenant.to_string(),
                 agent_name: pipeline.target_agent.clone(),
-            },
-        );
+            });
 
         let pre_metadata = AgentRunMetadata {
             session_id: Some(run_id.clone()),
@@ -647,14 +646,13 @@ async fn execute_target_agent(
         .map(|context| format_message_with_context(context, source_output))
         .unwrap_or_else(|| source_output.to_string());
 
-    let observability: Arc<dyn ares_llm::observability::ObservabilitySink> = Arc::new(
-        crate::run_history_observability::RunHistoryObservability {
+    let observability: Arc<dyn ares_llm::observability::ObservabilitySink> =
+        Arc::new(crate::run_history_observability::RunHistoryObservability {
             pool: pool.clone(),
             run_id: run_id.clone(),
             tenant_id: tenant_id.to_string(),
             agent_name: pipeline.target_agent.clone(),
-        },
-    );
+        });
 
     let req = AgentRequest {
         agent_name: pipeline.target_agent.clone(),
@@ -730,11 +728,7 @@ async fn execute_target_agent(
         tenant_id,
         &run_id,
     );
-    let run_ctx = if skill_run {
-        &request_ctx
-    } else {
-        &scoped
-    };
+    let run_ctx = if skill_run { &request_ctx } else { &scoped };
     let execution = exec
         .run(&req, run_ctx)
         .await

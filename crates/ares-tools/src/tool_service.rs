@@ -668,7 +668,11 @@ mod tests {
         }
     }
 
-    fn runtime_tool_row(name: &str, tenant_id: Option<&str>, is_public: bool) -> ares_store::runtime_tools::RuntimeTool {
+    fn runtime_tool_row(
+        name: &str,
+        tenant_id: Option<&str>,
+        is_public: bool,
+    ) -> ares_store::runtime_tools::RuntimeTool {
         use ares_store::runtime_tools::RuntimeTool;
         let now = chrono::Utc::now();
         RuntimeTool {
@@ -764,7 +768,9 @@ mod tests {
         static_reg.register(static_tool);
         let svc = Tools::with_runtime(Arc::new(static_reg), None);
         let ctx = Context::new_root();
-        let resolved = svc.resolve(&ctx, "builtin").expect("static without runtime");
+        let resolved = svc
+            .resolve(&ctx, "builtin")
+            .expect("static without runtime");
         assert_eq!(resolved.description(), "static");
     }
 

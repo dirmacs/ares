@@ -691,8 +691,7 @@ impl RuntimeToolRegistry {
         metadata: HashMap<String, RuntimeTool>,
     ) -> Self {
         Self {
-            pool: sqlx::PgPool::connect_lazy("postgres://localhost/unused")
-                .expect("lazy pool"),
+            pool: sqlx::PgPool::connect_lazy("postgres://localhost/unused").expect("lazy pool"),
             tools: Arc::new(ArcSwap::from_pointee(tools)),
             metadata: Arc::new(ArcSwap::from_pointee(metadata)),
             reload_interval_secs: 0,

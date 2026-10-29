@@ -15,7 +15,9 @@ use ares_agent::scheduler::SchedulerService;
 use ares_agent::{AgentConfig, AgentRegistry, Execute};
 use ares_llm::{ModelConfig, ProviderConfig, ProviderRegistry};
 use ares_store::run_history::RunHistoryStore;
-use ares_store::schedules::{CreatePipelineRequest, CreateScheduleRequest, PipelineStore, ScheduleStore};
+use ares_store::schedules::{
+    CreatePipelineRequest, CreateScheduleRequest, PipelineStore, ScheduleStore,
+};
 use ares_store::tenant_agents::{CreateTenantAgentRequest, create_tenant_agent};
 use ares_store::tenant_allowlist::TenantAllowlistStore;
 use ares_store::{FleetSecrets, PostgresClient, TenantDb};
@@ -288,7 +290,10 @@ async fn scheduler_run_writes_nonzero_run_costs_row_after_spawned_aggregation() 
     assert_eq!(cost.run_id, run_id);
     assert_eq!(cost.tenant_id, fx.tenant_id);
     assert_eq!(cost.agent_name, AGENT);
-    assert!(cost.total_llm_calls > 0, "zero llm_calls is the billing bug: {cost:?}");
+    assert!(
+        cost.total_llm_calls > 0,
+        "zero llm_calls is the billing bug: {cost:?}"
+    );
     assert!(
         cost.total_estimated_cost_usd > Decimal::ZERO,
         "zero cost is the billing bug: {cost:?}"
@@ -313,7 +318,10 @@ async fn pipeline_target_run_writes_nonzero_run_costs_row_after_spawned_aggregat
     let cost = fx.poll_run_cost(&run_id).await;
 
     assert_eq!(cost.run_id, run_id);
-    assert!(cost.total_llm_calls > 0, "zero llm_calls is the billing bug: {cost:?}");
+    assert!(
+        cost.total_llm_calls > 0,
+        "zero llm_calls is the billing bug: {cost:?}"
+    );
     assert!(
         cost.total_estimated_cost_usd > Decimal::ZERO,
         "zero cost is the billing bug: {cost:?}"

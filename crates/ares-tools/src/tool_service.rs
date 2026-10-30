@@ -416,12 +416,12 @@ impl Tools {
     fn resolve_named(&self, name: &str, tenant: Option<&str>) -> Option<Arc<dyn Tool>> {
         #[cfg(any(feature = "postgres", test))]
         if let Some(rt) = &self.runtime {
-            if let Some(tid) = tenant
-                && let Some(tool) = rt.get_for_tenant(name, Some(tid))
-            {
-                return Some(tool);
-            }
-            if let Some(tool) = rt.get(name) {
+            // Both lookups go through `get_for_tenant`, which refuses a tool that
+            // is not public and not owned by the calling tenant. The fleet-wide
+            // `get` must NOT be used as a fallback: it performs no tenant check,
+            // so it would hand a private tool to any tenant that asked for it by
+            // name (get_for_tenant denies, then this hands it over anyway).
+            if let Some(tool) = rt.get_for_tenant(name, tenant) {
                 return Some(tool);
             }
         }
@@ -799,6 +799,71 @@ mod tests {
             resolved.description(),
             "runtime-tenant-a",
             "get_for_tenant must select tenant-owned runtime before static"
+        );
+    }
+
+    /// A runtime tool owned by another tenant and not marked public must not be
+    /// resolvable by this tenant.
+    ///
+    /// `get_for_tenant` already denies it (`!is_public && tenant_id != tid`), but
+    /// `resolve_named` used to fall through to a bare `rt.get(name)`, which does no
+    /// tenant check at all, and hand the tool over anyway. That is a cross-tenant
+    /// leak, not just a precedence question, so the assertion is that the other
+    /// tenant's tool is unreachable - falling back to the *static* tool is the
+    /// correct outcome, not merely "not the runtime one".
+    #[tokio::test]
+    async fn resolve_named_does_not_leak_another_tenants_private_tool() {
+        let name = "tenant_private";
+        let static_tool = Arc::new(SourceProbe {
+            name: name.into(),
+            source: "static",
+        }) as Arc<dyn Tool>;
+        let runtime_tool = Arc::new(SourceProbe {
+            name: name.into(),
+            source: "runtime-tenant-a",
+        }) as Arc<dyn Tool>;
+        let mut static_reg = ToolRegistry::new();
+        static_reg.register(Arc::clone(&static_tool));
+        // Private to tenant-a: `is_public: false`.
+        let runtime = runtime_registry_with_tools(&[(
+            name,
+            runtime_tool,
+            runtime_tool_row(name, Some("tenant-a"), false),
+        )]);
+        let svc = Tools::with_runtime(Arc::new(static_reg), Some(runtime));
+
+        let ctx = Context::new_root().isolate::<Tools>("tenant:tenant-b");
+        let resolved = svc.resolve(&ctx, name).expect("static fallback for b");
+        assert_eq!(
+            resolved.description(),
+            "static",
+            "tenant-b must not resolve tenant-a's private runtime tool; \
+             it must fall back to the static tool of the same name"
+        );
+    }
+
+    /// A public runtime tool is fleet-wide by design and must stay resolvable
+    /// from any tenant - the guard must not over-restrict.
+    #[tokio::test]
+    async fn resolve_named_public_runtime_tool_is_cross_tenant() {
+        let name = "tenant_public";
+        let runtime_tool = Arc::new(SourceProbe {
+            name: name.into(),
+            source: "runtime-public",
+        }) as Arc<dyn Tool>;
+        let runtime = runtime_registry_with_tools(&[(
+            name,
+            runtime_tool,
+            runtime_tool_row(name, Some("tenant-a"), true),
+        )]);
+        let svc = Tools::with_runtime(Arc::new(ToolRegistry::new()), Some(runtime));
+
+        let ctx = Context::new_root().isolate::<Tools>("tenant:tenant-b");
+        let resolved = svc.resolve(&ctx, name).expect("public runtime tool");
+        assert_eq!(
+            resolved.description(),
+            "runtime-public",
+            "a public runtime tool stays resolvable from another tenant"
         );
     }
 

@@ -66,7 +66,7 @@ impl<'de> Deserialize<'de> for DatabaseBackend {
         let name = raw
             .backend
             .as_deref()
-            .unwrap_or("embedded")
+            .unwrap_or_else(|| default_backend_name())
             .trim()
             .to_ascii_lowercase();
         match name.as_str() {
@@ -111,10 +111,44 @@ impl<'de> Deserialize<'de> for DatabaseBackend {
     }
 }
 
+/// The backend a configuration that names none gets.
+///
+/// Build-aware on purpose. `Embedded` is preferred because it needs nothing from
+/// the environment, but it is only compiled in with the `turso` feature, and
+/// `turso` cannot be a default feature: `libsql-ffi` and `rusqlite` (via `appa`
+/// in `ares-tools`) each vendor SQLite, so a binary linking both fails with
+/// duplicate `sqlite3_*` symbols. See the root `Cargo.toml`.
+///
+/// A default the binary cannot serve would be the same class of bug this module
+/// exists to remove, so a build without `turso` defaults to the backend its
+/// feature set can always serve.
+pub const fn default_backend_name() -> &'static str {
+    if cfg!(feature = "turso") {
+        "embedded"
+    } else {
+        "postgres"
+    }
+}
+
+/// Connection string a `postgres`-defaulting build falls back to when it names
+/// no url.
+///
+/// Duplicated from `crate::postgres::DEFAULT_POSTGRES_URL` only because
+/// `postgres` is an optional feature that may be off; a test asserts the two
+/// agree whenever that feature is enabled, so they cannot drift.
+const FALLBACK_POSTGRES_URL: &str = "postgres://postgres:postgres@localhost:5432/ares";
+
 impl Default for DatabaseBackend {
     fn default() -> Self {
-        DatabaseBackend::Embedded {
-            path: default_embedded_path(),
+        if cfg!(feature = "turso") {
+            DatabaseBackend::Embedded {
+                path: default_embedded_path(),
+            }
+        } else {
+            DatabaseBackend::Postgres {
+                url: FALLBACK_POSTGRES_URL.to_string(),
+                max_connections: None,
+            }
         }
     }
 }
@@ -247,10 +281,27 @@ impl<'de> Deserialize<'de> for DatabaseConfig {
         }
 
         let raw = Raw::deserialize(deserializer)?;
+
+        // Nothing names a backend and nothing describes one: take the build's
+        // default whole, including its url/path. Treating this as "postgres with
+        // no url" would fail a config that is merely sparse — the bug class this
+        // module exists to remove.
+        if raw.backend.is_none() && raw.path.is_none() && raw.url.is_none() {
+            if raw.max_connections.is_some() {
+                return Err(serde::de::Error::custom(
+                    "[database] `max_connections` requires backend = \"postgres\"",
+                ));
+            }
+            return Ok(DatabaseConfig {
+                backend: DatabaseBackend::default(),
+                qdrant: raw.qdrant,
+            });
+        }
+
         let name = raw
             .backend
             .as_deref()
-            .unwrap_or("embedded")
+            .unwrap_or_else(|| default_backend_name())
             .trim()
             .to_ascii_lowercase();
         let backend = match name.as_str() {
@@ -341,18 +392,43 @@ mod tests {
     }
 
     #[test]
-    fn default_backend_is_embedded() {
-        assert_eq!(
-            DatabaseBackend::default(),
-            DatabaseBackend::Embedded {
-                path: default_embedded_path()
-            }
+    fn default_backend_matches_what_this_build_can_serve() {
+        let d = DatabaseBackend::default();
+        if cfg!(feature = "turso") {
+            assert_eq!(
+                d,
+                DatabaseBackend::Embedded {
+                    path: default_embedded_path()
+                },
+                "a build with `turso` should default to the embedded store"
+            );
+        } else {
+            assert!(
+                matches!(d, DatabaseBackend::Postgres { .. }),
+                "a build without `turso` must not default to a backend it cannot serve"
+            );
+        }
+        assert_eq!(DatabaseConfig::default().backend, d);
+        assert!(
+            DatabaseConfig::default().validate().is_ok(),
+            "the default config must be valid in this build"
         );
+    }
+
+    #[test]
+    fn empty_table_parses_to_the_builds_default_backend() {
+        let cfg = parse("{}").expect("empty object");
+        assert_eq!(cfg.backend, DatabaseBackend::default());
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn fallback_postgres_url_matches_the_postgres_module_constant() {
         assert_eq!(
-            DatabaseConfig::default().backend,
-            DatabaseBackend::default()
+            FALLBACK_POSTGRES_URL,
+            crate::postgres::DEFAULT_POSTGRES_URL,
+            "the two constants must not drift"
         );
-        assert!(DatabaseConfig::default().validate().is_ok());
     }
 
     #[test]

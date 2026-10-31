@@ -1630,7 +1630,7 @@ mod boot_tests {
         std::fs::write(
             dir.join("ares.toml"),
             format!(
-                "[server]\nhost = \"127.0.0.1\"\nport = 39471\nlog_level = \"info\"\n\n[database]\nurl = \"{db_url}\"\n\n[auth]\njwt_secret_env = \"JWT_SECRET_TEST_BOOT\"\njwt_access_expiry = 900\njwt_refresh_expiry = 604800\napi_key_env = \"API_KEY_TEST_BOOT\"\n"
+                "[server]\nhost = \"127.0.0.1\"\nport = 39471\nlog_level = \"info\"\n\n[database]\nbackend = \"postgres\"\nurl = \"{db_url}\"\n\n[auth]\njwt_secret_env = \"JWT_SECRET_TEST_BOOT\"\njwt_access_expiry = 900\njwt_refresh_expiry = 604800\napi_key_env = \"API_KEY_TEST_BOOT\"\n"
             ),
         )
         .expect("write ares.toml");

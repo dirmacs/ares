@@ -148,6 +148,16 @@ required-features = ["http", "cli"]
 
 [features]
 # Default features for NVIDIA NIM cloud inference
+# `turso` (the embedded backend) is deliberately NOT default. It cannot be:
+# `libsql-ffi` and `rusqlite` each vendor their own SQLite, so any binary that
+# links both gets duplicate C symbols and fails at LINK time —
+#   rust-lld: error: duplicate symbol: sqlite3_version
+#   defined in liblibsqlite3_sys-*.rlib  (rusqlite, via appa in ares-tools)
+#   defined in liblibsql_ffi-*.rlib      (libsql)
+# `cargo check` passes; only linking fails, which is why this was missed at
+# first. Builds that want the embedded store must exclude whatever pulls appa:
+#   --no-default-features --features turso,...
+# Tracked as its own problem; the store itself is backend-agnostic and tested.
 default = ["postgres", "ares-vector", "mcp", "inventory", "rhai-policy", "http", "cli", "script-tools"]
 # ============= Build Surfaces =============
 # HTTP server stack: the ares-http router surface plus axum/tower/utoipa.

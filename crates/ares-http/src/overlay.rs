@@ -1311,7 +1311,7 @@ api_key_env = "TEST_API_KEY"
             ares_store::DatabaseBackend::default(),
             "the config default and the build's default must agree"
         );
-        if cfg!(feature = "turso") {
+        if ares_store::default_backend_name() == "embedded" {
             assert_eq!(
                 config.database.backend,
                 ares_store::DatabaseBackend::Embedded {
@@ -1760,11 +1760,11 @@ api_key_env = "TEST_API_KEY"
         // The default must be a backend this build can serve, and must agree
         // with `DatabaseBackend::default()`.
         assert_eq!(db.backend, ares_store::DatabaseBackend::default());
-        if cfg!(feature = "turso") {
-            assert_eq!(db.backend.name(), "embedded");
-        } else {
-            assert_eq!(db.backend.name(), "postgres");
-        }
+        assert_eq!(
+            db.backend.name(),
+            ares_store::default_backend_name(),
+            "the default's name must match what ares-store reports for this build"
+        );
         assert!(db.validate().is_ok());
         assert!(db.qdrant.is_none());
     }

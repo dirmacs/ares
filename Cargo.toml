@@ -158,7 +158,7 @@ required-features = ["http", "cli"]
 # first. Builds that want the embedded store must exclude whatever pulls appa:
 #   --no-default-features --features turso,...
 # Tracked as its own problem; the store itself is backend-agnostic and tested.
-default = ["postgres", "ares-vector", "mcp", "inventory", "rhai-policy", "http", "cli", "script-tools"]
+default = ["postgres", "turso", "ares-vector", "mcp", "inventory", "rhai-policy", "http", "cli", "script-tools"]
 # ============= Build Surfaces =============
 # HTTP server stack: the ares-http router surface plus axum/tower/utoipa.
 # The `ares-server` binary requires both `http` and `cli`; the library only
@@ -203,7 +203,7 @@ llamacpp-vulkan = ["ares-llm/llamacpp-vulkan"]
 postgres = ["dep:sqlx", "ares-store/postgres", "ares-agent/postgres", "ares-agent/scheduler", "ares-agent/pipeline", "ares-agent/trigger", "ares-agent/workflows", "ares-mcp?/postgres", "ares-tools/postgres", "ares-http?/postgres"]
 
 # Turso/libSQL - Edge-native SQLite-compatible database
-turso = ["dep:libsql", "ares-store/turso"]
+turso = ["ares-store/turso"]
 
 # ============= Vector Store Backends =============
 # ares-vector - Pure Rust embedded vector database with HNSW (default, local-first)
@@ -343,7 +343,7 @@ ares-vector = { workspace = true, features = ["serde"], optional = true }
 qdrant-client = { version = "1.16.0", optional = true }
 lancedb = { version = "0.37.1", optional = true }
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "postgres", "tls-rustls", "macros", "derive"], optional = true }
-libsql = { version = "0.6", optional = true }
+
 chromadb = { version = "2.3.0", optional = true }
 pinecone-sdk = { version = "0.1.2", optional = true }
 

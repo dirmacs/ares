@@ -12,7 +12,7 @@ default = []
 # Compile-time factory collection (mirrors the server root feature)
 inventory = ["dep:inventory", "cordis/inventory"]
 postgres = ["dep:sqlx", "dep:sqlx-core", "dep:sqlx-postgres"]
-turso = ["dep:libsql"]
+turso = ["dep:rusqlite"]
 ares-vector = ["dep:ares-vector"]
 lancedb = ["dep:lancedb"]
 qdrant = ["dep:qdrant-client"]
@@ -45,7 +45,9 @@ sqlx-core = { workspace = true, optional = true }
 # needs for a `PgPool`. Its `migrate` feature is a forward to `sqlx-core/migrate`;
 # it does not pull in the sqlite driver.
 sqlx-postgres = { workspace = true, optional = true }
-libsql = { workspace = true, optional = true }
+# `bundled` matches how `appa` already declares rusqlite, so the graph keeps
+# exactly one vendored SQLite rather than expecting a system libsqlite3.
+rusqlite = { version = "0.40", optional = true, features = ["bundled"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }

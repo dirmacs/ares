@@ -53,7 +53,14 @@ OUT=$(cargo clippy --workspace --all-targets 2>&1)
 RC=$?
 if [ $RC -ne 0 ]; then
   # A hard error (not a warning) is always a failure, independent of the count.
-  echo "$OUT" | grep -E "^error" | head -20
+  #
+  # Strip ANSI before matching. CI sets CARGO_TERM_COLOR=always, so every
+  # diagnostic line arrives as \e[1m\e[31merror\e[0m... and a plain `^error`
+  # anchor matches nothing -- the job then reports "a compile error" with no
+  # error text, which is how this went undiagnosed. Match the coloured form
+  # too, so the report survives either CARGO_TERM_COLOR setting.
+  CLEAN=$(printf '%s\n' "$OUT" | sed $'s/\033\\[[0-9;]*m//g')
+  printf '%s\n' "$CLEAN" | grep -E "^error" | head -20
   echo "clippy-gate: clippy exited $RC; a compile error is not a warning budget"
   exit 1
 fi

@@ -590,6 +590,7 @@ jwt_secret_env = "TEST_JWT_SECRET"
 api_key_env = "TEST_API_KEY"
 
 [database]
+backend = "postgres"
 url = "postgres://localhost/ares"
 "#,
         )

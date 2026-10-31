@@ -69,3 +69,6 @@ matches = "0.1"
 rust_decimal_macros = { version = "1.36" }
 tempfile = "3"
 tokio = { workspace = true }
+# Config round-trip test serialises a DatabaseConfig through TOML, because that
+# is the format operators actually write.
+toml = "0.9.8"

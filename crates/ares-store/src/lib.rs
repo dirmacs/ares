@@ -75,7 +75,9 @@ pub mod billing_config;
 pub mod config;
 pub mod fleet_secrets;
 pub use billing_config::{BillingConfig, ModelPricingConfig};
-pub use config::{DatabaseConfig, QdrantConfig, default_qdrant_url};
+pub use config::{
+    DatabaseBackend, DatabaseConfig, QdrantConfig, default_backend_name, default_qdrant_url,
+};
 pub use fleet_secrets::{
     EncryptedPayload, FleetSecrets, FleetSecretsError, MasterKey, ProviderOverride,
     decrypt_api_key, encrypt_api_key, last_n_visible,
@@ -128,8 +130,9 @@ pub use realms::TenantRealms;
 #[cfg(feature = "postgres")]
 /// Agent config version history (Sprint 11).
 pub mod agent_versions;
+/// Backend-neutral domain types shared by every store backend.
+pub mod domain;
 /// Database traits and common types shared across providers.
-#[cfg(feature = "postgres")]
 pub mod traits;
 /// Turso/libSQL database client (alternative to PostgreSQL).
 #[cfg(feature = "turso")]

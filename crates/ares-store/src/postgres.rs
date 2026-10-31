@@ -158,31 +158,11 @@ impl Default for PostgresConfig {
     }
 }
 
-fn default_max_tool_iterations() -> i32 {
-    10
-}
+/// JSON configuration stored in `UserAgent::extra` (defined in [`crate::domain`]).
+pub use crate::domain::UserAgentExtraConfig;
 
-/// JSON configuration stored in `UserAgent::extra`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct UserAgentExtraConfig {
-    #[serde(default)]
-    pub parallel_tools: bool,
-    #[serde(default = "default_max_tool_iterations")]
-    pub max_tool_iterations: i32,
-    #[serde(default)]
-    pub custom: serde_json::Map<String, serde_json::Value>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct Conversation {
-    pub id: String,
-    pub user_id: String,
-    pub title: Option<String>,
-    #[sqlx(default)]
-    pub message_count: i32,
-    pub created_at: String,
-    pub updated_at: String,
-}
+/// Conversation row shape (defined in [`crate::domain`]).
+pub use crate::domain::Conversation;
 
 pub struct PostgresClient {
     pub pool: PgPool,
@@ -223,16 +203,6 @@ impl PostgresClient {
             .await
             .map_err(|e| AppError::Database(format!("Failed to connect to Postgres: {}", e)))?;
         Ok(Self { pool })
-    }
-
-    pub async fn new_local(_path: &str) -> Result<Self> {
-        let url = resolve_database_url(None);
-        Self::new_remote(url, "".to_string()).await
-    }
-
-    pub async fn new_memory() -> Result<Self> {
-        // Use the test lazy pool that doesn't require a live connection
-        Ok(Self::new_test())
     }
 
     /// Create a test-only client with a lazy pool that doesn't actually connect.
@@ -634,82 +604,67 @@ pub struct ConversationSnapshotRow {
     pub last_audit_seq: i64,
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct User {
-    pub id: String,
-    pub email: String,
-    pub password_hash: String,
-    pub name: String,
-    pub created_at: i64,
-    pub updated_at: i64,
+/// User row shape (defined in [`crate::domain`]).
+pub use crate::domain::User;
+
+/// Agent row shape and helpers (defined in [`crate::domain`]).
+pub use crate::domain::UserAgent;
+
+// Row mapping lives with the backend that needs it, so the shared domain types
+// stay free of any `sqlx` dependency. The embedded backend reads columns
+// positionally with `row.get(n)` and needs none of this.
+impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for User {
+    fn from_row(row: &'r sqlx::postgres::PgRow) -> std::result::Result<Self, sqlx::Error> {
+        use sqlx::Row as _;
+        Ok(Self {
+            id: row.try_get("id")?,
+            email: row.try_get("email")?,
+            password_hash: row.try_get("password_hash")?,
+            name: row.try_get("name")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct UserAgent {
-    pub id: String,
-    pub user_id: String,
-    pub name: String,
-    pub display_name: Option<String>,
-    pub description: Option<String>,
-    pub model: String,
-    pub system_prompt: Option<String>,
-    pub tools: String,
-    pub max_tool_iterations: i32,
-    pub parallel_tools: bool,
-    pub extra: String,
-    pub is_public: bool,
-    pub usage_count: i32,
-    pub rating_sum: i32,
-    pub rating_count: i32,
-    pub created_at: i64,
-    pub updated_at: i64,
+impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for UserAgent {
+    fn from_row(row: &'r sqlx::postgres::PgRow) -> std::result::Result<Self, sqlx::Error> {
+        use sqlx::Row as _;
+        Ok(Self {
+            id: row.try_get("id")?,
+            user_id: row.try_get("user_id")?,
+            name: row.try_get("name")?,
+            display_name: row.try_get("display_name")?,
+            description: row.try_get("description")?,
+            model: row.try_get("model")?,
+            system_prompt: row.try_get("system_prompt")?,
+            tools: row.try_get("tools")?,
+            max_tool_iterations: row.try_get("max_tool_iterations")?,
+            parallel_tools: row.try_get("parallel_tools")?,
+            extra: row.try_get("extra")?,
+            is_public: row.try_get("is_public")?,
+            usage_count: row.try_get("usage_count")?,
+            rating_sum: row.try_get("rating_sum")?,
+            rating_count: row.try_get("rating_count")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
 }
 
-impl UserAgent {
-    pub fn new(id: String, user_id: String, name: String, model: String) -> Self {
-        let now = chrono::Utc::now().timestamp();
-        Self {
-            id,
-            user_id,
-            name,
-            display_name: None,
-            description: None,
-            model,
-            system_prompt: None,
-            tools: "[]".to_string(),
-            max_tool_iterations: 10,
-            parallel_tools: false,
-            extra: "{}".to_string(),
-            is_public: false,
-            usage_count: 0,
-            rating_sum: 0,
-            rating_count: 0,
-            created_at: now,
-            updated_at: now,
-        }
-    }
-    pub fn tools_vec(&self) -> Vec<String> {
-        serde_json::from_str(&self.tools).unwrap_or_default()
-    }
-    pub fn set_tools(&mut self, tools: Vec<String>) {
-        self.tools = serde_json::to_string(&tools).unwrap_or_else(|_| "[]".to_string());
-    }
-    pub fn average_rating(&self) -> Option<f32> {
-        if self.rating_count > 0 {
-            Some(self.rating_sum as f32 / self.rating_count as f32)
-        } else {
-            None
-        }
-    }
-
-    pub fn extra_config(&self) -> UserAgentExtraConfig {
-        serde_json::from_str(&self.extra).unwrap_or_default()
-    }
-
-    pub fn set_extra_config(&mut self, config: &UserAgentExtraConfig) {
-        self.extra = serde_json::to_string(config).unwrap_or_else(|_| "{}".to_string());
-        self.parallel_tools = config.parallel_tools;
-        self.max_tool_iterations = config.max_tool_iterations;
+impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for Conversation {
+    fn from_row(row: &'r sqlx::postgres::PgRow) -> std::result::Result<Self, sqlx::Error> {
+        use sqlx::Row as _;
+        // `message_count` is not a column on `conversations`; it is supplied by
+        // the queries that join message counts. Default it when absent.
+        Ok(Self {
+            id: row.try_get("id")?,
+            user_id: row.try_get("user_id")?,
+            title: row.try_get("title")?,
+            message_count: row.try_get("message_count").unwrap_or_default(),
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
     }
 }
 
@@ -721,7 +676,10 @@ mod tests {
     async fn postgres_client_readable_via_cordis() {
         use cordis::Service;
         let ctx = cordis::Context::new_root();
-        let client = PostgresClient::new_memory().await.expect("memory");
+        // `new_test` is the documented test-only lazy pool; the deleted
+        // `new_memory` was the same thing under a name that implied a real
+        // in-memory database.
+        let client = PostgresClient::new_test();
         ctx.provide(client);
         let got = ctx.get::<PostgresClient>().expect("provided");
         assert_eq!(got.name(), "postgres_client");
@@ -1207,8 +1165,8 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn integration_new_memory_returns_lazy_client() {
-            let client = PostgresClient::new_memory().await.expect("new_memory");
+        async fn integration_new_test_returns_lazy_client() {
+            let client = PostgresClient::new_test();
             assert_eq!(client.pool.size(), 0);
         }
 

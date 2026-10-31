@@ -112,12 +112,12 @@ async fn seed(pool: &sqlx::PgPool) {
 }
 
 async fn boot() -> (String, String) {
-    // `PostgresClient::new_local` ignores its argument and resolves through
-    // `DATABASE_URL`, so bridge the staging URL into the environment.
-    // FIXME: Audit that the environment access only happens in single-threaded code.
-    unsafe { std::env::set_var("DATABASE_URL", staging_db_url()) };
+    // Pass the staging URL directly. The deleted `new_local` ignored its
+    // argument and resolved `DATABASE_URL` instead, which forced this test to
+    // mutate the process environment to be heard — and made the test's result
+    // depend on global state shared with every other test in the binary.
     let pg = Arc::new(
-        ares_store::PostgresClient::new_local("")
+        ares_store::PostgresClient::new_remote(staging_db_url(), String::new())
             .await
             .expect("staging Postgres reachable"),
     );

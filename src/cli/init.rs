@@ -244,7 +244,9 @@ api_key_env = "API_KEY"
 # Database Configuration
 # =============================================================================
 [database]
-url = "./data/ares.db"
+# Which backend to use. `embedded` needs no server; `postgres` requires a url.
+backend = "embedded"
+path = "./data/ares.db"
 
 {providers_block}
 # =============================================================================

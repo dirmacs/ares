@@ -128,8 +128,10 @@ async fn create_test_app() -> Router {
             api_key_env: "TEST_API_KEY".to_string(),
         },
         database: TomlDatabaseConfig {
-            url: "postgres://postgres:postgres@localhost:5432/ares_test".to_string(),
-            max_connections: None,
+            backend: ares_store::DatabaseBackend::Postgres {
+                url: "postgres://postgres:postgres@localhost:5432/ares_test".to_string(),
+                max_connections: None,
+            },
             qdrant: None,
         },
         nvidia: None,

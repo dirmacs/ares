@@ -1,111 +1,54 @@
 use super::domain::{Conversation, User, UserAgent};
+use super::sqlite_driver::Connection;
 use super::traits::{ConversationSummary, DatabaseClient};
 use ares_types::types::{
     AppError, ContentPart, MemoryFact, Message, MessageRole, Preference, Result,
 };
 use async_trait::async_trait;
 use chrono::Utc;
-use libsql::{Builder, Connection, Database, params};
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use rusqlite::params;
 
 /// Turso/libSQL database client for persistent storage
 ///
 /// Supports both remote Turso databases and local SQLite files.
 /// Handles connection pooling and schema initialization automatically.
 ///
-/// `Clone` is cheap: `libsql::Database` is a handle and the cached connection
-/// is already behind an `Arc`, so cloning shares one underlying database.
+/// `Clone` is cheap: the driver holds one `Arc`-backed connection, so cloning
+/// shares the same database.
 #[derive(Clone)]
 pub struct TursoClient {
-    db: Arc<Database>,
-    /// Cached connection for in-memory databases to ensure schema persists
-    cached_conn: Arc<Mutex<Option<Connection>>>,
-    is_memory: bool,
+    /// One guarded connection. The driver serialises access, so the in-memory
+    /// case no longer needs a separately cached connection to keep its schema:
+    /// `:memory:` lives for the lifetime of this handle either way.
+    conn: Connection,
 }
 
 impl TursoClient {
-    /// Create a new TursoClient with remote Turso database
-    pub async fn new_remote(url: String, auth_token: String) -> Result<Self> {
-        let db = Builder::new_remote(url, auth_token)
-            .build()
-            .await
-            .map_err(|e| AppError::Database(format!("Failed to connect to Turso: {}", e)))?;
-
-        let client = Self {
-            db: Arc::new(db),
-            cached_conn: Arc::new(Mutex::new(None)),
-            is_memory: false,
-        };
-        client.initialize_schema().await?;
-
-        Ok(client)
-    }
-
-    /// Create a new TursoClient with local SQLite database
+    /// Create a client over a local SQLite file (or `:memory:`).
     pub async fn new_local(path: &str) -> Result<Self> {
-        let is_memory = path == ":memory:";
-        let db = Builder::new_local(path)
-            .build()
-            .await
-            .map_err(|e| AppError::Database(format!("Failed to open local database: {}", e)))?;
-
-        let client = Self {
-            db: Arc::new(db),
-            cached_conn: Arc::new(Mutex::new(None)),
-            is_memory,
-        };
-
-        // For in-memory databases, we need to cache the connection
-        // so that schema persists across calls
-        if is_memory {
-            let conn = client
-                .db
-                .connect()
-                .map_err(|e| AppError::Database(format!("Failed to get connection: {}", e)))?;
-            *client.cached_conn.lock().await = Some(conn);
-        }
-
+        let conn = Connection::open(path)?;
+        let client = Self { conn };
         client.initialize_schema().await?;
-
         Ok(client)
     }
 
-    /// Create a new TursoClient with in-memory database (useful for testing)
+    /// Create a client over an in-memory database (useful for tests).
     pub async fn new_memory() -> Result<Self> {
         Self::new_local(":memory:").await
     }
 
-    /// Create client based on URL format - routes to local or remote
-    pub async fn new(url: String, auth_token: String) -> Result<Self> {
-        // If URL starts with "file:" or is a path, use local mode
-        if url.starts_with("file:") || url.ends_with(".db") || url == ":memory:" {
-            Self::new_local(&url).await
-        } else if url.starts_with("libsql://") || url.starts_with("https://") {
-            Self::new_remote(url, auth_token).await
-        } else {
-            // Default to local with the URL as path
-            Self::new_local(&url).await
-        }
-    }
-
-    /// Get a raw database connection (prefer `operation_conn` for most uses)
-    pub fn connection(&self) -> Result<Connection> {
-        self.db
-            .connect()
-            .map_err(|e| AppError::Database(format!("Failed to get connection: {}", e)))
-    }
-
-    /// Get the connection to use for operations (handles in-memory vs file-based)
+    /// The connection to use for operations.
+    ///
+    /// One connection serves both file and `:memory:` modes: an in-memory
+    /// database lives as long as this handle, so there is nothing left to branch
+    /// on and no cached-connection special case.
     pub async fn operation_conn(&self) -> Result<Connection> {
-        if self.is_memory {
-            let guard = self.cached_conn.lock().await;
-            guard.as_ref().cloned().ok_or_else(|| {
-                AppError::Database("No cached connection for in-memory database".to_string())
-            })
-        } else {
-            self.connection()
-        }
+        Ok(self.conn.clone())
+    }
+
+    /// The raw connection (same handle as [`Self::operation_conn`]).
+    pub fn connection(&self) -> Result<Connection> {
+        Ok(self.conn.clone())
     }
 
     async fn initialize_schema(&self) -> Result<()> {
@@ -123,7 +66,6 @@ impl TursoClient {
             )",
             (),
         )
-        .await
         .map_err(|e| AppError::Database(format!("Failed to create users table: {}", e)))?;
 
         // Sessions table
@@ -138,7 +80,6 @@ impl TursoClient {
             )",
             (),
         )
-        .await
         .map_err(|e| AppError::Database(format!("Failed to create sessions table: {}", e)))?;
 
         // Conversations table
@@ -153,7 +94,6 @@ impl TursoClient {
             )",
             (),
         )
-        .await
         .map_err(|e| AppError::Database(format!("Failed to create conversations table: {}", e)))?;
 
         // Messages table
@@ -169,16 +109,13 @@ impl TursoClient {
             )",
             (),
         )
-        .await
         .map_err(|e| AppError::Database(format!("Failed to create messages table: {}", e)))?;
 
         // Existing databases created before parts: add the column if missing.
-        let _ = conn
-            .execute(
-                "ALTER TABLE messages ADD COLUMN parts TEXT NOT NULL DEFAULT '[]'",
-                (),
-            )
-            .await;
+        let _ = conn.execute(
+            "ALTER TABLE messages ADD COLUMN parts TEXT NOT NULL DEFAULT '[]'",
+            (),
+        );
 
         // Memory facts table
         conn.execute(
@@ -195,7 +132,6 @@ impl TursoClient {
             )",
             (),
         )
-        .await
         .map_err(|e| AppError::Database(format!("Failed to create memory_facts table: {}", e)))?;
 
         // Preferences table
@@ -213,7 +149,6 @@ impl TursoClient {
             )",
             (),
         )
-        .await
         .map_err(|e| AppError::Database(format!("Failed to create preferences table: {}", e)))?;
 
         // User-created agents table (stores TOON-compatible agent configs)
@@ -241,7 +176,6 @@ impl TursoClient {
             )",
             (),
         )
-        .await
         .map_err(|e| AppError::Database(format!("Failed to create user_agents table: {}", e)))?;
 
         // Create index for agent lookup
@@ -249,7 +183,6 @@ impl TursoClient {
             "CREATE INDEX IF NOT EXISTS idx_user_agents_lookup ON user_agents(user_id, name)",
             (),
         )
-        .await
         .map_err(|e| {
             AppError::Database(format!("Failed to create user_agents_lookup index: {}", e))
         })?;
@@ -259,7 +192,6 @@ impl TursoClient {
             "CREATE INDEX IF NOT EXISTS idx_user_agents_public ON user_agents(is_public, usage_count DESC)",
             (),
         )
-        .await
         .map_err(|e| {
             AppError::Database(format!("Failed to create user_agents_public index: {}", e))
         })?;
@@ -287,7 +219,6 @@ impl TursoClient {
             )",
             (),
         )
-        .await
         .map_err(|e| AppError::Database(format!("Failed to create user_tools table: {}", e)))?;
 
         // User-created MCP configurations table
@@ -309,7 +240,6 @@ impl TursoClient {
             )",
             (),
         )
-        .await
         .map_err(|e| AppError::Database(format!("Failed to create user_mcps table: {}", e)))?;
 
         // Agent execution logs for analytics
@@ -332,7 +262,6 @@ impl TursoClient {
             )",
             (),
         )
-        .await
         .map_err(|e| {
             AppError::Database(format!("Failed to create agent_executions table: {}", e))
         })?;
@@ -342,14 +271,12 @@ impl TursoClient {
             "CREATE INDEX IF NOT EXISTS idx_executions_user ON agent_executions(user_id, created_at DESC)",
             (),
         )
-        .await
         .map_err(|e| AppError::Database(format!("Failed to create executions_user index: {}", e)))?;
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_executions_agent ON agent_executions(agent_name, created_at DESC)",
             (),
         )
-        .await
         .map_err(|e| {
             AppError::Database(format!("Failed to create executions_agent index: {}", e))
         })?;
@@ -379,7 +306,6 @@ impl TursoClient {
               VALUES (?, ?, ?, ?, ?, ?)",
             (id, email, password_hash, name, now, now),
         )
-        .await
         .map_err(|e| AppError::Database(format!("Failed to create user: {}", e)))?;
 
         Ok(())
@@ -395,12 +321,10 @@ impl TursoClient {
                  FROM users WHERE email = ?",
                 [email],
             )
-            .await
             .map_err(|e| AppError::Database(format!("Failed to query user: {}", e)))?;
 
         if let Some(row) = rows
-            .next()
-            .await
+            .try_next()
             .map_err(|e| AppError::Database(e.to_string()))?
         {
             Ok(Some(User {
@@ -438,7 +362,6 @@ impl TursoClient {
              VALUES (?, ?, ?, ?, ?)",
             (id, user_id, token_hash, expires_at, now),
         )
-        .await
         .map_err(|e| AppError::Database(format!("Failed to create session: {}", e)))?;
 
         Ok(())
@@ -459,7 +382,6 @@ impl TursoClient {
              VALUES (?, ?, ?, ?, ?)",
             (id, user_id, title, now, now),
         )
-        .await
         .map_err(|e| AppError::Database(format!("Failed to create conversation: {}", e)))?;
 
         Ok(())
@@ -474,12 +396,10 @@ impl TursoClient {
                 "SELECT 1 FROM conversations WHERE id = ?",
                 [conversation_id],
             )
-            .await
             .map_err(|e| AppError::Database(format!("Failed to check conversation: {}", e)))?;
 
         Ok(rows
-            .next()
-            .await
+            .try_next()
             .map_err(|e| AppError::Database(e.to_string()))?
             .is_some())
     }
@@ -519,7 +439,6 @@ impl TursoClient {
              VALUES (?, ?, ?, ?, ?, ?)",
             (id, conversation_id, role_str, content, now, parts_json),
         )
-        .await
         .map_err(|e| AppError::Database(format!("Failed to add message: {}", e)))?;
 
         Ok(())
@@ -535,13 +454,11 @@ impl TursoClient {
                  WHERE conversation_id = ? ORDER BY timestamp ASC",
                 [conversation_id],
             )
-            .await
             .map_err(|e| AppError::Database(format!("Failed to query messages: {}", e)))?;
 
         let mut messages = Vec::new();
         while let Some(row) = rows
-            .next()
-            .await
+            .try_next()
             .map_err(|e| AppError::Database(e.to_string()))?
         {
             let role_str: String = row.get(0).map_err(|e| AppError::Database(e.to_string()))?;
@@ -578,12 +495,10 @@ impl TursoClient {
                 "SELECT id, user_id, title, created_at, updated_at FROM conversations WHERE id = ?",
                 [conversation_id],
             )
-            .await
             .map_err(|e| AppError::Database(format!("Failed to query conversation: {}", e)))?;
 
         if let Some(row) = rows
-            .next()
-            .await
+            .try_next()
             .map_err(|e| AppError::Database(e.to_string()))?
         {
             let created_ts: i64 = row.get(3).map_err(|e| AppError::Database(e.to_string()))?;
@@ -622,13 +537,11 @@ impl TursoClient {
                  ORDER BY c.updated_at DESC",
                 [user_id],
             )
-            .await
             .map_err(|e| AppError::Database(format!("Failed to query conversations: {}", e)))?;
 
         let mut conversations = Vec::new();
         while let Some(row) = rows
-            .next()
-            .await
+            .try_next()
             .map_err(|e| AppError::Database(e.to_string()))?
         {
             let created_ts: i64 = row.get(3).map_err(|e| AppError::Database(e.to_string()))?;
@@ -664,7 +577,6 @@ impl TursoClient {
             "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
             (title, now, conversation_id),
         )
-        .await
         .map_err(|e| AppError::Database(format!("Failed to update conversation: {}", e)))?;
 
         Ok(())
@@ -679,12 +591,10 @@ impl TursoClient {
             "DELETE FROM messages WHERE conversation_id = ?",
             [conversation_id],
         )
-        .await
         .map_err(|e| AppError::Database(format!("Failed to delete messages: {}", e)))?;
 
         // Delete conversation
         conn.execute("DELETE FROM conversations WHERE id = ?", [conversation_id])
-            .await
             .map_err(|e| AppError::Database(format!("Failed to delete conversation: {}", e)))?;
 
         Ok(())
@@ -709,7 +619,6 @@ impl TursoClient {
                 fact.updated_at.timestamp(),
             ),
         )
-        .await
         .map_err(|e| AppError::Database(format!("Failed to store memory fact: {}", e)))?;
 
         Ok(())
@@ -725,13 +634,11 @@ impl TursoClient {
                 FROM memory_facts WHERE user_id = ?",
                 [user_id],
             )
-            .await
             .map_err(|e| AppError::Database(format!("Failed to query memory facts: {}", e)))?;
 
         let mut facts = Vec::new();
         while let Some(row) = rows
-            .next()
-            .await
+            .try_next()
             .map_err(|e| AppError::Database(e.to_string()))?
         {
             facts.push(MemoryFact {
@@ -782,7 +689,6 @@ impl TursoClient {
                 now,
             ),
         )
-        .await
         .map_err(|e| AppError::Database(format!("Failed to store preference: {}", e)))?;
 
         Ok(())
@@ -797,13 +703,11 @@ impl TursoClient {
                 "SELECT category, key, value, confidence FROM preferences WHERE user_id = ?",
                 [user_id],
             )
-            .await
             .map_err(|e| AppError::Database(format!("Failed to query preferences: {}", e)))?;
 
         let mut preferences = Vec::new();
         while let Some(row) = rows
-            .next()
-            .await
+            .try_next()
             .map_err(|e| AppError::Database(e.to_string()))?
         {
             preferences.push(Preference {
@@ -826,7 +730,7 @@ impl TursoClient {
     pub async fn create_user_agent(&self, agent: &UserAgent) -> Result<()> {
         let conn = self.operation_conn().await?;
 
-        // Convert Option<String> to Option<&str> for libsql compatibility
+        // Bind as &str; the driver takes string parameters.
         let display_name = agent.display_name.as_deref();
         let description = agent.description.as_deref();
         let system_prompt = agent.system_prompt.as_deref();
@@ -857,7 +761,6 @@ impl TursoClient {
                 agent.updated_at,
             ],
         )
-        .await
         .map_err(|e| AppError::Database(format!("Failed to create user agent: {}", e)))?;
 
         Ok(())
@@ -875,12 +778,10 @@ impl TursoClient {
                  FROM user_agents WHERE id = ?",
                 [id],
             )
-            .await
             .map_err(|e| AppError::Database(format!("Failed to query user agent: {}", e)))?;
 
         if let Some(row) = rows
-            .next()
-            .await
+            .try_next()
             .map_err(|e| AppError::Database(e.to_string()))?
         {
             Ok(Some(Self::row_to_user_agent(&row)?))
@@ -905,12 +806,10 @@ impl TursoClient {
                  FROM user_agents WHERE user_id = ? AND name = ?",
                 (user_id, name),
             )
-            .await
             .map_err(|e| AppError::Database(format!("Failed to query user agent: {}", e)))?;
 
         if let Some(row) = rows
-            .next()
-            .await
+            .try_next()
             .map_err(|e| AppError::Database(e.to_string()))?
         {
             Ok(Some(Self::row_to_user_agent(&row)?))
@@ -932,12 +831,10 @@ impl TursoClient {
                  ORDER BY usage_count DESC LIMIT 1",
                 [name],
             )
-            .await
             .map_err(|e| AppError::Database(format!("Failed to query public agent: {}", e)))?;
 
         if let Some(row) = rows
-            .next()
-            .await
+            .try_next()
             .map_err(|e| AppError::Database(e.to_string()))?
         {
             Ok(Some(Self::row_to_user_agent(&row)?))
@@ -958,13 +855,11 @@ impl TursoClient {
                  FROM user_agents WHERE user_id = ? ORDER BY updated_at DESC",
                 [user_id],
             )
-            .await
             .map_err(|e| AppError::Database(format!("Failed to list user agents: {}", e)))?;
 
         let mut agents = Vec::new();
         while let Some(row) = rows
-            .next()
-            .await
+            .try_next()
             .map_err(|e| AppError::Database(e.to_string()))?
         {
             agents.push(Self::row_to_user_agent(&row)?);
@@ -986,13 +881,11 @@ impl TursoClient {
                  ORDER BY usage_count DESC LIMIT ? OFFSET ?",
                 (limit, offset),
             )
-            .await
             .map_err(|e| AppError::Database(format!("Failed to list public agents: {}", e)))?;
 
         let mut agents = Vec::new();
         while let Some(row) = rows
-            .next()
-            .await
+            .try_next()
             .map_err(|e| AppError::Database(e.to_string()))?
         {
             agents.push(Self::row_to_user_agent(&row)?);
@@ -1005,7 +898,7 @@ impl TursoClient {
     pub async fn update_user_agent(&self, agent: &UserAgent) -> Result<()> {
         let conn = self.operation_conn().await?;
 
-        // Convert Option<String> to Option<&str> for libsql compatibility
+        // Bind as &str; the driver takes string parameters.
         let display_name = agent.display_name.as_deref();
         let description = agent.description.as_deref();
         let system_prompt = agent.system_prompt.as_deref();
@@ -1031,7 +924,6 @@ impl TursoClient {
                 agent.user_id.as_str(),
             ],
         )
-        .await
         .map_err(|e| AppError::Database(format!("Failed to update user agent: {}", e)))?;
 
         Ok(())
@@ -1046,7 +938,6 @@ impl TursoClient {
                 "DELETE FROM user_agents WHERE id = ? AND user_id = ?",
                 (id, user_id),
             )
-            .await
             .map_err(|e| AppError::Database(format!("Failed to delete user agent: {}", e)))?;
 
         Ok(affected > 0)
@@ -1060,14 +951,13 @@ impl TursoClient {
             "UPDATE user_agents SET usage_count = usage_count + 1 WHERE id = ?",
             [id],
         )
-        .await
         .map_err(|e| AppError::Database(format!("Failed to increment agent usage: {}", e)))?;
 
         Ok(())
     }
 
     /// Helper to convert a database row to UserAgent
-    fn row_to_user_agent(row: &libsql::Row) -> Result<UserAgent> {
+    fn row_to_user_agent(row: &super::sqlite_driver::Row) -> Result<UserAgent> {
         Ok(UserAgent {
             id: row.get(0).map_err(|e| AppError::Database(e.to_string()))?,
             user_id: row.get(1).map_err(|e| AppError::Database(e.to_string()))?,
@@ -1101,7 +991,7 @@ impl TursoClient {
     pub async fn log_agent_execution(&self, execution: &AgentExecution) -> Result<()> {
         let conn = self.operation_conn().await?;
 
-        // Convert Option<String> to Option<&str> for libsql compatibility
+        // Bind as &str; the driver takes string parameters.
         let agent_id = execution.agent_id.as_deref();
         let output = execution.output.as_deref();
         let tool_calls = execution.tool_calls.as_deref();
@@ -1128,7 +1018,6 @@ impl TursoClient {
                 execution.created_at,
             ],
         )
-        .await
         .map_err(|e| AppError::Database(format!("Failed to log agent execution: {}", e)))?;
 
         Ok(())
@@ -1150,13 +1039,11 @@ impl TursoClient {
                  ORDER BY created_at DESC LIMIT ?",
                 (user_id, limit),
             )
-            .await
             .map_err(|e| AppError::Database(format!("Failed to query executions: {}", e)))?;
 
         let mut executions = Vec::new();
         while let Some(row) = rows
-            .next()
-            .await
+            .try_next()
             .map_err(|e| AppError::Database(e.to_string()))?
         {
             executions.push(AgentExecution {
@@ -1189,12 +1076,10 @@ impl TursoClient {
                  FROM users WHERE id = ?",
                 [id],
             )
-            .await
             .map_err(|e| AppError::Database(format!("Failed to query user: {}", e)))?;
 
         if let Some(row) = rows
-            .next()
-            .await
+            .try_next()
             .map_err(|e| AppError::Database(e.to_string()))?
         {
             Ok(Some(User {
@@ -1218,12 +1103,10 @@ impl TursoClient {
                 "SELECT user_id FROM sessions WHERE token_hash = ? AND expires_at > ?",
                 (token_hash, now),
             )
-            .await
             .map_err(|e| AppError::Database(format!("Failed to validate session: {}", e)))?;
 
         if let Some(row) = rows
-            .next()
-            .await
+            .try_next()
             .map_err(|e| AppError::Database(e.to_string()))?
         {
             let user_id: String = row.get(0).map_err(|e| AppError::Database(e.to_string()))?;
@@ -1236,7 +1119,6 @@ impl TursoClient {
     pub async fn delete_session(&self, id: &str) -> Result<()> {
         let conn = self.operation_conn().await?;
         conn.execute("DELETE FROM sessions WHERE id = ?", [id])
-            .await
             .map_err(|e| AppError::Database(format!("Failed to delete session: {}", e)))?;
         Ok(())
     }
@@ -1244,7 +1126,6 @@ impl TursoClient {
     pub async fn delete_session_by_token_hash(&self, token_hash: &str) -> Result<()> {
         let conn = self.operation_conn().await?;
         conn.execute("DELETE FROM sessions WHERE token_hash = ?", [token_hash])
-            .await
             .map_err(|e| AppError::Database(format!("Failed to delete session: {}", e)))?;
         Ok(())
     }
@@ -1504,10 +1385,9 @@ mod tests {
                 "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
                 (),
             )
-            .await
             .expect("list tables");
         let mut tables = Vec::new();
-        while let Some(row) = rows.next().await.expect("row") {
+        while let Some(row) = rows.try_next().expect("row") {
             tables.push(row.get::<String>(0).expect("name"));
         }
         for expected in [
@@ -1526,9 +1406,7 @@ mod tests {
 
     #[tokio::test]
     async fn new_routes_memory_url_to_local() {
-        let client = TursoClient::new(":memory:".into(), String::new())
-            .await
-            .expect("memory via new()");
+        let client = TursoClient::new_memory().await.expect("memory via new()");
         assert!(client.operation_conn().await.is_ok());
     }
 
@@ -1536,7 +1414,7 @@ mod tests {
     async fn new_routes_file_url_to_local() {
         let path = std::env::temp_dir().join(format!("ares-turso-{}.db", uuid::Uuid::new_v4()));
         let url = format!("file:{}", path.display());
-        let client = TursoClient::new(url, String::new())
+        let client = TursoClient::new_local(&url)
             .await
             .expect("file-backed client");
         assert!(client.operation_conn().await.is_ok());
@@ -1551,8 +1429,8 @@ mod tests {
             .await
             .expect("local client");
         let conn = client.connection().expect("raw connection");
-        let mut rows = conn.query("SELECT 1", ()).await.expect("health check");
-        assert!(rows.next().await.expect("row").is_some());
+        let mut rows = conn.query("SELECT 1", ()).expect("health check");
+        assert!(rows.try_next().expect("row").is_some());
         let _ = std::fs::remove_file(&path);
     }
 

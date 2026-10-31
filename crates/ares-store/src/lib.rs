@@ -132,9 +132,12 @@ pub use realms::TenantRealms;
 pub mod agent_versions;
 /// Backend-neutral domain types shared by every store backend.
 pub mod domain;
+/// Async wrapper over rusqlite, matching the call shape the embedded client uses.
+#[cfg(feature = "turso")]
+pub mod sqlite_driver;
 /// Database traits and common types shared across providers.
 pub mod traits;
-/// Turso/libSQL database client (alternative to PostgreSQL).
+/// Embedded SQLite database client (alternative to PostgreSQL).
 #[cfg(feature = "turso")]
 pub mod turso;
 #[cfg(feature = "postgres")]

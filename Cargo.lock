@@ -2614,9 +2614,9 @@ checksum = "db756b5eb7d81d31f31f660f4132f8cf5698de52fca144c143d0ae0cbb5f2e06"
 
 [[package]]
 name = "daedra"
-version = "0.5.10"
+version = "0.5.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87498ca4ecd6ec95f3be3dda189fddaf6211dda3dceaa831d220d906f1d82ee9"
+checksum = "64b16170a82f3b140200a0c48c835afc5f95ec2a1e93ff096c2d2d13e359dad9"
 dependencies = [
  "anydoc",
  "anyhow",

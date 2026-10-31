@@ -42,7 +42,7 @@ reqwest = { workspace = true }
 # spelled, which the OpenAPPA engine requires.
 serde_json = { workspace = true, features = ["raw_value"] }
 tracing = { workspace = true }
-daedra = { version = "0.5", optional = true }
+daedra = { version = "0.5.11", optional = true }
 scraper = { version = "0.25.0", optional = true }
 boa_engine = { version = "0.20", optional = true }
 rhai = { workspace = true, optional = true }
@@ -54,7 +54,7 @@ ares-mcp = { workspace = true, features = ["mcp"] }
 ares-store = { workspace = true, features = ["postgres"] }
 tracing = { workspace = true }
 chrono = { workspace = true }
-daedra = { version = "0.5" }
+daedra = { version = "0.5.11" }
 scraper = { version = "0.25.0" }
 tokio = { workspace = true }
 toml = "0.9.8"

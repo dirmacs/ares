@@ -1301,15 +1301,24 @@ api_key_env = "TEST_API_KEY"
         assert_eq!(config.auth.jwt_access_expiry, 900);
         assert_eq!(config.auth.jwt_refresh_expiry, 604800);
 
-        // Database defaults: embedded, needs nothing from the environment.
-        // The previous default was a Postgres URL, which is what made a fresh
-        // checkout impossible without a server.
+        // Database defaults: the backend this build can actually serve. A
+        // `turso` build defaults to the embedded store (needs nothing from the
+        // environment); without `turso` it must default to Postgres, because
+        // naming a backend the binary cannot serve is the defect this module
+        // exists to remove. See `default_backend_name` and the root Cargo.toml.
         assert_eq!(
             config.database.backend,
-            ares_store::DatabaseBackend::Embedded {
-                path: "./data/ares.db".to_string()
-            }
+            ares_store::DatabaseBackend::default(),
+            "the config default and the build's default must agree"
         );
+        if cfg!(feature = "turso") {
+            assert_eq!(
+                config.database.backend,
+                ares_store::DatabaseBackend::Embedded {
+                    path: "./data/ares.db".to_string()
+                }
+            );
+        }
 
         // RAG defaults
         assert_eq!(config.rag.vector.embedding_model, "bge-small-en-v1.5");
@@ -1748,8 +1757,14 @@ api_key_env = "TEST_API_KEY"
     #[test]
     fn test_database_config_default() {
         let db = DatabaseConfig::default();
+        // The default must be a backend this build can serve, and must agree
+        // with `DatabaseBackend::default()`.
         assert_eq!(db.backend, ares_store::DatabaseBackend::default());
-        assert_eq!(db.backend.name(), "embedded");
+        if cfg!(feature = "turso") {
+            assert_eq!(db.backend.name(), "embedded");
+        } else {
+            assert_eq!(db.backend.name(), "postgres");
+        }
         assert!(db.validate().is_ok());
         assert!(db.qdrant.is_none());
     }

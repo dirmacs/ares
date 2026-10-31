@@ -106,7 +106,7 @@ text-splitter = "0.19"
 lru = "0.16.3"
 lancor = "0.2"
 fastembed = { version = "5.5.0" }
-daedra = { version = "0.1.4" }
+daedra = { version = "0.5" }
 scraper = { version = "0.25.0" }
 
 [package]

@@ -338,6 +338,53 @@ impl PipelineOrigin {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct PipelineRunSnap {
+    pub run_id: String,
+    pub tenant_id: String,
+    pub agent_name: String,
+    pub started_at: i64,
+    pub status: String,
+    pub current_step: i32,
+    pub total_steps: i32,
+    pub last_update: i64,
+    pub tool_name: Option<String>,
+    pub model: Option<String>,
+    pub is_catchup: bool,
+    pub request_source: Option<String>,
+    pub pipeline_id: Option<String>,
+    pub schedule_id: Option<String>,
+    pub trigger_id: Option<String>,
+}
+
+pub(crate) fn pipeline_active_run(
+    run_id: &str,
+    tenant_id: &str,
+    agent_name: &str,
+    pipeline_id: &str,
+    origin: Option<&PipelineOrigin>,
+    tool_name: Option<String>,
+) -> PipelineRunSnap {
+    let now = chrono::Utc::now().timestamp();
+    PipelineRunSnap {
+        run_id: run_id.to_string(),
+        tenant_id: tenant_id.to_string(),
+        agent_name: agent_name.to_string(),
+        started_at: now,
+        status: "running".to_string(),
+        current_step: 0,
+        total_steps: 0,
+        last_update: now,
+        tool_name,
+        model: None,
+        is_catchup: origin.map(|origin| origin.is_catchup).unwrap_or(false),
+        request_source: Some(PIPELINE_REQUEST_SOURCE.to_string()),
+        pipeline_id: Some(pipeline_id.to_string()),
+        schedule_id: origin.and_then(|origin| origin.schedule_id.clone()),
+        trigger_id: origin.and_then(|origin| origin.trigger_id.clone()),
+    }
+}
+
 pub(crate) fn pipeline_target_run_effects(
     pipeline: &AgentPipeline,
     tenant_id: &str,
@@ -1038,7 +1085,43 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_active_run_preserves_scheduled_origin() {
+        let origin = PipelineOrigin::scheduled("schedule-1".to_string(), true);
+        let run = pipeline_active_run(
+            "run-1",
+            "tenant-1",
+            "target",
+            "pipeline-1",
+            Some(&origin),
+            None,
+        );
+
+        assert!(run.is_catchup);
+        assert_eq!(run.request_source.as_deref(), Some("pipeline"));
+        assert_eq!(run.pipeline_id.as_deref(), Some("pipeline-1"));
+        assert_eq!(run.schedule_id.as_deref(), Some("schedule-1"));
+        assert_eq!(run.trigger_id, None);
+    }
+
     #[test]
+    fn pipeline_active_run_preserves_trigger_origin() {
+        let origin = PipelineOrigin::trigger("trigger-1".to_string());
+        let run = pipeline_active_run(
+            "run-1",
+            "tenant-1",
+            "target",
+            "pipeline-1",
+            Some(&origin),
+            Some("skill:child".to_string()),
+        );
+
+        assert!(!run.is_catchup);
+        assert_eq!(run.pipeline_id.as_deref(), Some("pipeline-1"));
+        assert_eq!(run.schedule_id, None);
+        assert_eq!(run.trigger_id.as_deref(), Some("trigger-1"));
+        assert_eq!(run.tool_name.as_deref(), Some("skill:child"));
+    }
+
     #[test]
     fn pipeline_target_run_effects_preserve_trigger_origin() {
         let pipeline = AgentPipeline {

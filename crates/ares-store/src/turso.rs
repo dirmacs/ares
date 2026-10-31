@@ -323,7 +323,10 @@ impl TursoClient {
             )
             .map_err(|e| AppError::Database(format!("Failed to query user: {}", e)))?;
 
-        if let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
+        if let Some(row) = rows
+            .try_next()
+            .map_err(|e| AppError::Database(e.to_string()))?
+        {
             Ok(Some(User {
                 id: row.get(0).map_err(|e| AppError::Database(e.to_string()))?,
                 email: row.get(1).map_err(|e| AppError::Database(e.to_string()))?,
@@ -396,7 +399,7 @@ impl TursoClient {
             .map_err(|e| AppError::Database(format!("Failed to check conversation: {}", e)))?;
 
         Ok(rows
-            .next()
+            .try_next()
             .map_err(|e| AppError::Database(e.to_string()))?
             .is_some())
     }
@@ -454,7 +457,10 @@ impl TursoClient {
             .map_err(|e| AppError::Database(format!("Failed to query messages: {}", e)))?;
 
         let mut messages = Vec::new();
-        while let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
+        while let Some(row) = rows
+            .try_next()
+            .map_err(|e| AppError::Database(e.to_string()))?
+        {
             let role_str: String = row.get(0).map_err(|e| AppError::Database(e.to_string()))?;
             let role = match role_str.as_str() {
                 "system" => MessageRole::System,
@@ -491,7 +497,10 @@ impl TursoClient {
             )
             .map_err(|e| AppError::Database(format!("Failed to query conversation: {}", e)))?;
 
-        if let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
+        if let Some(row) = rows
+            .try_next()
+            .map_err(|e| AppError::Database(e.to_string()))?
+        {
             let created_ts: i64 = row.get(3).map_err(|e| AppError::Database(e.to_string()))?;
             let updated_ts: i64 = row.get(4).map_err(|e| AppError::Database(e.to_string()))?;
 
@@ -531,7 +540,10 @@ impl TursoClient {
             .map_err(|e| AppError::Database(format!("Failed to query conversations: {}", e)))?;
 
         let mut conversations = Vec::new();
-        while let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
+        while let Some(row) = rows
+            .try_next()
+            .map_err(|e| AppError::Database(e.to_string()))?
+        {
             let created_ts: i64 = row.get(3).map_err(|e| AppError::Database(e.to_string()))?;
             let updated_ts: i64 = row.get(4).map_err(|e| AppError::Database(e.to_string()))?;
 
@@ -625,7 +637,10 @@ impl TursoClient {
             .map_err(|e| AppError::Database(format!("Failed to query memory facts: {}", e)))?;
 
         let mut facts = Vec::new();
-        while let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
+        while let Some(row) = rows
+            .try_next()
+            .map_err(|e| AppError::Database(e.to_string()))?
+        {
             facts.push(MemoryFact {
                 id: row.get(0).map_err(|e| AppError::Database(e.to_string()))?,
                 user_id: row.get(1).map_err(|e| AppError::Database(e.to_string()))?,
@@ -691,7 +706,10 @@ impl TursoClient {
             .map_err(|e| AppError::Database(format!("Failed to query preferences: {}", e)))?;
 
         let mut preferences = Vec::new();
-        while let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
+        while let Some(row) = rows
+            .try_next()
+            .map_err(|e| AppError::Database(e.to_string()))?
+        {
             preferences.push(Preference {
                 category: row.get(0).map_err(|e| AppError::Database(e.to_string()))?,
                 key: row.get(1).map_err(|e| AppError::Database(e.to_string()))?,
@@ -762,7 +780,10 @@ impl TursoClient {
             )
             .map_err(|e| AppError::Database(format!("Failed to query user agent: {}", e)))?;
 
-        if let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
+        if let Some(row) = rows
+            .try_next()
+            .map_err(|e| AppError::Database(e.to_string()))?
+        {
             Ok(Some(Self::row_to_user_agent(&row)?))
         } else {
             Ok(None)
@@ -787,7 +808,10 @@ impl TursoClient {
             )
             .map_err(|e| AppError::Database(format!("Failed to query user agent: {}", e)))?;
 
-        if let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
+        if let Some(row) = rows
+            .try_next()
+            .map_err(|e| AppError::Database(e.to_string()))?
+        {
             Ok(Some(Self::row_to_user_agent(&row)?))
         } else {
             Ok(None)
@@ -809,7 +833,10 @@ impl TursoClient {
             )
             .map_err(|e| AppError::Database(format!("Failed to query public agent: {}", e)))?;
 
-        if let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
+        if let Some(row) = rows
+            .try_next()
+            .map_err(|e| AppError::Database(e.to_string()))?
+        {
             Ok(Some(Self::row_to_user_agent(&row)?))
         } else {
             Ok(None)
@@ -831,7 +858,10 @@ impl TursoClient {
             .map_err(|e| AppError::Database(format!("Failed to list user agents: {}", e)))?;
 
         let mut agents = Vec::new();
-        while let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
+        while let Some(row) = rows
+            .try_next()
+            .map_err(|e| AppError::Database(e.to_string()))?
+        {
             agents.push(Self::row_to_user_agent(&row)?);
         }
 
@@ -854,7 +884,10 @@ impl TursoClient {
             .map_err(|e| AppError::Database(format!("Failed to list public agents: {}", e)))?;
 
         let mut agents = Vec::new();
-        while let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
+        while let Some(row) = rows
+            .try_next()
+            .map_err(|e| AppError::Database(e.to_string()))?
+        {
             agents.push(Self::row_to_user_agent(&row)?);
         }
 
@@ -1009,7 +1042,10 @@ impl TursoClient {
             .map_err(|e| AppError::Database(format!("Failed to query executions: {}", e)))?;
 
         let mut executions = Vec::new();
-        while let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
+        while let Some(row) = rows
+            .try_next()
+            .map_err(|e| AppError::Database(e.to_string()))?
+        {
             executions.push(AgentExecution {
                 id: row.get(0).map_err(|e| AppError::Database(e.to_string()))?,
                 agent_id: row.get(1).map_err(|e| AppError::Database(e.to_string()))?,
@@ -1042,7 +1078,10 @@ impl TursoClient {
             )
             .map_err(|e| AppError::Database(format!("Failed to query user: {}", e)))?;
 
-        if let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
+        if let Some(row) = rows
+            .try_next()
+            .map_err(|e| AppError::Database(e.to_string()))?
+        {
             Ok(Some(User {
                 id: row.get(0).map_err(|e| AppError::Database(e.to_string()))?,
                 email: row.get(1).map_err(|e| AppError::Database(e.to_string()))?,
@@ -1066,7 +1105,10 @@ impl TursoClient {
             )
             .map_err(|e| AppError::Database(format!("Failed to validate session: {}", e)))?;
 
-        if let Some(row) = rows.next().map_err(|e| AppError::Database(e.to_string()))? {
+        if let Some(row) = rows
+            .try_next()
+            .map_err(|e| AppError::Database(e.to_string()))?
+        {
             let user_id: String = row.get(0).map_err(|e| AppError::Database(e.to_string()))?;
             Ok(Some(user_id))
         } else {
@@ -1345,7 +1387,7 @@ mod tests {
             )
             .expect("list tables");
         let mut tables = Vec::new();
-        while let Some(row) = rows.next().expect("row") {
+        while let Some(row) = rows.try_next().expect("row") {
             tables.push(row.get::<String>(0).expect("name"));
         }
         for expected in [
@@ -1388,7 +1430,7 @@ mod tests {
             .expect("local client");
         let conn = client.connection().expect("raw connection");
         let mut rows = conn.query("SELECT 1", ()).expect("health check");
-        assert!(rows.next().expect("row").is_some());
+        assert!(rows.try_next().expect("row").is_some());
         let _ = std::fs::remove_file(&path);
     }
 

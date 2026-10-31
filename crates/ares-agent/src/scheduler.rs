@@ -1496,8 +1496,14 @@ mod tests {
             updated_at: 1_700_000_000,
         };
 
-        // `origin` carries the catch-up flag the deleted helper used to copy.
-        assert!(origin.is_catchup);
+        let run = crate::pipeline::pipeline_active_run(
+            "target-run-1",
+            &schedule.tenant_id,
+            &pipeline.target_agent,
+            &pipeline.id,
+            Some(&origin),
+            None,
+        );
         let effects = crate::pipeline::pipeline_target_run_effects(
             &pipeline,
             &schedule.tenant_id,
@@ -1514,6 +1520,8 @@ mod tests {
             None,
         );
 
+        assert!(run.is_catchup);
+        assert_eq!(run.schedule_id.as_deref(), Some("schedule-1"));
         assert_eq!(effects.metadata.schedule_id.as_deref(), Some("schedule-1"));
     }
 

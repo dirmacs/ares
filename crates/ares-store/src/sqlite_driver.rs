@@ -127,9 +127,12 @@ pub struct Rows {
 }
 
 impl Rows {
-    /// `None` when exhausted. Synchronous: rows are materialised by `query`,
-    /// so there is nothing left to wait for.
-    pub fn next(&mut self) -> Result<Option<Row>> {
+    /// `None` when exhausted. Synchronous: rows are materialised by `query`.
+    ///
+    /// Named `try_next` rather than `next` deliberately: this is not an
+    /// `Iterator`, and a `next` that returns `Result<Option<_>>` invites the
+    /// reader to assume `Iterator` semantics (no error channel).
+    pub fn try_next(&mut self) -> Result<Option<Row>> {
         Ok(self.rows.next())
     }
 }
@@ -199,9 +202,9 @@ mod tests {
         conn.execute("INSERT INTO t (a) VALUES (?)", ["hello"])
             .expect("insert");
         let mut rows = conn.query("SELECT a FROM t", ()).expect("select");
-        let row = rows.next().expect("next").expect("a row");
+        let row = rows.try_next().expect("next").expect("a row");
         assert_eq!(row.get::<String>(0).expect("text"), "hello");
-        assert!(rows.next().expect("next").is_none());
+        assert!(rows.try_next().expect("next").is_none());
     }
 
     #[test]
@@ -212,7 +215,7 @@ mod tests {
         conn.execute("INSERT INTO n (i, r) VALUES (?, ?)", ["42", "1.5"])
             .expect("insert");
         let mut rows = conn.query("SELECT i, r FROM n", ()).expect("select");
-        let row = rows.next().expect("next").expect("row");
+        let row = rows.try_next().expect("next").expect("row");
         assert_eq!(row.get::<i64>(0).expect("i64"), 42);
         assert_eq!(row.get::<i32>(0).expect("i32"), 42);
         assert_eq!(row.get::<f64>(1).expect("f64"), 1.5);
@@ -225,7 +228,7 @@ mod tests {
         conn.execute("INSERT INTO t (a) VALUES (?)", ["x"])
             .expect("insert");
         let mut rows = conn.query("SELECT a FROM t", ()).expect("select");
-        let row = rows.next().expect("next").expect("row");
+        let row = rows.try_next().expect("next").expect("row");
         assert!(row.get::<String>(7).is_err(), "a missing column must error");
     }
 
@@ -247,7 +250,7 @@ mod tests {
     fn wal_and_busy_timeout_are_set() {
         let conn = Connection::open(":memory:").expect("open");
         let mut rows = conn.query("PRAGMA busy_timeout", ()).expect("pragma");
-        let row = rows.next().expect("next").expect("row");
+        let row = rows.try_next().expect("next").expect("row");
         assert_eq!(row.get::<i64>(0).expect("timeout"), 5_000);
     }
 }

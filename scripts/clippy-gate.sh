@@ -75,16 +75,33 @@ fi
 # note was written the deduplicated total was sum(generated) - sum(duplicates)
 # = 30. Getting this wrong would have set the baseline 22 too high on the first
 # run, which is exactly the silent permission the ratchet exists to prevent.
-ACTUAL=$(echo "$OUT" | python3 -c '
-import re, sys
-gen = dup = 0
-for line in sys.stdin:
-    m = re.match(r"warning: `[^`]+` \([^)]*\) generated (\d+) warnings?(?: \((\d+) duplicates?\))?", line)
-    if m:
-        gen += int(m.group(1))
-        dup += int(m.group(2) or 0)
-print(gen - dup)
+# Count with awk, not python3. The runner image has NO python3 and NO python
+# (verified on dirmacs-runner:14: "command -v python3" -> not found, while jq,
+# sed and awk are present). With python3 missing the old counter produced an
+# EMPTY $ACTUAL, both later integer comparisons errored out, and the script fell
+# through to "unchanged from baseline" and exited 0 -- a gate that passed every
+# tree it was pointed at. Fail closed instead: no number is a gate failure.
+ACTUAL=$(printf '%s\n' "$OUT" | awk '
+  match($0, /generated [0-9]+ warnings?/) {
+    g = substr($0, RSTART + 10, RLENGTH - 10)
+    sub(/ warnings?$/, "", g)
+    gen += g
+    if (match($0, /\(([0-9]+) duplicates?\)/)) {
+      dup += substr($0, RSTART + 1, RLENGTH - 2) + 0
+    }
+  }
+  END {
+    if (gen == 0 && dup == 0) { print ""; exit }
+    print gen - dup
+  }
 ')
+
+if ! printf '%s' "$ACTUAL" | grep -Eq '^[0-9]+$'; then
+  echo "clippy-gate: FAILED, could not compute a warning count" >&2
+  echo "  The gate will not report a pass it did not measure. Clippy output was:" >&2
+  printf '%s\n' "$OUT" | tail -20 >&2
+  exit 1
+fi
 
 if [ ! -f "$BASELINE_FILE" ]; then
   echo "clippy-gate: no baseline at $BASELINE_FILE; writing $ACTUAL"

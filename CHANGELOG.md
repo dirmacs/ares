@@ -1,3 +1,12 @@
+## [Unreleased]
+
+### Changed
+- `ares-tools` now requires `daedra 0.5.11` instead of the 0.1.x line. The floor is 0.5.11 rather than `0.5` because every release from 0.5.0 to 0.5.10 carries a Brave parser anchored to a `#results` container the SERP no longer emits, which made that backend return zero results while reporting a genuine empty page.
+- Removed the unused `daedra` entry from `[workspace.dependencies]`. Nothing used `workspace = true` for it, so it described a constraint no crate observed.
+
+### Fixed
+- `search::tests::test_empty_query_returns_empty_results` failed against daedra 0.5.x because an empty query was dispatched to the backends and surfaced as a transport error. daedra 0.5.11 answers empty queries directly, and the suite is back to its baseline: 213 passing, 12 failing, with all 12 being `TEST_DATABASE_URL is required` rather than code failures.
+
 # Changelog
 
 All notable changes to ARES are documented here. This project follows [Semantic Versioning](https://semver.org/).

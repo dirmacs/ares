@@ -1038,7 +1038,8 @@ jwt_refresh_expiry = 604800
 api_key_env = "TEST_API_KEY"
 
 [database]
-url = "./data/test.db"
+backend = "embedded"
+path = "./data/test.db"
 
 [providers.ollama-local]
 type = "openai"
@@ -1300,10 +1301,14 @@ api_key_env = "TEST_API_KEY"
         assert_eq!(config.auth.jwt_access_expiry, 900);
         assert_eq!(config.auth.jwt_refresh_expiry, 604800);
 
-        // Database defaults
+        // Database defaults: embedded, needs nothing from the environment.
+        // The previous default was a Postgres URL, which is what made a fresh
+        // checkout impossible without a server.
         assert_eq!(
-            config.database.url,
-            "postgres://postgres:postgres@localhost:5432/ares"
+            config.database.backend,
+            ares_store::DatabaseBackend::Embedded {
+                path: "./data/ares.db".to_string()
+            }
         );
 
         // RAG defaults
@@ -1377,7 +1382,8 @@ api_key_env = "TEST_API_KEY"
         assert_eq!(tree.0[0].config["port"], 3000);
         assert_eq!(tree.0[1].config["host"], "keep.example");
         assert_eq!(tree.0[1].config["port"], 9);
-        assert_eq!(tree.0[2].config["url"], "./data/test.db");
+        assert_eq!(tree.0[2].config["backend"], "embedded");
+        assert_eq!(tree.0[2].config["path"], "./data/test.db");
         assert!(
             tree.0[3].config.get("calculator").is_some(),
             "empty Tools config should receive ares.toml tools map"
@@ -1742,7 +1748,9 @@ api_key_env = "TEST_API_KEY"
     #[test]
     fn test_database_config_default() {
         let db = DatabaseConfig::default();
-        assert!(db.url.contains("postgres"));
+        assert_eq!(db.backend, ares_store::DatabaseBackend::default());
+        assert_eq!(db.backend.name(), "embedded");
+        assert!(db.validate().is_ok());
         assert!(db.qdrant.is_none());
     }
 
@@ -2716,23 +2724,41 @@ api_key_env = "API"
     #[test]
     fn test_database_config_serde_roundtrip() {
         let db = DatabaseConfig {
-            url: "postgres://user:pass@host/db".into(),
-            max_connections: Some(12),
+            backend: ares_store::DatabaseBackend::Postgres {
+                url: "postgres://user:pass@host/db".into(),
+                max_connections: Some(12),
+            },
             qdrant: Some(QdrantConfig {
                 url: "http://qdrant:6333".into(),
                 api_key_env: Some("Q_KEY".into()),
             }),
         };
         let decoded: DatabaseConfig = toml::from_str(&toml::to_string(&db).unwrap()).unwrap();
-        assert_eq!(decoded.url, "postgres://user:pass@host/db");
-        assert_eq!(decoded.max_connections, Some(12));
+        match &decoded.backend {
+            ares_store::DatabaseBackend::Postgres {
+                url,
+                max_connections,
+            } => {
+                assert_eq!(url, "postgres://user:pass@host/db");
+                assert_eq!(*max_connections, Some(12));
+            }
+            other => panic!("expected the postgres backend, got {}", other.name()),
+        }
         let q = decoded.qdrant.unwrap();
         assert_eq!(q.url, "http://qdrant:6333");
         assert_eq!(q.api_key_env.as_deref(), Some("Q_KEY"));
 
-        // An absent pool ceiling stays `None` and is not serialized.
-        let bare: DatabaseConfig = toml::from_str("url = \"postgres://host/db\"").unwrap();
-        assert_eq!(bare.max_connections, None);
+        // An absent pool ceiling stays `None` and is not serialized. The backend
+        // must be named: there is no longer a shape where a bare `url` is
+        // accepted and silently interpreted.
+        let bare: DatabaseConfig =
+            toml::from_str("backend = \"postgres\"\nurl = \"postgres://host/db\"\n").unwrap();
+        match &bare.backend {
+            ares_store::DatabaseBackend::Postgres {
+                max_connections, ..
+            } => assert_eq!(*max_connections, None),
+            other => panic!("expected postgres, got {}", other.name()),
+        }
         assert!(!toml::to_string(&bare).unwrap().contains("max_connections"));
     }
 
@@ -3127,6 +3153,7 @@ custom_bool = true
 jwt_secret_env = "JWT"
 api_key_env = "API"
 [database]
+backend = "postgres"
 url = "postgres://host/db"
 [database.qdrant]
 url = "http://qdrant:6333"
@@ -3306,7 +3333,12 @@ api_key_env = "API"
         assert_eq!(config.server.port, 3000);
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.auth.jwt_secret_env, "TEST_JWT_SECRET");
-        assert_eq!(config.database.url, "./data/test.db");
+        assert_eq!(
+            config.database.backend,
+            ares_store::DatabaseBackend::Embedded {
+                path: "./data/test.db".to_string()
+            }
+        );
         assert!(config.agents.contains_key("router"));
         assert!(config.tools.contains_key("calculator"));
         assert!(!config.billing.model_pricing.is_empty());

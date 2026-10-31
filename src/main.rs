@@ -1197,14 +1197,35 @@ async fn run_mcp_server(config_path: &std::path::Path) -> Result<(), Box<dyn std
     Ok(())
 }
 
-/// Initialize PostgreSQL database from the `[database]` config section.
+/// Initialize a PostgreSQL client from the validated `[database]` config.
+///
+/// This is deliberately the only other construction site besides the cordis
+/// `Store` plugin, and it exists because the MCP server needs a concrete
+/// `PgPool` rather than a graph service. It reads the validated backend rather
+/// than the raw config string, so a misconfigured `[database]` fails here with
+/// the same message it fails with everywhere else.
 #[cfg(feature = "postgres")]
 async fn init_postgres_db(
     db: &ares_store::DatabaseConfig,
 ) -> Result<PostgresClient, Box<dyn std::error::Error>> {
-    let url = ares_store::postgres::resolve_database_url(Some(&db.url));
-    let max_connections = ares_store::postgres::resolve_max_connections(db.max_connections);
-    tracing::info!(database_url = %url, max_connections, "Initializing PostgreSQL database");
+    db.validate()?;
+    let (url, max_connections) = match &db.backend {
+        ares_store::DatabaseBackend::Postgres {
+            url,
+            max_connections,
+        } => (url.clone(), *max_connections),
+        other => {
+            return Err(format!(
+                "the MCP server requires the postgres backend, but [database] selected {:?}. \
+                 Set backend = \"postgres\" with a url, or use the main server for an embedded store.",
+                other.name()
+            )
+            .into())
+        }
+    };
+    let url = ares_store::postgres::resolve_database_url(Some(&url));
+    let max_connections = ares_store::postgres::resolve_max_connections(max_connections);
+    tracing::info!(max_connections, "Initializing PostgreSQL database for MCP");
     Ok(PostgresClient::new_remote_with_max_connections(url, max_connections).await?)
 }
 

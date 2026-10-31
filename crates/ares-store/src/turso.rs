@@ -1,4 +1,4 @@
-use super::postgres::{Conversation, User, UserAgent};
+use super::domain::{Conversation, User, UserAgent};
 use super::traits::{ConversationSummary, DatabaseClient};
 use ares_types::types::{
     AppError, ContentPart, MemoryFact, Message, MessageRole, Preference, Result,
@@ -13,8 +13,12 @@ use tokio::sync::Mutex;
 ///
 /// Supports both remote Turso databases and local SQLite files.
 /// Handles connection pooling and schema initialization automatically.
+///
+/// `Clone` is cheap: `libsql::Database` is a handle and the cached connection
+/// is already behind an `Arc`, so cloning shares one underlying database.
+#[derive(Clone)]
 pub struct TursoClient {
-    db: Database,
+    db: Arc<Database>,
     /// Cached connection for in-memory databases to ensure schema persists
     cached_conn: Arc<Mutex<Option<Connection>>>,
     is_memory: bool,
@@ -29,7 +33,7 @@ impl TursoClient {
             .map_err(|e| AppError::Database(format!("Failed to connect to Turso: {}", e)))?;
 
         let client = Self {
-            db,
+            db: Arc::new(db),
             cached_conn: Arc::new(Mutex::new(None)),
             is_memory: false,
         };
@@ -47,7 +51,7 @@ impl TursoClient {
             .map_err(|e| AppError::Database(format!("Failed to open local database: {}", e)))?;
 
         let client = Self {
-            db,
+            db: Arc::new(db),
             cached_conn: Arc::new(Mutex::new(None)),
             is_memory,
         };
@@ -1467,6 +1471,20 @@ impl AgentExecution {
         self.error_message = Some(error);
         self.status = "error".to_string();
         self
+    }
+}
+
+/// The embedded client participates in the cordis service graph like any other
+/// store backend, so it can be provided on a context and resolved by type.
+impl cordis::Service for TursoClient {
+    fn name(&self) -> &'static str {
+        "embedded_store"
+    }
+    fn init(&self, _ctx: &std::sync::Arc<cordis::Context>) -> cordis::ServiceInitFuture<'_> {
+        Box::pin(async { Ok(None) })
+    }
+    fn check(&self) -> bool {
+        true
     }
 }
 

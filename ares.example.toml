@@ -36,18 +36,19 @@ api_key_env = "API_KEY"             # Name of env var containing API key
 # Database Configuration
 # =============================================================================
 [database]
-# Local SQLite database (default)
-url = "./data/ares.db"
+# Which backend to use. Exactly one of these blocks, selected by `backend`.
+#
+# `embedded` (default): a local file, no server, no network. This is the only
+# mode that needs nothing from the environment, so it is the default.
+backend = "embedded"
+path = "./data/ares.db"
 
-# Maximum PostgreSQL pool connections (default 20; env override:
-# DATABASE_MAX_CONNECTIONS). The scheduler tick and request traffic share it.
-# max_connections = 20
-
-# Turso cloud database (optional - uncomment to enable)
-# When both turso_url_env and turso_token_env are set and the env vars exist,
-# the server will use Turso instead of local SQLite.
-# turso_url_env = "TURSO_URL"
-# turso_token_env = "TURSO_AUTH_TOKEN"
+# `postgres`: requires a reachable server. `url` must be a postgres:// URL —
+# a filesystem path is rejected at startup with an error naming this field.
+#
+# backend = "postgres"
+# url = "postgres://user:pass@host:5432/ares"
+# max_connections = 20   # default 20; env override: DATABASE_MAX_CONNECTIONS
 
 # Qdrant vector database for semantic search (optional)
 # [database.qdrant]

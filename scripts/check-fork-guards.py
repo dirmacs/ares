@@ -33,10 +33,20 @@ Notes:
     guard. Those are reported separately as `push_only`, not as findings.
   - `pull_request_target` is treated as fork-reachable and is worse than
     `pull_request`: it runs the base repo's workflow with secrets available, so
-    a finding on it is a credential exposure, not merely runner integrity. Such
-    findings are marked `** pull_request_target **` in the output and counted
-    separately. No repository in this fleet uses it today, so that path is
-    implemented but unexercised — see the fixture in the test notes.
+    a finding on it is a credential exposure, not merely runner integrity.
+    Such findings are marked `** pull_request_target **` in the output and
+    counted separately.
+
+    IMPORTANT: the `if:` guard this script checks for does NOT mitigate
+    `pull_request_target`. `github.event_name != 'pull_request'` evaluates true
+    for that trigger, so the condition passes and the job runs with secrets in
+    scope — the guard is a no-op there. A `pull_request_target` finding is
+    reported precisely because no `if:` line can fix it; the remediation is to
+    keep such a workflow off self-hosted runners, restrict it in repository
+    Actions settings, or require maintainer approval for fork workflows.
+
+    No repository in this fleet uses it today, so that path is implemented but
+    unexercised — see the fixture in the test notes.
   - Only job-level `if:` counts. A step-level guard leaves earlier steps
     exposed, so it is not accepted as a substitute.
 """

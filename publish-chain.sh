@@ -63,6 +63,31 @@ esac
 
 VERSION=0.11.9
 
+# Every publishable member, in dependency order. Derived once here rather than
+# written out at each site that needs it: this list has already gone stale twice
+# (guard 3 and both loops below each carried their own literal, and the literals
+# predated ares-vector joining the workspace version family). A crate added to
+# the workspace must appear everywhere automatically, or a verification step
+# silently omits the one crate whose version changed.
+PUBLISHABLE=$(cargo metadata --no-deps --format-version 1 | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+members = {p["name"]: p for p in d["packages"]}
+pub = {n for n, p in members.items() if p.get("publish") != []}
+deps = {n: {d["name"] for d in members[n]["dependencies"] if d["name"] in pub} for n in pub}
+order, remaining = [], {n: set(v) for n, v in deps.items()}
+while remaining:
+    ready = sorted(n for n, ds in remaining.items() if not ds)
+    if not ready:
+        raise SystemExit("cycle in the dependency graph: " + ", ".join(sorted(remaining)))
+    order.extend(ready)
+    for n in ready:
+        del remaining[n]
+    for ds in remaining.values():
+        ds.difference_update(ready)
+print(" ".join(order))
+')
+
 # --- Guard 1: clean tree ------------------------------------------------------
 if [ -n "$(git status --porcelain)" ]; then
   echo "REFUSING: the working tree is dirty." >&2
@@ -137,8 +162,8 @@ fi
 # `cargo publish` does not run the repo's commit guard, so this is the last
 # point at which the shipped bytes can be inspected.
 if [ "${SHOW_MANIFEST:-0}" = "1" ]; then
-  echo "==> packaged files per crate"
-  for c in ares-store ares-mcp ares-llm ares-rag ares-tools ares-agent ares-http ares-server; do
+    echo "==> packaged files per crate"
+    for c in $PUBLISHABLE; do
     total=$(cargo package --list -p "$c" 2>/dev/null | wc -l)
     tests=$(cargo package --list -p "$c" 2>/dev/null | grep -cE '^(tests|benches|examples)/' || true)
     printf '    %-14s %4s files, %2s test/bench/example\n' "$c" "$total" "$tests"
@@ -249,8 +274,8 @@ for p in json.load(sys.stdin)["packages"]:
   done <<< "$todo"
 
   echo
-  echo "==> verify"
-  for c in ares-store ares-mcp ares-llm ares-rag ares-tools ares-agent ares-http ares-server; do
+    echo "==> verify"
+    for c in $PUBLISHABLE; do
     printf '  %-14s ' "$c"
     curl -s --max-time 10 -H 'User-Agent: ares-publish-guard' \
       "https://crates.io/api/v1/crates/$c" \

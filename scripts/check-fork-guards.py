@@ -32,8 +32,11 @@ Notes:
   - A job with no `pull_request` trigger is correctly unguarded: nothing to
     guard. Those are reported separately as `push_only`, not as findings.
   - `pull_request_target` is treated as fork-reachable and is worse than
-    `pull_request`, because it runs in the base repo's context with secrets
-    available. It is called out separately.
+    `pull_request`: it runs the base repo's workflow with secrets available, so
+    a finding on it is a credential exposure, not merely runner integrity. Such
+    findings are marked `** pull_request_target **` in the output and counted
+    separately. No repository in this fleet uses it today, so that path is
+    implemented but unexercised — see the fixture in the test notes.
   - Only job-level `if:` counts. A step-level guard leaves earlier steps
     exposed, so it is not accepted as a substitute.
 """
@@ -189,7 +192,8 @@ def main() -> int:
             print(f"\n{r['repo']}")
             for f in bad:
                 secret = "  ** USES SECRETS **" if f["uses_secrets"] else ""
-                print(f"  {f['file']:24} {f['job']:24} events={','.join(f['events'])}{secret}")
+                prt = "  ** pull_request_target: SECRETS EXPOSED **" if "pull_request_target" in f["events"] else ""
+                print(f"  {f['file']:24} {f['job']:24} events={','.join(f['events'])}{secret}{prt}")
             for u in r.get("unreadable", []):
                 print(f"  UNREADABLE {u['file']}: {u['error']}")
         if not findings and not unreadable:
@@ -200,6 +204,11 @@ def main() -> int:
             if with_secrets:
                 print(f"{len(with_secrets)} of them carry secrets:")
                 for f in with_secrets:
+                    print(f"  {f['repo']}/{f['file']}/{f['job']}")
+            prt = [f for f in findings if "pull_request_target" in f["events"]]
+            if prt:
+                print(f"\n{len(prt)} reached by pull_request_target — secrets ARE exposed to fork code:")
+                for f in prt:
                     print(f"  {f['repo']}/{f['file']}/{f['job']}")
 
     if unreadable:

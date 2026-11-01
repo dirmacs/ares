@@ -311,7 +311,7 @@ impl Fence {
 
     /// Judge a write that has already landed, without landing it again.
     ///
-    /// The OpenAPPA post-call check runs after the tool has executed, so
+    /// The post-call check runs after the tool has executed, so
     /// the write is a fact by the time the contract is judged. This method
     /// runs the same L0-L3 checks [`Fence::fence_write`] runs — boundary,
     /// blocklist, read-before-edit observation, and the guard contract

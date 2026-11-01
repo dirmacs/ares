@@ -1132,7 +1132,7 @@ mod tests {
         #[tokio::test]
         async fn integration_connect_with_config_respects_max_connections() {
             let config = PostgresConfig {
-                url: ares_test_support::test_db_url(),
+                url: crate::test_db::test_db_url(),
                 max_connections: 3,
             };
             let client = PostgresClient::new_remote_with_max_connections(

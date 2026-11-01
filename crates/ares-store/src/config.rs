@@ -115,9 +115,9 @@ impl<'de> Deserialize<'de> for DatabaseBackend {
 ///
 /// Build-aware on purpose. `Embedded` is preferred because it needs nothing from
 /// the environment, but it is only compiled in with the `turso` feature, and
-/// `turso` cannot be a default feature: `libsql-ffi` and `rusqlite` (via `appa`
-/// in `ares-tools`) each vendor SQLite, so a binary linking both fails with
-/// duplicate `sqlite3_*` symbols. See the root `Cargo.toml`.
+/// `turso` cannot be a default feature: `libsql-ffi` and `rusqlite` each vendor
+/// SQLite, so a binary linking both fails with duplicate `sqlite3_*` symbols.
+/// See the root `Cargo.toml`.
 ///
 /// A default the binary cannot serve would be the same class of bug this module
 /// exists to remove, so a build without `turso` defaults to the backend its

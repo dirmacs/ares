@@ -215,7 +215,7 @@ pub async fn list_billing_model_rates(
 
 /// Backing source for unit billing rates.
 ///
-/// Downstream binaries (for example ares-dirmacs) provide their own
+/// Downstream binaries (for example a private deployment) provide their own
 /// implementation on the request [`Context`] before the router runs, for
 /// example `ctx.provide(UnitRateSourceHandle::new(provider))`. With no
 /// provider the endpoint keeps today's response (empty list), so the route

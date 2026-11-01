@@ -1,12 +1,3 @@
-## [Unreleased]
-
-### Changed
-- `ares-tools` now requires `daedra 0.5.11` instead of the 0.1.x line. The floor is 0.5.11 rather than `0.5` because every release from 0.5.0 to 0.5.10 carries a Brave parser anchored to a `#results` container the SERP no longer emits, which made that backend return zero results while reporting a genuine empty page.
-- Removed the unused `daedra` entry from `[workspace.dependencies]`. Nothing used `workspace = true` for it, so it described a constraint no crate observed.
-
-### Fixed
-- `search::tests::test_empty_query_returns_empty_results` failed against daedra 0.5.x because an empty query was dispatched to the backends and surfaced as a transport error. daedra 0.5.11 answers empty queries directly, and the suite is back to its baseline: 213 passing, 12 failing, with all 12 being `TEST_DATABASE_URL is required` rather than code failures.
-
 # Changelog
 
 All notable changes to ARES are documented here. This project follows [Semantic Versioning](https://semver.org/).
@@ -15,86 +6,34 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ## Unreleased
 
-**OpenAPPA (information-flow) integration — the ARES funnel slice.**
+### Removed
 
-### Added
+- **OpenAPPA is gone from ARES, and it never shipped.** The `appa`, `appa-runtime-api` and `appa-eventlog` git dependencies, `crates/ares-tools-appa/`, `crates/ares-tools/src/appa.rs` (both 1404 lines), `crates/ares-tools/src/gate.rs` with its `ToolGate` contract, `Tools::with_appa` / `attach_appa` / `appa_gate` and the `appa` section on the `Tools` cordis entry, `config/appa*`, `policy-tests*/`, `scripts/appa-policy-gate.sh`, and the `policy` CI job are all deleted. (`gate.rs` had already left `main` in the earlier crate split, so the diff against `main` shows the net removal rather than that file; it is listed here because the release notes describe the release, not the diff.)
 
-- `appa` (archestra-ai/OpenAPPA, lib `appa_runtime`) pinned at rev
-  `1c52575176330bc88a3c346abe678af5d42083b3` (tag v0.31.1), plus
-  `appa-runtime-api` and `appa-eventlog` at the same rev, behind
-  `default-features = false`: an in-process embed with no daemon stack and
-  `Backend::Memory` trajectories.
-- `ares-tools/src/appa.rs` — the host-side `Adapter` (`AdapterName::Embedded`)
-  and the pre/post-call gate at `Tools::execute`. The control tool
-  `appa/execute_remedy_plan` is spelled for the model as
-  `execute_remedy_plan` and intercepted before tool resolution; the remedy
-  path runs the engine's mandate envelope. Denials return the engine's
-  feedback to the model without entering the tool's execute path; blocks and
-  operational refusals stop the turn — never a default allow.
-- `Fence::verify_write` and `Fence::observed_version` — the L0-L3 write fence
-  extended to judge a landed write without rewriting it, which is the
-  post-call contract check the gate rides on. The fence had zero production
-  callers before this change.
-- `Tools::with_appa` / `Tools::attach_appa` / `Tools::appa_gate` and the
-  `appa` section on the `Tools` cordis entry (or `ARES_APPA_CONFIG`): the hook
-  path is inert unless configured, and a configured path without
-  `EventsService` fails loudly at startup instead of running unguarded.
-- The test posture `config/appa.test.toml`, the replay suites under
-  `policy-tests/` with the intentionally-mismatched set under
-  `policy-tests-negative/`, the gate script `scripts/appa-policy-gate.sh`,
-  and the `policy` job in `.github/workflows/ci.yml`
-  (`appa describe --check`, `appa replay`, and the negative arm that proves
-  the harness can fail).
-- The proposed production posture, clearly marked and applied nowhere:
-  `config/appa.proposed.toml` with batteries under `config/appa-batteries/`
-  (the classification kernel, the PII oracle/redactor, the identity
-  directory).
+  The integration had reached `main` but was never released: `ares-tools` last shipped as `0.11.8`, so no published crate ever contained it. Removing it now is why it costs nothing — there is no public surface to walk back.
 
-### Fixed
+  The friction was structural, not fixable by trimming. Upstream publishes nothing to crates.io and sets `publish = false`, so every crate naming it was permanently unpublishable. Its `rusqlite 0.40` pin also forced two vendored SQLites to coexist, which is the `links = "sqlite3"` conflict that blocked `0.11.9` entirely. The dependency could not be made `optional` to route around it either: `cargo package` resolves the full optional-dependency space, so the dependency has to be removed outright rather than gated. Nothing in the tree configured it, so there is no gate to delete — only the code that would have run had it been.
 
-- **Run costs were recorded only for runs driven through an HTTP handler.**
-  `billing_summary_from_run_costs` computes `billable_cost_usd` from `run_costs`
-  alone, so a run with no row there bills as zero. The three agent execution
-  paths (`pipeline`, `trigger`, `scheduler`) wrote their `agent_runs` and
-  `usage_events` rows and then called `spawn_run_cost_aggregation`, which was a
-  stub that built a `RunHistoryStore` and discarded it. Trigger-driven and
-  scheduler-driven runs were therefore unbilled while handler-driven runs were
-  billed, depending on which path started the work. The call sites were
-  present and correctly named, so this survived code review.
+  `crates/ares-tools/src/fence.rs` is kept. The L0–L3 write contract is a real invariant that stands without an enforcing engine, and `Fence::verify_write` / `Fence::observed_version` keep the post-call check as a library surface. A trait kept purely as a seam for an engine nothing ships would be the same debt in a different costume, so `ToolGate` went with the rest.
 
-  The aggregation moved to `RunHistoryStore::aggregate_run_cost` in
-  `ares-store`, where both `ares-agent` and `ares-http` can reach it without
-  inverting the layering, and all three agent paths now call it. Accumulation
-  semantics are unchanged, the arithmetic is factored out as the pure
-  `build_run_cost_record`, and `ares-http`'s `RunObservability` delegates to it
-  so its five handler call sites behave identically.
+- **`dotdot` is no longer a deploy target.** Dropped from `VALID_TARGETS` in the deploy handler and from `cors_origins` in `ares.toml`, so the allowlist and the CORS policy now agree rather than disagreeing in opposite directions.
 
 ### Changed
 
-- `ares-vector` moves to `0.1.7`. crates.io already carries `0.1.5` and
-  `0.1.6`; both were published from commits this repository contains, so
-  neither version can be published again and `0.1.7` is the next free
-  one. Measured, not assumed: each crate's `.cargo_vcs_info.json` names the
-  published commit, and that commit's `crates/ares-vector/src/` is
-  byte-identical (sha256 of all 8 files, 0 differing) to the published
-  `src/` in both cases — `0.1.5` against `5f8be30b` and `0.1.6` against
-  `4d642f1b`. Both commits carry version `0.1.4` in-tree and are marked
-  `dirty`, which is why the published manifests read `0.1.5`/`0.1.6`, and
-  both predate the edition-2024 migration, so the published sources are
-  edition 2021 while `main` is 2024. No published work is missing from this
-  repository.
+- **`ares-vector` joins the workspace version family.** It moves from its own `0.1.x` line to `version.workspace = true`, so all thirteen members carry `0.11.9` and a release bump touches one file instead of two versioning schemes. `0.1.7` was already published, from `0826585` on `main`; this does not rewrite it, it ends the second line so the crate stops drifting from the tree it ships with.
+- `ares-tools` now requires `daedra 0.5.11` instead of the 0.1.x line. The floor is 0.5.11 rather than `0.5` because every release from 0.5.0 to 0.5.10 carries a Brave parser anchored to a `#results` container the SERP no longer emits, which made that backend return zero results while reporting a genuine empty page.
+- Removed the unused `daedra` entry from `[workspace.dependencies]`. Nothing used `workspace = true` for it, so it described a constraint no crate observed.
+- Dropped `policy-tests/*` and `policy-tests-negative/*` from the workspace `exclude` list. Those directories no longer exist, and an exclude rule for a deleted path is a claim about the tree that is no longer true.
 
-### Blocked
+### Fixed
 
-- The workspace does not resolve with the pin: `appa-eventlog` requires
-  `rusqlite` 0.40 → `libsqlite3-sys` 0.38, while `sqlx` 0.8.6 (through the
-  `json`/`uuid`/`chrono`/`migrate` features) locks `sqlx-sqlite` →
-  `libsqlite3-sys` 0.30.1, and two versions of a `links = "sqlite3"` package
-  cannot coexist. The Rust half of this slice is written and reviewed but
-  unverifiable until that is resolved (a sqlx-side upgrade allowing
-  `libsqlite3-sys` 0.38, or a storage decision on the appa side). The fence
-  extension and the policy gate are independent of the blocker and are
-  verified on their own.
+- **`ares-server` could not be published.** The root manifest named `ares-tools-appa` unconditionally, and that crate is `publish = false` with git-only dependencies. `0.11.8` shipped without any appa dependency, so this was a regression introduced by the gate split. The dependency and its single call site (`src/main.rs`, `ares_tools_appa::install()`) are gone with the rest of the integration.
+- **`ares-store` could not be packaged**, which blocked `0.11.9` for the six crates that depend on it. `cargo package` reported a `libsqlite3-sys` `links = "sqlite3"` conflict between `sqlx-sqlite` and `rusqlite`; the cause was a dev-dependency cycle with `ares-test-support`, which depends back on `ares-store` and thereby pulled `sqlx-sqlite` into the packaged graph. The build was never affected, which is why it survived. `src/test_db.rs` now owns the live-DB lifecycle directly, so the dependency is one-way. The test tables truncated between runs are derived from `pg_tables` rather than hardcoded, so a new migration cannot silently leave data behind.
+- `search::tests::test_empty_query_returns_empty_results` failed against daedra 0.5.x because an empty query was dispatched to the backends and surfaced as a transport error. daedra 0.5.11 answers empty queries directly, and the suite is back to its baseline: 213 passing, 12 failing, with all 12 being `TEST_DATABASE_URL is required` rather than code failures.
+
+### Packaging
+
+- `ares-server`'s tarball drops from 140 files to 31. The `exclude` list keeps `.github/`, `config/`, `docs/`, `tests/`, and `publish-chain.sh` out of published crates — these carry runner labels, internal tool names, and host paths that have no business on a second distribution channel. They are already public in the GitHub repository, so this is a footprint decision, not a disclosure one.
 
 ---
 

@@ -3,7 +3,6 @@
 pub mod config;
 pub use config::ToolConfig;
 
-pub mod appa;
 pub mod calculator;
 pub mod fence;
 pub mod http_tool;
@@ -37,7 +36,6 @@ pub mod mcp_bridge;
 #[cfg(any(feature = "postgres", test))]
 pub mod connectors;
 
-pub use appa::AppaGate;
 pub use calculator::{Calculator, CalculatorConfig, CalculatorService};
 pub use plugins::{ExtraStaticTools, register_plugins};
 pub use registry::Tool;

@@ -887,8 +887,8 @@ mod route_path_tests {
     //   - a call through a `use ..::routes as other` alias: the import itself
     //     is not a call and is not flagged. With (a) holding, no `routes()`
     //     exists in compiled code to be imported;
-    //   - other repositories. The wrapper (`ares-dirmacs`) is checked by the
-    //     orchestrator's verify with a grep, not here.
+    //   - other repositories. A wrapper binary in another repo is checked by
+    //     that repo's own verifier with a grep, not here.
     // -----------------------------------------------------------------------
 
     /// One lexical token of a source file.

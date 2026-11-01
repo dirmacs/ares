@@ -19,16 +19,15 @@ authors = ["Dirmacs <build@dirmacs.com>"]
 
 [workspace.dependencies]
 # Shared dependencies across workspace
-ares-vector = { version = "0.1.7", path = "crates/ares-vector" }
-# OpenAPPA (archestra-ai/OpenAPPA) — the deterministic information-flow engine
-# gating the tool-call funnel. Git-pinned: upstream publishes nothing to
-# crates.io and is explicitly preview with breaking minors. `default-features =
-# false` drops the MCP/HTTP/CLI daemon stack; the lib links in-process. The
-# two sibling crates the embed needs: the wire vocabulary (Adapter, HookEvent)
-# and the in-memory trajectory log (Backend::Memory).
-appa = { git = "https://github.com/archestra-ai/OpenAPPA", rev = "1c52575176330bc88a3c346abe678af5d42083b3", default-features = false }
-appa-runtime-api = { git = "https://github.com/archestra-ai/OpenAPPA", rev = "1c52575176330bc88a3c346abe678af5d42083b3" }
-appa-eventlog = { git = "https://github.com/archestra-ai/OpenAPPA", rev = "1c52575176330bc88a3c346abe678af5d42083b3", default-features = false }
+ares-vector = { version = "0.11.9", path = "crates/ares-vector" }
+# OpenAPPA (archestra-ai/OpenAPPA) was removed from this workspace, not just
+# unpinned. Upstream is git-only with `publish = false`, so any crate naming it
+# could never reach crates.io, and its `rusqlite 0.40` pin made the graph
+# unpublishable a second way by colliding on `libsqlite3-sys`. It also needed
+# two vendored SQLites to coexist. The friction was structural, not incidental,
+# so the engine and its integration crate are gone rather than parked behind a
+# feature flag. `ares-tools/src/fence.rs` (the L0-L3 write contract) is
+# independent of it and stays.
 tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "net", "sync", "time", "io-util", "signal", "fs", "process"] }
 tokio-util = "0.7"
 serde = { version = "1.0", features = ["derive"] }
@@ -61,20 +60,20 @@ rhai = { version = "1.25", features = ["serde", "sync"] }
 # PostgreSQL only. The `uuid`, `chrono`, `json` and `migrate` features are
 # deliberately absent: in sqlx 0.8 each of them maps to a `sqlx-sqlite?/<name>`
 # term, which activates the optional `sqlx-sqlite` dependency — and with it
-# `libsqlite3-sys`, which declares `links = "sqlite3"`. The OpenAPPA embed
-# (crates/ares-tools) brings `rusqlite 0.40`, whose `libsqlite3-sys 0.38` declares
-# the same `links` value, so the two cannot coexist in one graph. ARES talks only
-# to PostgreSQL, so `sqlx-sqlite` was dead weight that the four features pulled in
-# for nothing; dropping them leaves `libsqlite3-sys 0.38.2` and `rusqlite 0.40`
-# resolvable together. sqlx's `migrate` feature must stay off for the same reason
-# (it activates the optional `sqlx-sqlite` driver for its compile-time
-# `sqlx::migrate!` macro); the migrator types come from `sqlx-core` instead.
+# `libsqlite3-sys`, which declares `links = "sqlite3"`. `ares-store` also links
+# `rusqlite`, whose own `libsqlite3-sys` declares the same `links` value, so the
+# two cannot coexist in one graph. ARES talks only to PostgreSQL, so
+# `sqlx-sqlite` would be dead weight pulled in by those four features for
+# nothing; leaving them off keeps exactly one `libsqlite3-sys` resolvable.
+# sqlx's `migrate` feature must stay off for the same reason (it activates the
+# optional `sqlx-sqlite` driver for its compile-time `sqlx::migrate!` macro);
+# the migrator types come from `sqlx-core` instead.
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "postgres", "tls-rustls", "rust_decimal", "macros", "derive"] }
 # The migrator types (see crates/ares-store/src/lib.rs and build.rs): the
 # compile-time `sqlx::migrate!` macro lives behind sqlx's `migrate` feature,
 # which activates the optional `sqlx-sqlite` driver for that macro — and with it
-# `libsqlite3-sys 0.30.1`, which conflicts with OpenAPPA's `rusqlite 0.40`
-# (`libsqlite3-sys 0.38`). sqlx's `migrate` feature must therefore stay OFF.
+# a second `libsqlite3-sys` alongside the one `ares-store` gets from `rusqlite`.
+# sqlx's `migrate` feature must therefore stay OFF.
 # `sqlx-core/migrate` carries the migrator types without the sqlite driver, and
 # `build.rs` builds the migration set exactly the way `resolve_blocking` does.
 # The Postgres side of the same feature (`Migrate for PgConnection`, which
@@ -132,6 +131,19 @@ exclude = [
     "Dockerfile",
     "hurl/*",
     "scripts/*",
+    # Not part of the published crate. These carry internal identifiers the
+    # OSS commit guard exists to keep out of public artifacts — runner labels
+    # (`.github`), agent configs naming internal tools (`config`), and design
+    # notes with internal repo names and host paths (`docs`). They are already
+    # public in the GitHub repo, so this is not a new disclosure; it just stops
+    # crates.io from becoming a second distribution channel for them.
+    ".github/*",
+    "config/*",
+    "docs/*",
+    "examples/*",
+    "tests/*",
+    # This repo's own publish tooling; it has no business inside a crate.
+    "publish-chain.sh",
 ]
 
 
@@ -147,17 +159,22 @@ path = "src/main.rs"
 required-features = ["http", "cli"]
 
 [features]
-# Default features for NVIDIA NIM cloud inference
-# `turso` (the embedded backend) is deliberately NOT default. It cannot be:
-# `libsql-ffi` and `rusqlite` each vendor their own SQLite, so any binary that
-# links both gets duplicate C symbols and fails at LINK time —
-#   rust-lld: error: duplicate symbol: sqlite3_version
-#   defined in liblibsqlite3_sys-*.rlib  (rusqlite, via appa in ares-tools)
-#   defined in liblibsql_ffi-*.rlib      (libsql)
-# `cargo check` passes; only linking fails, which is why this was missed at
-# first. Builds that want the embedded store must exclude whatever pulls appa:
-#   --no-default-features --features turso,...
-# Tracked as its own problem; the store itself is backend-agnostic and tested.
+# Default features for NVIDIA NIM cloud inference.
+#
+# HISTORY: this comment used to say `turso` was deliberately NOT default, because
+# `libsql-ffi` and `rusqlite` each vendored their own SQLite and any binary
+# linking both died with `duplicate symbol: sqlite3_version`. It then listed
+# `turso` in the default set anyway, so the comment and the value disagreed.
+#
+# That conflict is gone: the embedded backend now runs on rusqlite through
+# libsqlite3-sys, and `cargo tree -p ares-server` shows exactly one SQLite
+# provider (libsqlite3-sys 0.38.2 via rusqlite 0.40.2) with no libsql-ffi in the
+# graph at all. The default set therefore links; the old workaround
+# (`--no-default-features --features turso,...`) was solving a problem that no
+# longer exists.
+#
+# `--no-default-features` remains useful in the Dockerfile for a slimmer build,
+# not for correctness.
 default = ["postgres", "turso", "ares-vector", "mcp", "inventory", "rhai-policy", "http", "cli", "script-tools"]
 # ============= Build Surfaces =============
 # HTTP server stack: the ares-http router surface plus axum/tower/utoipa.

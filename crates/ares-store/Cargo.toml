@@ -45,8 +45,8 @@ sqlx-core = { workspace = true, optional = true }
 # needs for a `PgPool`. Its `migrate` feature is a forward to `sqlx-core/migrate`;
 # it does not pull in the sqlite driver.
 sqlx-postgres = { workspace = true, optional = true }
-# `bundled` matches how `appa` already declares rusqlite, so the graph keeps
-# exactly one vendored SQLite rather than expecting a system libsqlite3.
+# `bundled` keeps exactly one vendored SQLite in the graph rather than
+# expecting a system libsqlite3.
 rusqlite = { version = "0.40", optional = true, features = ["bundled"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -65,7 +65,13 @@ rust_decimal = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 [dev-dependencies]
-ares-test-support = { workspace = true }
+# `ares-test-support` is deliberately absent: it depends back on this crate (it
+# runs `MIGRATOR` and builds `PostgresClient`), and `cargo package` resolves the
+# whole optional-dependency space through that cycle, pulling `sqlx-sqlite` in
+# beside `rusqlite`. Both claim `links = "sqlite3"`, which made this crate
+# unpackagable. `src/test_db.rs` owns the live-DB lifecycle directly instead.
+dotenvy = "0.15.7"
+dtor = "1.0.6"
 chrono = { workspace = true }
 matches = "0.1"
 rust_decimal_macros = { version = "1.36" }

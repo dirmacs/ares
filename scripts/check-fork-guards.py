@@ -2,14 +2,20 @@
 """Audit GitHub Actions workflows for self-hosted jobs reachable by fork PRs.
 
 A fork PR runs fork-controlled code. On a self-hosted runner that is arbitrary
-code execution on the runner fleet, and if the job carries secrets in `env:` or
-interpolates them into a `run:` block, that code can read them out. The guard
-that prevents it is a job-level condition:
+code execution on the runner fleet — a persistent host with the fleet's network
+position, toolchain, and filesystem. The guard that prevents it is a job-level
+condition:
 
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
 
-This script finds every self-hosted job that a `pull_request` event can reach
-without that guard, and flags which of them carry secrets.
+This script finds every self-hosted job a `pull_request` event can reach without
+that guard, and reports which of them reference secrets.
+
+On the secret flag: GitHub does not pass secrets to fork-triggered workflows, so
+a fork PR sees an empty string and cannot read them. That is GitHub's protection,
+not the guard's. The flag is a blast-radius hint — `pull_request_target` *does*
+expose secrets to fork code, running in the base repo's context — not evidence
+that a fork could have leaked the secret.
 
 Usage:
     check-fork-guards.py                 # scan $PWD

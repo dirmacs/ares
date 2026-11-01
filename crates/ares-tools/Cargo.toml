@@ -9,14 +9,10 @@ publish = true
 description = "Built-in tools for ARES agents"
 
 [features]
-default = ["appa-gate"]
+default = []
 # Compile-time factory collection (mirrors the server root feature)
 inventory = ["dep:inventory", "cordis/inventory"]
 search-tools = ["dep:daedra", "dep:scraper"]
-# The APPA pre-call gate. On by default so behaviour is unchanged; a consumer
-# that cannot fetch the git dependency can turn it off with
-# default-features = false.
-appa-gate = ["dep:appa", "dep:appa-runtime-api", "dep:appa-eventlog"]
 mcp = ["dep:ares-mcp", "ares-mcp/mcp", "ares-mcp/postgres"]
 postgres = ["dep:sqlx", "dep:ares-store", "ares-store/postgres"]
 # Sandboxed script engines (boa JS + rhai); the root facade enables this by default
@@ -28,16 +24,6 @@ toml = { workspace = true }
 base64 = "0.22"
 urlencoding = "2.1"
 # The OpenAPPA embed: the gate at the Tools::execute funnel.
-# APPA (the pre-call tool gate) is a git dependency on archestra-ai/OpenAPPA,
-# whose workspace sets `publish = false` — those crates cannot come from
-# crates.io. Making them optional is what lets this crate publish at all.
-# The gate is not lost: the server root enables `appa-gate`, so every build we
-# ship still carries it. Only a bare `ares-tools` consumer who ignores the
-# feature gets a crate without the gate, and the gated types are absent rather
-# than silently degraded.
-appa = { workspace = true, optional = true }
-appa-runtime-api = { workspace = true, optional = true }
-appa-eventlog = { workspace = true, optional = true }
 ares-store = { workspace = true, optional = true }
 cordis = { workspace = true }
 inventory = { workspace = true, optional = true }

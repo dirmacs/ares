@@ -13,8 +13,7 @@ use ares_types::types::{Result, ToolDefinition};
 use cordis::{CordisError, EventsService, Service};
 use serde_json::{Value, json};
 
-#[cfg(feature = "appa-gate")]
-use crate::appa::{PreCall, ToolGate, Withheld};
+use crate::gate::{ActorRef, PreCall, RemedyAnswer, RemedyPlan, ToolGate, ToolOutcome, Withheld};
 use crate::registry::{Tool, ToolRegistry};
 
 #[cfg(any(feature = "postgres", test))]
@@ -33,7 +32,6 @@ pub struct Tools {
     /// The OpenAPPA gate, when the hook path is configured. Held as a trait
     /// object so a spawn boundary's auto-trait check never recurses through
     /// the concrete runtime's type tree.
-    #[cfg(feature = "appa-gate")]
     appa: Option<Arc<dyn ToolGate>>,
 }
 
@@ -43,7 +41,6 @@ impl Clone for Tools {
             static_registry: Arc::clone(&self.static_registry),
             #[cfg(any(feature = "postgres", test))]
             runtime: self.runtime.clone(),
-            #[cfg(feature = "appa-gate")]
             appa: self.appa.clone(),
         }
     }
@@ -55,7 +52,6 @@ impl Tools {
             static_registry,
             #[cfg(any(feature = "postgres", test))]
             runtime: None,
-            #[cfg(feature = "appa-gate")]
             appa: None,
         }
     }
@@ -69,14 +65,12 @@ impl Tools {
         Self {
             static_registry,
             runtime,
-            #[cfg(feature = "appa-gate")]
             appa: None,
         }
     }
 
     /// Attach an OpenAPPA gate to a static tool set. The hook path is live
     /// from construction: the gate decides every call this service executes.
-    #[cfg(feature = "appa-gate")]
     pub fn with_appa(
         tools: impl IntoIterator<Item = Arc<dyn Tool>>,
         gate: impl ToolGate + 'static,
@@ -86,14 +80,12 @@ impl Tools {
 
     /// Attach an OpenAPPA gate to an already-built service, preserving its
     /// runtime registry.
-    #[cfg(feature = "appa-gate")]
     pub fn attach_appa(mut self, gate: impl ToolGate + 'static) -> Self {
         self.appa = Some(Arc::new(gate));
         self
     }
 
     /// The attached OpenAPPA gate, when the hook path is configured.
-    #[cfg(feature = "appa-gate")]
     pub fn appa_gate(&self) -> Option<&(dyn ToolGate + 'static)> {
         self.appa.as_deref()
     }
@@ -214,7 +206,6 @@ impl Tools {
         // waterfall the policy's audit listeners ride on is bypassed without
         // EventsService, so a configured gate without it is a configuration
         // fault, not a degraded mode.
-        #[cfg(feature = "appa-gate")]
         if self.appa.is_some() && ctx.get::<EventsService>().is_none() {
             return Err(ares_types::AppError::Configuration(
                 "the appa hook path is configured but EventsService is not on this \
@@ -226,24 +217,21 @@ impl Tools {
         // The control tool is not a host tool: intercept it before resolution
         // so a quote of an offer reaches the remedy path rather than a
         // not-found.
-        #[cfg(feature = "appa-gate")]
         if let Some(gate) = &self.appa
-            && appa_runtime_api::is_reserved_tool_name(name)
+            && gate.is_reserved_tool_name(name)
         {
             let actor = gate.actor_for(tenant_id_from_tool_ctx(ctx).as_deref());
-            return Self::control_call(gate, &actor, args).await;
+            return Self::control_call(gate.as_ref(), &actor, args).await;
         }
 
         let tool = self
             .resolve(ctx, name)
             .ok_or_else(|| ares_types::AppError::NotFound(format!("Tool not found: {name}")))?;
-        #[cfg(feature = "appa-gate")]
         let actor = self
             .appa
             .as_ref()
             .map(|gate| gate.actor_for(tenant_id_from_tool_ctx(ctx).as_deref()));
 
-        #[cfg(feature = "appa-gate")]
         if let (Some(gate), Some(actor)) = (&self.appa, &actor) {
             match gate.check_call(actor, name, &args).await {
                 Ok(PreCall::Allow) => {}
@@ -260,7 +248,7 @@ impl Tools {
                 Ok(PreCall::Refuse { detail }) => {
                     return Err(ares_types::AppError::Unavailable(format!("appa: {detail}")));
                 }
-                Ok(PreCall::Control) => return Self::control_call(gate, actor, args).await,
+                Ok(PreCall::Control) => return Self::control_call(gate.as_ref(), actor, args).await,
                 Err(detail) => {
                     return Err(ares_types::AppError::Unavailable(format!("appa: {detail}")));
                 }
@@ -269,7 +257,6 @@ impl Tools {
 
         let Some(events) = ctx.get::<EventsService>() else {
             let result = tool.execute(args.clone()).await;
-            #[cfg(feature = "appa-gate")]
             return Self::admit(
                 gate_arg(&self.appa, &actor),
                 actor.as_ref(),
@@ -278,8 +265,6 @@ impl Tools {
                 result,
             )
             .await;
-            #[cfg(not(feature = "appa-gate"))]
-            return result;
         };
         let payload = serde_json::to_value(cordis::ToolsExecutePayload {
             name: name.to_string(),
@@ -312,43 +297,31 @@ impl Tools {
         // funnel received.
         let executed_args = out.get("args").cloned().unwrap_or(args);
         let result = Ok(out.get("result").cloned().unwrap_or(Value::Null));
-        #[cfg(feature = "appa-gate")]
-        {
-            return Self::admit(
-                gate_arg(&self.appa, &actor),
-                actor.as_ref(),
-                name,
-                &executed_args,
-                result,
-            )
-            .await;
-        }
-        #[cfg(not(feature = "appa-gate"))]
-        {
-            let _ = &executed_args;
-            result
-        }
+        Self::admit(
+            gate_arg(&self.appa, &actor),
+            actor.as_ref(),
+            name,
+            &executed_args,
+            result,
+        )
+        .await
     }
 
     /// The remedy path: the model quoted an `offer_id` on the control tool.
     /// The tool's own execute path is never entered — the engine executes the
     /// plan inside its mandate envelope and the answer reaches the model as
     /// this call's result.
-    #[cfg(feature = "appa-gate")]
     async fn control_call(
         gate: &(dyn ToolGate + 'static),
-        actor: &appa_runtime_api::Actor,
+        actor: &ActorRef,
         args: Value,
     ) -> Result<Value> {
-        let plan: appa_runtime::api::ExecuteRemedyPlanArgs = serde_json::from_value(args.clone())
-            .map_err(|error| {
-            ares_types::AppError::InvalidInput(format!("appa remedy plan: {error}"))
-        })?;
+        let plan = RemedyPlan { args: args.clone() };
         // The hook decides the control call first: an accepted quote answers
         // PassControl and records the vouch the engine spends when the plan
         // runs. Executing without the hook would leave the remedy unvouched.
         match gate
-            .check_call(actor, crate::appa::REMEDY_TOOL_SPELLING, &args)
+            .check_call(actor, gate.control_tool_spelling(), &args)
             .await
         {
             Ok(PreCall::Control) => {}
@@ -373,10 +346,9 @@ impl Tools {
     /// tool that errored is reported to the engine as a failure; a withheld
     /// or refused result stops the turn rather than re-entering the
     /// conversation with the value.
-    #[cfg(feature = "appa-gate")]
     async fn admit(
         gate: Option<&(dyn ToolGate + 'static)>,
-        actor: Option<&appa_runtime_api::Actor>,
+        actor: Option<&ActorRef>,
         name: &str,
         args: &Value,
         result: Result<Value>,
@@ -397,7 +369,7 @@ impl Tools {
             Err(error) => {
                 // A failed tool reports no value: the engine closes the
                 // dispatch as a failure and the error still reaches the model.
-                let failure = appa_runtime_api::ToolOutcome::Failure {
+                let failure = ToolOutcome::Failure {
                     message: error.to_string(),
                 };
                 gate.report_failure(actor, name, args, failure).await;
@@ -543,10 +515,9 @@ where
 }
 
 /// The gate as an optional borrow, for the post-call admit path.
-#[cfg(feature = "appa-gate")]
 fn gate_arg<'a>(
     gate: &'a Option<Arc<dyn ToolGate>>,
-    actor: &Option<appa_runtime_api::Actor>,
+    actor: &Option<ActorRef>,
 ) -> Option<&'a (dyn ToolGate + 'static)> {
     if actor.is_some() {
         gate.as_deref()
@@ -558,28 +529,27 @@ fn gate_arg<'a>(
 /// The remedy outcome as the model reads it: the engine's own words for a
 /// refusal or a decline, the executed call for an authorized plan, and the
 /// crossed value for a plan that declares a return.
-#[cfg(feature = "appa-gate")]
-fn remedy_reply(outcome: appa_runtime::api::RemedyOutcome) -> Value {
+fn remedy_reply(outcome: RemedyAnswer) -> Value {
     match outcome {
-        appa_runtime::api::RemedyOutcome::Authorized { call } => json!({
+        RemedyAnswer::Authorized { call } => json!({
             "remedy": "authorized",
-            "tool": call.tool,
+            "tool": call.get("tool").cloned().unwrap_or(Value::Null),
         }),
-        appa_runtime::api::RemedyOutcome::Returned { value } => json!({
+        RemedyAnswer::Returned { value } => json!({
             "remedy": "returned",
             "value": value,
         }),
-        appa_runtime::api::RemedyOutcome::Declined { presentation } => json!({
+        RemedyAnswer::Declined { presentation } => json!({
             "remedy": "declined",
-            "feedback": presentation.feedback,
+            "feedback": presentation,
         }),
-        appa_runtime::api::RemedyOutcome::NoAnswer { feedback } => json!({
+        RemedyAnswer::NoAnswer { feedback } => json!({
             "remedy": "no-answer",
             "feedback": feedback,
         }),
-        appa_runtime::api::RemedyOutcome::Refused { reason } => json!({
+        RemedyAnswer::Refused { reason } => json!({
             "remedy": "refused",
-            "reason": format!("{reason:?}"),
+            "reason": reason,
         }),
     }
 }

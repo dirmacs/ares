@@ -1,0 +1,21 @@
+[package]
+name = "ares-tools-appa"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.99"
+description = "The OpenAPPA pre-call tool gate for ARES. Not published: the upstream crates are git-only and their workspace sets publish = false."
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+ares-tools = { version = "0.11.9", path = "../ares-tools" }
+ares-types = { workspace = true }
+appa = { workspace = true }
+appa-runtime-api = { workspace = true }
+appa-eventlog = { workspace = true }
+async-trait = { workspace = true }
+cordis = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

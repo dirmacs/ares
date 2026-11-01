@@ -103,6 +103,13 @@ fn rate_to_interval_ms(rate_per_second: u32) -> u64 {
 #[cfg(feature = "postgres")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Install the pre-call gate engine before any tool registry is built.
+    // `ares-tools` cannot name the engine (its deps are git-only and would
+    // make that crate unpublishable), so the engine registers itself here.
+    // Without this call the tools funnel has no gate and a config that asks
+    // for one is refused rather than silently accepted.
+    ares_tools_appa::install();
+
     // Parse CLI arguments
     let cli = Cli::parse_args();
 

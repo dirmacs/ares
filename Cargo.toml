@@ -4,7 +4,7 @@ members = [
     ".", "crates/ares-vector", "crates/ares-types",
     "crates/ares-rag", "crates/ares-tools", "crates/ares-llm",
     "crates/ares-store", "crates/ares-mcp", "crates/ares-agent",
-    "crates/ares-http", "crates/cordis", "crates/ares-test-support",
+    "crates/ares-http", "crates/cordis", "crates/ares-test-support", "crates/ares-tools-appa",
     "crates/ares-suriv",
 ]
 exclude = ["ui"]
@@ -299,6 +299,7 @@ minimal = []
 ares-types = { workspace = true }
 ares-rag = { workspace = true }
 ares-tools = { workspace = true }
+ares-tools-appa = { version = "0.11.9", path = "crates/ares-tools-appa" }
 ares-llm = { workspace = true }
 ares-store = { workspace = true }
 ares-mcp = { workspace = true, default-features = false, optional = true }

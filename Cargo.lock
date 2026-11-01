@@ -576,6 +576,7 @@ dependencies = [
  "ares-suriv",
  "ares-test-support",
  "ares-tools",
+ "ares-tools-appa",
  "ares-types",
  "ares-vector",
  "async-trait",
@@ -678,9 +679,6 @@ dependencies = [
 name = "ares-tools"
 version = "0.11.9"
 dependencies = [
- "appa",
- "appa-eventlog",
- "appa-runtime-api",
  "arc-swap",
  "ares-cordis",
  "ares-mcp",
@@ -705,6 +703,22 @@ dependencies = [
  "tracing",
  "urlencoding",
  "wiremock",
+]
+
+[[package]]
+name = "ares-tools-appa"
+version = "0.11.9"
+dependencies = [
+ "appa",
+ "appa-eventlog",
+ "appa-runtime-api",
+ "ares-cordis",
+ "ares-tools",
+ "ares-types",
+ "async-trait",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tracing",
 ]
 
 [[package]]
@@ -2501,9 +2515,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.3"
+version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03bb0e1cc970d482d121d9a1744999169b69a07470b3d644a7894e53fcaf4574"
+checksum = "a2376ffd6f96d8a9db59875b4b6b0237d6900b5baf64279714e05493ce64828a"
 dependencies = [
  "cmov",
 ]

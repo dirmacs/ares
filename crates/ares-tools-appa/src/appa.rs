@@ -53,6 +53,9 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
+use ares_tools::gate::{
+    ActorRef, GateError, PreCall, RemedyAnswer, RemedyPlan, ToolGate, ToolOutcome, Withheld,
+};
 use appa_eventlog::{Backend, LogStore};
 use appa_runtime::api::{ExecuteRemedyPlanArgs, OpenError, RemedyOutcome, Runtime};
 use appa_runtime::config::{Config, ConfigError, HostDefaults, HostedBattery};
@@ -62,7 +65,7 @@ use appa_runtime_api::{
     HookDecision, HookEvent, IdentifiedTool, ParseRefusal, ProposedCall, TrajectoryId,
 };
 
-use crate::fence::{Fence, FencePolicy, WriteGuard};
+use ares_tools::fence::{AuditEntry, Fence, FencePolicy, WriteGuard};
 
 /// The host spelling of the canonical control tool, as the model calls it.
 pub const REMEDY_TOOL_SPELLING: &str = ADVERTISED_CONTROL_TOOL;
@@ -157,52 +160,6 @@ pub fn adapter() -> Adapter {
     }
 }
 
-/// Why a gate could not open.
-#[derive(Debug, thiserror::Error)]
-pub enum AppaError {
-    #[error("appa configuration refused: {0}")]
-    Config(#[from] ConfigError),
-    #[error("appa runtime refused: {0}")]
-    Open(#[from] OpenError),
-    #[error("appa event log refused: {0}")]
-    Log(String),
-    #[error("appa arguments could not be carried: {0}")]
-    Arguments(String),
-}
-
-/// The gate's answer to one proposed call.
-#[derive(Debug, Clone, PartialEq)]
-pub enum PreCall {
-    /// The engine allows the call; execute as today.
-    Allow,
-    /// The policy blocks the call and names why, with the ids of the remedies
-    /// it offers. The tool's execute path is not entered; the feedback and the
-    /// offer ids reach the model as the call's result, so it can take a remedy
-    /// on the control tool.
-    Deny {
-        feedback: String,
-        offers: Vec<String>,
-    },
-    /// A hard stop: the turn ends. No remedy is offered.
-    Block { reason: String },
-    /// An operational fault: nothing was judged. The turn ends; the detail is
-    /// the runtime's words, never policy feedback.
-    Refuse { detail: String },
-    /// The model quoted an offer on the control tool; route to the remedy path.
-    Control,
-}
-
-/// Why a result did not reach the model.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Withheld {
-    /// The engine (or the fence) blocked the value; the conversation sees the
-    /// reason, never the value.
-    Blocked { reason: String },
-    /// An operational fault at result time; the value is withheld and the
-    /// detail is the runtime's words.
-    Refused { detail: String },
-}
-
 /// Which fence contract class a tool's call falls into.
 #[derive(Clone, Debug)]
 pub struct FenceClasses {
@@ -242,116 +199,109 @@ impl FenceClasses {
 /// through it from a spawn boundary overflows the solver on the pinned
 /// toolchain. The object stops that recursion; the bound is what the funnel
 /// and the tokio spawns actually require.
-#[async_trait::async_trait]
-pub trait ToolGate: Send + Sync {
-    /// The trajectory this host's contexts decide under.
-    fn actor_for(&self, tenant: Option<&str>) -> Actor;
 
-    /// Submit the pre-call event and fold the engine's answer.
-    async fn check_call(&self, actor: &Actor, tool: &str, args: &Value) -> Result<PreCall, String>;
-
-    /// Submit the post-call event and fold the engine's answer.
-    async fn admit_result(
-        &self,
-        actor: &Actor,
-        tool: &str,
-        args: &Value,
-        result: &Value,
-    ) -> Result<Value, Withheld>;
-
-    /// Execute one remedy plan the model quoted on the control tool.
-    async fn execute_remedy(&self, actor: &Actor, args: ExecuteRemedyPlanArgs) -> RemedyOutcome;
-
-    /// Report a tool that ran and failed.
-    async fn report_failure(
-        &self,
-        actor: &Actor,
-        tool: &str,
-        args: &Value,
-        failure: appa_runtime_api::ToolOutcome,
-    );
-
-    /// Snapshot of one trajectory's fence audit ring.
-    fn fence_audit(&self, actor: &Actor) -> Vec<crate::fence::AuditEntry>;
-}
-
-/// A shared gate is a gate: the funnel holds `Arc<dyn ToolGate>` and passes
-/// it around by value.
-#[async_trait::async_trait]
-impl<T: ToolGate + Send + Sync + ?Sized> ToolGate for Arc<T> {
-    fn actor_for(&self, tenant: Option<&str>) -> Actor {
-        (**self).actor_for(tenant)
-    }
-
-    async fn check_call(&self, actor: &Actor, tool: &str, args: &Value) -> Result<PreCall, String> {
-        (**self).check_call(actor, tool, args).await
-    }
-
-    async fn admit_result(
-        &self,
-        actor: &Actor,
-        tool: &str,
-        args: &Value,
-        result: &Value,
-    ) -> Result<Value, Withheld> {
-        (**self).admit_result(actor, tool, args, result).await
-    }
-
-    async fn execute_remedy(&self, actor: &Actor, args: ExecuteRemedyPlanArgs) -> RemedyOutcome {
-        (**self).execute_remedy(actor, args).await
-    }
-
-    async fn report_failure(
-        &self,
-        actor: &Actor,
-        tool: &str,
-        args: &Value,
-        failure: appa_runtime_api::ToolOutcome,
-    ) {
-        (**self).report_failure(actor, tool, args, failure).await
-    }
-
-    fn fence_audit(&self, actor: &Actor) -> Vec<crate::fence::AuditEntry> {
-        (**self).fence_audit(actor)
+impl AppaGate {
+    /// The engine's own trajectory handle, from the host-side one.
+    fn to_engine_actor(&self, actor: &ActorRef) -> Actor {
+        Actor {
+            root: TrajectoryId(actor.root.clone()),
+            child: actor.child.as_ref().map(|c| TrajectoryId(c.clone())),
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl ToolGate for AppaGate {
-    fn actor_for(&self, tenant: Option<&str>) -> Actor {
-        AppaGate::actor_for(self, tenant)
+    fn actor_for(&self, tenant: Option<&str>) -> ActorRef {
+        let a = AppaGate::actor_for(self, tenant);
+        ActorRef {
+            root: a.root.0.clone(),
+            child: a.child.as_ref().map(|c| c.0.clone()),
+        }
     }
 
-    async fn check_call(&self, actor: &Actor, tool: &str, args: &Value) -> Result<PreCall, String> {
-        AppaGate::check_call(self, actor, tool, args).await
+    async fn check_call(
+        &self,
+        actor: &ActorRef,
+        tool: &str,
+        args: &Value,
+    ) -> Result<PreCall, String> {
+        let a = self.to_engine_actor(actor);
+        AppaGate::check_call(self, &a, tool, args).await
     }
 
     async fn admit_result(
         &self,
-        actor: &Actor,
+        actor: &ActorRef,
         tool: &str,
         args: &Value,
         result: &Value,
     ) -> Result<Value, Withheld> {
-        AppaGate::admit_result(self, actor, tool, args, result).await
+        let a = self.to_engine_actor(actor);
+        AppaGate::admit_result(self, &a, tool, args, result).await
     }
 
-    async fn execute_remedy(&self, actor: &Actor, args: ExecuteRemedyPlanArgs) -> RemedyOutcome {
-        AppaGate::execute_remedy(self, actor, args).await
+    async fn execute_remedy(&self, actor: &ActorRef, plan: RemedyPlan) -> RemedyAnswer {
+        let a = self.to_engine_actor(actor);
+        let args: ExecuteRemedyPlanArgs = match serde_json::from_value(plan.args) {
+            Ok(v) => v,
+            Err(e) => {
+                return RemedyAnswer::Refused {
+                    reason: format!("remedy plan could not be carried: {e}"),
+                };
+            },
+        };
+        match AppaGate::execute_remedy(self, &a, args).await {
+            RemedyOutcome::Authorized { call } => RemedyAnswer::Authorized {
+                call: serde_json::to_value(&call).unwrap_or(Value::Null),
+            },
+            RemedyOutcome::Returned { value } => RemedyAnswer::Returned {
+                value: Value::String(value),
+            },
+            RemedyOutcome::Declined { presentation } => RemedyAnswer::Declined {
+                presentation: presentation.feedback,
+            },
+            RemedyOutcome::NoAnswer { feedback } => RemedyAnswer::NoAnswer { feedback },
+            RemedyOutcome::Refused { reason } => RemedyAnswer::Refused {
+                reason: format!("{reason:?}"),
+            },
+        }
     }
 
     async fn report_failure(
         &self,
-        actor: &Actor,
+        actor: &ActorRef,
         tool: &str,
         args: &Value,
-        failure: appa_runtime_api::ToolOutcome,
+        failure: ToolOutcome,
     ) {
-        AppaGate::report_failure(self, actor, tool, args, failure).await
+        let a = self.to_engine_actor(actor);
+        let engine_failure = match failure {
+            ToolOutcome::Success { body } => appa_runtime_api::ToolOutcome::Success {
+                body: match body {
+                    Some(b) => appa_runtime_api::OutcomeBody::Available(b),
+                    None => appa_runtime_api::OutcomeBody::Unavailable,
+                },
+            },
+            ToolOutcome::Failure { message } => {
+                appa_runtime_api::ToolOutcome::Failure { message }
+            },
+            ToolOutcome::Indeterminate => appa_runtime_api::ToolOutcome::Indeterminate,
+        };
+        AppaGate::report_failure(self, &a, tool, args, engine_failure).await
     }
 
-    fn fence_audit(&self, actor: &Actor) -> Vec<crate::fence::AuditEntry> {
-        AppaGate::fence_audit(self, actor)
+    fn fence_audit(&self, actor: &ActorRef) -> Vec<ares_tools::fence::AuditEntry> {
+        let a = self.to_engine_actor(actor);
+        AppaGate::fence_audit(self, &a)
+    }
+
+    fn is_reserved_tool_name(&self, name: &str) -> bool {
+        appa_runtime_api::is_reserved_tool_name(name)
+    }
+
+    fn control_tool_spelling(&self) -> &'static str {
+        REMEDY_TOOL_SPELLING
     }
 }
 
@@ -378,7 +328,7 @@ impl AppaGate {
         defaults: HostDefaults,
         lookup: impl Fn(&str) -> Option<String>,
         fence_policy: FencePolicy,
-    ) -> Result<Self, AppaError> {
+    ) -> Result<Self, GateError> {
         Self::open_with_classes(
             root,
             batteries,
@@ -397,12 +347,14 @@ impl AppaGate {
         lookup: impl Fn(&str) -> Option<String>,
         fence_policy: FencePolicy,
         fence_classes: FenceClasses,
-    ) -> Result<Self, AppaError> {
-        let config = Config::hosted_composed(root, batteries, defaults, lookup)?;
+    ) -> Result<Self, GateError> {
+        let config = Config::hosted_composed(root, batteries, defaults, lookup)
+            .map_err(|e| GateError::Config(e.to_string()))?;
         let store = Arc::new(
-            LogStore::open(Backend::Memory).map_err(|error| AppaError::Log(error.to_string()))?,
+            LogStore::open(Backend::Memory).map_err(|error| GateError::Log(error.to_string()))?,
         );
-        let runtime = Runtime::open_with_store_as(config, store, None, adapter())?;
+        let runtime = Runtime::open_with_store_as(config, store, None, adapter())
+            .map_err(|e| GateError::Open(e.to_string()))?;
         Ok(Self {
             runtime,
             fence_policy,
@@ -691,7 +643,7 @@ impl AppaGate {
     }
 
     /// Snapshot of one trajectory's fence audit ring, for diagnostics.
-    pub fn fence_audit(&self, actor: &Actor) -> Vec<crate::fence::AuditEntry> {
+    pub fn fence_audit(&self, actor: &Actor) -> Vec<ares_tools::fence::AuditEntry> {
         self.fence_for(actor)
             .get(actor.root.as_str())
             .map(|fence| fence.audit_log())
@@ -730,7 +682,7 @@ fn path_argument(args: &Value) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fence::FenceMode;
+    use ares_tools::fence::FenceMode;
     use crate::registry::Tool;
     use crate::tool_service::Tools;
     use appa_runtime_api::CONTROL_TOOL;
@@ -1354,7 +1306,7 @@ builtin = "redact-secrets"
         assert!(
             audit
                 .iter()
-                .any(|entry| entry.outcome == crate::fence::FsError::FS_NOT_OBSERVED),
+                .any(|entry| entry.outcome == ares_tools::fence::FsError::FS_NOT_OBSERVED),
             "the violation lands in the fence's audit ring"
         );
     }

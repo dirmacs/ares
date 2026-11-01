@@ -178,7 +178,7 @@ if [ "$LIVE" -eq 1 ]; then
   # So the live path publishes an explicit, dependency-ordered list of only the
   # crates that still need this version. The list is derived, not hardcoded.
   echo
-  echo "==> computing crates that still need $VERSION"
+  echo "==> computing crates that still need a publish"
   # The publish SET and its ORDER both come from live data, not a literal list:
   # order from `cargo metadata`'s dependency graph (topological), membership
   # from the crates.io index. A hardcoded order would silently skip any crate
@@ -224,14 +224,14 @@ for crate in order:
             cur = json.load(r).get("crate", {}).get("max_version", "")
     except Exception:
         cur = ""
-    if cur != want:
+      if cur != want:
         print(crate)
-' "$VERSION"
-)
-  if [ -z "$todo" ]; then
-    echo "    nothing to do; all crates already at $VERSION"
-    exit 0
-  fi
+'
+  )
+    if [ -z "$todo" ]; then
+      echo "    nothing to do; every crate already carries its manifest version"
+      exit 0
+    fi
   echo "$todo" | sed 's/^/    /'
 
   echo

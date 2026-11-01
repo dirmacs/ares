@@ -6,11 +6,30 @@
 
 use std::sync::Arc;
 
-use ares_tools::gate::{install_gate_builder, ToolGate};
+use ares_tools::gate::{ToolGate, install_gate_builder};
 use serde_json::Value;
 
 use crate::appa::AppaGate;
 
+/// The Tools entry config shape of the OpenAPPA hook path.
+///
+/// ```json
+/// { "appa": {
+///     "enabled": true,
+///     "config": "config/appa.toml",
+///     "batteries_dir": "config/appa-batteries",
+///     "granted_env": ["ERUKA_CLASSIFIER_TOKEN"],
+///     "workspace_root": "/srv/ares",
+///     "fence_mode": "workspace_write",
+///     "blocklist": [".env", "id_rsa"],
+///     "read_tools": ["read_file"],
+///     "write_tools": ["write_file"]
+/// } }
+/// ```
+///
+/// Every field but `enabled` and `config` defaults. `ARES_APPA_CONFIG` names
+/// the policy file when the entry states none; with neither, the hook path
+/// stays off.
 pub fn gate_from_config(config: &Value) -> Result<Option<Arc<dyn ToolGate>>, cordis::CordisError> {
     let refuse = |detail: String| cordis::CordisError::Configuration(format!("appa: {detail}"));
     let section = config.get("appa");
@@ -154,5 +173,5 @@ pub fn gate_from_config(config: &Value) -> Result<Option<Arc<dyn ToolGate>>, cor
 ///
 /// Call once at process start, before the tools entry is loaded.
 pub fn install() {
-    install_gate_builder(|config| gate_from_config(config));
+    install_gate_builder(gate_from_config);
 }

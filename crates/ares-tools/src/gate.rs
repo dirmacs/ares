@@ -130,7 +130,12 @@ pub trait ToolGate: Send + Sync {
     fn actor_for(&self, tenant: Option<&str>) -> ActorRef;
 
     /// Submit the pre-call event and fold the engine's answer.
-    async fn check_call(&self, actor: &ActorRef, tool: &str, args: &Value) -> Result<PreCall, String>;
+    async fn check_call(
+        &self,
+        actor: &ActorRef,
+        tool: &str,
+        args: &Value,
+    ) -> Result<PreCall, String>;
 
     /// Submit the post-call event and fold the engine's answer.
     async fn admit_result(
@@ -174,7 +179,12 @@ impl<T: ToolGate + Send + Sync + ?Sized> ToolGate for Arc<T> {
         (**self).actor_for(tenant)
     }
 
-    async fn check_call(&self, actor: &ActorRef, tool: &str, args: &Value) -> Result<PreCall, String> {
+    async fn check_call(
+        &self,
+        actor: &ActorRef,
+        tool: &str,
+        args: &Value,
+    ) -> Result<PreCall, String> {
         (**self).check_call(actor, tool, args).await
     }
 
@@ -248,6 +258,6 @@ pub fn installed_from_config(
                 ));
             }
             Ok(None)
-        },
+        }
     }
 }

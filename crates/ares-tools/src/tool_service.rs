@@ -248,7 +248,9 @@ impl Tools {
                 Ok(PreCall::Refuse { detail }) => {
                     return Err(ares_types::AppError::Unavailable(format!("appa: {detail}")));
                 }
-                Ok(PreCall::Control) => return Self::control_call(gate.as_ref(), actor, args).await,
+                Ok(PreCall::Control) => {
+                    return Self::control_call(gate.as_ref(), actor, args).await;
+                }
                 Err(detail) => {
                     return Err(ares_types::AppError::Unavailable(format!("appa: {detail}")));
                 }

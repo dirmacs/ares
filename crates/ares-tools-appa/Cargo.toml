@@ -19,3 +19,9 @@ cordis = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+# The test module stands up a mock annotator server, so it needs the same test
+# stack the gate's own tests used before the split.
+tokio = { workspace = true }
+wiremock = "0.6.5"

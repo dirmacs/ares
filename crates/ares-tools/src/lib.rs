@@ -3,12 +3,12 @@
 pub mod config;
 pub use config::ToolConfig;
 
+pub mod calculator;
+pub mod fence;
 /// The pre-call tool gate contract. Always present: it names no engine type,
 /// so `ares-tools` stays publishable while the OpenAPPA implementation lives
 /// in `ares-tools-appa`.
 pub mod gate;
-pub mod calculator;
-pub mod fence;
 pub mod http_tool;
 pub mod plugins;
 pub(crate) mod registry;
@@ -40,8 +40,10 @@ pub mod mcp_bridge;
 #[cfg(any(feature = "postgres", test))]
 pub mod connectors;
 
-pub use gate::{ActorRef, GateError, PreCall, RemedyAnswer, RemedyPlan, ToolGate, ToolOutcome, Withheld};
 pub use calculator::{Calculator, CalculatorConfig, CalculatorService};
+pub use gate::{
+    ActorRef, GateError, PreCall, RemedyAnswer, RemedyPlan, ToolGate, ToolOutcome, Withheld,
+};
 pub use plugins::{ExtraStaticTools, register_plugins};
 pub use registry::Tool;
 #[cfg(feature = "script-tools")]

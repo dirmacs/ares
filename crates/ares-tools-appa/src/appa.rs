@@ -53,19 +53,19 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
-use ares_tools::gate::{
-    ActorRef, GateError, PreCall, RemedyAnswer, RemedyPlan, ToolGate, ToolOutcome, Withheld,
-};
 use appa_eventlog::{Backend, LogStore};
-use appa_runtime::api::{ExecuteRemedyPlanArgs, OpenError, RemedyOutcome, Runtime};
-use appa_runtime::config::{Config, ConfigError, HostDefaults, HostedBattery};
+use appa_runtime::api::{ExecuteRemedyPlanArgs, RemedyOutcome, Runtime};
+use appa_runtime::config::{Config, HostDefaults, HostedBattery};
 use appa_runtime::hooks;
 use appa_runtime_api::{
     ADVERTISED_CONTROL_TOOL, Actor, Adapter, AdapterName, CanonicalTool, CanonicalToolError,
     HookDecision, HookEvent, IdentifiedTool, ParseRefusal, ProposedCall, TrajectoryId,
 };
+use ares_tools::gate::{
+    ActorRef, GateError, PreCall, RemedyAnswer, RemedyPlan, ToolGate, ToolOutcome, Withheld,
+};
 
-use ares_tools::fence::{AuditEntry, Fence, FencePolicy, WriteGuard};
+use ares_tools::fence::{Fence, FencePolicy, WriteGuard};
 
 /// The host spelling of the canonical control tool, as the model calls it.
 pub const REMEDY_TOOL_SPELLING: &str = ADVERTISED_CONTROL_TOOL;
@@ -199,7 +199,6 @@ impl FenceClasses {
 /// through it from a spawn boundary overflows the solver on the pinned
 /// toolchain. The object stops that recursion; the bound is what the funnel
 /// and the tokio spawns actually require.
-
 impl AppaGate {
     /// The engine's own trajectory handle, from the host-side one.
     fn to_engine_actor(&self, actor: &ActorRef) -> Actor {
@@ -249,7 +248,7 @@ impl ToolGate for AppaGate {
                 return RemedyAnswer::Refused {
                     reason: format!("remedy plan could not be carried: {e}"),
                 };
-            },
+            }
         };
         match AppaGate::execute_remedy(self, &a, args).await {
             RemedyOutcome::Authorized { call } => RemedyAnswer::Authorized {
@@ -283,9 +282,7 @@ impl ToolGate for AppaGate {
                     None => appa_runtime_api::OutcomeBody::Unavailable,
                 },
             },
-            ToolOutcome::Failure { message } => {
-                appa_runtime_api::ToolOutcome::Failure { message }
-            },
+            ToolOutcome::Failure { message } => appa_runtime_api::ToolOutcome::Failure { message },
             ToolOutcome::Indeterminate => appa_runtime_api::ToolOutcome::Indeterminate,
         };
         AppaGate::report_failure(self, &a, tool, args, engine_failure).await
@@ -683,9 +680,15 @@ fn path_argument(args: &Value) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use ares_tools::fence::FenceMode;
-    use crate::registry::Tool;
-    use crate::tool_service::Tools;
+    // `registry` is `pub(crate)` in ares-tools, and `tool_service`'s `Tools` is
+    // re-exported at the root. These paths were `crate::registry` /
+    // `crate::tool_service` while this module lived inside ares-tools; the
+    // OpenAPPA split moved the file but not these lines.
     use appa_runtime_api::CONTROL_TOOL;
+    use ares_tools::{Tool, Tools};
+    // `OpenError` is matched only in this module, so it belongs here rather than
+    // in the crate-level import set.
+    use appa_runtime::api::OpenError;
     use async_trait::async_trait;
     use cordis::{Context, EventsService};
     use serde_json::json;

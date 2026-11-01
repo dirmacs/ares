@@ -165,26 +165,8 @@ fn factory_tools(
     }
 }
 
-/// The Tools entry config shape of the OpenAPPA hook path.
-///
-/// ```json
-/// { "appa": {
-///     "enabled": true,
-///     "config": "config/appa.toml",
-///     "batteries_dir": "config/appa-batteries",
-///     "granted_env": ["ERUKA_CLASSIFIER_TOKEN"],
-///     "workspace_root": "/srv/ares",
-///     "fence_mode": "workspace_write",
-///     "blocklist": [".env", "id_rsa"],
-///     "read_tools": ["read_file"],
-///     "write_tools": ["write_file"]
-/// } }
-/// ```
-///
-/// Every field but `enabled` and `config` defaults. `ARES_APPA_CONFIG` names
-/// the policy file when the entry states none; with neither, the hook path
-/// stays off.
-
+/// The Tools entry config shape of the OpenAPPA hook path lives with
+/// `gate_from_config` in `ares-tools-appa`, which is what actually reads it.
 fn register_always_on_tools(tool_registry: &mut ToolRegistry) {
     tool_registry.register(Arc::new(Calculator));
     tool_registry.register(Arc::new(ProviderWebSearch));

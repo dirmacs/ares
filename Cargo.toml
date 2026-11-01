@@ -140,8 +140,6 @@ exclude = [
     ".github/*",
     "config/*",
     "docs/*",
-    "policy-tests/*",
-    "policy-tests-negative/*",
     "examples/*",
     "tests/*",
     # This repo's own publish tooling; it has no business inside a crate.

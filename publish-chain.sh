@@ -29,9 +29,14 @@
 #
 #     What does matter is that the packaged surface carries no secrets and no
 #     OSS-guard blocklisted identifiers, because the commit hook does not run on
-#     `cargo publish`. Both were scanned across all 437 packaged files of the
-#     eight crates with a planted positive control proving the scanners fire:
+#     `cargo publish`. Both were scanned across the packaged files of every
+#     crate with a planted positive control proving the scanners fire:
 #     0 secret-shaped hits, 0 blocked-pattern hits.
+#
+#     That scan originally covered the eight crates then pending. The set has
+#     since grown: the train is thirteen publishable members, and ares-vector
+#     carries its own version history (0.1.x), so it is compared against its own
+#     manifest version rather than the shared 0.11.9 one.
 #
 # We do NOT re-implement sequencing. `cargo publish --workspace` already walks
 # the dependency graph in order and waits for the index. Hand-rolling that was
@@ -100,12 +105,18 @@ echo "    ok"
 # --- Guard 3: version is not already taken -----------------------------------
 # Re-publishing an existing version is an error, but only after packaging.
 echo "==> checking that ${CRATE_VERSION_CHECK:-0.11.9} is not already published"
-stale=$(python3 -c '
+    stale=$(python3 -c '
 import json, urllib.request
-for crate in ["ares-store", "ares-mcp", "ares-llm", "ares-rag", "ares-tools",
-              "ares-agent", "ares-http", "ares-server"]:
+# Membership is derived from `cargo metadata` below, not listed here. This guard
+# is a courtesy notice printed before packaging; a hardcoded list would go stale
+# every time a crate joined the train, which has already happened twice.
+import subprocess
+d = json.loads(subprocess.run(["cargo", "metadata", "--no-deps",
+                               "--format-version", "1"],
+                              capture_output=True, text=True).stdout)
+for m in sorted({p["name"] for p in d["packages"] if p.get("publish") != []}):
     req = urllib.request.Request(
-        f"https://crates.io/api/v1/crates/{crate}",
+        f"https://crates.io/api/v1/crates/{m}",
         headers={"User-Agent": "ares-publish-guard"},
     )
     try:
@@ -115,7 +126,7 @@ for crate in ["ares-store", "ares-mcp", "ares-llm", "ares-rag", "ares-tools",
     except Exception:
         cur = "?"
     if cur == "0.11.9":
-        print(f"{crate} already at 0.11.9")
+        print(f"{m} already at 0.11.9")
 ')
 if [ -n "$stale" ]; then
   echo "NOTE: some crates are already at 0.11.9; they will be skipped by cargo:" >&2

@@ -19,7 +19,7 @@ authors = ["Dirmacs <build@dirmacs.com>"]
 
 [workspace.dependencies]
 # Shared dependencies across workspace
-ares-vector = { version = "0.1.7", path = "crates/ares-vector" }
+ares-vector = { version = "0.11.9", path = "crates/ares-vector" }
 # OpenAPPA (archestra-ai/OpenAPPA) was removed from this workspace, not just
 # unpinned. Upstream is git-only with `publish = false`, so any crate naming it
 # could never reach crates.io, and its `rusqlite 0.40` pin made the graph

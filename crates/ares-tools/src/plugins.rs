@@ -144,6 +144,11 @@ fn factory_tools(
     // the `appa` key on this entry, or ARES_APPA_CONFIG naming a policy file.
     // A configured path fails loudly rather than starting unguarded — see
     // `appa_gate_from_config` and the EventsService requirement.
+    //
+    // Without the `appa-gate` feature the gate is absent, not silently
+    // degraded: a config that ASKS for the hook path is refused, so no
+    // deployment can believe it is guarded when the build cannot guard.
+    #[cfg(feature = "appa-gate")]
     match appa_gate_from_config(config) {
         Ok(Some(gate)) => {
             // The tools.execute event waterfall the policy's audit listeners
@@ -162,6 +167,18 @@ fn factory_tools(
         }
         Ok(None) => block_on_plugin(ctx, tools),
         Err(error) => Err(error),
+    }
+
+    #[cfg(not(feature = "appa-gate"))]
+    {
+        if config.get("appa").is_some() || std::env::var_os("ARES_APPA_CONFIG").is_some() {
+            return Err(cordis::CordisError::Configuration(
+                "an APPA policy is configured but this build was compiled without the \
+                 `appa-gate` feature; rebuild with it rather than running unguarded"
+                    .to_string(),
+            ));
+        }
+        block_on_plugin(ctx, tools)
     }
 }
 
@@ -184,6 +201,7 @@ fn factory_tools(
 /// Every field but `enabled` and `config` defaults. `ARES_APPA_CONFIG` names
 /// the policy file when the entry states none; with neither, the hook path
 /// stays off.
+#[cfg(feature = "appa-gate")]
 fn appa_gate_from_config(config: &Value) -> Result<Option<crate::AppaGate>, cordis::CordisError> {
     let refuse = |detail: String| cordis::CordisError::Configuration(format!("appa: {detail}"));
     let section = config.get("appa");

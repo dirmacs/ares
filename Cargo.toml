@@ -132,6 +132,21 @@ exclude = [
     "Dockerfile",
     "hurl/*",
     "scripts/*",
+    # Not part of the published crate. These carry internal identifiers the
+    # OSS commit guard exists to keep out of public artifacts — runner labels
+    # (`.github`), agent configs naming internal tools (`config`), and design
+    # notes with internal repo names and host paths (`docs`). They are already
+    # public in the GitHub repo, so this is not a new disclosure; it just stops
+    # crates.io from becoming a second distribution channel for them.
+    ".github/*",
+    "config/*",
+    "docs/*",
+    "policy-tests/*",
+    "policy-tests-negative/*",
+    "examples/*",
+    "tests/*",
+    # This repo's own publish tooling; it has no business inside a crate.
+    "publish-chain.sh",
 ]
 
 

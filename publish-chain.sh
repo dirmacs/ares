@@ -143,12 +143,42 @@ if [ "$LIVE" -eq 1 ]; then
   # crates that still need this version. The list is derived, not hardcoded.
   echo
   echo "==> computing crates that still need $VERSION"
-  todo=$(python3 - "$VERSION" <<'PY'
+  # The publish SET and its ORDER both come from live data, not a literal list:
+  # order from `cargo metadata`'s dependency graph (topological), membership
+  # from the crates.io index. A hardcoded order would silently skip any crate
+  # added later, which is exactly the class of mistake this train has already
+  # produced twice.
+  todo=$(cargo metadata --no-deps --format-version 1 | python3 -c '
 import json, sys, urllib.request
-version = sys.argv[1]
-order = ["ares-store", "ares-mcp", "ares-llm", "ares-rag", "ares-tools",
-         "ares-agent", "ares-http", "ares-server"]
+
+d = json.load(sys.stdin)
+members = {p["name"]: p for p in d["packages"]}
+publishable = {n for n, p in members.items() if p.get("publish") != []}
+
+# Edges: which publishable crates depend on which other publishable crates.
+deps = {n: set() for n in publishable}
+for name in publishable:
+    for dep in members[name]["dependencies"]:
+        if dep["name"] in publishable:
+            deps[name].add(dep["name"])
+
+# Kahn topological sort; ties broken alphabetically for determinism.
+order, remaining = [], {n: set(v) for n, v in deps.items()}
+while remaining:
+    ready = sorted(n for n, ds in remaining.items() if not ds)
+    if not ready:
+        raise SystemExit("cycle in the dependency graph: " + ", ".join(sorted(remaining)))
+    for n in ready:
+        order.append(n)
+        del remaining[n]
+    for ds in remaining.values():
+        ds.difference_update(ready)
+
+# Compare each crate against ITS OWN manifest version, never a shared constant:
+# ares-vector is versioned 0.1.7 independently of the 0.11.9 family, so a single
+# $VERSION comparison would wrongly queue it for republishing.
 for crate in order:
+    want = members[crate]["version"]
     req = urllib.request.Request(
         f"https://crates.io/api/v1/crates/{crate}",
         headers={"User-Agent": "ares-publish-guard"},
@@ -158,9 +188,9 @@ for crate in order:
             cur = json.load(r).get("crate", {}).get("max_version", "")
     except Exception:
         cur = ""
-    if cur != version:
+    if cur != want:
         print(crate)
-PY
+' "$VERSION"
 )
   if [ -z "$todo" ]; then
     echo "    nothing to do; all crates already at $VERSION"
@@ -176,22 +206,31 @@ PY
 
   while IFS= read -r crate; do
     [ -z "$crate" ] && continue
+    # Each crate's own manifest version — ares-vector is 0.1.7 while the rest of
+    # the family is 0.11.9, so waiting on a shared constant would time out.
+    want=$(cargo metadata --no-deps --format-version 1 \
+      | python3 -c '
+import json, sys
+for p in json.load(sys.stdin)["packages"]:
+    if p["name"] == sys.argv[1]:
+        print(p["version"])
+' "$crate")
     echo
-    echo "==> $crate"
+    echo "==> $crate $want"
     cargo publish -p "$crate"
     # The index is a CDN and lags the upload; the next crate's
-    # `ares-<prev> = "^$VERSION"` requirement cannot resolve until this lands.
-    echo "    waiting for $crate $VERSION on the index..."
+    # `ares-<prev> = "^..."` requirement cannot resolve until this lands.
+    echo "    waiting for $crate $want on the index..."
     ok=0
     for _ in $(seq 1 60); do
       got=$(curl -s --max-time 10 -H 'User-Agent: ares-publish-guard' \
             "https://crates.io/api/v1/crates/$crate" \
             | python3 -c 'import sys,json;print(json.load(sys.stdin).get("crate",{}).get("max_version",""))' 2>/dev/null || true)
-      if [ "$got" = "$VERSION" ]; then ok=1; break; fi
+      if [ "$got" = "$want" ]; then ok=1; break; fi
       sleep 5
     done
     if [ "$ok" -ne 1 ]; then
-      echo "REFUSING to continue: $crate $VERSION did not appear on the index." >&2
+      echo "REFUSING to continue: $crate $want did not appear on the index." >&2
       echo "Remaining crates were NOT published." >&2
       exit 1
     fi

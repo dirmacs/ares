@@ -1557,9 +1557,17 @@ mod tests {
 
     #[test]
     fn next_run_at_parses_cron_and_returns_future() {
+        // One clock read, taken before the call and reused for every
+        // assertion. Reading `Utc::now()` again below let the two reads land in
+        // different seconds: `next_run_at("...")` returns the start of the next
+        // minute, so a read at :59 followed by one at :00 made `diff` negative
+        // and failed `diff > 0`. That is a real race, not a slow machine — it
+        // surfaced about one run in four under the full suite and never in
+        // isolation.
+        let now = Utc::now();
         let next = next_run_at("* * * * *");
-        assert!(next > Utc::now(), "next_run_at should be in future");
-        let diff = (next - Utc::now()).num_seconds();
+        assert!(next > now, "next_run_at should be in future");
+        let diff = (next - now).num_seconds();
         assert!(
             diff > 0 && diff <= 120,
             "diff {} should be within 120s",
@@ -1569,9 +1577,14 @@ mod tests {
 
     #[test]
     fn next_run_at_invalid_fallback_is_future() {
+        // Same single-read shape as above. The fallback is `Utc::now() + 60s`
+        // computed inside `next_run_at`, so comparing against a later
+        // `Utc::now()` here measured a window that could only shrink, and a
+        // whole-second boundary could push it below the 55s floor.
+        let now = Utc::now();
         let next = next_run_at("not-a-cron");
-        assert!(next > Utc::now());
-        let diff = (next - Utc::now()).num_seconds();
+        assert!(next > now);
+        let diff = (next - now).num_seconds();
         assert!(
             (55..=65).contains(&diff),
             "fallback diff {} should be ~60s",

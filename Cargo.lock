@@ -576,7 +576,6 @@ dependencies = [
  "ares-suriv",
  "ares-test-support",
  "ares-tools",
- "ares-tools-appa",
  "ares-types",
  "ares-vector",
  "async-trait",

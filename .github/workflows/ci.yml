@@ -48,6 +48,10 @@ jobs:
         run: ./scripts/appa-policy-gate.sh appa
   crap:
     name: CRAP Score Gate
+    # Self-hosted runners execute whatever the checked-out ref contains, so a
+    # fork PR must never reach them. Required on every pull_request-triggered
+    # self-hosted job.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, ARM64, dirmacs-ci]
     env:
       CRAP_THRESHOLD: "715"
@@ -90,6 +94,10 @@ jobs:
         run: cargo crap --workspace --format json --threshold "$CRAP_THRESHOLD" --fail-above
   headless:
     name: Headless Facade Gate
+    # Self-hosted runners execute whatever the checked-out ref contains, so a
+    # fork PR must never reach them. Required on every pull_request-triggered
+    # self-hosted job.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, ARM64, dirmacs-ci]
     steps:
       - uses: actions/checkout@v4
@@ -113,6 +121,10 @@ jobs:
           fi
   fmt:
     name: Formatting Gate
+    # Self-hosted runners execute whatever the checked-out ref contains, so a
+    # fork PR must never reach them. Required on every pull_request-triggered
+    # self-hosted job.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, ARM64, dirmacs-ci]
     steps:
       - uses: actions/checkout@v4
@@ -126,6 +138,10 @@ jobs:
         run: cargo fmt --all -- --check
   clippy:
     name: Clippy Gate
+    # Self-hosted runners execute whatever the checked-out ref contains, so a
+    # fork PR must never reach them. Required on every pull_request-triggered
+    # self-hosted job.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, ARM64, dirmacs-ci]
     steps:
       - uses: actions/checkout@v4

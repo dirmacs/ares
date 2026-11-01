@@ -140,33 +140,10 @@ fn factory_tools(
     #[cfg(not(any(feature = "postgres", test)))]
     let tools = Tools::new(static_reg);
 
-    // A pre-call gate hook, when an engine crate has installed one. This
-    // crate names no engine type: `ares-tools-appa` registers the OpenAPPA
-    // gate at startup, so the published crates stay free of the git-only
-    // dependency while the deployed server still runs the gate.
-    match crate::gate::installed_from_config(config) {
-        Ok(Some(gate)) => {
-            // The tools.execute event waterfall the policy's audit listeners
-            // ride on is bypassed without EventsService, so a configured hook
-            // path without it is a configuration fault, not a degraded mode.
-            if ctx.get::<cordis::EventsService>().is_none() {
-                return Err(cordis::CordisError::Configuration(
-                    "a pre-call gate is configured but EventsService is not on the \
-                     context; cordis-entries.toml must load the events entry before \
-                     the tools entry"
-                        .to_string(),
-                ));
-            }
-            tracing::info!("pre-call gate attached to the tools funnel");
-            Ok(block_on_plugin(ctx, tools.attach_appa(gate))?)
-        }
-        Ok(None) => block_on_plugin(ctx, tools),
-        Err(error) => Err(error),
-    }
+    block_on_plugin(ctx, tools)
 }
 
-/// The Tools entry config shape of the OpenAPPA hook path lives with
-/// `gate_from_config` in `ares-tools-appa`, which is what actually reads it.
+/// Register the always-on tools: the calculator and the provider web search.
 fn register_always_on_tools(tool_registry: &mut ToolRegistry) {
     tool_registry.register(Arc::new(Calculator));
     tool_registry.register(Arc::new(ProviderWebSearch));

@@ -90,7 +90,7 @@ pub fn new_deploy_registry() -> DeployRegistry {
 // Handlers
 // ---------------------------------------------------------------------------
 
-const VALID_TARGETS: &[&str] = &["ares", "admin", "eruka", "dotdot"];
+const VALID_TARGETS: &[&str] = &["ares", "admin", "eruka"];
 fn deploy_script() -> String {
     std::env::var("DEPLOY_SCRIPT").unwrap_or_else(|_| "./scripts/deploy.sh".to_string())
 }

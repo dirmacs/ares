@@ -248,7 +248,7 @@ pub struct UpdateUserAgent {
 
 /// Overridable backing store for the `/user/agents` endpoints.
 ///
-/// Downstream binaries (for example ares-dirmacs) provide their own
+/// Downstream binaries (for example a private deployment) provide their own
 /// implementation on the request [`Context`] before the router runs, for
 /// example `ctx.provide(UserAgentStoreHandle::new(provider))`. With no
 /// provider the endpoints keep today's responses (empty list / 501 for

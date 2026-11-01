@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Removed
+- **OpenAPPA is gone from ARES, not parked behind a feature.** The `appa`, `appa-runtime-api` and `appa-eventlog` git dependencies, the `ares-tools-appa` crate, `crates/ares-tools/src/gate.rs` and its `ToolGate` contract, the `config/appa*` policy and battery files, `policy-tests*/`, and `scripts/appa-policy-gate.sh` are all deleted. Upstream publishes nothing to crates.io and sets `publish = false`, so every crate naming it was permanently unpublishable; its `rusqlite 0.40` pin also forced two vendored SQLites to coexist. That friction was structural, so the integration is removed rather than isolated — a trait kept as a seam for an engine nothing ships is the same debt in a different costume. `crates/ares-tools/src/fence.rs` (the L0–L3 write contract) never referenced the gate and is untouched. `serde_json`'s `raw_value` feature went with it: nothing but the engine used it.
+- **`dotdot` is no longer a deploy target.** Dropped from `VALID_TARGETS` in the deploy handler and from `cors_origins` in `ares.toml`, so the allowlist and the CORS policy agree.
+
 ### Changed
 - `ares-tools` now requires `daedra 0.5.11` instead of the 0.1.x line. The floor is 0.5.11 rather than `0.5` because every release from 0.5.0 to 0.5.10 carries a Brave parser anchored to a `#results` container the SERP no longer emits, which made that backend return zero results while reporting a genuine empty page.
 - Removed the unused `daedra` entry from `[workspace.dependencies]`. Nothing used `workspace = true` for it, so it described a constraint no crate observed.

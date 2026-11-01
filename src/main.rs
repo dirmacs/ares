@@ -895,7 +895,7 @@ async fn run_server(
     #[allow(unused_mut)]
     let mut app = http.router.clone().merge(extra);
 
-    // Proprietary routes are registered by ares-dirmacs, not here.
+    // Proprietary routes are registered by the embedding binary, not here.
     // Extension crates call app.merge(), ...) in their own main.rs.
 
     // Swagger UI (optional - requires network during build)

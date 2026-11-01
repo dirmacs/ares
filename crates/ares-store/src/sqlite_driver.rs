@@ -1,15 +1,11 @@
 //! A blocking SQLite driver exposed through the async shape `turso.rs` expects.
 //!
 //! Why this exists: the embedded store was written against `libsql`, which is
-//! async. `libsql-ffi` vendors its own SQLite, and `appa` (via `ares-tools`)
-//! pulls `rusqlite`, which vendors another. Cargo permits one `links = "sqlite3"`
-//! per graph, and the two produce duplicate `sqlite3_*` symbols at LINK time —
-//! `cargo check` passes, only linking fails. The practical result was that the
-//! embedded backend could not be compiled into a binary alongside `appa`.
-//!
-//! `rusqlite` is already linked in every default build because `appa` needs it.
-//! Building the embedded store on `rusqlite` therefore adds no second SQLite and
-//! requires no change to `appa` — no security control is traded away.
+//! async and whose `libsql-ffi` vendors its own SQLite. `rusqlite` vendors
+//! another. Cargo permits one `links = "sqlite3"` per graph, and the two
+//! produce duplicate `sqlite3_*` symbols at LINK time — `cargo check` passes,
+//! only linking fails. The embedded backend is therefore built on `rusqlite`
+//! directly: one vendored SQLite, nothing else linked.
 //!
 //! The only impedance mismatch is async: `turso.rs` awaits its queries, while
 //! `rusqlite` blocks. Each call is pushed onto the blocking pool via

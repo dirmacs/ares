@@ -46,7 +46,7 @@ pub async fn upsert_fleet_provider(
     if req.api_key.is_some() && master.is_none() {
         return Err(HttpError::from(AppError::Configuration(
             "FLEET_SECRETS_KEY is not set; cannot store new API keys. \
-             Configure /etc/dirmacs/fleet-secrets.env and reload ares.service."
+             Configure your fleet-secrets environment file and reload the service."
                 .into(),
         )));
     }

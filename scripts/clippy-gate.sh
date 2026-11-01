@@ -49,17 +49,94 @@ echo "clippy-gate: running cargo clippy --workspace --all-targets"
 #   warning: `ares-agent` (lib) generated 27 warnings (run `cargo clippy ...`)
 # Counting those totals avoids double-counting the per-diagnostic lines, which
 # clippy repeats in the crate summary anyway. The cache makes reruns cheap.
-OUT=$(cargo clippy --workspace --all-targets 2>&1)
-RC=$?
+
+# Run clippy, capturing combined output and the exit status.
+run_clippy() {
+  OUT=$(cargo clippy --workspace --all-targets 2>&1)
+  RC=$?
+}
+
+# Strip ANSI. CI sets CARGO_TERM_COLOR=always, so every diagnostic line arrives
+# as \e[1m\e[31merror\e[0m... and a plain `^error` anchor matches nothing -- the
+# job then reports "a compile error" with no error text, which is how this went
+# undiagnosed. Match the coloured form too, so the report survives either
+# CARGO_TERM_COLOR setting.
+strip_ansi() { printf '%s\n' "$1" | sed $'s/\033\\[[0-9;]*m//g'; }
+
+# Clear the dep-info files named in a "could not parse/generate dep info" error.
+#
+# Removes ONLY the offending .d files, not the target directory. Deleting the
+# whole target would force a full rebuild whose cost is unmeasured here, trading
+# a 90-second job for an unknown one. The named file is the corrupt artifact, so
+# the surgical removal is the change that actually addresses the failure.
+#
+# Deliberately does not guess crate names from filenames: cargo recompiles a unit
+# whose dep-info is missing, which regenerates it correctly.
+clear_corrupt_dep_info() {
+  local cleaned paths p removed=0
+  cleaned=$(strip_ansi "$1")
+  paths=$(printf '%s\n' "$cleaned" \
+    | grep -oE 'could not parse/generate dep info at: .*' \
+    | sed 's|^could not parse/generate dep info at: ||' \
+    | sed 's/[[:space:]]*$//' \
+    | sort -u)
+  if [ -z "$paths" ]; then
+    return 1
+  fi
+  while IFS= read -r p; do
+    [ -z "$p" ] && continue
+    case "$p" in
+      /*) : ;;
+      *) echo "clippy-gate: refusing to remove non-absolute path: $p" >&2; continue ;;
+    esac
+    # Only ever remove cargo dep-info files. A corrupt .d is the failure we are
+    # recovering from; anything else is not ours to delete.
+    case "$p" in
+      *.d) : ;;
+      *) echo "clippy-gate: refusing to remove non-dep-info file: $p" >&2; continue ;;
+    esac
+    if [ -f "$p" ]; then
+      echo "clippy-gate: removing corrupt dep-info: $p" >&2
+      rm -f -- "$p" && removed=$((removed + 1))
+    fi
+  done <<< "$paths"
+  [ "$removed" -gt 0 ]
+}
+
+run_clippy
+if [ $RC -ne 0 ]; then
+  # A corrupt dep-info file restored from a cache is not a defect in the tree:
+  # cargo aborts before linting anything, on a file it did not write this run.
+  # Measured at roughly 2 in 17 CI runs, and not attributable to the diff, the
+  # cache key, the restore type, job overlap or the runner host -- all four were
+  # tested and falsified (ares#113). Because the root cause is unestablished, the
+  # only defensible fix is one that is correct regardless of cause: recognise the
+  # specific signature, remove the corrupt artifact, and retry exactly once.
+  #
+  # The retry is conditional on the signature. A genuine compile error retries
+  # nothing and still fails, so this cannot mask a real defect -- it can only
+  # recover from a malformed cache artifact, which is not in the repository.
+  CLEAN=$(strip_ansi "$OUT")
+  if printf '%s\n' "$CLEAN" | grep -q 'could not parse/generate dep info'; then
+    echo "clippy-gate: clippy exited $RC on a corrupt dep-info file (cache artifact, not this tree)" >&2
+    if clear_corrupt_dep_info "$OUT"; then
+      echo "clippy-gate: retrying once after clearing the corrupt dep-info" >&2
+      run_clippy
+      if [ $RC -eq 0 ]; then
+        echo "clippy-gate: retry succeeded; the failure was the cache artifact" >&2
+      else
+        echo "clippy-gate: retry also failed (exit $RC); reporting the second run" >&2
+        OUT_CLEAN=$(strip_ansi "$OUT")
+      fi
+    else
+      echo "clippy-gate: could not identify a removable dep-info file; not retrying" >&2
+    fi
+  fi
+fi
+
 if [ $RC -ne 0 ]; then
   # A hard error (not a warning) is always a failure, independent of the count.
-  #
-  # Strip ANSI before matching. CI sets CARGO_TERM_COLOR=always, so every
-  # diagnostic line arrives as \e[1m\e[31merror\e[0m... and a plain `^error`
-  # anchor matches nothing -- the job then reports "a compile error" with no
-  # error text, which is how this went undiagnosed. Match the coloured form
-  # too, so the report survives either CARGO_TERM_COLOR setting.
-  CLEAN=$(printf '%s\n' "$OUT" | sed $'s/\033\\[[0-9;]*m//g')
+  CLEAN=$(strip_ansi "$OUT")
   printf '%s\n' "$CLEAN" | grep -E "^error" | head -20
   echo "clippy-gate: clippy exited $RC; a compile error is not a warning budget"
   exit 1

@@ -2,6 +2,10 @@ name: Open Source Guard
 on: [push, pull_request]
 jobs:
   check:
+    # Self-hosted runners execute whatever the checked-out ref contains, so a
+    # fork PR must never reach them. Required on every pull_request-triggered
+    # self-hosted job.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, ARM64, dirmacs-ci]
     steps:
       - uses: actions/checkout@v4
@@ -21,7 +25,20 @@ jobs:
           # config/, ui/, scripts/, hurl/ and the root documents, so a file
           # outside the old list was never checked for anything.
           SCAN="src/ crates/ tests/ docs/ examples/ config/ ui/ scripts/ hurl/ README.md AGENTS.md ARCHITECTURE.md CHANGELOG.md CLAUDE.md CONTRIBUTING.md SECURITY.md ares.example.toml"
-          if grep -rnE "$TERMS|$FIGURES" $SCAN 2>/dev/null; then
+          # Restrict SCAN to paths that exist. `grep -r` exits 2 when any
+          # operand is missing, and `if grep; then` treats only 0 as true — so a
+          # single absent path (someone deletes examples/, or renames docs/)
+          # would make this guard print "No proprietary content found" and pass
+          # even while matching. Missing paths are not a scan result.
+          EXISTING=""
+          for p in $SCAN; do [ -e "$p" ] && EXISTING="$EXISTING $p"; done
+          if [ -z "${EXISTING# }" ]; then
+            echo "::error::None of the scanned paths exist; guard cannot run"
+            exit 1
+          fi
+          HITS=$(grep -rnE "$TERMS|$FIGURES" $EXISTING 2>/dev/null || true)
+          if [ -n "$HITS" ]; then
+            echo "$HITS"
             echo "::error::Proprietary content detected in open-source repo"
             exit 1
           fi

@@ -5,6 +5,7 @@
 - Removed the unused `daedra` entry from `[workspace.dependencies]`. Nothing used `workspace = true` for it, so it described a constraint no crate observed.
 
 ### Fixed
+- `ares-store` could not be packaged, which blocked `0.11.9` for the six crates that depend on it. `cargo package` reported a `libsqlite3-sys` `links = "sqlite3"` conflict between `sqlx-sqlite` and `rusqlite`; the cause was a dev-dependency cycle with `ares-test-support`, which depends back on `ares-store` and thereby pulled `sqlx-sqlite` into the packaged graph. The build was never affected. `src/test_db.rs` now owns the live-DB lifecycle directly, so the dependency is one-way. The test tables truncated between runs are derived from `pg_tables` rather than hardcoded, so a new migration cannot silently leave data behind.
 - `search::tests::test_empty_query_returns_empty_results` failed against daedra 0.5.x because an empty query was dispatched to the backends and surfaced as a transport error. daedra 0.5.11 answers empty queries directly, and the suite is back to its baseline: 213 passing, 12 failing, with all 12 being `TEST_DATABASE_URL is required` rather than code failures.
 
 # Changelog

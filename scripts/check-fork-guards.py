@@ -132,7 +132,15 @@ def audit(root: Path, label: str) -> dict[str, Any]:
                 "events": fork_reachable,
                 "uses_secrets": "secrets." in body_text,
             }
-            if fork_reachable and not has_guard:
+            # A `pull_request_target` job is a finding whether or not it carries
+            # the guard. `github.event_name != 'pull_request'` is true for that
+            # trigger, so the condition passes and the job runs with secrets in
+            # scope — the guard is a no-op there. Treating a present guard as
+            # exculpatory would report a credential exposure as clean.
+            reached_by_prt = "pull_request_target" in fork_reachable
+            if fork_reachable and (reached_by_prt or not has_guard):
+                entry["guard_present"] = has_guard
+                entry["guard_is_noop"] = reached_by_prt
                 findings.append(entry)
             elif not fork_reachable:
                 push_only.append(f"{label}/{wf.name}/{name}")
@@ -202,14 +210,19 @@ def main() -> int:
             print(f"\n{r['repo']}")
             for f in bad:
                 secret = "  ** USES SECRETS **" if f["uses_secrets"] else ""
-                prt = "  ** pull_request_target: SECRETS EXPOSED **" if "pull_request_target" in f["events"] else ""
+                if f.get("guard_is_noop"):
+                    prt = "  ** pull_request_target: GUARD IS A NO-OP, SECRETS EXPOSED **"
+                elif "pull_request_target" in f["events"]:
+                    prt = "  ** pull_request_target: SECRETS EXPOSED **"
+                else:
+                    prt = ""
                 print(f"  {f['file']:24} {f['job']:24} events={','.join(f['events'])}{secret}{prt}")
             for u in r.get("unreadable", []):
                 print(f"  UNREADABLE {u['file']}: {u['error']}")
         if not findings and not unreadable:
-            print("clean: no unguarded fork-reachable self-hosted jobs")
+            print("clean: no exposed fork-reachable self-hosted jobs")
         else:
-            print(f"\n{len(findings)} unguarded fork-reachable self-hosted job(s)")
+            print(f"\n{len(findings)} exposed fork-reachable self-hosted job(s)")
             with_secrets = [f for f in findings if f["uses_secrets"]]
             if with_secrets:
                 print(f"{len(with_secrets)} of them carry secrets:")
@@ -218,6 +231,9 @@ def main() -> int:
             prt = [f for f in findings if "pull_request_target" in f["events"]]
             if prt:
                 print(f"\n{len(prt)} reached by pull_request_target — secrets ARE exposed to fork code:")
+                noop = [f for f in prt if f.get("guard_is_noop")]
+                if noop:
+                    print(f"  ({len(noop)} of them carry the guard, which does not mitigate this trigger)")
                 for f in prt:
                     print(f"  {f['repo']}/{f['file']}/{f['job']}")
 

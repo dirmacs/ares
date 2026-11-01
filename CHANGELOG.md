@@ -8,7 +8,7 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ### Removed
 
-- **OpenAPPA is gone from ARES, and it never shipped.** The `appa`, `appa-runtime-api` and `appa-eventlog` git dependencies, the `ares-tools-appa` crate, `crates/ares-tools/src/appa.rs` and `gate.rs` with its `ToolGate` contract, `Tools::with_appa` / `attach_appa` / `appa_gate` and the `appa` section on the `Tools` cordis entry, `config/appa*`, `policy-tests*/`, `scripts/appa-policy-gate.sh`, and the `policy` CI job are all deleted.
+- **OpenAPPA is gone from ARES, and it never shipped.** The `appa`, `appa-runtime-api` and `appa-eventlog` git dependencies, `crates/ares-tools-appa/`, `crates/ares-tools/src/appa.rs` (both 1404 lines), `crates/ares-tools/src/gate.rs` with its `ToolGate` contract, `Tools::with_appa` / `attach_appa` / `appa_gate` and the `appa` section on the `Tools` cordis entry, `config/appa*`, `policy-tests*/`, `scripts/appa-policy-gate.sh`, and the `policy` CI job are all deleted. (`gate.rs` had already left `main` in the earlier crate split, so the diff against `main` shows the net removal rather than that file; it is listed here because the release notes describe the release, not the diff.)
 
   The integration had reached `main` but was never released: `ares-tools` last shipped as `0.11.8`, so no published crate ever contained it. Removing it now is why it costs nothing — there is no public surface to walk back.
 

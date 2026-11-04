@@ -238,7 +238,7 @@ for crate in order:
             cur = json.load(r).get("crate", {}).get("max_version", "")
     except Exception:
         cur = ""
-      if cur != want:
+    if cur != want:
         print(crate)
 '
   )

@@ -11,7 +11,7 @@ exclude = ["ui"]
 resolver = "2"
 
 [workspace.package]
-version = "0.11.9"
+version = "0.11.10"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/dirmacs/ares"
@@ -19,7 +19,7 @@ authors = ["Dirmacs <build@dirmacs.com>"]
 
 [workspace.dependencies]
 # Shared dependencies across workspace
-ares-vector = { version = "0.11.9", path = "crates/ares-vector" }
+ares-vector = { version = "0.11.10", path = "crates/ares-vector" }
 # OpenAPPA (archestra-ai/OpenAPPA) was removed from this workspace, not just
 # unpinned. Upstream is git-only with `publish = false`, so any crate naming it
 # could never reach crates.io, and its `rusqlite 0.40` pin made the graph
@@ -39,17 +39,17 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10.4"
 async-trait = "0.1"
 
-ares-types = { version = "0.11.9", path = "crates/ares-types" }
-ares-rag = { version = "0.11.9", path = "crates/ares-rag" }
-ares-tools = { version = "0.11.9", path = "crates/ares-tools" }
-ares-llm = { version = "0.11.9", path = "crates/ares-llm" }
-ares-store = { version = "0.11.9", path = "crates/ares-store" }
-ares-mcp = { version = "0.11.9", path = "crates/ares-mcp", default-features = false }
-ares-agent = { version = "0.11.9", path = "crates/ares-agent" }
-ares-http = { version = "0.11.9", path = "crates/ares-http" }
-cordis = { version = "0.11.9", path = "crates/cordis", package = "ares-cordis", default-features = false }
-ares-test-support = { version = "0.11.9", path = "crates/ares-test-support" }
-ares-suriv = { version = "0.11.9", path = "crates/ares-suriv" }
+ares-types = { version = "0.11.10", path = "crates/ares-types" }
+ares-rag = { version = "0.11.10", path = "crates/ares-rag" }
+ares-tools = { version = "0.11.10", path = "crates/ares-tools" }
+ares-llm = { version = "0.11.10", path = "crates/ares-llm" }
+ares-store = { version = "0.11.10", path = "crates/ares-store" }
+ares-mcp = { version = "0.11.10", path = "crates/ares-mcp", default-features = false }
+ares-agent = { version = "0.11.10", path = "crates/ares-agent" }
+ares-http = { version = "0.11.10", path = "crates/ares-http" }
+cordis = { version = "0.11.10", path = "crates/cordis", package = "ares-cordis", default-features = false }
+ares-test-support = { version = "0.11.10", path = "crates/ares-test-support" }
+ares-suriv = { version = "0.11.10", path = "crates/ares-suriv" }
 anyhow = "1.0.100"
 hex = "0.4"
 rand = "0.9.2"

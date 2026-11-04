@@ -6,6 +6,15 @@ All notable changes to ARES are documented here. This project follows [Semantic 
 
 ## Unreleased
 
+---
+
+## 0.11.10 - 2026-11-04
+
+Nothing here changes a public API. It closes the `0.11.9` train: that version was
+tagged and released while `OpenAPPA` was still in the tree, so the sixteen
+commits that removed it and hardened the publish path never shipped.
+`ares-server` 0.11.10 is the first published crate that does not depend on it.
+
 ### Removed
 
 - **OpenAPPA is gone from ARES, and it never shipped.** The `appa`, `appa-runtime-api` and `appa-eventlog` git dependencies, `crates/ares-tools-appa/`, `crates/ares-tools/src/appa.rs` (both 1404 lines), `crates/ares-tools/src/gate.rs` with its `ToolGate` contract, `Tools::with_appa` / `attach_appa` / `appa_gate` and the `appa` section on the `Tools` cordis entry, `config/appa*`, `policy-tests*/`, `scripts/appa-policy-gate.sh`, and the `policy` CI job are all deleted. (`gate.rs` had already left `main` in the earlier crate split, so the diff against `main` shows the net removal rather than that file; it is listed here because the release notes describe the release, not the diff.)

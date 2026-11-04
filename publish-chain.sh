@@ -143,8 +143,9 @@ echo "    ok"
 # --- Guard 3: version is not already taken -----------------------------------
 # Re-publishing an existing version is an error, but only after packaging.
 echo "==> checking that ${CRATE_VERSION_CHECK:-$VERSION} is not already published"
-    stale=$(python3 -c '
-import json, urllib.request
+    stale=$(TARGET="${CRATE_VERSION_CHECK:-$VERSION}" python3 -c '
+import json, os, urllib.request
+target = os.environ["TARGET"]
 # Membership is derived from `cargo metadata` below, not listed here. This guard
 # is a courtesy notice printed before packaging; a hardcoded list would go stale
 # every time a crate joined the train, which has already happened twice.

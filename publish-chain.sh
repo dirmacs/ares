@@ -61,7 +61,20 @@ case "${1:-}" in
   *) echo "unknown argument: $1 (use --live to publish for real)" >&2; exit 2 ;;
 esac
 
-VERSION=0.11.9
+VERSION=$(python3 -c '
+import json, subprocess
+d = json.loads(subprocess.run(["cargo", "metadata", "--no-deps",
+                               "--format-version", "1"],
+                              capture_output=True, text=True).stdout)
+for p in d["packages"]:
+    if p.get("publish") != [] and p["name"] == "ares-server":
+        print(p["version"]); break
+')
+if [ -z "$VERSION" ]; then
+  echo "FATAL: could not derive the workspace version from cargo metadata." >&2
+  exit 78
+fi
+echo "==> publishing ares-server $VERSION"
 
 # Every publishable member, in dependency order. Derived once here rather than
 # written out at each site that needs it: this list has already gone stale twice
@@ -129,7 +142,7 @@ echo "    ok"
 
 # --- Guard 3: version is not already taken -----------------------------------
 # Re-publishing an existing version is an error, but only after packaging.
-echo "==> checking that ${CRATE_VERSION_CHECK:-0.11.9} is not already published"
+echo "==> checking that ${CRATE_VERSION_CHECK:-$VERSION} is not already published"
     stale=$(python3 -c '
 import json, urllib.request
 # Membership is derived from `cargo metadata` below, not listed here. This guard
@@ -150,11 +163,11 @@ for m in sorted({p["name"] for p in d["packages"] if p.get("publish") != []}):
         cur = data.get("crate", {}).get("max_version", "?")
     except Exception:
         cur = "?"
-    if cur == "0.11.9":
-        print(f"{m} already at 0.11.9")
+    if cur == target:
+        print(f"{m} already at {target}")
 ')
 if [ -n "$stale" ]; then
-  echo "NOTE: some crates are already at 0.11.9; they will be skipped by cargo:" >&2
+  echo "NOTE: some crates are already at $VERSION; they will be skipped by cargo:" >&2
   echo "$stale" | sed 's/^/  /' >&2
 fi
 
@@ -174,7 +187,7 @@ fi
 if [ "$LIVE" -eq 1 ]; then
   # `cargo publish --workspace` cannot be used live here: it attempts every
   # member, including the ones already at this version, and aborts on the first
-  # with "crate ares-types@0.11.9 already exists" before uploading anything.
+  # with "crate ares-types@$VERSION already exists" before uploading anything.
   # So the live path publishes an explicit, dependency-ordered list of only the
   # crates that still need this version. The list is derived, not hardcoded.
   echo

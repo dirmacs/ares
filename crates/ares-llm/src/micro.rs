@@ -7,6 +7,14 @@
 //! no directly parseable JSON is re-requested identically up to
 //! `json_retries` times before substring salvage gets a chance.
 //!
+//! Transport retries back off exponentially (see
+//! [`MicroEngine::with_retry_backoff`]) and pass through a shared
+//! [`CircuitBreaker`] from `llm-resilience`: once the provider has failed
+//! enough calls in a row, every task on the engine fails fast instead of
+//! sending more requests into a 429 or an outage. Errors that a retry cannot
+//! fix (auth, invalid input, configuration, exhausted budget) are returned
+//! after the first attempt.
+//!
 //! Identical deterministic-class requests (same model, template, and input)
 //! are served from a bounded content-hash cache: see [`MicroCacheConfig`].
 //!
@@ -35,15 +43,28 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
+use llm_resilience::CircuitBreaker;
 use parking_lot::Mutex;
 use serde_json::Value;
 
 use crate::client::LLMClient;
-use ares_types::types::Result;
+use ares_types::types::{AppError, Result};
 
 /// Default number of identical re-requests after an answer whose JSON could
 /// not be parsed directly, before substring salvage runs.
 pub(crate) const DEFAULT_JSON_RETRIES: u32 = 2;
+
+/// Default delay before the first transport retry; it doubles per retry.
+pub(crate) const DEFAULT_RETRY_BACKOFF: Duration = Duration::from_millis(250);
+
+/// Upper bound on a single transport-retry delay.
+pub(crate) const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(8);
+
+/// Consecutive transport failures that open the default circuit breaker.
+pub(crate) const DEFAULT_BREAKER_FAILURES: usize = 5;
+
+/// How long the default circuit breaker stays open before one probe call.
+pub(crate) const DEFAULT_BREAKER_OPEN_FOR: Duration = Duration::from_secs(30);
 
 /// Default maximum number of outcomes kept in the micro-call cache.
 pub(crate) const DEFAULT_CACHE_ENTRIES: usize = 256;
@@ -137,6 +158,23 @@ pub struct MicroEngine {
     json_retries: u32,
     cache_config: MicroCacheConfig,
     cache: Mutex<LruOutcomeCache>,
+    retry_backoff: Duration,
+    breaker: Option<CircuitBreaker>,
+}
+
+/// Errors a retry cannot fix: sending the same request again fails the same
+/// way, so these are returned after the first attempt and say nothing about
+/// provider health.
+fn is_retryable(err: &AppError) -> bool {
+    !matches!(
+        err,
+        AppError::Auth(_)
+            | AppError::InvalidInput(_)
+            | AppError::Configuration(_)
+            | AppError::NotFound(_)
+            | AppError::FeatureDisabled(_)
+            | AppError::BudgetExceeded(_)
+    )
 }
 
 /// Bounded least-recently-used store of micro outcomes keyed by content hash.
@@ -221,7 +259,47 @@ impl MicroEngine {
             json_retries: DEFAULT_JSON_RETRIES,
             cache_config: MicroCacheConfig::default(),
             cache: Mutex::new(LruOutcomeCache::new()),
+            retry_backoff: DEFAULT_RETRY_BACKOFF,
+            breaker: Some(CircuitBreaker::new(
+                DEFAULT_BREAKER_FAILURES,
+                1.0,
+                DEFAULT_BREAKER_OPEN_FOR,
+            )),
         }
+    }
+
+    /// Wait `base` before the first transport retry, doubling per retry up to
+    /// 8 seconds. Defaults to 250 ms; `Duration::ZERO` retries immediately.
+    pub fn with_retry_backoff(mut self, base: Duration) -> Self {
+        self.retry_backoff = base;
+        self
+    }
+
+    /// Replace the circuit breaker shared by every task on this engine.
+    ///
+    /// The default opens after 5 consecutive transport failures and lets one
+    /// probe through after 30 seconds (doubling while probes keep failing).
+    pub fn with_circuit_breaker(mut self, breaker: CircuitBreaker) -> Self {
+        self.breaker = Some(breaker);
+        self
+    }
+
+    /// Turn the circuit breaker off: every task always reaches the client.
+    pub fn without_circuit_breaker(mut self) -> Self {
+        self.breaker = None;
+        self
+    }
+
+    /// The circuit breaker guarding the client, if any.
+    pub fn circuit_breaker(&self) -> Option<&CircuitBreaker> {
+        self.breaker.as_ref()
+    }
+
+    fn backoff_for(&self, retry: u32) -> Duration {
+        let factor = 1u32 << retry.saturating_sub(1).min(16);
+        self.retry_backoff
+            .saturating_mul(factor)
+            .min(MAX_RETRY_BACKOFF.max(self.retry_backoff))
     }
 
     /// Re-request an answer with no directly parseable JSON this many times,
@@ -245,7 +323,14 @@ impl MicroEngine {
         Self::new(client, 2, 4)
     }
 
-    /// Run one task, retrying transport errors up to `max_retries` times.
+    /// Run one task, retrying transport errors up to `max_retries` times
+    /// with exponential backoff between attempts.
+    ///
+    /// Every call goes through the engine's circuit breaker: while it is open
+    /// the client is not called and [`AppError::Unavailable`] is returned at
+    /// once. Non-retryable errors (auth, invalid input, configuration, not
+    /// found, disabled feature, exhausted budget) are returned after the
+    /// first attempt.
     ///
     /// The answer text is trimmed of optional Markdown code fences before a
     /// strict JSON parse is attempted. An answer that does not parse is
@@ -273,12 +358,29 @@ impl MicroEngine {
         }
 
         loop {
+            let permit = match &self.breaker {
+                Some(breaker) => match breaker.try_acquire() {
+                    Some(permit) => Some(permit),
+                    None => {
+                        let wait = breaker.retry_after_sync().unwrap_or_default();
+                        return Err(AppError::Unavailable(format!(
+                            "micro task {}: LLM circuit breaker open, next probe in {} ms",
+                            task.name,
+                            wait.as_millis()
+                        )));
+                    }
+                },
+                None => None,
+            };
             match self
                 .client
                 .generate_with_system(&task.system, &task.input)
                 .await
             {
                 Ok(content) => {
+                    if let Some(permit) = permit {
+                        permit.success();
+                    }
                     let text = strip_code_fences(&content);
                     match serde_json::from_str::<Value>(text) {
                         Ok(json) => {
@@ -325,10 +427,31 @@ impl MicroEngine {
                     }
                 }
                 Err(err) => {
-                    if retries >= self.max_retries {
+                    if !is_retryable(&err) {
+                        // Says nothing about provider health: record nothing.
+                        drop(permit);
+                        return Err(err);
+                    }
+                    if let Some(permit) = permit {
+                        permit.failure();
+                    }
+                    if retries >= self.max_retries
+                        || self.breaker.as_ref().is_some_and(|b| b.is_open_sync())
+                    {
                         return Err(err);
                     }
                     retries += 1;
+                    let wait = self.backoff_for(retries);
+                    tracing::debug!(
+                        task = task.name,
+                        retry = retries,
+                        wait_ms = wait.as_millis() as u64,
+                        error = %err,
+                        "micro transport error; backing off before retry"
+                    );
+                    if !wait.is_zero() {
+                        tokio::time::sleep(wait).await;
+                    }
                 }
             }
         }
@@ -876,5 +999,92 @@ mod tests {
             "an answer reached through retries must not be cached"
         );
         assert!(!second.cache_hit);
+    }
+
+    #[tokio::test]
+    async fn transport_retries_back_off_between_attempts() {
+        let client = Arc::new(BehaviorClient::new(|call| {
+            if call < 2 {
+                Err(AppError::RateLimited("429".into()))
+            } else {
+                Ok("{\"ok\":true}".to_string())
+            }
+        }));
+        let engine =
+            MicroEngine::with_client(client.clone()).with_retry_backoff(Duration::from_millis(40));
+
+        let started = Instant::now();
+        let outcome = engine.run(&task("limited", "payload")).await.expect("ok");
+
+        assert_eq!(outcome.retries, 2);
+        assert_eq!(client.call_count(), 3);
+        // 40 ms before retry 1, 80 ms before retry 2: no back-to-back hammering.
+        assert!(
+            started.elapsed() >= Duration::from_millis(120),
+            "retries must wait, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn open_breaker_stops_calls_across_tasks() {
+        let client = Arc::new(BehaviorClient::new(|_| {
+            Err(AppError::External("provider outage".into()))
+        }));
+        let engine = MicroEngine::new(client.clone(), 2, 1)
+            .with_retry_backoff(Duration::ZERO)
+            .with_circuit_breaker(CircuitBreaker::new(3, 1.0, Duration::from_secs(60)));
+
+        let first = engine.run(&task("a", "one")).await;
+        assert!(matches!(first, Err(AppError::External(_))));
+        assert_eq!(client.call_count(), 3, "initial attempt plus 2 retries");
+
+        // Without the breaker each further task would send 3 more requests
+        // into the outage; with it they fail fast and the client is idle.
+        for input in ["two", "three", "four"] {
+            let result = engine.run(&task("b", input)).await;
+            assert!(matches!(result, Err(AppError::Unavailable(_))));
+        }
+        assert_eq!(client.call_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn breaker_disabled_keeps_calling_client() {
+        let client = Arc::new(BehaviorClient::new(|_| {
+            Err(AppError::External("provider outage".into()))
+        }));
+        let engine = MicroEngine::new(client.clone(), 2, 1)
+            .with_retry_backoff(Duration::ZERO)
+            .without_circuit_breaker();
+
+        for input in ["one", "two"] {
+            assert!(engine.run(&task("x", input)).await.is_err());
+        }
+        assert_eq!(client.call_count(), 6);
+    }
+
+    #[tokio::test]
+    async fn non_retryable_error_is_not_retried() {
+        let client = Arc::new(BehaviorClient::new(|_| {
+            Err(AppError::Auth("bad api key".into()))
+        }));
+        let engine = MicroEngine::with_client(client.clone());
+
+        let result = engine.run(&task("auth", "payload")).await;
+
+        assert!(matches!(result, Err(AppError::Auth(_))));
+        assert_eq!(client.call_count(), 1, "a bad key fails the same way again");
+        assert!(engine.circuit_breaker().expect("default").is_closed_sync());
+    }
+
+    #[test]
+    fn backoff_doubles_and_caps() {
+        let client = Arc::new(BehaviorClient::new(|_| Ok("{}".to_string())));
+        let engine =
+            MicroEngine::with_client(client).with_retry_backoff(Duration::from_millis(250));
+        assert_eq!(engine.backoff_for(1), Duration::from_millis(250));
+        assert_eq!(engine.backoff_for(2), Duration::from_millis(500));
+        assert_eq!(engine.backoff_for(3), Duration::from_secs(1));
+        assert_eq!(engine.backoff_for(30), MAX_RETRY_BACKOFF);
     }
 }
